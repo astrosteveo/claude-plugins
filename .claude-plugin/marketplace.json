@@ -1,0 +1,35 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "astrosteveo-plugins",
+  "description": "Claude Code plugins by astrosteveo: reusable project workflows.",
+  "owner": {
+    "name": "astrosteveo",
+    "url": "https://github.com/astrosteveo"
+  },
+  "plugins": [
+    {
+      "name": "workflow",
+      "source": "./plugins/workflow",
+      "description": "A small software team for one request: an orchestrator routes work through discovery, planning, implementation, and independent review of both the plan and the code.",
+      "version": "0.1.0",
+      "author": {
+        "name": "astrosteveo"
+      },
+      "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/workflow",
+      "category": "productivity",
+      "tags": ["workflow", "orchestration", "brainstorming", "planning", "implementation", "review"]
+    },
+    {
+      "name": "claudex",
+      "source": "./plugins/claudex",
+      "description": "Pair Claude Code with the OpenAI Codex CLI: Claude drives, Codex consults, plans, implements in isolated worktrees, and reviews.",
+      "version": "0.1.0",
+      "author": {
+        "name": "astrosteveo"
+      },
+      "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/claudex",
+      "category": "productivity",
+      "tags": ["codex", "openai", "pair-programming", "multi-model", "worktree", "review"]
+    }
+  ]
+}

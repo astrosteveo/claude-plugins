@@ -1,0 +1,13 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "workflow",
+  "displayName": "Workflow",
+  "version": "0.1.0",
+  "description": "A small software team for one request: an orchestrator routes work through discovery, planning, implementation, and independent review of both the plan and the code.",
+  "author": {
+    "name": "astrosteveo"
+  },
+  "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/workflow",
+  "repository": "https://github.com/astrosteveo/claude-plugins",
+  "keywords": ["workflow", "orchestration", "brainstorming", "planning", "implementation", "review"]
+}

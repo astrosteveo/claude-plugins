@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""SessionStart hook for the claudex plugin.
+
+Prints a short context note so Claude knows Codex is available as a pair
+partner, where the wrapper lives, and when to engage it. Stdout from a
+SessionStart hook is added to Claude's context.
+"""
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+WRAPPER = PLUGIN_ROOT / "bin" / "codex-run"
+CODEX_BIN = os.environ.get("CLAUDEX_CODEX_BIN", "codex")
+
+
+def codex_status() -> tuple[bool, str]:
+    path = shutil.which(CODEX_BIN)
+    if not path:
+        return False, "codex CLI not found on PATH"
+    try:
+        version = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=5).stdout.strip()
+    except (subprocess.SubprocessError, OSError):
+        version = "codex (version unknown)"
+    codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
+    if not (codex_home / "auth.json").exists():
+        return False, f"{version} found but not logged in (run `codex login`)"
+    return True, version
+
+
+def main() -> int:
+    ok, detail = codex_status()
+    if not ok:
+        print(f"claudex plugin: Codex pairing is unavailable this session ({detail}). Do not attempt Codex delegation until this is fixed.")
+        return 0
+    print(
+        "claudex plugin active. OpenAI Codex ({detail}) is available as a pair-programming partner through "
+        "`{wrapper}` (subcommands: ask, plan, task, review, reply, patch, apply, drop, show, runs, doctor). "
+        "You remain the driver. Engage Codex when a second model earns its cost: design or architecture choices, "
+        "hard or ambiguous bugs, unfamiliar APIs, independent review of non-trivial diffs, or implementation work "
+        "that can run in parallel without touching files you are editing. Skip it for trivial edits and quick questions. "
+        "Codex runs at the user's configured reasoning effort and can take several minutes per call, so run task, plan, "
+        "and review calls with `run_in_background` and keep working. Each Codex run counts against the user's ChatGPT Pro limits. "
+        "Always tell the user when you engage Codex and what it contributed. The claudex skills (claudex:pair, claudex:codex-ask, "
+        "claudex:codex-plan, claudex:codex-task, claudex:codex-review) hold the procedures.".format(detail=detail, wrapper=WRAPPER)
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

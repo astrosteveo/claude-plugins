@@ -1,0 +1,1193 @@
+#!/usr/bin/env python3
+"""codex-run: a thin, scriptable wrapper around the OpenAI Codex CLI for the claudex plugin.
+
+Claude Code calls this to consult Codex, get an independent plan, delegate an
+implementation to an isolated git worktree, review a diff, or continue a thread.
+Every run keeps its full event log on disk and prints a compact Markdown report
+to stdout so the calling agent's context stays small.
+
+Run `codex-run --help` for the command list.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import hashlib
+import json
+import os
+import re
+import secrets
+import shlex
+import shutil
+import signal
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+HOME = Path(os.environ.get("CLAUDEX_HOME") or (Path.home() / ".cache" / "claudex"))
+RUNS_DIR = HOME / "runs"
+WORKTREES_DIR = HOME / "worktrees"
+REGISTRY = HOME / "worktrees.json"
+CODEX_BIN = os.environ.get("CLAUDEX_CODEX_BIN", "codex")
+BRANCH_PREFIX = "claudex/"
+MAX_REPORT_MESSAGE_CHARS = 16000
+MAX_LISTED_COMMANDS = 25
+MAX_LISTED_FILES = 60
+
+
+# --------------------------------------------------------------------------- utilities
+
+class UsageError(Exception):
+    pass
+
+
+def die(msg: str, code: int = 2) -> None:
+    print(f"codex-run: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def sh(args: list[str], cwd: Path | None = None, check: bool = True, input_text: str | None = None) -> str:
+    proc = subprocess.run(
+        args, cwd=str(cwd) if cwd else None, text=True, capture_output=True, input=input_text
+    )
+    if check and proc.returncode != 0:
+        raise RuntimeError(
+            f"command failed ({proc.returncode}): {' '.join(args)}\n{proc.stderr.strip()}"
+        )
+    return proc.stdout
+
+
+def git(repo: Path, *args: str, check: bool = True, input_text: str | None = None) -> str:
+    return sh(["git", "-C", str(repo), *args], check=check, input_text=input_text)
+
+
+def repo_root(path: Path) -> Path | None:
+    try:
+        out = sh(["git", "-C", str(path), "rev-parse", "--show-toplevel"])
+    except RuntimeError:
+        return None
+    return Path(out.strip())
+
+
+def now_iso() -> str:
+    return dt.datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def new_run_id(mode: str) -> str:
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    return f"{stamp}-{mode}-{secrets.token_hex(2)}"
+
+
+def slugify(text: str, limit: int = 32) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return slug[:limit].rstrip("-") or "task"
+
+
+def fmt_duration(seconds: float) -> str:
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, sec = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m{sec:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m"
+
+
+def fmt_int(n) -> str:
+    try:
+        return f"{int(n):,}"
+    except (TypeError, ValueError):
+        return "?"
+
+
+def read_prompt(arg: str | None) -> str:
+    if arg is None:
+        raise UsageError("a prompt is required (pass text, or '-' to read stdin)")
+    if arg == "-":
+        text = sys.stdin.read()
+    else:
+        text = arg
+    text = text.strip()
+    if not text:
+        raise UsageError("prompt is empty")
+    return text
+
+
+def load_prompt_template(name: str, **fields: str) -> str:
+    path = PLUGIN_ROOT / "prompts" / f"{name}.md"
+    text = path.read_text()
+    for key, value in fields.items():
+        text = text.replace("{{" + key + "}}", value)
+    return text.strip()
+
+
+def compose_prompt(preamble: str | None, body: str) -> str:
+    if not preamble:
+        return body
+    return (
+        "<claudex-instructions>\n"
+        f"{preamble}\n"
+        "</claudex-instructions>\n\n"
+        "<task>\n"
+        f"{body}\n"
+        "</task>"
+    )
+
+
+def load_registry() -> dict:
+    if REGISTRY.exists():
+        try:
+            return json.loads(REGISTRY.read_text())
+        except json.JSONDecodeError:
+            pass
+    return {"worktrees": {}}
+
+
+def save_registry(reg: dict) -> None:
+    HOME.mkdir(parents=True, exist_ok=True)
+    tmp = REGISTRY.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(reg, indent=2, sort_keys=True))
+    tmp.replace(REGISTRY)
+
+
+def write_json(path: Path, data: dict) -> None:
+    path.write_text(json.dumps(data, indent=2, sort_keys=True))
+
+
+def codex_available() -> str | None:
+    return shutil.which(CODEX_BIN)
+
+
+# --------------------------------------------------------------------------- event parsing
+
+class RunState:
+    def __init__(self) -> None:
+        self.thread_id: str | None = None
+        self.messages: list[str] = []
+        self.commands: list[dict] = []
+        self.file_changes: list[dict] = []
+        self.tool_calls: list[dict] = []
+        self.errors: list[str] = []
+        self.usage: dict = {}
+        self.turn_status: str | None = None
+        self.event_count = 0
+        self.unknown_types: set[str] = set()
+
+    def ingest(self, ev: dict) -> None:
+        self.event_count += 1
+        etype = ev.get("type")
+        if etype == "thread.started":
+            self.thread_id = ev.get("thread_id") or ev.get("threadId") or self.thread_id
+        elif etype == "turn.started":
+            pass
+        elif etype == "turn.completed":
+            self.usage = ev.get("usage") or self.usage
+            self.turn_status = "completed"
+        elif etype == "turn.failed":
+            err = ev.get("error")
+            self.errors.append(err.get("message") if isinstance(err, dict) else str(err))
+            self.turn_status = "failed"
+        elif etype in ("item.started", "item.updated", "item.completed"):
+            item = ev.get("item") or {}
+            itype = item.get("type")
+            if etype != "item.completed":
+                return
+            if itype == "agent_message":
+                self.messages.append(item.get("text") or "")
+            elif itype == "command_execution":
+                self.commands.append(
+                    {
+                        "command": item.get("command"),
+                        "exit_code": item.get("exit_code"),
+                        "status": item.get("status"),
+                    }
+                )
+            elif itype == "file_change":
+                for change in item.get("changes") or []:
+                    self.file_changes.append(change)
+            elif itype == "mcp_tool_call":
+                self.tool_calls.append({"server": item.get("server"), "tool": item.get("tool"), "status": item.get("status")})
+            elif itype == "error":
+                self.errors.append(item.get("message") or json.dumps(item))
+            elif itype in ("reasoning", "todo_list", "web_search"):
+                pass
+            else:
+                self.unknown_types.add(f"item:{itype}")
+        elif etype == "error":
+            self.errors.append(ev.get("message") or json.dumps(ev))
+        else:
+            self.unknown_types.add(str(etype))
+
+
+# --------------------------------------------------------------------------- reporting
+
+def attach_stderr_tail(run_dir: Path, state: RunState, status: str, exit_code: int | None) -> None:
+    """When a run did not complete and produced no structured error, surface the stderr tail."""
+    if status == "completed" or state.errors:
+        return
+    try:
+        text = (run_dir / "stderr.log").read_text()
+    except OSError:
+        return
+    tail = text.strip()[-1500:]
+    if tail:
+        state.errors.append(f"codex exited {exit_code} ({status}); stderr tail:\n{tail}")
+
+
+def final_message(run_dir: Path, state: RunState) -> str:
+    last = run_dir / "last_message.md"
+    if last.exists():
+        text = last.read_text().strip()
+        if text:
+            return text
+    if state.messages:
+        return state.messages[-1].strip()
+    return ""
+
+
+def truncate(text: str, limit: int, note_path: Path | None = None) -> str:
+    if len(text) <= limit:
+        return text
+    hint = f" (full text: {note_path})" if note_path else ""
+    return text[:limit].rstrip() + f"\n\n[... truncated {len(text) - limit:,} characters{hint}]"
+
+
+def usage_line(usage: dict) -> str:
+    if not usage:
+        return "tokens: n/a"
+    parts = [f"in {fmt_int(usage.get('input_tokens'))}"]
+    if usage.get("cached_input_tokens"):
+        parts.append(f"cached {fmt_int(usage.get('cached_input_tokens'))}")
+    parts.append(f"out {fmt_int(usage.get('output_tokens'))}")
+    return "tokens: " + " · ".join(parts)
+
+
+def commands_section(state: RunState) -> list[str]:
+    if not state.commands:
+        return []
+    lines = [f"## Commands run ({len(state.commands)})"]
+    for cmd in state.commands[:MAX_LISTED_COMMANDS]:
+        text = (cmd.get("command") or "").strip().replace("\n", " ")
+        if len(text) > 160:
+            text = text[:157] + "..."
+        code = cmd.get("exit_code")
+        marker = "" if code in (0, None) else f"  [exit {code}]"
+        lines.append(f"- `{text}`{marker}")
+    if len(state.commands) > MAX_LISTED_COMMANDS:
+        lines.append(f"- ... {len(state.commands) - MAX_LISTED_COMMANDS} more in events.jsonl")
+    return lines
+
+
+def errors_section(state: RunState) -> list[str]:
+    if not state.errors:
+        return []
+    lines = [f"## Errors ({len(state.errors)})"]
+    for err in state.errors[:10]:
+        lines.append(f"- {str(err).strip()[:500]}")
+    return lines
+
+
+def build_report(meta: dict, state: RunState, run_dir: Path, extra_head: list[str], body_title: str, body: str, trailer: list[str]) -> str:
+    status = meta["status"]
+    head = [
+        f"# claudex {meta['mode']} · run {meta['run_id']} · {status} in {fmt_duration(meta['duration_seconds'])}",
+    ]
+    if state.thread_id:
+        head.append(f"- thread: `{state.thread_id}` (continue with `codex-run reply {state.thread_id} \"...\"`)")
+    head.append(f"- cwd: `{meta['cwd']}`")
+    head.extend(extra_head)
+    if meta["mode"] == "review":
+        head.append("- tokens and commands: not reported by `codex review` (see stderr.log)")
+    else:
+        head.append(f"- {usage_line(state.usage)} · commands {len(state.commands)} · file-change items {len(state.file_changes)}")
+    head.append(f"- logs: `{run_dir}` (events.jsonl, stderr.log)")
+    if state.unknown_types:
+        head.append(f"- note: unrecognized event types ignored: {', '.join(sorted(state.unknown_types))}")
+    sections = ["\n".join(head)]
+    err = errors_section(state)
+    if err:
+        sections.append("\n".join(err))
+    if body.strip():
+        sections.append(f"## {body_title}\n\n{body}")
+    elif status != "completed":
+        sections.append(f"## {body_title}\n\n(no final message; see stderr.log)")
+    cmds = commands_section(state)
+    if cmds:
+        sections.append("\n".join(cmds))
+    if trailer:
+        sections.append("\n".join(trailer))
+    return "\n\n".join(sections).rstrip() + "\n"
+
+
+def finish_run(run_dir: Path, meta: dict, report: str) -> None:
+    write_json(run_dir / "meta.json", meta)
+    (run_dir / "report.md").write_text(report)
+    sys.stdout.write(report)
+    sys.stdout.flush()
+
+
+# --------------------------------------------------------------------------- codex arg assembly
+
+def base_exec_args(ns: argparse.Namespace, cwd: Path, run_dir: Path, is_repo: bool) -> list[str]:
+    args = [CODEX_BIN, "exec", "--json", "-o", str(run_dir / "last_message.md"), "-C", str(cwd)]
+    args += ["-c", 'approval_policy="never"']
+    if getattr(ns, "sandbox", None):
+        args += ["--sandbox", ns.sandbox]
+    model = getattr(ns, "model", None) or os.environ.get("CLAUDEX_MODEL")
+    if model:
+        args += ["-m", model]
+    effort = getattr(ns, "effort", None) or os.environ.get("CLAUDEX_EFFORT")
+    if effort:
+        args += ["-c", f'model_reasoning_effort="{effort}"']
+    if getattr(ns, "schema", None):
+        args += ["--output-schema", str(Path(ns.schema).resolve())]
+    for image in getattr(ns, "image", None) or []:
+        args += ["-i", str(Path(image).resolve())]
+    if not is_repo:
+        args.append("--skip-git-repo-check")
+    for override in getattr(ns, "config", None) or []:
+        args += ["-c", override]
+    return args
+
+
+def start_run(mode: str, cwd: Path, prompt: str) -> tuple[str, Path, dict]:
+    run_id = new_run_id(mode)
+    run_dir = RUNS_DIR / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "prompt.md").write_text(prompt)
+    meta = {
+        "run_id": run_id,
+        "mode": mode,
+        "cwd": str(cwd),
+        "started_at": now_iso(),
+        "status": "running",
+    }
+    write_json(run_dir / "meta.json", meta)
+    return run_id, run_dir, meta
+
+
+def print_dry_run(args: list[str], cwd: Path, prompt: str) -> None:
+    print("# dry run: nothing executed")
+    print("cwd:", cwd)
+    print("command:", " ".join(shlex.quote(a) for a in args))
+    print("\n--- prompt ---")
+    print(prompt)
+
+
+def execute(mode: str, ns: argparse.Namespace, cwd: Path, prompt: str, extra_head: list[str], trailer_fn=None, body_title: str = "Final message") -> int:
+    if not codex_available():
+        die(f"'{CODEX_BIN}' not found on PATH (set CLAUDEX_CODEX_BIN or install Codex)", 3)
+    is_repo = repo_root(cwd) is not None
+    if getattr(ns, "dry_run", False):
+        print_dry_run(base_exec_args(ns, cwd, RUNS_DIR / "<run-id>", is_repo) + ["-"], cwd, prompt)
+        return 0
+    run_id, run_dir, meta = start_run(mode, cwd, prompt)
+    args = base_exec_args(ns, cwd, run_dir, is_repo) + ["-"]
+    meta["command"] = args
+    write_json(run_dir / "meta.json", meta)
+
+    started = time.monotonic()
+    # The prompt goes over stdin to avoid argv length limits and quoting issues.
+    with open(run_dir / "prompt.md") as stdin_file:
+        code, state, status = run_codex_with_stdin(args, cwd, run_dir, ns.max_minutes, stdin_file)
+    duration = time.monotonic() - started
+    attach_stderr_tail(run_dir, state, status, code)
+
+    meta.update(
+        {
+            "status": status,
+            "exit_code": code,
+            "finished_at": now_iso(),
+            "duration_seconds": round(duration, 1),
+            "thread_id": state.thread_id,
+            "usage": state.usage,
+            "errors": state.errors,
+        }
+    )
+    body = final_message(run_dir, state)
+    if getattr(ns, "schema", None) and body:
+        try:
+            body = "```json\n" + json.dumps(json.loads(body), indent=2) + "\n```"
+        except json.JSONDecodeError:
+            pass
+    body = truncate(body, MAX_REPORT_MESSAGE_CHARS, run_dir / "last_message.md")
+    trailer = trailer_fn(meta, state) if trailer_fn else []
+    report = build_report(meta, state, run_dir, extra_head, body_title, body, trailer)
+    finish_run(run_dir, meta, report)
+    return 0 if status == "completed" else (124 if status == "timeout" else 1)
+
+
+def run_codex_with_stdin(args: list[str], cwd: Path, run_dir: Path, max_minutes: float, stdin_file) -> tuple[int, RunState, str]:
+    """Run codex with the prompt on stdin, streaming JSONL events to events.jsonl and stderr to stderr.log.
+
+    Returns (exit_code, state, status) where status is completed|failed|timeout.
+    """
+    state = RunState()
+    events_path = run_dir / "events.jsonl"
+    stderr_path = run_dir / "stderr.log"
+    timed_out = threading.Event()
+
+    with open(stderr_path, "w") as stderr_file:
+        proc = subprocess.Popen(
+            args,
+            cwd=str(cwd),
+            stdout=subprocess.PIPE,
+            stderr=stderr_file,
+            stdin=stdin_file,
+            text=True,
+            start_new_session=True,
+        )
+        (run_dir / "pid").write_text(str(proc.pid))
+
+        def killer() -> None:
+            timed_out.set()
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+                time.sleep(5)
+                if proc.poll() is None:
+                    os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+        timer = threading.Timer(max_minutes * 60, killer) if max_minutes > 0 else None
+        if timer:
+            timer.daemon = True
+            timer.start()
+        try:
+            with open(events_path, "w") as events_file:
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    events_file.write(line)
+                    events_file.flush()
+                    stripped = line.strip()
+                    if not stripped:
+                        continue
+                    try:
+                        ev = json.loads(stripped)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(ev, dict):
+                        state.ingest(ev)
+            proc.wait()
+        finally:
+            if timer:
+                timer.cancel()
+            try:
+                (run_dir / "pid").unlink()
+            except FileNotFoundError:
+                pass
+
+    if timed_out.is_set():
+        status = "timeout"
+    elif proc.returncode == 0 and state.turn_status != "failed":
+        status = "completed"
+    else:
+        status = "failed"
+    return proc.returncode, state, status
+
+
+# --------------------------------------------------------------------------- worktrees
+
+def repo_key(repo: Path) -> str:
+    digest = hashlib.sha1(str(repo).encode()).hexdigest()[:8]
+    return f"{repo.name}-{digest}"
+
+
+def find_worktree(reg: dict, repo: Path | None, ref: str) -> tuple[str, dict]:
+    """Resolve a worktree by name (scoped to repo when given) or by run id."""
+    entries = reg.get("worktrees", {})
+    matches = []
+    for key, entry in entries.items():
+        if entry.get("run_id") == ref or entry.get("name") == ref or key == ref:
+            if repo is None or Path(entry["repo"]) == repo:
+                matches.append((key, entry))
+    if not matches:
+        raise UsageError(f"no claudex worktree matches '{ref}'" + (f" for {repo}" if repo else "") + " (see `codex-run worktrees`)")
+    if len(matches) > 1:
+        keys = ", ".join(k for k, _ in matches)
+        raise UsageError(f"'{ref}' is ambiguous ({keys}); pass -C <repo> or the full key")
+    return matches[0]
+
+
+def create_worktree(repo: Path, name: str, base: str, include_uncommitted: bool) -> dict:
+    branch = BRANCH_PREFIX + name
+    path = WORKTREES_DIR / repo_key(repo) / name
+    if path.exists():
+        raise UsageError(f"worktree path already exists: {path} (drop it or pick another --name)")
+    existing = git(repo, "branch", "--list", branch).strip()
+    if existing:
+        raise UsageError(f"branch {branch} already exists (drop it or pick another --name)")
+    base_sha = git(repo, "rev-parse", "--verify", f"{base}^{{commit}}").strip()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    git(repo, "worktree", "add", "-b", branch, str(path), base_sha)
+
+    seeded_files = 0
+    baseline = base_sha
+    if include_uncommitted:
+        tracked_diff = git(repo, "diff", "--binary", "HEAD")
+        if tracked_diff.strip():
+            git(path, "apply", "--binary", "--index", "-", input_text=tracked_diff)
+        untracked = [p for p in git(repo, "ls-files", "--others", "--exclude-standard", "-z").split("\0") if p]
+        for rel in untracked:
+            src = repo / rel
+            dst = path / rel
+            if src.is_symlink() or not src.is_file():
+                continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+        if tracked_diff.strip() or untracked:
+            git(path, "add", "-A")
+            seeded_files = len([l for l in git(path, "status", "--porcelain").splitlines() if l.strip()])
+            if seeded_files:
+                git(
+                    path,
+                    "-c", "user.name=claudex", "-c", "user.email=claudex@localhost",
+                    "commit", "-q", "--no-verify", "-m", "claudex: baseline snapshot of uncommitted changes",
+                )
+                baseline = git(path, "rev-parse", "HEAD").strip()
+    entry = {
+        "name": name,
+        "repo": str(repo),
+        "path": str(path),
+        "branch": branch,
+        "base": base,
+        "base_sha": base_sha,
+        "baseline_sha": baseline,
+        "seeded_files": seeded_files,
+        "created_at": now_iso(),
+        "applied": False,
+        "run_id": None,
+    }
+    reg = load_registry()
+    reg.setdefault("worktrees", {})[f"{repo_key(repo)}/{name}"] = entry
+    save_registry(reg)
+    return entry
+
+
+def worktree_changes(entry: dict) -> tuple[str, list[str]]:
+    path = Path(entry["path"])
+    git(path, "add", "-A")
+    stat = git(path, "diff", "--cached", "--stat", entry["baseline_sha"]).strip()
+    files = [l for l in git(path, "diff", "--cached", "--name-status", entry["baseline_sha"]).splitlines() if l.strip()]
+    return stat, files
+
+
+def worktree_patch(entry: dict) -> str:
+    path = Path(entry["path"])
+    git(path, "add", "-A")
+    return git(path, "diff", "--cached", "--binary", entry["baseline_sha"])
+
+
+# --------------------------------------------------------------------------- commands
+
+def cmd_doctor(ns: argparse.Namespace) -> int:
+    ok = True
+    path = codex_available()
+    print(f"codex binary: {path or 'NOT FOUND'}")
+    if not path:
+        return 3
+    try:
+        print("codex version:", sh([CODEX_BIN, "--version"]).strip())
+    except RuntimeError as exc:
+        print("codex --version failed:", exc)
+        ok = False
+    codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
+    auth = codex_home / "auth.json"
+    print(f"codex auth: {'present' if auth.exists() else 'MISSING (run `codex login`)'} ({auth})")
+    ok = ok and auth.exists()
+    print(f"claudex home: {HOME}")
+    print(f"plugin root: {PLUGIN_ROOT}")
+    print("git:", sh(["git", "--version"]).strip())
+    reg = load_registry()
+    print(f"registered worktrees: {len(reg.get('worktrees', {}))}")
+    print("status:", "ok" if ok else "problems found")
+    return 0 if ok else 1
+
+
+def cmd_ask(ns: argparse.Namespace) -> int:
+    cwd = Path(ns.cwd).resolve()
+    if not cwd.is_dir():
+        raise UsageError(f"cwd does not exist: {cwd}")
+    body = read_prompt(ns.prompt)
+    preamble = None if ns.no_preamble else load_prompt_template("ask")
+    prompt = compose_prompt(preamble, body)
+    return execute("ask", ns, cwd, prompt, [], body_title="Answer")
+
+
+def cmd_plan(ns: argparse.Namespace) -> int:
+    cwd = Path(ns.cwd).resolve()
+    if not cwd.is_dir():
+        raise UsageError(f"cwd does not exist: {cwd}")
+    body = read_prompt(ns.prompt)
+    preamble = None if ns.no_preamble else load_prompt_template("plan")
+    if not ns.schema and not ns.no_schema:
+        ns.schema = str(PLUGIN_ROOT / "schemas" / "plan.json")
+    prompt = compose_prompt(preamble, body)
+    return execute("plan", ns, cwd, prompt, [], body_title="Plan")
+
+
+def cmd_task(ns: argparse.Namespace) -> int:
+    start = Path(ns.cwd).resolve()
+    repo = repo_root(start)
+    if repo is None:
+        raise UsageError(f"{start} is not inside a git repository (task mode needs one)")
+    body = read_prompt(ns.prompt)
+    name = ns.name or f"{dt.datetime.now().strftime('%m%d-%H%M')}-{slugify(body)}"
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+        raise UsageError("--name may contain only letters, digits, '.', '_' and '-'")
+
+    if ns.no_worktree:
+        preamble = None if ns.no_preamble else load_prompt_template("task-inplace", repo=str(repo))
+        prompt = compose_prompt(preamble, body)
+        return execute("task", ns, repo, prompt, ["- worktree: none (ran in place)"], body_title="Codex summary")
+
+    if ns.dry_run:
+        placeholder = str(WORKTREES_DIR / repo_key(repo) / name)
+        preamble = None if ns.no_preamble else load_prompt_template(
+            "task", worktree=placeholder, branch=BRANCH_PREFIX + name, base=ns.base, repo=str(repo), seed_note=""
+        )
+        print(f"# dry run: would create worktree {placeholder} on branch {BRANCH_PREFIX + name} from {ns.base}")
+        return execute("task", ns, Path(placeholder), compose_prompt(preamble, body), [], body_title="Codex summary")
+
+    entry = create_worktree(repo, name, ns.base, include_uncommitted=not ns.exclude_uncommitted)
+    seed_note = (
+        f" The worktree also contains a baseline commit with the {entry['seeded_files']} uncommitted file(s) from the original checkout."
+        if entry["seeded_files"]
+        else ""
+    )
+    preamble = None if ns.no_preamble else load_prompt_template(
+        "task", worktree=entry["path"], branch=entry["branch"], base=f"{ns.base} ({entry['base_sha'][:10]})", repo=str(repo), seed_note=seed_note
+    )
+    prompt = compose_prompt(preamble, body)
+
+    def trailer(meta: dict, state: RunState) -> list[str]:
+        reg = load_registry()
+        key = f"{repo_key(repo)}/{name}"
+        reg["worktrees"][key]["run_id"] = meta["run_id"]
+        save_registry(reg)
+        try:
+            stat, files = worktree_changes(entry)
+        except RuntimeError as exc:
+            return [f"## Worktree changes\n\ncould not read: {exc}"]
+        lines = [f"## Worktree changes vs baseline ({len(files)} files)"]
+        if files:
+            for line in files[:MAX_LISTED_FILES]:
+                lines.append(f"- {line}")
+            if len(files) > MAX_LISTED_FILES:
+                lines.append(f"- ... {len(files) - MAX_LISTED_FILES} more")
+            lines.append("")
+            lines.append("```")
+            lines.append(stat)
+            lines.append("```")
+        else:
+            lines.append("(no changes)")
+        lines.append("")
+        lines.append("Next: `codex-run patch " + name + f" -C {repo}` to view, `codex-run apply {name} -C {repo}` to bring into the checkout, `codex-run drop {name} -C {repo}` when done.")
+        return lines
+
+    extra_head = [
+        f"- worktree: `{entry['path']}`",
+        f"- branch: `{entry['branch']}` from `{ns.base}` ({entry['base_sha'][:10]}), baseline `{entry['baseline_sha'][:10]}`"
+        + (f", seeded {entry['seeded_files']} uncommitted file(s)" if entry["seeded_files"] else ""),
+    ]
+    ns.cwd = entry["path"]
+    return execute("task", ns, Path(entry["path"]), prompt, extra_head, trailer_fn=trailer, body_title="Codex summary")
+
+
+def cmd_reply(ns: argparse.Namespace) -> int:
+    if not codex_available():
+        die(f"'{CODEX_BIN}' not found on PATH", 3)
+    body = read_prompt(ns.prompt)
+    cwd = Path(ns.cwd).resolve() if ns.cwd else None
+    # Default cwd: the cwd of the run that created the thread, if we know it.
+    if cwd is None:
+        for meta_path in sorted(RUNS_DIR.glob("*/meta.json"), reverse=True):
+            try:
+                meta = json.loads(meta_path.read_text())
+            except json.JSONDecodeError:
+                continue
+            if meta.get("thread_id") == ns.thread_id:
+                cwd = Path(meta["cwd"])
+                break
+    if cwd is None:
+        cwd = Path.cwd()
+    run_id, run_dir, meta = start_run("reply", cwd, body)
+    meta["parent_thread_id"] = ns.thread_id
+    args = [CODEX_BIN, "exec", "resume", "--json", "-o", str(run_dir / "last_message.md"), "-c", 'approval_policy="never"']
+    model = ns.model or os.environ.get("CLAUDEX_MODEL")
+    if model:
+        args += ["-m", model]
+    effort = ns.effort or os.environ.get("CLAUDEX_EFFORT")
+    if effort:
+        args += ["-c", f'model_reasoning_effort="{effort}"']
+    if ns.schema:
+        args += ["--output-schema", str(Path(ns.schema).resolve())]
+    if ns.sandbox:
+        args += ["-c", f'sandbox_mode="{ns.sandbox}"']
+    for override in ns.config or []:
+        args += ["-c", override]
+    args += [ns.thread_id, "-"]
+    if ns.dry_run:
+        shutil.rmtree(run_dir, ignore_errors=True)
+        print_dry_run(args, cwd, body)
+        return 0
+    meta["command"] = args
+    write_json(run_dir / "meta.json", meta)
+
+    started = time.monotonic()
+    with open(run_dir / "prompt.md") as stdin_file:
+        code, state, status = run_codex_with_stdin(args, cwd, run_dir, ns.max_minutes, stdin_file)
+    duration = time.monotonic() - started
+    attach_stderr_tail(run_dir, state, status, code)
+    if not state.thread_id:
+        state.thread_id = ns.thread_id
+    meta.update(
+        {
+            "status": status,
+            "exit_code": code,
+            "finished_at": now_iso(),
+            "duration_seconds": round(duration, 1),
+            "thread_id": state.thread_id,
+            "usage": state.usage,
+            "errors": state.errors,
+        }
+    )
+    body_text = final_message(run_dir, state)
+    if ns.schema and body_text:
+        try:
+            body_text = "```json\n" + json.dumps(json.loads(body_text), indent=2) + "\n```"
+        except json.JSONDecodeError:
+            pass
+    body_text = truncate(body_text, MAX_REPORT_MESSAGE_CHARS, run_dir / "last_message.md")
+
+    trailer: list[str] = []
+    reg = load_registry()
+    for key, entry in reg.get("worktrees", {}).items():
+        if entry.get("path") and Path(entry["path"]) == cwd:
+            try:
+                stat, files = worktree_changes(entry)
+                trailer = [f"## Worktree changes vs baseline ({len(files)} files)", "```", stat or "(no changes)", "```"]
+            except RuntimeError:
+                pass
+            break
+    report = build_report(meta, state, run_dir, [f"- continued thread: `{ns.thread_id}`"], "Reply", body_text, trailer)
+    finish_run(run_dir, meta, report)
+    return 0 if status == "completed" else (124 if status == "timeout" else 1)
+
+
+def cmd_review(ns: argparse.Namespace) -> int:
+    if not codex_available():
+        die(f"'{CODEX_BIN}' not found on PATH", 3)
+    start = Path(ns.cwd).resolve()
+    repo = repo_root(start)
+    if repo is None:
+        raise UsageError(f"{start} is not inside a git repository")
+    selectors = [bool(ns.base), bool(ns.commit), ns.uncommitted]
+    if sum(selectors) > 1:
+        raise UsageError("pass only one of --uncommitted, --base, --commit")
+    if sum(selectors) == 0:
+        ns.uncommitted = True
+    focus = read_prompt(ns.focus) if ns.focus else ""
+    if ns.uncommitted:
+        selector = ["--uncommitted"]
+        scope = "uncommitted changes (staged, unstaged, untracked)"
+        scope_prompt = (
+            "Review the uncommitted changes in this repository: staged, unstaged, and untracked files "
+            "(see `git status`, `git diff`, `git diff --cached`)."
+        )
+    elif ns.base:
+        selector = ["--base", ns.base]
+        scope = f"changes against base `{ns.base}`"
+        scope_prompt = (
+            f"Review the changes on the current branch relative to base branch `{ns.base}` "
+            f"(`git diff {ns.base}...HEAD`), plus any uncommitted changes."
+        )
+    else:
+        selector = ["--commit", ns.commit]
+        scope = f"commit `{ns.commit}`"
+        scope_prompt = f"Review the changes introduced by commit `{ns.commit}` (`git show {ns.commit}`)."
+    # `codex review` rejects a custom prompt combined with a selector flag, so when focus
+    # instructions are given the scope is described in the prompt instead.
+    prompt = f"{scope_prompt}\n\n{focus}" if focus else ""
+    args = [CODEX_BIN, "review", "-c", 'approval_policy="never"']
+    if not prompt:
+        args += selector
+        if ns.title:
+            args += ["--title", ns.title]
+    model = ns.model or os.environ.get("CLAUDEX_MODEL")
+    if model:
+        args += ["-m", model]
+    effort = ns.effort or os.environ.get("CLAUDEX_EFFORT")
+    if effort:
+        args += ["-c", f'model_reasoning_effort="{effort}"']
+    for override in ns.config or []:
+        args += ["-c", override]
+    if prompt:
+        args.append(prompt)
+    if ns.dry_run:
+        print_dry_run(args, repo, prompt or f"(built-in review prompt for {scope})")
+        return 0
+    run_id, run_dir, meta = start_run("review", repo, prompt or f"(codex review {' '.join(selector)})")
+    meta["command"] = args
+    meta["scope"] = scope
+    write_json(run_dir / "meta.json", meta)
+
+    started = time.monotonic()
+    timed_out = threading.Event()
+    with open(run_dir / "stderr.log", "w") as stderr_file, open(run_dir / "stdout.log", "w") as stdout_file:
+        proc = subprocess.Popen(
+            args, cwd=str(repo), stdout=stdout_file, stderr=stderr_file, stdin=subprocess.DEVNULL, text=True, start_new_session=True
+        )
+        (run_dir / "pid").write_text(str(proc.pid))
+
+        def killer() -> None:
+            timed_out.set()
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+                time.sleep(5)
+                if proc.poll() is None:
+                    os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+        timer = threading.Timer(ns.max_minutes * 60, killer) if ns.max_minutes > 0 else None
+        if timer:
+            timer.daemon = True
+            timer.start()
+        try:
+            proc.wait()
+        finally:
+            if timer:
+                timer.cancel()
+            try:
+                (run_dir / "pid").unlink()
+            except FileNotFoundError:
+                pass
+    duration = time.monotonic() - started
+    status = "timeout" if timed_out.is_set() else ("completed" if proc.returncode == 0 else "failed")
+    output = (run_dir / "stdout.log").read_text().strip()
+    (run_dir / "last_message.md").write_text(output)
+    meta.update(
+        {"status": status, "exit_code": proc.returncode, "finished_at": now_iso(), "duration_seconds": round(duration, 1)}
+    )
+    state = RunState()
+    stderr_text = (run_dir / "stderr.log").read_text()
+    session = re.search(r"^session id:\s*(\S+)", stderr_text, re.M)
+    if session:
+        state.thread_id = session.group(1)
+        meta["thread_id"] = state.thread_id
+    if status != "completed":
+        state.errors.append(f"codex review exited {proc.returncode}; stderr tail:\n{stderr_text[-2000:]}")
+    body = truncate(output, MAX_REPORT_MESSAGE_CHARS, run_dir / "last_message.md")
+    report = build_report(meta, state, run_dir, [f"- scope: {scope}"], "Review", body, [])
+    finish_run(run_dir, meta, report)
+    return 0 if status == "completed" else (124 if status == "timeout" else 1)
+
+
+def cmd_patch(ns: argparse.Namespace) -> int:
+    repo = repo_root(Path(ns.cwd).resolve()) if ns.cwd else None
+    key, entry = find_worktree(load_registry(), repo, ns.ref)
+    patch = worktree_patch(entry)
+    if ns.out:
+        Path(ns.out).write_text(patch)
+        print(f"wrote {len(patch):,} bytes to {ns.out} ({key})")
+    else:
+        if not patch.strip():
+            print(f"(no changes in {key})")
+        else:
+            sys.stdout.write(patch)
+    return 0
+
+
+def cmd_apply(ns: argparse.Namespace) -> int:
+    repo = repo_root(Path(ns.cwd).resolve()) if ns.cwd else None
+    reg = load_registry()
+    key, entry = find_worktree(reg, repo, ns.ref)
+    target = repo or Path(entry["repo"])
+    patch = worktree_patch(entry)
+    if not patch.strip():
+        print(f"(no changes to apply from {key})")
+        return 0
+    patch_path = Path(entry["path"]).parent / f"{entry['name']}.patch"
+    patch_path.write_text(patch)
+
+    def git_apply(*extra: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git", "-C", str(target), "apply", "--binary", *extra, str(patch_path)], text=True, capture_output=True
+        )
+
+    # 1) Plain working-tree apply: works even when the touched files have unstaged edits,
+    #    as long as the patch context matches (the usual case, since the worktree was seeded
+    #    from this checkout).
+    if git_apply("--check").returncode == 0:
+        proc = git_apply()
+        how = "applied to the working tree"
+    else:
+        # 2) Three-way merge. git implies --index here, so it needs the touched files to be
+        #    unmodified relative to the index; on conflicts it leaves markers and exits non-zero.
+        proc = git_apply("--3way")
+        how = "applied with a three-way merge (changes are staged)"
+    if proc.returncode != 0:
+        print(f"patch from {key} did not apply cleanly to {target}:")
+        print(proc.stderr.strip())
+        if not ns.force:
+            print(
+                f"\nOptions: resolve by hand with `git -C {target} apply --3way --binary {patch_path}` "
+                f"(stash or commit unrelated edits first), ask Codex to rebase its work with "
+                f"`codex-run reply <thread> ...`, or commit in the worktree and merge branch {entry['branch']}."
+            )
+            return 1
+        print("--force given: marking as applied; check the working tree for conflict markers.")
+    entry["applied"] = True
+    entry["applied_at"] = now_iso()
+    reg["worktrees"][key] = entry
+    save_registry(reg)
+    status = git(target, "status", "--short").strip()
+    print(f"{how}: {key} -> {target}\n\n{status}")
+    return 0
+
+
+def cmd_drop(ns: argparse.Namespace) -> int:
+    repo = repo_root(Path(ns.cwd).resolve()) if ns.cwd else None
+    reg = load_registry()
+    key, entry = find_worktree(reg, repo, ns.ref)
+    target = Path(entry["repo"])
+    path = Path(entry["path"])
+    if path.exists() and not entry.get("applied") and not ns.force:
+        try:
+            _, files = worktree_changes(entry)
+        except RuntimeError:
+            files = []
+        if files:
+            print(f"{key} has {len(files)} unapplied changed file(s); pass --force to drop anyway")
+            return 1
+    if path.exists():
+        git(target, "worktree", "remove", "--force", str(path), check=False)
+        if path.exists():
+            shutil.rmtree(path, ignore_errors=True)
+    git(target, "worktree", "prune", check=False)
+    git(target, "branch", "-D", entry["branch"], check=False)
+    patch_file = path.parent / f"{entry['name']}.patch"
+    if patch_file.exists():
+        patch_file.unlink()
+    try:
+        path.parent.rmdir()  # per-repo directory, only if now empty
+    except OSError:
+        pass
+    del reg["worktrees"][key]
+    save_registry(reg)
+    print(f"dropped {key} (worktree and branch {entry['branch']})")
+    return 0
+
+
+def cmd_worktrees(ns: argparse.Namespace) -> int:
+    repo = repo_root(Path(ns.cwd).resolve()) if ns.cwd else None
+    reg = load_registry()
+    rows = []
+    for key, entry in sorted(reg.get("worktrees", {}).items()):
+        if repo and Path(entry["repo"]) != repo:
+            continue
+        exists = Path(entry["path"]).exists()
+        rows.append((key, entry["branch"], "applied" if entry.get("applied") else "pending", "present" if exists else "missing", entry.get("run_id") or "-", entry["path"]))
+    if not rows:
+        print("(no claudex worktrees" + (f" for {repo}" if repo else "") + ")")
+        return 0
+    for row in rows:
+        print(" | ".join(row))
+    return 0
+
+
+def cmd_runs(ns: argparse.Namespace) -> int:
+    metas = []
+    for meta_path in RUNS_DIR.glob("*/meta.json"):
+        try:
+            metas.append(json.loads(meta_path.read_text()))
+        except json.JSONDecodeError:
+            continue
+    metas.sort(key=lambda m: m.get("run_id", ""), reverse=True)
+    if not metas:
+        print("(no runs yet)")
+        return 0
+    for meta in metas[: ns.limit]:
+        status = meta.get("status", "?")
+        dur = fmt_duration(meta.get("duration_seconds", 0)) if meta.get("duration_seconds") is not None else "-"
+        thread = (meta.get("thread_id") or "-")
+        print(f"{meta['run_id']} | {status:9} | {dur:>7} | {thread} | {meta.get('cwd')}")
+    return 0
+
+
+def cmd_show(ns: argparse.Namespace) -> int:
+    run_dir = RUNS_DIR / ns.run_id
+    if not run_dir.exists():
+        matches = sorted(RUNS_DIR.glob(f"*{ns.run_id}*"))
+        if len(matches) == 1:
+            run_dir = matches[0]
+        else:
+            raise UsageError(f"unknown run id {ns.run_id}")
+    report = run_dir / "report.md"
+    meta = json.loads((run_dir / "meta.json").read_text())
+    if report.exists() and meta.get("status") != "running" and not ns.live:
+        sys.stdout.write(report.read_text())
+        return 0
+    # Live or unfinished: summarize events so far.
+    state = RunState()
+    events = run_dir / "events.jsonl"
+    if events.exists():
+        with open(events) as fh:
+            for line in fh:
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(ev, dict):
+                    state.ingest(ev)
+    pid_file = run_dir / "pid"
+    alive = False
+    if pid_file.exists():
+        try:
+            os.kill(int(pid_file.read_text()), 0)
+            alive = True
+        except (OSError, ValueError):
+            alive = False
+    started = meta.get("started_at", "?")
+    print(f"# run {meta['run_id']} · {meta.get('status')} · started {started} · process {'alive' if alive else 'not running'}")
+    print(f"- events so far: {state.event_count} · commands {len(state.commands)} · messages {len(state.messages)} · errors {len(state.errors)}")
+    if state.thread_id:
+        print(f"- thread: {state.thread_id}")
+    for cmd in state.commands[-8:]:
+        text = (cmd.get("command") or "").replace("\n", " ")
+        print(f"- `{text[:140]}` exit={cmd.get('exit_code')}")
+    if state.messages:
+        print("\n## Latest message\n")
+        print(truncate(state.messages[-1], 4000))
+    for err in state.errors[-3:]:
+        print(f"- error: {err[:300]}")
+    return 0
+
+
+# --------------------------------------------------------------------------- argparse
+
+def add_common_exec_args(p: argparse.ArgumentParser, with_cwd: bool = True) -> None:
+    if with_cwd:
+        p.add_argument("-C", "--cwd", default=".", help="directory Codex works in (default: current directory)")
+    p.add_argument("-m", "--model", help="override the Codex model (default: inherit ~/.codex/config.toml)")
+    p.add_argument("--effort", help="override reasoning effort, e.g. low|medium|high|xhigh|max (default: inherit)")
+    p.add_argument("--sandbox", choices=["read-only", "workspace-write", "danger-full-access"], help="override Codex sandbox (default: inherit config)")
+    p.add_argument("--schema", help="JSON Schema file for the final answer (structured output)")
+    p.add_argument("-i", "--image", action="append", help="image file to attach (repeatable)")
+    p.add_argument("-c", "--config", action="append", help="raw codex -c key=value override (repeatable)")
+    p.add_argument("--max-minutes", type=float, default=float(os.environ.get("CLAUDEX_MAX_MINUTES", "0")), help="kill the run after N minutes (0 = no limit)")
+    p.add_argument("--no-preamble", action="store_true", help="send the prompt verbatim without the claudex role instructions")
+    p.add_argument("--dry-run", action="store_true", help="print the codex command and composed prompt without running")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="codex-run",
+        description="Run OpenAI Codex non-interactively as a pair partner for Claude Code.",
+        epilog=(
+            "Runs are stored under $CLAUDEX_HOME (default ~/.cache/claudex). "
+            "Model, effort, sandbox, and approval policy inherit from ~/.codex/config.toml unless overridden; "
+            "approval is always forced to 'never' because runs are non-interactive."
+        ),
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("doctor", help="check that codex is installed and logged in")
+    p.set_defaults(func=cmd_doctor)
+
+    p = sub.add_parser("ask", help="read-only consultation: ask Codex a question about the code")
+    add_common_exec_args(p)
+    p.add_argument("prompt", nargs="?", help="question text, or '-' to read from stdin")
+    p.set_defaults(func=cmd_ask)
+
+    p = sub.add_parser("plan", help="get an independent implementation plan as structured JSON")
+    add_common_exec_args(p)
+    p.add_argument("--no-schema", action="store_true", help="free-form plan instead of the bundled JSON schema")
+    p.add_argument("prompt", nargs="?", help="task description, or '-' to read from stdin")
+    p.set_defaults(func=cmd_plan)
+
+    p = sub.add_parser("task", help="delegate an implementation to Codex in an isolated git worktree")
+    add_common_exec_args(p)
+    p.add_argument("--name", help="worktree/branch name (default: derived from time and prompt)")
+    p.add_argument("--base", default="HEAD", help="commit-ish to branch from (default: HEAD)")
+    p.add_argument("--exclude-uncommitted", action="store_true", help="do not seed the worktree with the checkout's uncommitted changes")
+    p.add_argument("--no-worktree", action="store_true", help="run directly in the repository instead of a worktree")
+    p.add_argument("prompt", nargs="?", help="task brief, or '-' to read from stdin")
+    p.set_defaults(func=cmd_task)
+
+    p = sub.add_parser("reply", help="continue an existing Codex thread")
+    add_common_exec_args(p, with_cwd=False)
+    p.add_argument("-C", "--cwd", default=None, help="directory to run in (default: the cwd of the run that created the thread)")
+    p.add_argument("thread_id", help="thread id from an earlier report")
+    p.add_argument("prompt", nargs="?", help="follow-up text, or '-' to read from stdin")
+    p.set_defaults(func=cmd_reply)
+
+    p = sub.add_parser("review", help="have Codex review a diff (codex review)")
+    p.add_argument("-C", "--cwd", default=".", help="repository directory (default: current directory)")
+    p.add_argument("--uncommitted", action="store_true", help="review staged, unstaged, and untracked changes (default)")
+    p.add_argument("--base", help="review changes against this base branch")
+    p.add_argument("--commit", help="review the changes introduced by this commit")
+    p.add_argument("--title", help="optional title shown in the review summary")
+    p.add_argument("--focus", help="extra review instructions, or '-' to read from stdin")
+    p.add_argument("-m", "--model", help="override the Codex model")
+    p.add_argument("--effort", help="override reasoning effort")
+    p.add_argument("-c", "--config", action="append", help="raw codex -c key=value override (repeatable)")
+    p.add_argument("--max-minutes", type=float, default=float(os.environ.get("CLAUDEX_MAX_MINUTES", "0")), help="kill the run after N minutes (0 = no limit)")
+    p.add_argument("--dry-run", action="store_true", help="print the codex command and prompt without running")
+    p.set_defaults(func=cmd_review)
+
+    p = sub.add_parser("patch", help="print (or write) the patch of a task worktree relative to its baseline")
+    p.add_argument("ref", help="worktree name, registry key, or run id")
+    p.add_argument("-C", "--cwd", default=None, help="repository directory, to disambiguate names")
+    p.add_argument("--out", help="write the patch to this file instead of stdout")
+    p.set_defaults(func=cmd_patch)
+
+    p = sub.add_parser("apply", help="apply a task worktree's patch onto the original checkout (git apply --3way)")
+    p.add_argument("ref", help="worktree name, registry key, or run id")
+    p.add_argument("-C", "--cwd", default=None, help="repository directory (default: the worktree's original repo)")
+    p.add_argument("--force", action="store_true", help="apply even if --check reported problems")
+    p.set_defaults(func=cmd_apply)
+
+    p = sub.add_parser("drop", help="remove a task worktree and its branch")
+    p.add_argument("ref", help="worktree name, registry key, or run id")
+    p.add_argument("-C", "--cwd", default=None, help="repository directory, to disambiguate names")
+    p.add_argument("--force", action="store_true", help="drop even if it has unapplied changes")
+    p.set_defaults(func=cmd_drop)
+
+    p = sub.add_parser("worktrees", help="list claudex worktrees")
+    p.add_argument("-C", "--cwd", default=None, help="only worktrees for this repository")
+    p.set_defaults(func=cmd_worktrees)
+
+    p = sub.add_parser("runs", help="list recent runs")
+    p.add_argument("--limit", type=int, default=20)
+    p.set_defaults(func=cmd_runs)
+
+    p = sub.add_parser("show", help="print a run's report, or a live summary while it is running")
+    p.add_argument("run_id", help="run id (or unique substring)")
+    p.add_argument("--live", action="store_true", help="summarize events even if a final report exists")
+    p.set_defaults(func=cmd_show)
+
+    return parser
+
+
+def main(argv: list[str]) -> int:
+    parser = build_parser()
+    ns = parser.parse_args(argv)
+    try:
+        return ns.func(ns)
+    except UsageError as exc:
+        die(str(exc), 2)
+    except RuntimeError as exc:
+        die(str(exc), 1)
+    except KeyboardInterrupt:
+        die("interrupted", 130)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
