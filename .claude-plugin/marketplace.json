@@ -18,18 +18,6 @@
       "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/workflow",
       "category": "productivity",
       "tags": ["workflow", "orchestration", "brainstorming", "planning", "implementation", "review"]
-    },
-    {
-      "name": "claudex",
-      "source": "./plugins/claudex",
-      "description": "Pair Claude Code with the OpenAI Codex CLI: Claude drives, Codex consults, plans, implements in isolated worktrees, and reviews.",
-      "version": "0.1.0",
-      "author": {
-        "name": "astrosteveo"
-      },
-      "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/claudex",
-      "category": "productivity",
-      "tags": ["codex", "openai", "pair-programming", "multi-model", "worktree", "review"]
     }
   ]
 }

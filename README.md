@@ -8,7 +8,6 @@ maintained by astrosteveo.
 | Plugin | Purpose |
 | --- | --- |
 | [Workflow](plugins/workflow/README.md) | A small software team for one request: an orchestrator routes work through discovery, planning, implementation, and independent review of both the plan and the code. Includes the planner, implementer, and reviewer agents. |
-| [Claudex](plugins/claudex/README.md) | Pair Claude Code with the OpenAI Codex CLI. Claude drives; Codex consults, plans, implements in isolated git worktrees, and reviews. Includes the codex-liaison agent. |
 
 ## Install
 
