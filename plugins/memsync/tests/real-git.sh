@@ -142,7 +142,24 @@ echo "$out" | sed 's/^/    /'
 check "rebase aborted" test ! -d "$T/a/repo/.git/rebase-merge"
 check "the conflicting sync is reported, not forced" sh -c "echo \"\$0\" | grep -q 'rebase onto origin/main failed'" "$out"
 
-echo "# 6. Off means no git"
+echo "# 6. Prune clears a project whose folder is gone, and keeps its memory"
+OLD="$T/a/Projects/old"
+project "$OLD" old
+bare_on a "$OLD"
+OLD_DIR=$(engine_dir a "$OLD")
+echo 'Fact about the old project.' > "$OLD_DIR/memory/old-fact.md"
+rm -rf "$OLD"
+out=$(claude_on a "$APP_A" "/memsync status")
+check "status lists the project as dead" sh -c "echo \"\$0\" | grep -q '1 dead'" "$out"
+out=$(claude_on a "$APP_A" "/memsync prune")
+echo "$out" | sed 's/^/    /'
+check "its memory folder is gone from the engine folder" test ! -e "$OLD_DIR/memory"
+check "its memory moved into the repo" has "$T/a/repo/projects/old/old-fact.md" 'old project'
+check "its transcript stayed" sh -c "ls '$OLD_DIR'/*.jsonl > /dev/null"
+out=$(claude_on a "$APP_A" "/memsync status")
+check "status lists no dead projects" sh -c "echo \"\$0\" | grep -q '0 dead'" "$out"
+
+echo "# 7. Off means no git"
 claude_on a "$APP_A" "/memsync off" > /dev/null
 before=$(git -C "$T/a/repo" rev-parse HEAD)
 echo 'Written while off.' > "$MEM_A/off.md"

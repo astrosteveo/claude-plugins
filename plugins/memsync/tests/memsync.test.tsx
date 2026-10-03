@@ -87,6 +87,7 @@ test('/memsync arguments map to actions', () => {
   expect(parseAction('')).toBe('open')
   expect(parseAction('link all')).toBe('link-all')
   expect(parseAction(' Sync ')).toBe('sync')
+  expect(parseAction('prune')).toBe('prune')
   expect(parseAction('frobnicate')).toBe('help')
 })
 
@@ -174,7 +175,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const { seen, clock } = world(on, { hasRepo: false, skillFiles: [], store: { enabled: false } })
     await start($)
     await clock.settle()
-    expect(seen.status.at(-1)).toBe('mem off')
+    expect(seen.status.at(-1)).toBe('memory sync is off: /memsync on')
     expect(seen.processes).toBe(0)
 
     const status = await $.command.run(run('status'))
@@ -258,6 +259,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await ui.find({ type: 'Text', text: /projects\/app\/note\.box\.md/ })).toBeDefined()
     expect(await ui.find({ type: 'Button', text: 'Merge' })).toBeDefined()
     expect(await ui.find({ type: 'Button', text: 'Link all' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', text: 'Prune' })).toBeDefined()
     await ui.unmount()
   })
 }

@@ -2,7 +2,7 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "memsync",
   "displayName": "Memsync",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Sync Claude Code auto memory, CLAUDE.md and user skills across machines through your own private git repo, with a /memsync pane that shows the sync state.",
   "author": {
     "name": "astrosteveo"

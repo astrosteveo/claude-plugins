@@ -123,12 +123,12 @@ export type Paths = {
 }
 
 /** What `/memsync <args>` asks for. */
-export type Action = 'open' | 'status' | 'sync' | 'link' | 'link-all' | 'on' | 'off' | 'close' | 'help'
+export type Action = 'open' | 'status' | 'sync' | 'link' | 'link-all' | 'prune' | 'on' | 'off' | 'close' | 'help'
 
 export function parseAction(args: string): Action {
   const words = args.trim().toLowerCase().split(/\s+/).filter(Boolean)
   if (words.length === 0) return 'open'
   if (words[0] === 'link') return words[1] === 'all' ? 'link-all' : 'link'
-  const known: Action[] = ['status', 'sync', 'on', 'off', 'close']
+  const known: Action[] = ['status', 'sync', 'prune', 'on', 'off', 'close']
   return known.includes(words[0] as Action) ? (words[0] as Action) : 'help'
 }

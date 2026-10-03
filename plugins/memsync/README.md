@@ -11,9 +11,9 @@ you own, and shows the sync state in a `/memsync` pane.
  Repo         ~/claude-memory → origin/main (clean)
  This project claude-plugins → projects/claude-plugins ✓
 
- Projects     18 linked · 1 unlinked · 2 dead [ Link all ]
+ Projects     18 linked · 1 unlinked · 2 dead [ Link all ] [ Prune ]
    ! ~/Projects/agent-marketplaces/codex-plugins not linked
-   ✗ ~/Projects/racing-manager folder gone (projects/racing-manager kept)
+   ✗ ~/Projects/racing-manager folder gone
 
  Conflicts    1
    projects/void-sector/notes.laptop.md [ Merge ]
@@ -97,8 +97,13 @@ choice lasts across sessions.
 The mod runs only `git`, `ln`, `mv`, `flock` and `setsid`. It uses `mv` only
 to move an existing folder or file aside before it links that place.
 
-A pinned line under the prompt shows the state: `mem ✓ 10:42`, `mem ⟳`
-while syncing, `mem ! sync failed: /memsync` or `mem off`.
+A line pinned under the prompt appears only when something needs you: a
+failed sync, a conflict copy to merge, or syncing turned off. Claude Code
+draws every pinned line with a warning sign, so a healthy sync shows none.
+
+**Prune** clears projects whose folder is gone from this machine. Their
+memory files merge into the repo first, then the old memory folder moves to
+`~/.claude/backups/memory/`. Their transcripts stay where they are.
 
 ## Commands
 
@@ -111,6 +116,7 @@ it.
 /memsync sync       commit, pull and push now
 /memsync link       link this project's memory
 /memsync link all   link every project in the projects folder
+/memsync prune      clear projects whose folder is gone (memory is kept)
 /memsync status     show the state as text
 /memsync on | off   turn syncing on or off
 /memsync close      close the pane

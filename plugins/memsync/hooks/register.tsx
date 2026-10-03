@@ -115,14 +115,17 @@ async function log($: $, text: string) {
   await patch($, { log: kept.slice(-LOG_SHOW) })
 }
 
+/**
+ * Pins a line under the prompt only when something needs the person.
+ * Claude Code draws every pinned line as a warning, so a healthy sync shows none.
+ */
 async function showStatus($: $) {
   const v = await read($, view)
-  const now = await $.clock.now()
-  if (v.phase === 'off') $.ui.status('mem off')
-  else if (v.phase === 'syncing') $.ui.status('mem ⟳')
-  else if (v.phase === 'error') $.ui.status('mem ! sync failed: /memsync')
-  else if (v.conflicts.length > 0) $.ui.status(`mem ! ${v.conflicts.length} conflict${v.conflicts.length === 1 ? '' : 's'}`)
-  else $.ui.status(v.lastSync ? `mem ✓ ${clockLabel(v.lastSync.at, now)}` : 'mem ✓')
+  const conflicts = v.conflicts.length
+  if (v.phase === 'off') $.ui.status('memory sync is off: /memsync on')
+  else if (v.phase === 'error') $.ui.status('memory sync failed: /memsync')
+  else if (conflicts > 0) $.ui.status(`memory sync: ${conflicts} conflict cop${conflicts === 1 ? 'y' : 'ies'} to merge: /memsync`)
+  else $.ui.status(undefined)
 }
 
 async function fail($: $, message: string) {
@@ -650,6 +653,41 @@ async function linkAllOp($: $): Promise<string> {
   return `Linked ${count} project${count === 1 ? '' : 's'}.${failed.length ? ` ${failed.length} failed.` : ''}`
 }
 
+/**
+ * Clears projects whose folder is gone. Memory files merge into the repo
+ * first, then the memory folder (or link) moves to backups. Transcripts stay.
+ */
+async function pruneOp($: $): Promise<string> {
+  if (!(await isEnabled($))) return OFF_TEXT
+  const missing = await repoMissing($)
+  if (missing) return missing
+  const p = paths!
+  const scan = await scanProjects($)
+  if (scan.dead.length === 0) return 'No projects to prune.'
+  const failed: string[] = []
+  const result = await withLock($, LOCK_WAIT_S, async () => {
+    for (const dead of scan.dead) {
+      try {
+        const mem = await stat($, dead.memoryDir)
+        if (mem && !mem.isLink && (await walk($, dead.memoryDir)).length > 0) {
+          await mergeInto($, dead.memoryDir, `${p.repo}/projects/${dead.key || basename(dead.root)}`)
+        }
+        await moveAside($, dead.memoryDir, `${p.claudeDir}/backups/memory`, basename(dirname(dead.memoryDir)))
+        await log($, `pruned ${dead.root}`)
+      } catch (err) {
+        failed.push(`${basename(dead.root)}: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+    return gitSyncShown($)
+  })
+  if (result === 'busy') return fail($, BUSY)
+  await refreshProjects($)
+  const pruned = scan.dead.length - failed.length
+  if (failed.length > 0) return fail($, `could not prune ${failed.join('; ')}`)
+  await afterSync($, 'prune', result)
+  return `Pruned ${pruned} project${pruned === 1 ? '' : 's'}. Their memory is in the repo, and the old folders are in ${p.claudeDir}/backups/memory.`
+}
+
 async function refreshProjects($: $) {
   const scan = await scanProjects($)
   await patch($, scan)
@@ -737,6 +775,7 @@ const HELP = [
   '/memsync sync       commit, pull and push now',
   '/memsync link       link this project’s memory',
   '/memsync link all   link every project in the projects folder',
+  '/memsync prune      clear projects whose folder is gone (memory is kept)',
   '/memsync status     show the state as text',
   '/memsync on | off   turn syncing on or off',
   '/memsync close      close the pane',
@@ -810,6 +849,7 @@ export const register: Register = (on, options) => {
     if (action === 'sync') return { text: started ?? (await syncOp($, 'manual')) }
     if (action === 'link') return { text: await linkOp($) }
     if (action === 'link-all') return { text: await linkAllOp($) }
+    if (action === 'prune') return { text: await pruneOp($) }
     await refreshRepo($)
     await refreshProjects($)
     if (action === 'status') return { text: statusText(await read($, view), await $.clock.now()) }
@@ -837,6 +877,7 @@ export const register: Register = (on, options) => {
       await refreshProjects($)
     })
     const linkEvery = act(() => linkAllOp($))
+    const prune = act(() => pruneOp($))
     const merge = (copy: string) =>
       act(() =>
         $.prompt.fill({
@@ -927,6 +968,7 @@ export const register: Register = (on, options) => {
               {v.linked.length} linked · {v.unlinked.length} unlinked · {v.dead.length} dead{' '}
             </Text>
             {v.unlinked.length > 0 && <Button key="link-all" label="Link all" hotkey="a" onPress={linkEvery} />}
+            {v.dead.length > 0 && <Button key="prune" label="Prune" hotkey="p" onPress={prune} />}
           </Box>
           {v.unlinked.map(x => (
             <Text color={COLOR.warn} wrap="truncate">
