@@ -1,8 +1,8 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
-import type { ClientKeyEvent, ModelForkResult, PromptEditInput, PromptEditResult, PromptOrigin } from 'claude-code'
+import type { ClientKeyEvent, ModelForkResult, PromptEditInput, PromptEditResult, PromptOrigin, RenderSurface } from 'claude-code'
 
-import { ASK, isHotkey, parseSuggestions } from '../hooks/register'
+import { ASK, isHotkey, parseSuggestions, skipsAfter } from '../hooks/register'
 
 type $ = Parameters<TestBody>[0]
 
@@ -19,11 +19,23 @@ const band = (surface: (typeof SURFACES)[number], bodyColumns = 100) =>
     props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns, scroll: { offset: 0, bodyRows: 10 }, view: {} },
   }) as const
 
-type Setup = { reply?: string; fork?: ModelForkResult; box?: string; gate?: Promise<void> }
+type Setup = {
+  reply?: string
+  fork?: ModelForkResult
+  box?: string
+  gate?: Promise<void>
+  surfaces?: readonly RenderSurface[]
+  store?: Record<string, unknown>
+}
 
-function setup(on: Parameters<TestBody>[1], { reply = ITEMS.join('\n'), fork, box = '', gate }: Setup = {}) {
+function setup(
+  on: Parameters<TestBody>[1],
+  { reply = ITEMS.join('\n'), fork, box = '', gate, surfaces = ['terminal'], store = {} }: Setup = {},
+) {
   const sent = { asks: [] as string[], submitted: [] as { text: string; origin: PromptOrigin }[], reachedCore: [] as string[] }
   on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('session.surfaces', () => ({ value: surfaces }))
+  mock.store(on, store)
   on('session.end', ($, e) => ({ sessionId: e.sessionId }))
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', ($, e) => ({ text: e.answer }))
@@ -203,6 +215,121 @@ test('a reply with fewer than 3 usable lines shows no list', async ($, on) => {
   await start($)
   await reply($, sent)
   expect(await shownItems($)).toEqual([])
+  // The debug line is off by default.
+  const ui = await $.ui.mount(band('terminal'))
+  expect(await ui.find({ type: 'Text', text: /next-prompts:/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('with no screen attached, as in a plain -p run, no fork is made', async ($, on) => {
+  const sent = setup(on, { surfaces: [] })
+  await start($)
+  await reply($, sent)
+  expect(sent.asks).toEqual([])
+  expect(await shownItems($)).toEqual([])
+})
+
+/** Shows a list, then types over it, so the list goes unused. */
+async function leaveUnused($: $, sent: { settle: () => Promise<void> }) {
+  await reply($, sent)
+  expect(await shownItems($)).toEqual(ITEMS)
+  await edit($, 'h')
+}
+
+test('after 3 unused lists in a row, the next reply is skipped, then lists come back', async ($, on) => {
+  const sent = setup(on)
+  await start($)
+  for (let i = 0; i < 3; i++) await leaveUnused($, sent)
+  expect(sent.asks.length).toBe(3)
+
+  await reply($, sent)
+  expect(sent.asks.length).toBe(3)
+  expect(await shownItems($)).toEqual([])
+
+  await reply($, sent)
+  expect(sent.asks.length).toBe(4)
+  expect(await shownItems($)).toEqual(ITEMS)
+})
+
+test('pressing 0 counts the list as unused', async ($, on) => {
+  const sent = setup(on, { store: { ignored: 2 } })
+  await start($)
+  await reply($, sent)
+  const ui = await $.ui.mount(band('terminal'))
+  await ui.press({ key: 'dismiss' })
+  await ui.unmount()
+
+  await reply($, sent)
+  expect(sent.asks.length).toBe(1)
+})
+
+test('your own prompt counts the list as unused, and a prompt from another plugin does not', async ($, on) => {
+  const sent = setup(on, { store: { ignored: 2 } })
+  await start($)
+  await reply($, sent)
+  await $.prompt.submit({ text: 'from a mod', wait: false, origin: { kind: 'plugin', name: 'consult' } })
+  expect(await shownItems($)).toEqual([])
+
+  await reply($, sent)
+  expect(sent.asks.length).toBe(2)
+  await $.prompt.submit({ text: 'my own', wait: false, origin: { kind: 'composer' } })
+
+  await reply($, sent)
+  expect(sent.asks.length).toBe(2)
+})
+
+test('sending a suggestion starts the unused count again', async ($, on) => {
+  const sent = setup(on, { store: { ignored: 6 } })
+  await start($)
+  await reply($, sent)
+  const ui = await $.ui.mount(band('terminal'))
+  await ui.press({ key: 'send-1' })
+  await ui.unmount()
+  await sent.settle()
+
+  // Without the reset, this would be the 7th unused list in a row.
+  await leaveUnused($, sent)
+  await reply($, sent)
+  expect(sent.asks.length).toBe(3)
+})
+
+test('skips double with each unused list after the 2nd, up to 16', () => {
+  expect([0, 1, 2, 3, 4, 5, 6, 7, 8, 20].map(skipsAfter)).toEqual([0, 0, 0, 1, 2, 4, 8, 16, 16, 16])
+})
+
+test('a second press before the band redraws sends nothing more', async ($, on) => {
+  const sent = setup(on)
+  await start($)
+  await reply($, sent)
+
+  const ui = await $.ui.mount(band('terminal'))
+  await Promise.allSettled([ui.press({ key: 'send-1' }), ui.press({ key: 'send-2' })])
+  await ui.unmount()
+  await sent.settle()
+  expect(sent.submitted.map(s => s.text)).toEqual([ITEMS[0]])
+})
+
+test('with the debug option, the band says what the last check did', { options: { debug: true } }, async ($, on) => {
+  const sent = setup(on, { reply: 'Only one idea' })
+  await start($)
+  await reply($, sent)
+
+  const ui = await $.ui.mount(band('terminal'))
+  expect(await ui.find({ type: 'Button' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /next-prompts: too few lines: 1 of 3/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'beneath' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('with the debug option, a skipped check says why', { options: { debug: true } }, async ($, on) => {
+  const sent = setup(on, { store: { skips: 2 } })
+  await start($)
+  await reply($, sent)
+
+  expect(sent.asks).toEqual([])
+  const ui = await $.ui.mount(band('terminal'))
+  expect(await ui.find({ type: 'Text', text: /skipped: recent lists went unused \(1 more to skip\)/ })).toBeDefined()
+  await ui.unmount()
 })
 
 const UNANSWERED: ModelForkResult[] = [

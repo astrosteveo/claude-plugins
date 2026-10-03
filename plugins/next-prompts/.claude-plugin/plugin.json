@@ -2,7 +2,7 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "next-prompts",
   "displayName": "Next Prompts",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Shows 3 suggested next prompts above the prompt after each reply. Type 1, 2 or 3 to send one, or 0 to dismiss the list.",
   "author": {
     "name": "astrosteveo"
@@ -10,5 +10,13 @@
   "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/next-prompts",
   "repository": "https://github.com/astrosteveo/claude-plugins",
   "keywords": ["mod", "band", "prompt", "suggestions"],
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "debug": {
+      "type": "boolean",
+      "title": "Show what each check did",
+      "description": "Show a dim line in the band that says what the last check after a reply did, such as why no list showed.",
+      "default": false
+    }
+  }
 }
