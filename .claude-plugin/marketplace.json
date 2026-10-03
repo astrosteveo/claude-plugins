@@ -8,42 +8,6 @@
   },
   "plugins": [
     {
-      "name": "file-tree",
-      "source": "./plugins/file-tree",
-      "description": "A pane with the project's file tree that marks the files Claude creates or changes and shows their diffs, without leaving the terminal.",
-      "version": "0.1.2",
-      "author": {
-        "name": "astrosteveo"
-      },
-      "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/file-tree",
-      "category": "productivity",
-      "tags": [
-        "mod",
-        "file-tree",
-        "diff",
-        "review",
-        "pane"
-      ]
-    },
-    {
-      "name": "consult",
-      "source": "./plugins/consult",
-      "description": "Ask a side copy of Claude how to answer it, or have it write your next prompt, without adding to the main chat.",
-      "version": "0.2.0",
-      "author": {
-        "name": "astrosteveo"
-      },
-      "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/consult",
-      "category": "productivity",
-      "tags": [
-        "mod",
-        "consult",
-        "prompt",
-        "side-question",
-        "pane"
-      ]
-    },
-    {
       "name": "memsync",
       "source": "./plugins/memsync",
       "description": "Sync Claude Code auto memory, CLAUDE.md and user skills across machines through your own private git repo, with a /memsync pane that shows the sync state.",
@@ -59,59 +23,6 @@
         "sync",
         "git",
         "pane"
-      ]
-    },
-    {
-      "name": "plain-english",
-      "source": "./plugins/plain-english",
-      "description": "Makes Claude write plain, literal English: short sentences, common words, and status updates stated as facts, with no metaphors or stagey transitions.",
-      "version": "0.1.0",
-      "author": {
-        "name": "astrosteveo"
-      },
-      "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/plain-english",
-      "category": "productivity",
-      "tags": [
-        "mod",
-        "plain-language",
-        "writing",
-        "style",
-        "system-prompt"
-      ]
-    },
-    {
-      "name": "token-weather",
-      "source": "./plugins/token-weather",
-      "description": "A live forecast of the context window in the band above the prompt: how full it is, the last 12 turns and what the last turn added.",
-      "version": "0.1.1",
-      "author": {
-        "name": "astrosteveo"
-      },
-      "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/token-weather",
-      "category": "productivity",
-      "tags": [
-        "mod",
-        "band",
-        "context",
-        "tokens",
-        "usage"
-      ]
-    },
-    {
-      "name": "next-prompts",
-      "source": "./plugins/next-prompts",
-      "description": "Shows 3 suggested next prompts above the prompt after each reply. Type 1, 2 or 3 to send one, or 0 to dismiss the list.",
-      "version": "0.2.0",
-      "author": {
-        "name": "astrosteveo"
-      },
-      "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/next-prompts",
-      "category": "productivity",
-      "tags": [
-        "mod",
-        "band",
-        "prompt",
-        "suggestions"
       ]
     }
   ]
