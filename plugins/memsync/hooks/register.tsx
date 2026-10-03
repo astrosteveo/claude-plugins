@@ -813,7 +813,10 @@ export const register: Register = (on, options) => {
     await refreshRepo($)
     await refreshProjects($)
     if (action === 'status') return { text: statusText(await read($, view), await $.clock.now()) }
-    await $.ui.open({ id: PANE, title: 'claude-memory' })
+    // A dialog, like Claude Code's own menus: it takes the keys, Esc closes it
+    const v = await read($, view)
+    const rows = 18 + v.unlinked.length + v.dead.length + v.conflicts.length + v.log.length
+    await $.ui.open({ id: PANE, title: 'claude-memory', focus: true, closeOnEscape: true, holdToasts: true, rows: Math.min(rows, 40) })
     return {}
   })
 
@@ -892,6 +895,7 @@ export const register: Register = (on, options) => {
         <Box flexDirection="row" columnGap={2}>
           {stateText}
           <Button key="toggle" label={isOff ? 'Turn on' : 'Turn off'} hotkey="t" onPress={toggle} />
+          <Button key="close" label="Close" role="dismiss" onPress={act(() => $.ui.close({ id: PANE }))} />
         </Box>
         {v.error !== '' && <Text color={COLOR.bad}>{v.error}</Text>}
 

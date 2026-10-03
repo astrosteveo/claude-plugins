@@ -84,7 +84,7 @@
       "name": "memsync",
       "source": "./plugins/memsync",
       "description": "Sync Claude Code auto memory, CLAUDE.md and user skills across machines through your own private git repo, with a /memsync pane that shows the sync state.",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "author": {
         "name": "astrosteveo"
       },

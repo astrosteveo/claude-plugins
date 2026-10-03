@@ -104,13 +104,22 @@ const run = (args: string) =>
 type World = { hasRepo: boolean; skillFiles: string[]; store?: Record<string, unknown> }
 
 function world(on: Parameters<TestBody>[1], w: World) {
-  const seen = { processes: 0, repoChecks: 0, toasts: [] as string[], status: [] as (string | undefined)[] }
+  const seen = {
+    processes: 0,
+    repoChecks: 0,
+    toasts: [] as string[],
+    status: [] as (string | undefined)[],
+    opened: {} as Record<string, unknown>,
+  }
   mock.env(on, { HOME: '/home/u' })
   mock.store(on, w.store ?? {})
   const clock = mock.clock(on, { now: 1_000_000 })
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.open', ($, e) => {
+    seen.opened = { ...e }
+    return { value: { isPlaced: true } }
+  })
   on('ui.toast', ($, e) => {
     seen.toasts.push(e.text)
     return { value: undefined }
@@ -172,8 +181,10 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(status.text).toContain('Memsync is off.')
 
     await $.command.run(run(''))
+    expect(seen.opened).toMatchObject({ id: 'memsync', focus: true, closeOnEscape: true, holdToasts: true })
     const ui = await $.ui.mount({ plugin: 'memsync', surface, ...PANE })
     expect(await ui.find({ type: 'Text', text: '○ off' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', text: 'Close' })).toBeDefined()
     const turnOn = await ui.find({ type: 'Button', text: 'Turn on' })
     expect(turnOn).toBeDefined()
 

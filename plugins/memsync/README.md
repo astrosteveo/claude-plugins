@@ -102,6 +102,10 @@ while syncing, `mem ! sync failed: /memsync` or `mem off`.
 
 ## Commands
 
+`/memsync` opens the pane as a dialog, like Claude Code's own menus. It takes
+the keyboard, Tab and the arrow keys move between its buttons, and Esc closes
+it.
+
 ```text
 /memsync            open the pane
 /memsync sync       commit, pull and push now
