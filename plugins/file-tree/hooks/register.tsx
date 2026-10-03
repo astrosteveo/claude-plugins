@@ -125,6 +125,14 @@ async function record(
   }
 }
 
+async function forget($: $, paths: string[]) {
+  const base = await rootOf($)
+  const keys = new Set(paths.map(path => relativeTo(base, path)))
+  await update($, changes, all => Object.fromEntries(Object.entries(all).filter(([key]) => !keys.has(key))))
+  await update($, selected, now => (keys.has(now) ? '' : now))
+  await refresh($)
+}
+
 type Dirty = Record<string, { code: string; mtime: number }>
 
 // Files git sees as changed, by absolute path; undefined outside a repo
@@ -161,6 +169,19 @@ async function gitHunks($: $, base: string, path: string, code: string): Promise
   return start < 0 ? [] : body.slice(start + 1).replace(/\n$/, '').split(/\n(?=@@ )/)
 }
 
+// True when git tracks the file and it matches HEAD; ignored files print `!!`, so they never count
+async function isClean($: $, path: string) {
+  const status = await $.process
+    .run(['git', 'status', '--porcelain', '--ignored', '--', path], { cwd: await rootOf($) })
+    .catch(() => undefined)
+  return status?.exitCode === 0 && status.stdout.trim() === ''
+}
+
+async function gitHead($: $, base: string) {
+  const head = await $.process.run(['git', 'rev-parse', 'HEAD'], { cwd: base }).catch(() => undefined)
+  return head?.exitCode === 0 ? head.stdout.trim() : undefined
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     // Runs again on each reload, so keep the first root
@@ -189,7 +210,8 @@ export const register: Register = on => {
     if (ran.deny !== undefined || ran.isError || ran.result.staged) return ran
     const isNew = ran.result.type === 'create'
     const hunks = isNew ? [creationHunk(e.content)] : ran.result.structuredPatch.map(hunkText)
-    await record($, e.file_path, isNew ? 'added' : 'modified', hunks)
+    if (await isClean($, e.file_path)) await forget($, [e.file_path])
+    else await record($, e.file_path, isNew ? 'added' : 'modified', hunks)
 
     return ran
   })
@@ -197,7 +219,8 @@ export const register: Register = on => {
   on('tool.call', { tool: 'Edit' }, async ($, e, next) => {
     const ran = await next(e)
     if (ran.deny !== undefined || ran.isError || ran.result.staged) return ran
-    await record($, e.file_path, 'modified', ran.result.structuredPatch.map(hunkText))
+    if (await isClean($, e.file_path)) await forget($, [e.file_path])
+    else await record($, e.file_path, 'modified', ran.result.structuredPatch.map(hunkText))
 
     return ran
   })
@@ -205,7 +228,8 @@ export const register: Register = on => {
   on('tool.call', { tool: 'NotebookEdit' }, async ($, e, next) => {
     const ran = await next(e)
     if (ran.deny !== undefined || ran.isError) return ran
-    await record($, e.notebook_path, 'modified', [])
+    if (await isClean($, e.notebook_path)) await forget($, [e.notebook_path])
+    else await record($, e.notebook_path, 'modified', [])
 
     return ran
   })
@@ -214,6 +238,7 @@ export const register: Register = on => {
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const base = await rootOf($)
     const before = await gitDirty($, base).catch(() => undefined)
+    const headBefore = await gitHead($, base)
     const ran = await next(e)
     if (before === undefined || ran.deny !== undefined) return ran
 
@@ -224,6 +249,12 @@ export const register: Register = on => {
       const isNew = now.code === '??' || now.code.includes('A')
       const hunks = await gitHunks($, base, path, now.code)
       await record($, path, isNew ? 'added' : 'modified', hunks, 'replace')
+    }
+
+    // A file that went clean without a commit was reverted or removed, so drop its mark
+    if (after !== undefined && (await gitHead($, base)) === headBefore) {
+      const gone = Object.keys(before).filter(path => after[path] === undefined)
+      if (gone.length > 0) await forget($, gone)
     }
 
     return ran
