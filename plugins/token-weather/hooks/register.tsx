@@ -84,6 +84,8 @@ export const register: Register = on => {
     const added = previous === undefined ? null : tokens - previous
     const width = e.props.bodyColumns
 
+    // Another mod may draw in this band too: keep its tree above the forecast.
+    const above = await next(e)
     const { Box, Text } = $.ui.resolve(e)
     const sep = <Text color="inactive">·</Text>
 
@@ -106,19 +108,22 @@ export const register: Register = on => {
       )
 
     return (
-      <Box flexDirection="row" columnGap={1}>
-        <Text color={now.color} bold>
-          {now.icon} {now.word}
-        </Text>
-        <Text color={now.color}>{percent}%</Text>
-        {sep}
-        <Text>
-          {compact(tokens)} / {compact(size)}
-        </Text>
-        {chart === null ? null : sep}
-        {chart}
-        {delta === null ? null : sep}
-        {delta}
+      <Box flexDirection="column">
+        {above}
+        <Box flexDirection="row" columnGap={1}>
+          <Text color={now.color} bold>
+            {now.icon} {now.word}
+          </Text>
+          <Text color={now.color}>{percent}%</Text>
+          {sep}
+          <Text>
+            {compact(tokens)} / {compact(size)}
+          </Text>
+          {chart === null ? null : sep}
+          {chart}
+          {delta === null ? null : sep}
+          {delta}
+        </Box>
       </Box>
     )
   })

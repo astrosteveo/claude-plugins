@@ -83,7 +83,7 @@
       "name": "token-weather",
       "source": "./plugins/token-weather",
       "description": "A live forecast of the context window in the band above the prompt: how full it is, the last 12 turns and what the last turn added.",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "author": {
         "name": "astrosteveo"
       },

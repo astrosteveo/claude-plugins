@@ -141,6 +141,17 @@ test('a narrower band drops the words, then the change, then the chart', async (
   await at45.unmount()
 })
 
+test('another mod in the band still shows, above the forecast', async ($, on) => {
+  // The live bug: next-prompts' list never showed while this band drew.
+  setup(on, 36_100)
+  await start($)
+
+  const ui = await mount($)
+  expect(await ui.find({ type: 'Text', text: 'beneath' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '☀ Clear' })).toBeDefined()
+  await ui.unmount()
+})
+
 test('a survey takes the band, and the desktop draws it too', async ($, on) => {
   setup(on, 36_100)
   await start($)
