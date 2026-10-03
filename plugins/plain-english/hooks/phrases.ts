@@ -1,5 +1,8 @@
 import type { FlaggedPhrases } from '../types'
 
+// What gets merged: "PR #223", "#223", "the fix", "this".
+const MERGED = '(?:PRs?|MRs?|pull requests?|branch(?:es)?|commits?|changes?|fix(?:es)?|patch(?:es)?|release|this|that|#\\d+)(?:\\s#\\d+)?'
+
 // Mostly multi-word phrases: a bare "ship", "land" or "flight" is too often literal
 // in a coding session, and a flag that cries wolf gets ignored.
 const BUILT_IN = [
@@ -16,10 +19,11 @@ const BUILT_IN = [
   '(?:sets?|setting) the stage|the stage is set',
   '(?:paves?|paving|clears?|clearing) the way',
   'furthermore|moreover',
-  // Travel, flight and sports
-  '(?:once|when|after|until|before|as soon as)\\s[^.!?\\n]{1,60}?\\slands?',
-  '(?:has|have|had|just|already) landed',
-  'land(?:s|ed|ing)? (?:the|this|that|it|#\\d+)',
+  // Travel, flight and sports. "Land" counts only for code being merged, since a
+  // player landing on a platform is literal in a game.
+  `(?:once|when|after|until|before|as soon as)\\s(?:[^.!?\\n]{0,30}?\\s)?${MERGED}\\slands?`,
+  `${MERGED}\\s(?:(?:has|have|had|just|already|finally)\\s)*landed`,
+  `land(?:s|ed|ing)?\\s(?:(?:the|this|that|your|my|our)\\s)?${MERGED}`,
   '(?:for|into) flight|ready for takeoff|cleared for takeoff',
   'home stretch|finish line|(?:over|across) the line',
   "ball(?:'s| is) in|(?:get|gets|got) the ball rolling|drop(?:s|ped)? the ball",

@@ -20,6 +20,16 @@ test('leaves plain status updates alone', () => {
   expect(findPhrases('The landing page now loads. In-flight requests retry. The next update ships Monday.')).toEqual([])
 })
 
+test('flags "land" for merges and leaves a literal landing alone', () => {
+  expect(findPhrases('Once this lands, I will start #227.')).toEqual(['Once this lands'])
+  expect(findPhrases('The fix for #12 has landed.')).toEqual(['#12 has landed'])
+  expect(findPhrases('I will land PR #223 first.')).toEqual(['land PR #223'])
+
+  expect(findPhrases('When the player lands on the platform, reset the jump count.')).toEqual([])
+  expect(findPhrases('The player has landed.')).toEqual([])
+  expect(findPhrases('Land the jump to score. When it lands, play the dust effect.')).toEqual([])
+})
+
 test('skips code, links, block quotes and quoted text', () => {
   const text = [
     'Run `kick off --now` to start it.',
