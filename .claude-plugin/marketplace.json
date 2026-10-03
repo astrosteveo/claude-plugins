@@ -97,6 +97,24 @@
         "git",
         "pane"
       ]
+    },
+    {
+      "name": "plain-english",
+      "source": "./plugins/plain-english",
+      "description": "Makes Claude write plain, literal English: short sentences, common words, and status updates stated as facts, with no metaphors or stagey transitions.",
+      "version": "0.1.0",
+      "author": {
+        "name": "astrosteveo"
+      },
+      "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/plain-english",
+      "category": "productivity",
+      "tags": [
+        "mod",
+        "plain-language",
+        "writing",
+        "style",
+        "system-prompt"
+      ]
     }
   ]
 }
