@@ -9,7 +9,6 @@ maintained by astrosteveo.
 | --- | --- |
 | [Workflow](plugins/workflow/README.md) | A small software team for one request: an orchestrator routes work through discovery, planning, implementation, and independent review of both the plan and the code. Includes the planner, implementer, and reviewer agents. |
 | [File Tree](plugins/file-tree/README.md) | A mod: a pane with the project's file tree that marks the files Claude creates or changes and shows their diffs, without leaving the terminal. |
-| [Status Band](plugins/status-band/README.md) | A mod: one row above the prompt with the model, effort, project, git state and 7-day usage. |
 | [Consult](plugins/consult/README.md) | A mod: `/consult` asks a side copy of Claude how to answer it, or writes your next prompt, without adding to the main chat. |
 | [Memsync](plugins/memsync/README.md) | A mod: syncs auto memory, `CLAUDE.md` and user skills across machines through your own private git repo, with a `/memsync` pane that shows the sync state. |
 | [Plain English](plugins/plain-english/README.md) | A mod: makes Claude write plain, literal English, flags figurative phrases under a reply, and replaces the Plain Language output style. |
