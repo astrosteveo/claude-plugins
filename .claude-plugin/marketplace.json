@@ -17,7 +17,32 @@
       },
       "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/workflow",
       "category": "productivity",
-      "tags": ["workflow", "orchestration", "brainstorming", "planning", "implementation", "review"]
+      "tags": [
+        "workflow",
+        "orchestration",
+        "brainstorming",
+        "planning",
+        "implementation",
+        "review"
+      ]
+    },
+    {
+      "name": "file-tree",
+      "source": "./plugins/file-tree",
+      "description": "A pane with the project's file tree that marks the files Claude creates or changes and shows their diffs, without leaving the terminal.",
+      "version": "0.1.0",
+      "author": {
+        "name": "astrosteveo"
+      },
+      "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/file-tree",
+      "category": "productivity",
+      "tags": [
+        "mod",
+        "file-tree",
+        "diff",
+        "review",
+        "pane"
+      ]
     }
   ]
 }

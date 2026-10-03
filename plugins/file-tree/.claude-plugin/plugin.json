@@ -1,0 +1,14 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "file-tree",
+  "displayName": "File Tree",
+  "version": "0.1.0",
+  "description": "A pane with the project's file tree that marks the files Claude creates or changes and shows their diffs, without leaving the terminal.",
+  "author": {
+    "name": "astrosteveo"
+  },
+  "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/file-tree",
+  "repository": "https://github.com/astrosteveo/claude-plugins",
+  "keywords": ["mod", "file-tree", "diff", "review", "pane"],
+  "types": "./types/index.d.ts"
+}

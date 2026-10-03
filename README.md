@@ -8,6 +8,7 @@ maintained by astrosteveo.
 | Plugin | Purpose |
 | --- | --- |
 | [Workflow](plugins/workflow/README.md) | A small software team for one request: an orchestrator routes work through discovery, planning, implementation, and independent review of both the plan and the code. Includes the planner, implementer, and reviewer agents. |
+| [File Tree](plugins/file-tree/README.md) | A mod: a pane with the project's file tree that marks the files Claude creates or changes and shows their diffs, without leaving the terminal. |
 
 ## Install
 
