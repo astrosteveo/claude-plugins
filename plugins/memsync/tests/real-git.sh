@@ -167,5 +167,10 @@ out=$(claude_on a "$APP_A" "/memsync sync")
 check "sync refused while off" sh -c "echo \"\$0\" | grep -q 'Memsync is off'" "$out"
 check "nothing committed while off" test "$before" = "$(git -C "$T/a/repo" rev-parse HEAD)"
 
+echo "# 8. The log keeps what happened"
+out=$(claude_on a "$APP_A" "/memsync log")
+check "log has the refused secret" sh -c "echo \"\$0\" | grep -q 'possible secret in projects/app/leak.md'" "$out"
+check "log has the prune" sh -c "echo \"\$0\" | grep -q 'pruned .*/old'" "$out"
+
 if [ "$FAILED" = 0 ]; then echo "all real-git checks passed"; else echo "some real-git checks failed (KEEP=1 keeps $T)"; fi
 exit "$FAILED"

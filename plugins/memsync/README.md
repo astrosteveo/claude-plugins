@@ -5,18 +5,18 @@ skills the same on every machine. It stores them in a private git repo that
 you own, and shows the sync state in a `/memsync` pane.
 
 ```text
- ● on   [ Turn off ]
+ ● on  [ Turn off ]  [ Close ]
 
  Last sync    10:42  pushed 2, pulled 0 [ Sync now ]
- Repo         ~/claude-memory → origin/main (clean)
+ Repo         clean  ~/claude-memory → origin/main
  This project claude-plugins → projects/claude-plugins ✓
 
  Projects     18 linked · 1 unlinked · 2 dead [ Link all ] [ Prune ]
-   ! ~/Projects/agent-marketplaces/codex-plugins not linked
+   ! ~/Projects/agent-marketplaces/codex-plugins not linked [ Link ]
    ✗ ~/Projects/racing-manager folder gone
 
  Conflicts    1
-   projects/void-sector/notes.laptop.md [ Merge ]
+   projects/void-sector/notes.laptop.md [ Diff ] [ Merge ]
 
  Shared       CLAUDE.md ✓  reflect ✓  issue ✓
 
@@ -84,22 +84,40 @@ choice lasts across sessions.
   your `CLAUDE.md`, the mod reloads them into the session.
 - **Merging:** Two `MEMORY.md` indexes merge line by line. Any other file
   that differs is kept twice, the second copy named after the machine, such
-  as `notes.laptop.md`. The pane lists these copies. Press **Merge** to put a
-  prompt asking Claude to merge one into your prompt box.
+  as `notes.laptop.md`. The pane lists these copies. Press **Diff** to see
+  how a copy differs from the original. Press **Merge** to close the pane and
+  add a prompt to your prompt box that asks Claude to merge the copy. Any text
+  already in the box stays.
 - **Secrets:** A change that looks like a secret value, such as a GitHub
   token or a private key, doesn't sync. The pane names the file. Remove the
-  value and sync again. Names of secrets are fine.
+  value and sync again, or press **Fix with Claude**. Names of secrets are
+  fine.
 - **Locking:** Sessions take turns through `flock` on `.memsync.lock` in the
   repo. A rebase left stuck by an interrupted sync is aborted at the next
-  start. A rebase that conflicts is aborted and reported, so you can fix it by
+  sync. A rebase that conflicts is aborted and reported, so you can fix it by
   hand in the repo.
 
 The mod runs only `git`, `ln`, `mv`, `flock` and `setsid`. It uses `mv` only
 to move an existing folder or file aside before it links that place.
 
 A line pinned under the prompt appears only when something needs you: a
-failed sync, a conflict copy to merge, or syncing turned off. Claude Code
-draws every pinned line with a warning sign, so a healthy sync shows none.
+failed sync and its cause, this project's memory not linked, a conflict copy
+to merge, or syncing turned off. Claude Code draws every pinned line with a
+warning sign, so a healthy sync shows none. While a sync runs or waits for
+another one to finish, the footer at the right of the prompt shows a dim
+`memory syncing` or `memory sync waiting`. The terminal and the desktop app
+draw that footer.
+
+When a sync fails, the pane shows the error. For a secret, a failed push, a
+missing repo or another error, press **Fix with Claude** to close the pane
+and add a prompt that asks Claude to fix it. A failed fetch or a busy lock
+only needs **Sync now**. A failed rebase has no fix button. Resolve it by
+hand in the repo, because the next sync aborts a rebase that is still in
+progress.
+
+Each button in the pane says what it did, such as `Linked 2 projects.`, on
+the line under the header. When a pull brings in files from another machine,
+a dim line in the transcript names them.
 
 **Prune** clears projects whose folder is gone from this machine. Their
 memory files merge into the repo first, then the old memory folder moves to
@@ -109,7 +127,13 @@ memory files merge into the repo first, then the old memory folder moves to
 
 `/memsync` opens the pane as a dialog, like Claude Code's own menus. It takes
 the keyboard, Tab and the arrow keys move between its buttons, and Esc closes
-it.
+it. In a narrow pane, such as one docked beside the transcript, each row's
+buttons move to a line of their own.
+
+`/memsync status` and `/memsync log` color their output: problems in your
+theme's error color, things to look at in its warning color. The pane uses
+the same theme colors, so it follows `/theme`, including the light and
+colorblind-friendly themes.
 
 ```text
 /memsync            open the pane
@@ -118,6 +142,7 @@ it.
 /memsync link all   link every project in the projects folder
 /memsync prune      clear projects whose folder is gone (memory is kept)
 /memsync status     show the state as text
+/memsync log        show the last 40 sync events
 /memsync on | off   turn syncing on or off
 /memsync close      close the pane
 ```
