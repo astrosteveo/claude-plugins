@@ -7,12 +7,7 @@ maintained by astrosteveo.
 
 | Plugin | Purpose |
 | --- | --- |
-| [File Tree](plugins/file-tree/README.md) | A mod: a pane with the project's file tree that marks the files Claude creates or changes and shows their diffs, without leaving the terminal. |
-| [Consult](plugins/consult/README.md) | A mod: `/consult` asks a side copy of Claude how to answer it, or writes your next prompt, without adding to the main chat. |
 | [Memsync](plugins/memsync/README.md) | A mod: syncs auto memory, `CLAUDE.md` and user skills across machines through your own private git repo, with a `/memsync` pane that shows the sync state. |
-| [Plain English](plugins/plain-english/README.md) | A mod: makes Claude write plain, literal English, flags figurative phrases under a reply, and replaces the Plain Language output style. |
-| [Token Weather](plugins/token-weather/README.md) | A mod: a live forecast of the context window in the band above the prompt, with how full it is, the last 12 turns and what the last turn added. |
-| [Next Prompts](plugins/next-prompts/README.md) | A mod: 3 suggested next prompts above the prompt after each reply. Type 1, 2 or 3 to send one, or 0 to dismiss the list. |
 
 ## Install
 
@@ -20,14 +15,14 @@ Inside Claude Code, add the marketplace from GitHub and install a plugin:
 
 ```text
 /plugin marketplace add astrosteveo/claude-plugins
-/plugin install file-tree@astrosteveo-plugins
+/plugin install memsync@astrosteveo-plugins
 ```
 
 From a local checkout, register the checkout directory instead:
 
 ```text
 /plugin marketplace add /path/to/claude-plugins
-/plugin install file-tree@astrosteveo-plugins
+/plugin install memsync@astrosteveo-plugins
 ```
 
 The same commands work from a shell as `claude plugin marketplace add ...` and
@@ -35,7 +30,7 @@ The same commands work from a shell as `claude plugin marketplace add ...` and
 installing. Plugin skills are namespaced as `/<plugin>:<skill>`.
 
 To try a plugin without installing it, start Claude Code with the plugin
-directory: `claude --plugin-dir ./plugins/file-tree`.
+directory: `claude --plugin-dir ./plugins/memsync`.
 
 ## Structure
 
