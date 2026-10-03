@@ -63,9 +63,12 @@ let isSyncing = false
 
 type Run = { exitCode: number; stdout: string; stderr: string }
 
+const NO_PROMPT = { GIT_TERMINAL_PROMPT: '0' }
+
 async function run($: $, argv: string[], timeoutMs = GIT_MS): Promise<Run> {
   try {
-    const r = await $.process.run(argv, { timeoutMs })
+    // No credential prompts: one would land in Claude Code's terminal and hang
+    const r = await $.process.run(argv, { timeoutMs, env: NO_PROMPT })
     return { exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr }
   } catch (err) {
     return { exitCode: -1, stdout: '', stderr: String(err) }
@@ -435,7 +438,8 @@ type Commit = { ok: true; names: string[] } | { ok: false; message: string }
 /** Stages everything, refuses secrets, commits. */
 async function commitLocal($: $): Promise<Commit> {
   const p = paths!
-  await git($, p.repo, ['add', '-A'])
+  const added = await git($, p.repo, ['add', '-A'])
+  if (added.exitCode !== 0) return { ok: false, message: `git add failed: ${firstLine(added)}` }
   // bin/ holds the old script and its tests, which contain patterns, not secrets
   const diff = await git($, p.repo, ['diff', '--cached', '-U0', '--no-color', '--', '.', ':!bin'])
   const hits = findSecrets(diff.stdout)
@@ -721,7 +725,7 @@ async function finish($: $) {
   const branch = (await git($, paths.repo, ['branch', '--show-current'])).stdout.trim()
   if (branch === '') return
   // setsid -f outlives the session. Its child keeps our pipes, so don't wait on the stream
-  const push = $.process.spawn({ argv: ['setsid', '-f', 'git', '-C', paths.repo, 'push', '-q', 'origin', branch] })
+  const push = $.process.spawn({ argv: ['setsid', '-f', 'git', '-C', paths.repo, 'push', '-q', 'origin', branch], env: NO_PROMPT })
   const pieces = push[Symbol.asyncIterator]()
   await Promise.race([pieces.next().catch(() => undefined), $.clock.sleep(200)])
 }

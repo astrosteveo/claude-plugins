@@ -192,3 +192,61 @@ test('/memsync with an unknown word shows the help', async ($, on) => {
   const out = await $.command.run(run('frobnicate'))
   expect(out.text).toContain('/memsync link all')
 })
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`the pane lists linked, unlinked and dead projects, conflicts and the repo (${surface})`, async ($, on) => {
+    const PROJECTS = '/home/u/.claude/projects'
+    const cwds = { 'f-app': '/home/u/Projects/app', 'f-new': '/home/u/Projects/new', 'f-gone': '/home/u/Projects/gone' }
+    mock.env(on, { HOME: '/home/u' })
+    mock.store(on, { enabled: false, cwds })
+    const clock = mock.clock(on, { now: 1_000_000 })
+    on('session.start', ($, e) => ({ cwd: e.cwd }))
+    on('command.register', ($, e) => ({ value: { command: e.name } }))
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    on('ui.status', () => ({ value: undefined }))
+    on('fs.read', () => ({ value: 'box\n' }))
+    on('fs.exists', ($, e) => ({
+      value: [`${REPO}/.git`, '/home/u/Projects/app', '/home/u/Projects/new'].includes(e.path),
+    }))
+    on('fs.list', ($, e) => ({
+      value:
+        e.path === PROJECTS
+          ? Object.keys(cwds).map(name => ({ name, kind: 'dir' as const, size: 0, mtimeMs: 0, isLink: false }))
+          : [],
+    }))
+    on('fs.stat', ($, e) => {
+      const isLink = e.path === `${PROJECTS}/f-app/memory`
+      if (!e.path.startsWith(PROJECTS)) throw new Error('missing')
+      return {
+        value: { kind: 'dir' as const, size: 0, mtimeMs: 0, isLink, realPath: isLink ? `${REPO}/projects/app` : e.path },
+      }
+    })
+    on('process.run', ($, e) => {
+      const argv = e.argv.join(' ')
+      const ok = (stdout: string) => ({
+        value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+      })
+      if (argv.includes('status --porcelain=v2')) return ok('# branch.head main\n# branch.ab +0 -0\n')
+      if (argv.startsWith(`git -C ${REPO} remote get-url`)) return ok('git@github.com:me/claude-memory.git\n')
+      if (argv.includes('ls-files')) return ok('projects/app/note.md\nprojects/app/note.box.md\n')
+      if (argv.includes('rev-parse --show-toplevel')) {
+        const root = e.argv[2]!
+        return ok(`${root}\n${root}/.git\n${root}/.git\nfalse\n`)
+      }
+      return { value: { exitCode: 1, stdout: '', stderr: 'mocked', isStdoutTruncated: false, isStderrTruncated: false } }
+    })
+
+    await start($)
+    await clock.settle()
+    await $.command.run(run(''))
+    const ui = await $.ui.mount({ plugin: 'memsync', surface, ...PANE })
+    expect(await ui.find({ type: 'Text', text: /claude-memory → origin\/main/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /1 linked · 1 unlinked · 1 dead/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /~\/Projects\/new not linked/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /~\/Projects\/gone folder gone/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /projects\/app\/note\.box\.md/ })).toBeDefined()
+    expect(await ui.find({ type: 'Button', text: 'Merge' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', text: 'Link all' })).toBeDefined()
+    await ui.unmount()
+  })
+}
