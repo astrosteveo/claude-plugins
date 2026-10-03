@@ -5,6 +5,7 @@ import type { FileTreeChange, FileTreeEntry } from '../types'
 
 const PANE = 'file-tree'
 const TITLE = 'Files'
+const UNPLACED = 'Claude changed files. Run /tree to see them, or widen the terminal.'
 // Never listed: too big to be useful, and not code anyone reviews
 const HIDDEN = new Set(['.git', 'node_modules'])
 const MAX_ENTRIES = 300
@@ -121,7 +122,13 @@ async function record(
 
   if (!(await read($, isAutoOpened))) {
     await update($, isAutoOpened, () => true)
-    void $.ui.open({ id: PANE, title: TITLE, columns: 44 }).catch(() => {})
+    // Opened unasked, so a narrow terminal keeps it undrawn; say how to see it
+    void $.ui
+      .open({ id: PANE, title: TITLE, columns: 44 })
+      .then(opened => {
+        if (!opened.isPlaced) $.ui.toast(UNPLACED)
+      })
+      .catch(() => {})
   }
 }
 

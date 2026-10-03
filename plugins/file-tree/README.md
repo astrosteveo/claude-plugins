@@ -25,6 +25,9 @@ compares `git status` before and after each command.
 - The pane docks on the right only in the fullscreen terminal layout
   (`/tui fullscreen`), 110 columns or wider. It opens by itself from 144
   columns. Otherwise it sits above the prompt.
+- On a terminal narrower than that, the first change shows a toast that
+  says to run `/tree` or widen the terminal, and the pane waits until you
+  do one of them.
 - The tree's root is the folder the session started in.
 - `.git` and `node_modules` are hidden.
 - Long diffs keep the newest changes that fit in about 9,500 characters.
