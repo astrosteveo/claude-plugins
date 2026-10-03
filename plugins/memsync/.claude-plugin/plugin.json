@@ -1,0 +1,28 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "memsync",
+  "displayName": "Memsync",
+  "version": "0.1.0",
+  "description": "Sync Claude Code auto memory, CLAUDE.md and user skills across machines through your own private git repo, with a /memsync pane that shows the sync state.",
+  "author": {
+    "name": "astrosteveo"
+  },
+  "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/memsync",
+  "repository": "https://github.com/astrosteveo/claude-plugins",
+  "keywords": ["mod", "memory", "sync", "git", "pane"],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "repoPath": {
+      "type": "string",
+      "title": "Memory repo",
+      "description": "Your clone of the private git repo that holds your memory. ~ means your home folder.",
+      "default": "~/claude-memory"
+    },
+    "projectsRoot": {
+      "type": "string",
+      "title": "Projects folder",
+      "description": "Only projects inside this folder sync. Others keep their memory on this machine.",
+      "default": "~/Projects"
+    }
+  }
+}
