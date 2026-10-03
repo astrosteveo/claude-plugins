@@ -1,22 +1,30 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, PluginOptions, Register } from 'claude-code'
+import type { EngineInterface, PluginOptions, Register, RenderChildren, RenderSurface } from 'claude-code'
 
-import type { MemsyncLastSync, MemsyncProject, MemsyncShared, MemsyncView } from '../types'
+import type { MemsyncDiff, MemsyncErrorKind, MemsyncLastSync, MemsyncPhase, MemsyncProject, MemsyncShared, MemsyncView } from '../types'
 import {
   basename,
   changedAreas,
+  clean,
   clockLabel,
   conflictCopies,
   cwdFromTranscript,
+  diffHunks,
   dirname,
   expandHome,
   findSecrets,
+  fixPrompt,
   isUnder,
+  kindOf,
+  lineTone,
   memoryDirFromSection,
+  modeLabel,
+  originalOf,
   parseAction,
   parseStatus,
   projectKey,
   stamp,
+  statusLine,
   unionLines,
 } from './core'
 import type { Paths } from './core'
@@ -34,12 +42,16 @@ const LOCK_HOLD_S = 300
 const LOCK_WAIT_S = 60
 // Quiet time after a turn before a changed memory syncs
 const DEBOUNCE_MS = 3_000
+// Below this many body columns, a pane row's buttons go on a line of their own
+const NARROW = 64
 // fs.read stops at 4 MiB
 const READ_LIMIT = 4 * 1024 * 1024
 
 const EMPTY: MemsyncView = {
   phase: 'idle',
   error: '',
+  errorKind: null,
+  notice: '',
   repoPath: '',
   repo: null,
   lastSync: null,
@@ -50,10 +62,12 @@ const EMPTY: MemsyncView = {
   conflicts: [],
   shared: [],
   log: [],
+  diff: null,
 }
 const view = atom({ plugin: 'memsync', key: 'view' } as const, EMPTY)
 
-const COLOR = { ok: '#A3BE8C', warn: '#EBCB8B', bad: '#BF616A', dim: '#6B7280', accent: '#88C0D0' }
+// Claude Code theme keys, so the pane follows /theme, light and colorblind themes included
+const COLOR = { ok: 'success', warn: 'warning', bad: 'error', dim: 'inactive', accent: 'suggestion' }
 
 // Module state; a reload starts it over, and the store keeps what matters
 let paths: Paths | null = null
@@ -77,7 +91,8 @@ async function run($: $, argv: string[], timeoutMs = GIT_MS): Promise<Run> {
 
 const git = ($: $, repo: string, args: string[], timeoutMs = GIT_MS) => run($, ['git', '-C', repo, ...args], timeoutMs)
 const lines = (text: string) => text.split('\n').filter(line => line !== '')
-const firstLine = (r: Run) => lines(r.stderr)[0] ?? lines(r.stdout)[0] ?? `exit ${r.exitCode}`
+const firstLine = (r: Run) => clean(lines(r.stderr)[0] ?? lines(r.stdout)[0] ?? `exit ${r.exitCode}`)
+const errText = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
 async function resolvePaths($: $, options: PluginOptions): Promise<Paths> {
   if (paths) return paths
@@ -110,28 +125,22 @@ async function patch($: $, change: Partial<MemsyncView>) {
 
 async function log($: $, text: string) {
   const at = clockLabel(await $.clock.now(), await $.clock.now())
-  const kept = (((await $.store.get('log')) as string[] | undefined) ?? []).concat(`${at} ${text}`).slice(-LOG_KEEP)
+  const kept = (((await $.store.get('log')) as string[] | undefined) ?? []).concat(`${at} ${clean(text)}`).slice(-LOG_KEEP)
   await $.store.set('log', kept)
   await patch($, { log: kept.slice(-LOG_SHOW) })
 }
 
-/**
- * Pins a line under the prompt only when something needs the person.
- * Claude Code draws every pinned line as a warning, so a healthy sync shows none.
- */
+/** Pins a line under the prompt only when something needs the person. */
 async function showStatus($: $) {
-  const v = await read($, view)
-  const conflicts = v.conflicts.length
-  if (v.phase === 'off') $.ui.status('memory sync is off: /memsync on')
-  else if (v.phase === 'error') $.ui.status('memory sync failed: /memsync')
-  else if (conflicts > 0) $.ui.status(`memory sync: ${conflicts} conflict cop${conflicts === 1 ? 'y' : 'ies'} to merge: /memsync`)
-  else $.ui.status(undefined)
+  $.ui.status(statusLine(await read($, view)))
 }
 
-async function fail($: $, message: string) {
+async function fail($: $, text: string, kind: MemsyncErrorKind = 'other') {
+  const message = clean(text)
   const before = await read($, view)
   await $.store.set('error', message)
-  await patch($, { phase: 'error', error: message })
+  await $.store.set('errorKind', kind)
+  await patch($, { phase: 'error', error: message, errorKind: kind })
   await log($, message)
   if (before.error !== message) $.ui.toast(`memsync: ${message}`, { timeoutMs: 8000 })
   await showStatus($)
@@ -315,7 +324,7 @@ async function linkShared($: $): Promise<MemsyncShared[]> {
       if (linked.exitCode !== 0) await log($, `could not link ${pair.name}: ${firstLine(linked)}`)
     } catch (err) {
       shared.push({ name: pair.name, isLinked: false })
-      await log($, String(err instanceof Error ? err.message : err))
+      await log($, errText(err))
     }
   }
   return shared
@@ -397,34 +406,58 @@ async function transcriptCwd($: $, dir: string): Promise<string | null> {
 async function withLock<T>($: $, waitS: number, task: () => Promise<T>): Promise<T | 'busy'> {
   const p = paths!
   const deadline = (await $.clock.now()) + waitS * 1000
-  for (;;) {
-    const holder = $.process.spawn({
-      argv: ['flock', '-o', '-n', p.lock, 'flock', '-w', String(LOCK_HOLD_S), p.lock, 'git', '--version'],
-    })
-    const pieces = holder[Symbol.asyncIterator]()
-    let hasEnded = false
-    void pieces.next().then(
-      () => (hasEnded = true),
-      () => (hasEnded = true),
-    )
-    // Ending the stream kills the holder, which lets the lock go
-    const release = async () => {
-      try {
-        await pieces.return?.(undefined as never)
-      } catch {
-        // Already gone
+  // The phase to go back to once the wait ends; null while not shown as waiting
+  let before: MemsyncPhase | null = null
+  const stopWaiting = async () => {
+    if (before === null) return
+    const back = before
+    before = null
+    // A sync that ran meanwhile may have moved the phase on; keep that
+    if ((await read($, view)).phase === 'waiting') {
+      await patch($, { phase: back })
+      await showStatus($)
+    }
+  }
+  try {
+    for (;;) {
+      const holder = $.process.spawn({
+        argv: ['flock', '-o', '-n', p.lock, 'flock', '-w', String(LOCK_HOLD_S), p.lock, 'git', '--version'],
+      })
+      const pieces = holder[Symbol.asyncIterator]()
+      let hasEnded = false
+      void pieces.next().then(
+        () => (hasEnded = true),
+        () => (hasEnded = true),
+      )
+      // Ending the stream kills the holder, which lets the lock go
+      const release = async () => {
+        try {
+          await pieces.return?.(undefined as never)
+        } catch {
+          // Already gone
+        }
+      }
+      const probe = await run($, ['flock', '-w', '0.4', '-E', '75', p.lock, 'git', '--version'])
+      if (probe.exitCode === 75 && !hasEnded) {
+        await stopWaiting()
+        try {
+          return await task()
+        } finally {
+          await release()
+        }
+      }
+      await release()
+      if ((await $.clock.now()) >= deadline) return 'busy'
+      // Never over syncing: the holder may be this session's own sync
+      const phase = (await read($, view)).phase
+      if (before === null && (phase === 'idle' || phase === 'error')) {
+        before = phase
+        await patch($, { phase: 'waiting' })
+        await showStatus($)
       }
     }
-    const probe = await run($, ['flock', '-w', '0.4', '-E', '75', p.lock, 'git', '--version'])
-    if (probe.exitCode === 75 && !hasEnded) {
-      try {
-        return await task()
-      } finally {
-        await release()
-      }
-    }
-    await release()
-    if ((await $.clock.now()) >= deadline) return 'busy'
+  } finally {
+    await stopWaiting()
   }
 }
 
@@ -436,29 +469,31 @@ async function abortStuckRebase($: $) {
   }
 }
 
-type Commit = { ok: true; names: string[] } | { ok: false; message: string }
+type Failure = { ok: false; message: string; kind: MemsyncErrorKind }
+
+type Commit = { ok: true; names: string[] } | Failure
 
 /** Stages everything, refuses secrets, commits. */
 async function commitLocal($: $): Promise<Commit> {
   const p = paths!
   const added = await git($, p.repo, ['add', '-A'])
-  if (added.exitCode !== 0) return { ok: false, message: `git add failed: ${firstLine(added)}` }
+  if (added.exitCode !== 0) return { ok: false, message: `git add failed: ${firstLine(added)}`, kind: 'other' }
   // bin/ holds the old script and its tests, which contain patterns, not secrets
   const diff = await git($, p.repo, ['diff', '--cached', '-U0', '--no-color', '--', '.', ':!bin'])
   const hits = findSecrets(diff.stdout)
   if (hits.length > 0) {
     await git($, p.repo, ['reset', '-q'])
-    return { ok: false, message: `not synced: possible secret in ${hits.join(' ')}` }
+    return { ok: false, message: `not synced: possible secret in ${hits.join(' ')}`, kind: 'secret' }
   }
   const names = lines((await git($, p.repo, ['diff', '--cached', '--name-only'])).stdout)
   if (names.length > 0) {
     const committed = await git($, p.repo, ['commit', '-q', '-m', `Sync from ${p.host}: ${changedAreas(names)}`])
-    if (committed.exitCode !== 0) return { ok: false, message: `commit failed: ${firstLine(committed)}` }
+    if (committed.exitCode !== 0) return { ok: false, message: `commit failed: ${firstLine(committed)}`, kind: 'other' }
   }
   return { ok: true, names }
 }
 
-type SyncResult = { ok: true; pushed: number; pulled: string[] } | { ok: false; message: string }
+type SyncResult = { ok: true; pushed: number; pulled: string[] } | Failure
 
 async function gitSync($: $): Promise<SyncResult> {
   const p = paths!
@@ -469,15 +504,15 @@ async function gitSync($: $): Promise<SyncResult> {
   if ((await g(['remote', 'get-url', 'origin'])).exitCode !== 0) return { ok: true, pushed: commit.names.length, pulled: [] }
 
   const branch = (await g(['branch', '--show-current'])).stdout.trim()
-  if (branch === '') return { ok: false, message: `${p.repo} is not on a branch` }
+  if (branch === '') return { ok: false, message: `${p.repo} is not on a branch`, kind: 'other' }
   const fetched = await g(['fetch', '-q', 'origin'], NET_MS)
-  if (fetched.exitCode !== 0) return { ok: false, message: 'fetch failed (offline?)' }
+  if (fetched.exitCode !== 0) return { ok: false, message: 'fetch failed (offline?)', kind: 'offline' }
 
   const before = (await g(['rev-parse', 'HEAD'])).stdout.trim()
   const hasUpstream = (await g(['rev-parse', '-q', '--verify', `origin/${branch}`])).exitCode === 0
   if (hasUpstream && (await g(['rebase', '-q', `origin/${branch}`])).exitCode !== 0) {
     await g(['rebase', '--abort'])
-    return { ok: false, message: `rebase onto origin/${branch} failed; resolve by hand in ${p.repo}` }
+    return { ok: false, message: `rebase onto origin/${branch} failed; resolve by hand in ${p.repo}`, kind: 'rebase' }
   }
   const after = (await g(['rev-parse', 'HEAD'])).stdout.trim()
   const pulled = before !== after && before !== '' ? lines((await g(['diff', '--name-only', before, after])).stdout) : []
@@ -485,7 +520,7 @@ async function gitSync($: $): Promise<SyncResult> {
   const ahead = hasUpstream ? Number((await g(['rev-list', '--count', `origin/${branch}..HEAD`])).stdout.trim()) : 1
   if (ahead > 0) {
     const pushed = await g(['push', '-q', '-u', 'origin', branch], NET_MS)
-    if (pushed.exitCode !== 0) return { ok: false, message: `push failed: ${firstLine(pushed)}` }
+    if (pushed.exitCode !== 0) return { ok: false, message: `push failed: ${firstLine(pushed)}`, kind: 'push' }
   }
   return { ok: true, pushed: commit.names.length, pulled }
 }
@@ -527,7 +562,7 @@ const BUSY = 'another sync held the lock for a minute; try again'
 async function repoMissing($: $): Promise<string | null> {
   const p = paths!
   if (await $.fs.exists(`${p.repo}/.git`)) return null
-  return fail($, `${p.repo} is not a git repo; clone your memory repo there or change the Memory repo setting`)
+  return fail($, `${p.repo} is not a git repo; clone your memory repo there or change the Memory repo setting`, 'repo')
 }
 
 /** gitSync with the pane showing it. Call it while holding the lock. */
@@ -548,18 +583,21 @@ async function afterSync($: $, why: string, result: SyncResult): Promise<string>
     await refreshRepo($)
     // Retry on the next change, not on every turn
     lastSnapshot = await snapshot($)
-    return fail($, result.message)
+    return fail($, result.message, result.kind)
   }
   const now = await $.clock.now()
   const lastSync: MemsyncLastSync = { at: now, pushed: result.pushed, pulled: result.pulled.length }
   await $.store.set('lastSync', lastSync)
   await $.store.delete('error')
-  await patch($, { phase: 'idle', error: '', lastSync })
+  await $.store.delete('errorKind')
+  await patch($, { phase: 'idle', error: '', errorKind: null, lastSync })
   if (result.pushed > 0 || result.pulled.length > 0) {
     await log($, `${why}: pushed ${result.pushed}, pulled ${result.pulled.length}`)
   }
 
   if (result.pulled.length > 0) {
+    // Stays in the transcript, where a toast is gone in seconds
+    $.ui.log(`memsync pulled ${changedAreas(result.pulled)} from another machine`)
     const v = await read($, view)
     const key = v.project?.key
     const touchesUs = result.pulled.some(name => (key && name.startsWith(`projects/${key}/`)) || name === 'claude/CLAUDE.md')
@@ -585,7 +623,7 @@ async function syncOp($: $, why: string): Promise<string> {
   const missing = await repoMissing($)
   if (missing) return missing
   const result = await withLock($, LOCK_WAIT_S, () => gitSyncShown($))
-  if (result === 'busy') return fail($, BUSY)
+  if (result === 'busy') return fail($, BUSY, 'busy')
   return afterSync($, why, result)
 }
 
@@ -613,7 +651,7 @@ async function linkHere($: $): Promise<string> {
     return `${result === 'already' ? 'Already linked' : 'Linked'} ${projectRoot} to projects/${project.key}.`
   } catch (err) {
     await patch($, { project: { ...project, state: 'unlinked' } })
-    return fail($, String(err instanceof Error ? err.message : err))
+    return fail($, errText(err))
   }
 }
 
@@ -622,19 +660,25 @@ async function linkOp($: $): Promise<string> {
   const missing = await repoMissing($)
   if (missing) return missing
   const result = await withLock($, LOCK_WAIT_S, () => linkHere($))
-  return result === 'busy' ? fail($, BUSY) : result
+  return result === 'busy' ? fail($, BUSY, 'busy') : result
+}
+
+/** Why other projects can't be linked from here, or null when they can. */
+async function layoutProblem($: $): Promise<string | null> {
+  const here = await read($, view)
+  // The other folders follow the engine's layout only while this one does
+  if (here.project?.memoryDir && dirname(dirname(here.project.memoryDir)) !== `${paths!.claudeDir}/projects`) {
+    return 'This machine keeps memory outside the usual folder, so only the current project links. Open each project to link it.'
+  }
+  return null
 }
 
 async function linkAllOp($: $): Promise<string> {
   if (!(await isEnabled($))) return OFF_TEXT
   const missing = await repoMissing($)
   if (missing) return missing
-  const p = paths!
-  const here = await read($, view)
-  // The other folders follow the engine's layout only while this one does
-  if (here.project?.memoryDir && dirname(dirname(here.project.memoryDir)) !== `${p.claudeDir}/projects`) {
-    return 'This machine keeps memory outside the usual folder, so only the current project links. Open each project to link it.'
-  }
+  const layout = await layoutProblem($)
+  if (layout) return layout
   const scan = await scanProjects($)
   let count = 0
   const failed: string[] = []
@@ -643,14 +687,40 @@ async function linkAllOp($: $): Promise<string> {
       try {
         if ((await linkProject($, project.memoryDir, project.root)) === 'linked') count += 1
       } catch (err) {
-        failed.push(`${basename(project.root)}: ${err instanceof Error ? err.message : String(err)}`)
+        failed.push(`${basename(project.root)}: ${errText(err)}`)
       }
     }
   })
-  if (result === 'busy') return fail($, BUSY)
+  if (result === 'busy') return fail($, BUSY, 'busy')
   await refreshProjects($)
   if (failed.length > 0) await fail($, `could not link ${failed.join('; ')}`)
   return `Linked ${count} project${count === 1 ? '' : 's'}.${failed.length ? ` ${failed.length} failed.` : ''}`
+}
+
+/** Links one project from the pane's list of unlinked ones. */
+async function linkOneOp($: $, root: string): Promise<string> {
+  if (!(await isEnabled($))) return OFF_TEXT
+  const missing = await repoMissing($)
+  if (missing) return missing
+  const layout = await layoutProblem($)
+  if (layout) return layout
+  const project = (await read($, view)).unlinked.find(x => x.root === root)
+  if (!project) return `${basename(root)} is not waiting to be linked.`
+  const result = await withLock($, LOCK_WAIT_S, async () => {
+    try {
+      await linkProject($, project.memoryDir, project.root)
+      return ''
+    } catch (err) {
+      return errText(err)
+    }
+  })
+  if (result === 'busy') return fail($, BUSY, 'busy')
+  await refreshProjects($)
+  if (result !== '') return fail($, `could not link ${basename(root)}: ${result}`)
+  const here = (await read($, view)).project
+  if (here?.root === root) await patch($, { project: { ...here, state: 'linked' } })
+  await showStatus($)
+  return `Linked ${basename(root)} to projects/${project.key}.`
 }
 
 /**
@@ -675,12 +745,12 @@ async function pruneOp($: $): Promise<string> {
         await moveAside($, dead.memoryDir, `${p.claudeDir}/backups/memory`, basename(dirname(dead.memoryDir)))
         await log($, `pruned ${dead.root}`)
       } catch (err) {
-        failed.push(`${basename(dead.root)}: ${err instanceof Error ? err.message : String(err)}`)
+        failed.push(`${basename(dead.root)}: ${errText(err)}`)
       }
     }
     return gitSyncShown($)
   })
-  if (result === 'busy') return fail($, BUSY)
+  if (result === 'busy') return fail($, BUSY, 'busy')
   await refreshProjects($)
   const pruned = scan.dead.length - failed.length
   if (failed.length > 0) return fail($, `could not prune ${failed.join('; ')}`)
@@ -707,17 +777,20 @@ async function startupOnce($: $): Promise<string | null> {
   const p = paths!
   if (!isLoaded) {
     isLoaded = true
-    const [lastSync, error, logLines] = await Promise.all([
+    const [lastSync, error, errorKind, logLines] = await Promise.all([
       $.store.get('lastSync') as Promise<MemsyncLastSync | undefined>,
       $.store.get('error') as Promise<string | undefined>,
+      $.store.get('errorKind') as Promise<MemsyncErrorKind | undefined>,
       $.store.get('log') as Promise<string[] | undefined>,
     ])
+    // Cleaned on load too: what an older version stored may hold control characters
     await patch($, {
       repoPath: p.repo,
       lastSync: lastSync ?? null,
-      error: error ?? '',
+      error: clean(error ?? ''),
+      errorKind: error ? (errorKind ?? kindOf(error)) : null,
       phase: error ? 'error' : 'idle',
-      log: (logLines ?? []).slice(-LOG_SHOW),
+      log: (logLines ?? []).slice(-LOG_SHOW).map(clean),
     })
   }
   if (isStarted) return null
@@ -740,7 +813,7 @@ async function startupOnce($: $): Promise<string | null> {
     const pushed = await gitSyncShown($)
     return pushed.ok ? { ...pushed, pulled: [...pulled.pulled, ...pushed.pulled] } : pushed
   })
-  if (result === 'busy') return fail($, BUSY)
+  if (result === 'busy') return fail($, BUSY, 'busy')
   return result === null ? null : afterSync($, 'start', result)
 }
 
@@ -777,6 +850,7 @@ const HELP = [
   '/memsync link all   link every project in the projects folder',
   '/memsync prune      clear projects whose folder is gone (memory is kept)',
   '/memsync status     show the state as text',
+  '/memsync log        show the last 40 sync events',
   '/memsync on | off   turn syncing on or off',
   '/memsync close      close the pane',
 ].join('\n')
@@ -800,17 +874,43 @@ function statusText(v: MemsyncView, now: number): string {
 
 const short = (path: string, home: string) => (home && path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path)
 
+/** A conflict copy's changes against its original, for the pane's Diff button. */
+async function conflictDiff($: $, copy: string): Promise<MemsyncDiff> {
+  const r = await git($, paths!.repo, ['diff', '--no-index', '--no-color', '--', originalOf(copy), copy])
+  // --no-index exits 1 when the files differ and 0 when they match
+  if (r.exitCode === 0) return { copy, hunks: '', note: 'The copy matches the original.' }
+  if (r.exitCode !== 1) return { copy, hunks: '', note: `Could not compare them: ${firstLine(r)}` }
+  const found = diffHunks(r.stdout)
+  if (!found) return { copy, hunks: '', note: 'The diff is too long to show here.' }
+  return { copy, hunks: found.hunks, note: found.isCut ? 'Only the first part is shown.' : '' }
+}
+
+/**
+ * Puts a prompt in the prompt box for the person to send. The pane closes
+ * first, because the box refuses text while a dialog holds the keys.
+ */
+async function offerPrompt($: $, text: string, surface: RenderSurface) {
+  await $.ui.close({ id: PANE })
+  const filled = await $.prompt.fill({ text, mode: 'append' })
+  if (filled.isFilled) return
+  const copied = await $.ui.copy({ text, surface })
+  $.ui.toast(
+    copied.isCopied ? 'memsync: the prompt box was busy, so the prompt is on your clipboard' : 'memsync: could not put the prompt in the prompt box',
+    { timeoutMs: 8000 },
+  )
+}
+
 export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     const result = await next(e)
     await resolvePaths($, options)
     await $.command.register({
       name: 'memsync',
-      description: 'Show the memory sync pane, or sync, link, status, on, off',
-      argumentHint: '[sync | link [all] | status | on | off | close]',
+      description: 'Show the memory sync pane, or sync, link, status, log, on, off',
+      argumentHint: '[sync | link [all] | prune | status | log | on | off | close]',
     })
     // Never awaited: the first prompt must not wait on the network
-    void startupOnce($).catch(err => fail($, String(err)))
+    void startupOnce($).catch(err => fail($, errText(err)))
     return result
   })
 
@@ -821,7 +921,7 @@ export const register: Register = (on, options) => {
       const now = await snapshot($)
       if (now !== lastSnapshot) {
         debounce?.cancel()
-        debounce = $.clock.after(DEBOUNCE_MS, () => void syncOp($, 'change'))
+        debounce = $.clock.after(DEBOUNCE_MS, () => void syncOp($, 'change').catch(err => fail($, errText(err))))
       }
     }
     return result
@@ -844,6 +944,10 @@ export const register: Register = (on, options) => {
       await setEnabled($, action === 'on')
       return { text: `Memsync is ${action}.` }
     }
+    if (action === 'log') {
+      const all = ((await $.store.get('log')) as string[] | undefined) ?? []
+      return { text: all.length > 0 ? all.join('\n') : 'Nothing logged yet.' }
+    }
     // Start-up runs first, here or in the background, so answers reflect it
     const started = await startupOnce($)
     if (action === 'sync') return { text: started ?? (await syncOp($, 'manual')) }
@@ -854,43 +958,86 @@ export const register: Register = (on, options) => {
     await refreshProjects($)
     if (action === 'status') return { text: statusText(await read($, view), await $.clock.now()) }
     // A dialog, like Claude Code's own menus: it takes the keys, Esc closes it
+    await patch($, { notice: '', diff: null })
     const v = await read($, view)
-    const rows = 18 + v.unlinked.length + v.dead.length + v.conflicts.length + v.log.length
+    const rows = 21 + v.unlinked.length + v.dead.length + v.conflicts.length + v.log.length
     await $.ui.open({ id: PANE, title: 'claude-memory', focus: true, closeOnEscape: true, holdToasts: true, rows: Math.min(rows, 40) })
     return {}
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const { Box, Text, Button, Code } = $.ui.resolve(e)
     const v = await read($, view)
     const now = await $.clock.now()
     const home = (await $.env.get('HOME')) ?? ''
     const isOff = v.phase === 'off'
+    const isNarrow = e.props.bodyColumns < NARROW
 
+    // Shows what the press did, unless the error line already says it
     const act = (task: () => Promise<unknown>) => () => {
-      void task().catch(err => fail($, String(err)))
+      void (async () => {
+        await patch($, { notice: '' })
+        const said = await task()
+        if (typeof said === 'string' && said !== '' && said !== (await read($, view)).error) await patch($, { notice: said })
+      })().catch(err => fail($, errText(err)))
     }
     const toggle = act(() => setEnabled($, isOff))
     const syncNow = act(() => syncOp($, 'manual'))
     const linkThis = act(async () => {
-      await linkOp($)
+      const said = await linkOp($)
       await refreshProjects($)
+      return said
     })
+    const linkOne = (root: string) => act(() => linkOneOp($, root))
     const linkEvery = act(() => linkAllOp($))
     const prune = act(() => pruneOp($))
+    const ask = (text: string) => act(() => offerPrompt($, text, e.surface))
     const merge = (copy: string) =>
-      act(() =>
-        $.prompt.fill({
-          text: `Merge the memsync conflict copy ${v.repoPath}/${copy} into ${v.repoPath}/${copy.replace(/\.[^./]+\.md$/, '.md')}, keep every fact from both, then delete the copy.`,
-          mode: 'replace',
-        }),
-      )
+      ask(`Merge the memsync conflict copy ${v.repoPath}/${copy} into ${v.repoPath}/${originalOf(copy)}, keep every fact from both, then delete the copy.`)
+    const toggleDiff = (copy: string) =>
+      act(async () => {
+        const open = (await read($, view)).diff
+        await patch($, { diff: open?.copy === copy ? null : await conflictDiff($, copy) })
+      })
+    const fix = v.errorKind ? fixPrompt(v.errorKind, v.error, v.repoPath) : null
 
     const label = (text: string) => (
       <Box width={13}>
         <Text color={COLOR.dim}>{text}</Text>
       </Box>
     )
+    // A labelled row; in a narrow pane its buttons go on a line of their own
+    const row = (name: string, body: RenderChildren, buttons: RenderChildren[] = []) => {
+      const shown = buttons.filter(Boolean)
+      if (shown.length === 0) {
+        return (
+          <Box flexDirection="row">
+            {label(name)}
+            {body}
+          </Box>
+        )
+      }
+      const bar = (
+        <Box flexDirection="row" columnGap={1} marginLeft={1}>
+          {shown}
+        </Box>
+      )
+      return isNarrow ? (
+        <Box flexDirection="column">
+          <Box flexDirection="row">
+            {label(name)}
+            {body}
+          </Box>
+          <Box paddingLeft={12}>{bar}</Box>
+        </Box>
+      ) : (
+        <Box flexDirection="row">
+          {label(name)}
+          {body}
+          {bar}
+        </Box>
+      )
+    }
     const stateText =
       v.phase === 'off' ? (
         <Text color={COLOR.dim}>○ off</Text>
@@ -898,18 +1045,20 @@ export const register: Register = (on, options) => {
         <Text color={COLOR.bad}>● error</Text>
       ) : v.phase === 'syncing' ? (
         <Text color={COLOR.accent}>⟳ syncing</Text>
+      ) : v.phase === 'waiting' ? (
+        <Text color={COLOR.accent}>◌ waiting for the sync lock</Text>
       ) : (
         <Text color={COLOR.ok}>● on</Text>
       )
 
+    // State first: a cut line loses its end, and the path matters least
     const repoLine = v.repo ? (
       <Text wrap="truncate">
-        {short(v.repoPath, home)} → {v.repo.remote ? `origin/${v.repo.branch}` : `${v.repo.branch} (no remote)`}
+        <Text color={v.repo.dirty > 0 ? COLOR.warn : COLOR.ok}>{v.repo.dirty > 0 ? `${v.repo.dirty} uncommitted` : 'clean'}</Text>
         {v.repo.ahead > 0 ? ` ↑${v.repo.ahead}` : ''}
         {v.repo.behind > 0 ? ` ↓${v.repo.behind}` : ''}
-        <Text color={v.repo.dirty > 0 ? COLOR.warn : COLOR.ok}>
-          {v.repo.dirty > 0 ? ` (${v.repo.dirty} uncommitted)` : ' (clean)'}
-        </Text>
+        {'  '}
+        {short(v.repoPath, home)} → {v.repo.remote ? `origin/${v.repo.branch}` : `${v.repo.branch} (no remote)`}
       </Text>
     ) : (
       <Text color={COLOR.bad}>{short(v.repoPath, home)} is not a git repo</Text>
@@ -933,47 +1082,59 @@ export const register: Register = (on, options) => {
 
     return (
       <Box flexDirection="column" gap={1}>
-        <Box flexDirection="row" columnGap={2}>
+        <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
           {stateText}
           <Button key="toggle" label={isOff ? 'Turn on' : 'Turn off'} hotkey="t" onPress={toggle} />
           <Button key="close" label="Close" role="dismiss" onPress={act(() => $.ui.close({ id: PANE }))} />
         </Box>
-        {v.error !== '' && <Text color={COLOR.bad}>{v.error}</Text>}
+        {(v.notice !== '' || v.error !== '') && (
+          <Box flexDirection="column">
+            {v.notice !== '' && <Text color={COLOR.accent}>{v.notice}</Text>}
+            {v.error !== '' && <Text color={COLOR.bad}>{v.error}</Text>}
+            {v.error !== '' && fix && (
+              <Box flexDirection="row">
+                <Button key="fix" label="Fix with Claude" hotkey="f" onPress={ask(fix)} />
+              </Box>
+            )}
+          </Box>
+        )}
 
         <Box flexDirection="column">
-          <Box flexDirection="row">
-            {label('Last sync')}
+          {row(
+            'Last sync',
             <Text>
               {v.lastSync
                 ? `${clockLabel(v.lastSync.at, now)}  pushed ${v.lastSync.pushed}, pulled ${v.lastSync.pulled}`
-                : 'not yet'}{' '}
-            </Text>
-            <Button key="sync" label="Sync now" hotkey="s" variant="primary" onPress={syncNow} />
-          </Box>
-          <Box flexDirection="row">
-            {label('Repo')}
-            {repoLine}
-          </Box>
-          <Box flexDirection="row">
-            {label('This project')}
-            {projectLine}
-            {project && project.state === 'unlinked' && <Button key="link" label="Link" hotkey="l" onPress={linkThis} />}
-          </Box>
+                : 'not yet'}
+            </Text>,
+            [<Button key="sync" label="Sync now" hotkey="s" variant="primary" onPress={syncNow} />],
+          )}
+          {row('Repo', repoLine)}
+          {row('This project', projectLine, [
+            project?.state === 'unlinked' && <Button key="link" label="Link" hotkey="l" onPress={linkThis} />,
+          ])}
         </Box>
 
         <Box flexDirection="column">
-          <Box flexDirection="row">
-            {label('Projects')}
+          {row(
+            'Projects',
             <Text>
-              {v.linked.length} linked · {v.unlinked.length} unlinked · {v.dead.length} dead{' '}
-            </Text>
-            {v.unlinked.length > 0 && <Button key="link-all" label="Link all" hotkey="a" onPress={linkEvery} />}
-            {v.dead.length > 0 && <Button key="prune" label="Prune" hotkey="p" onPress={prune} />}
-          </Box>
+              {v.linked.length} linked · {v.unlinked.length} unlinked · {v.dead.length} dead
+            </Text>,
+            [
+              v.unlinked.length > 0 && <Button key="link-all" label="Link all" hotkey="a" onPress={linkEvery} />,
+              v.dead.length > 0 && <Button key="prune" label="Prune" hotkey="p" onPress={prune} />,
+            ],
+          )}
           {v.unlinked.map(x => (
-            <Text color={COLOR.warn} wrap="truncate">
-              {'  '}! {short(x.root, home)} not linked
-            </Text>
+            <Box flexDirection="row">
+              <Text color={COLOR.warn} wrap="truncate">
+                {'  '}! {short(x.root, home)} not linked
+              </Text>
+              <Box marginLeft={1}>
+                <Button key={`link-${x.root}`} label="Link" onPress={linkOne(x.root)} />
+              </Box>
+            </Box>
           ))}
           {v.dead.map(x => (
             <Text color={COLOR.dim} wrap="truncate">
@@ -983,36 +1144,89 @@ export const register: Register = (on, options) => {
         </Box>
 
         <Box flexDirection="column">
-          <Box flexDirection="row">
-            {label('Conflicts')}
-            <Text color={v.conflicts.length > 0 ? COLOR.warn : COLOR.ok}>{v.conflicts.length === 0 ? 'none' : v.conflicts.length}</Text>
-          </Box>
-          {v.conflicts.map(copy => (
-            <Box flexDirection="row">
-              <Text wrap="truncate">{'  '}{copy} </Text>
-              <Button key={`merge-${copy}`} label="Merge" onPress={merge(copy)} />
-            </Box>
-          ))}
+          {row(
+            'Conflicts',
+            <Text color={v.conflicts.length > 0 ? COLOR.warn : COLOR.ok}>{v.conflicts.length === 0 ? 'none' : v.conflicts.length}</Text>,
+          )}
+          {v.conflicts.map(copy => {
+            const diff = v.diff?.copy === copy ? v.diff : null
+            return (
+              <Box flexDirection="column">
+                <Box flexDirection="row">
+                  <Text wrap="truncate">
+                    {'  '}
+                    {copy}
+                  </Text>
+                  <Box flexDirection="row" columnGap={1} marginLeft={1}>
+                    <Button key={`diff-${copy}`} label={diff ? 'Hide diff' : 'Diff'} onPress={toggleDiff(copy)} />
+                    <Button key={`merge-${copy}`} label="Merge" onPress={merge(copy)} />
+                  </Box>
+                </Box>
+                {diff && (
+                  <Box flexDirection="column" paddingLeft={4}>
+                    {diff.hunks !== '' && (
+                      <Text color={COLOR.dim}>
+                        - {basename(originalOf(copy))}   + {basename(copy)}
+                      </Text>
+                    )}
+                    {diff.hunks !== '' && <Code source={diff.hunks} format="diff" path={copy} wrap="truncate-end" />}
+                    {diff.note !== '' && <Text color={COLOR.dim}>{diff.note}</Text>}
+                  </Box>
+                )}
+              </Box>
+            )
+          })}
         </Box>
 
-        <Box flexDirection="row">
-          {label('Shared')}
+        {row(
+          'Shared',
           <Text wrap="wrap">
             {v.shared.length === 0
               ? 'nothing shared'
               : v.shared.map(s => `${s.name} ${s.isLinked ? '✓' : '✗'}`).join('  ')}
-          </Text>
-        </Box>
+          </Text>,
+        )}
 
         <Box flexDirection="column">
           {label('Log')}
           {v.log.length === 0 && <Text color={COLOR.dim}>{'  '}nothing yet</Text>}
           {v.log.map(line => (
             <Text color={COLOR.dim} wrap="truncate">
-              {'  '}{line}
+              {'  '}
+              {line}
             </Text>
           ))}
         </Box>
+      </Box>
+    )
+  })
+
+  // A quiet footer label while a sync runs or waits; the status line is for problems
+  on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
+    const label = modeLabel((await read($, view)).phase)
+    return next(label ? { ...e, props: { ...e.props, modes: [...e.props.modes, label] } } : e)
+  })
+
+  // Colors /memsync status and /memsync log; the model still reads the plain text
+  on('ui.render', { component: 'CommandOutput', props: { command: 'memsync' } }, async ($, e, next) => {
+    const action = parseAction(e.props.args)
+    if (e.props.isErrored || (action !== 'status' && action !== 'log')) return next(e)
+    const { Box, Text } = $.ui.resolve(e)
+    const tones = { bad: COLOR.bad, warn: COLOR.warn, dim: COLOR.dim }
+    const marked = (line: string) =>
+      line
+        .split(/([✓✗])/)
+        .filter(part => part !== '')
+        .map(part => (part === '✓' ? <Text color={COLOR.ok}>✓</Text> : part === '✗' ? <Text color={COLOR.bad}>✗</Text> : part))
+    return (
+      <Box flexDirection="column">
+        {clean(e.props.text)
+          .split('\n')
+          .map(line => {
+            const tone = lineTone(line, action)
+            if (line === '') return <Text> </Text>
+            return tone ? <Text color={tones[tone]}>{line}</Text> : <Text>{marked(line)}</Text>
+          })}
       </Box>
     )
   })

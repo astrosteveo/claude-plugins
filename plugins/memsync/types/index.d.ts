@@ -1,4 +1,8 @@
-export type MemsyncPhase = 'off' | 'idle' | 'syncing' | 'error'
+// waiting: a sync waits for the repo lock, held by another session or this one
+export type MemsyncPhase = 'off' | 'idle' | 'waiting' | 'syncing' | 'error'
+
+// What kind of failure `error` is, so the pane can offer the right fix
+export type MemsyncErrorKind = 'secret' | 'rebase' | 'push' | 'offline' | 'busy' | 'repo' | 'other'
 
 export type MemsyncRepo = {
   branch: string
@@ -33,10 +37,23 @@ export type MemsyncShared = {
   isLinked: boolean
 }
 
+export type MemsyncDiff = {
+  // The conflict copy, such as projects/app/notes.laptop.md
+  copy: string
+  // Unified-diff hunks against the original; '' when there is nothing to draw
+  hunks: string
+  // Why there are no hunks, or that only the first part is shown; '' otherwise
+  note: string
+}
+
 export type MemsyncView = {
   phase: MemsyncPhase
   // The last failure in plain words; '' when the last sync worked
   error: string
+  // null when there is no error
+  errorKind: MemsyncErrorKind | null
+  // What the last pane button did, in plain words; '' when there is nothing to say
+  notice: string
   repoPath: string
   // null until the first look at the repo, or when it isn't a git repo
   repo: MemsyncRepo | null
@@ -52,6 +69,8 @@ export type MemsyncView = {
   shared: MemsyncShared[]
   // Newest last, each line led by its time
   log: string[]
+  // The conflict copy whose diff the pane shows; null when none is open
+  diff: MemsyncDiff | null
 }
 
 declare module 'claude-code' {

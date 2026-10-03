@@ -1,5 +1,7 @@
 // Pure helpers: no `$`, so the tests call them directly.
 
+import type { MemsyncErrorKind, MemsyncPhase, MemsyncView } from '../types'
+
 // Values that look like credentials. Names of secrets are fine; values aren't.
 // `sk-` needs a non-word, non-dash char before it, so kebab names like
 // `risk-assessment-…` or `use-sk-learn-…` pass.
@@ -123,12 +125,113 @@ export type Paths = {
 }
 
 /** What `/memsync <args>` asks for. */
-export type Action = 'open' | 'status' | 'sync' | 'link' | 'link-all' | 'prune' | 'on' | 'off' | 'close' | 'help'
+export type Action = 'open' | 'status' | 'log' | 'sync' | 'link' | 'link-all' | 'prune' | 'on' | 'off' | 'close' | 'help'
 
 export function parseAction(args: string): Action {
   const words = args.trim().toLowerCase().split(/\s+/).filter(Boolean)
   if (words.length === 0) return 'open'
   if (words[0] === 'link') return words[1] === 'all' ? 'link-all' : 'link'
-  const known: Action[] = ['status', 'sync', 'prune', 'on', 'off', 'close']
+  const known: Action[] = ['status', 'log', 'sync', 'prune', 'on', 'off', 'close']
   return known.includes(words[0] as Action) ? (words[0] as Action) : 'help'
+}
+
+/** Text that Text and Code accept: CRLF made LF, other control characters dropped. */
+export const clean = (text: string) =>
+  text.replace(/\r\n?/g, '\n').replace(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g, '')
+
+/** `text` cut to `max` characters, ending in an ellipsis when cut. */
+export const cut = (text: string, max: number) => (text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`)
+
+/** The file a conflict copy was kept beside: notes.laptop.md → notes.md. */
+export const originalOf = (copy: string) => copy.replace(/\.[^./]+\.md$/, '.md')
+
+/**
+ * The line pinned under the prompt, or undefined when nothing needs the person.
+ * Claude Code draws every pinned line as a warning, so a healthy sync pins none.
+ */
+export function statusLine(v: Pick<MemsyncView, 'phase' | 'error' | 'conflicts' | 'project'>): string | undefined {
+  if (v.phase === 'off') return 'memory sync is off: /memsync on'
+  if (v.phase === 'error') return v.error ? `memory sync failed (${cut(v.error, 60)}): /memsync` : 'memory sync failed: /memsync'
+  if (v.project?.state === 'unlinked') return 'memory sync: this project’s memory isn’t linked: /memsync link'
+  const n = v.conflicts.length
+  if (n > 0) return `memory sync: ${n} conflict cop${n === 1 ? 'y' : 'ies'} to merge: /memsync`
+  return undefined
+}
+
+/** The kind of an error stored before kinds were, read from its words. */
+export function kindOf(error: string): MemsyncErrorKind {
+  if (error.startsWith('rebase onto')) return 'rebase'
+  if (error.startsWith('fetch failed')) return 'offline'
+  if (error.startsWith('push failed')) return 'push'
+  if (error.includes('possible secret')) return 'secret'
+  if (error.includes('is not a git repo')) return 'repo'
+  if (error.includes('held the lock')) return 'busy'
+  return 'other'
+}
+
+/** The footer label while a sync runs or waits, beside Claude Code's own modes. */
+export function modeLabel(phase: MemsyncPhase): string | null {
+  if (phase === 'syncing') return 'memory syncing'
+  if (phase === 'waiting') return 'memory sync waiting'
+  return null
+}
+
+/**
+ * A prompt asking Claude to fix the failure, or null when there is none to
+ * offer. Offline and a busy lock need only Sync now. A failed rebase gets
+ * none: every sync aborts a rebase in progress, so a turn that ends mid-rebase
+ * would lose the work.
+ */
+export function fixPrompt(kind: MemsyncErrorKind, error: string, repo: string): string | null {
+  const hands = 'Don’t commit or push. Memsync does that on its next sync.'
+  switch (kind) {
+    case 'secret':
+      return `Memsync didn’t sync my memory repo at ${repo} because of this: ${error}. In each file it names, remove the secret value and keep only the secret’s name or where it’s stored. ${hands}`
+    case 'push':
+      return `Memsync can’t push my memory repo at ${repo}. Git said: ${error}. Find out why and fix it. ${hands}`
+    case 'repo':
+      return `Memsync needs a git clone of my private memory repo at ${repo}, and there isn’t one. Help me find that repo on my git host and clone it to ${repo}. If I don’t have one yet, help me create a private one.`
+    case 'other':
+      return `Memsync, the mod that syncs my Claude memory through the git repo at ${repo}, reported this: ${error}. Find the cause and fix it. ${hands}`
+    default:
+      return null
+  }
+}
+
+/**
+ * The hunks of a `git diff` for a Code element, cut at a hunk boundary to fit
+ * `max` characters (Code takes at most 10,000). null when there are no hunks,
+ * or the first alone is too long.
+ */
+export function diffHunks(diff: string, max = 10_000): { hunks: string; isCut: boolean } | null {
+  const lines = clean(diff).replace(/\n+$/, '').split('\n')
+  const start = lines.findIndex(line => line.startsWith('@@'))
+  if (start < 0) return null
+  const hunks: string[][] = []
+  for (const line of lines.slice(start)) {
+    if (line.startsWith('diff --git')) break
+    if (line.startsWith('@@')) hunks.push([line])
+    else hunks[hunks.length - 1]!.push(line)
+  }
+  let out = ''
+  for (const hunk of hunks) {
+    const next = out === '' ? hunk.join('\n') : `${out}\n${hunk.join('\n')}`
+    if (next.length > max) return out === '' ? null : { hunks: out, isCut: true }
+    out = next
+  }
+  return { hunks: out, isCut: false }
+}
+
+export type Tone = 'bad' | 'warn' | 'dim' | ''
+
+/** How `/memsync status` and `/memsync log` color one line of their output. */
+export function lineTone(line: string, action: 'status' | 'log'): Tone {
+  if (action === 'status') {
+    if (line.startsWith('Problem:')) return 'bad'
+    if (/^(Memsync is off|Unlinked:|Conflict copies:)/.test(line)) return 'warn'
+    return ''
+  }
+  if (/fail|could not|not synced|secret/i.test(line)) return 'bad'
+  if (/conflict|skipped|lock|aborted/i.test(line)) return 'warn'
+  return 'dim'
 }
