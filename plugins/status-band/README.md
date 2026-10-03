@@ -27,6 +27,9 @@ turn and every 15 seconds.
 Below 100 columns the reset time goes. Below 70 the bar and the effort word
 go too.
 
+The colors come from your Claude Code theme, so the band follows `/theme`,
+including the light and colorblind-friendly themes.
+
 ## Develop
 
 ```sh

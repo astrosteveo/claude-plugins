@@ -21,18 +21,19 @@ const NARROW = 70
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
 const TOOLS_THAT_TOUCH_FILES = new Set(['Bash', 'Edit', 'Write', 'NotebookEdit'])
 
+// Claude Code theme keys, so the band follows /theme, light and colorblind themes included
 const COLOR = {
-  model: '#D97757',
-  effort: '#E0A458',
-  project: '#E6E6E6',
-  branch: '#B48EAD',
-  clean: '#A3BE8C',
-  staged: '#A3BE8C',
-  modified: '#EBCB8B',
-  untracked: '#88C0D0',
-  conflict: '#BF616A',
-  track: '#4C566A',
-  dim: '#6B7280',
+  model: 'claude',
+  effort: 'warning',
+  project: 'text',
+  branch: 'merged',
+  clean: 'success',
+  staged: 'success',
+  modified: 'warning',
+  untracked: 'suggestion',
+  conflict: 'error',
+  track: 'subtle',
+  dim: 'inactive',
 }
 
 // 'claude-opus-5-5[1m]' reads as 'Opus 5.5 1M'; an alias like 'opus' as 'Opus'
