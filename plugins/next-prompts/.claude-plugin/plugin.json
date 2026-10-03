@@ -2,7 +2,7 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "next-prompts",
   "displayName": "Next Prompts",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Shows 3 suggested next prompts above the prompt after each reply. Type 1, 2 or 3 to send one, or 0 to dismiss the list.",
   "author": {
     "name": "astrosteveo"

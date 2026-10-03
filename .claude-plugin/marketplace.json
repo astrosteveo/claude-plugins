@@ -101,7 +101,7 @@
       "name": "next-prompts",
       "source": "./plugins/next-prompts",
       "description": "Shows 3 suggested next prompts above the prompt after each reply. Type 1, 2 or 3 to send one, or 0 to dismiss the list.",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "author": {
         "name": "astrosteveo"
       },
