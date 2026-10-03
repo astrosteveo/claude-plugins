@@ -2,7 +2,7 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "file-tree",
   "displayName": "File Tree",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "A pane with the project's file tree that marks the files Claude creates or changes and shows their diffs, without leaving the terminal.",
   "author": {
     "name": "astrosteveo"
