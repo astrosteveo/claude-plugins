@@ -134,8 +134,6 @@ async function suggest($: EngineInterface, mine: number) {
 }
 
 async function send($: EngineInterface, text: string) {
-  // A second press before the band redraws finds the list gone, and sends nothing.
-  if (!isShown) return
   await clear($)
   // Not awaited: the prompt runs as its own turn, after this press.
   void $.prompt.submit({ text, asUser: true })
@@ -199,14 +197,21 @@ export const register: Register = (on, options) => {
     const { Box, Button, Text } = $.ui.resolve(e)
     // A Button neither wraps nor truncates, so its label is cut to fit after `1: `.
     const width = Math.max(10, bodyColumns - 4)
+    // One press per drawing: a second press before the band redraws does nothing.
+    let isPressed = false
+    const once = (act: () => Promise<void>) => () => {
+      if (isPressed) return
+      isPressed = true
+      return act()
+    }
     return (
       <Box flexDirection="column">
         {list?.map((item, i) => (
-          <Button key={`send-${i + 1}`} plain hotkey={String(i + 1)} label={cut(item, width)} onPress={() => send($, item)} />
+          <Button key={`send-${i + 1}`} plain hotkey={String(i + 1)} label={cut(item, width)} onPress={once(() => send($, item))} />
         ))}
         {list && (
           <Box>
-            <Button key="dismiss" plain hotkey="0" role="dismiss" label="Dismiss" onPress={() => ignore($)} />
+            <Button key="dismiss" plain hotkey="0" role="dismiss" label="Dismiss" onPress={once(() => ignore($))} />
             <Text dimColor wrap="truncate-end">
               {'  '}or type your own prompt
             </Text>
