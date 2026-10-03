@@ -1,0 +1,14 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "status-band",
+  "displayName": "Status Band",
+  "version": "0.1.3",
+  "description": "A one-row band above the prompt with the model, effort, project, git state and 7-day usage.",
+  "author": {
+    "name": "astrosteveo"
+  },
+  "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/status-band",
+  "repository": "https://github.com/astrosteveo/claude-plugins",
+  "keywords": ["mod", "status-line", "band", "git", "usage"],
+  "types": "./types/index.d.ts"
+}
