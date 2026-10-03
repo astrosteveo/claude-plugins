@@ -45,24 +45,6 @@
       ]
     },
     {
-      "name": "status-band",
-      "source": "./plugins/status-band",
-      "description": "A one-row band above the prompt with the model, effort, project, git state and 7-day usage.",
-      "version": "0.1.4",
-      "author": {
-        "name": "astrosteveo"
-      },
-      "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/status-band",
-      "category": "productivity",
-      "tags": [
-        "mod",
-        "status-line",
-        "band",
-        "git",
-        "usage"
-      ]
-    },
-    {
       "name": "consult",
       "source": "./plugins/consult",
       "description": "Ask a side copy of Claude how to answer it, or have it write your next prompt, without adding to the main chat.",
