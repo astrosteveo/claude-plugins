@@ -8,45 +8,66 @@ Mods need Claude Code v2.1.287 or later.
 ## Use it
 
 ```text
-1 Yes, add the expiry tests
-2 Show me the diff first
-3 Use Redis instead of a Map
-Type 1-3 to send, 0 to dismiss, or type your own prompt
+1: Yes, add the expiry tests
+2: Show me the diff first
+3: Use Redis instead of a Map
+0: Dismiss  or type your own prompt
 ```
 
-- Type `1`, `2` or `3` to send that suggestion as your next prompt.
+- Type `1`, `2` or `3` into the empty prompt box to send that suggestion as
+  your next prompt. It sends 0.4 seconds after the key, or at once if you
+  press Enter.
 - Type `0` to dismiss the list.
-- Type anything else to ignore it. The list goes away, your key lands in the
-  prompt box as normal, and nothing is sent.
+- In fullscreen mode and in the desktop app, you can also click a line.
+- Type anything else to ignore the list. It goes away, your keys type as
+  normal, and nothing is sent.
 
-A digit only picks when it is the first key you type into an empty prompt
-box. A digit pasted, typed after other text or held with Ctrl or Alt types
-as normal.
+Claude Code handles these keys the same way it handles a survey's. A digit
+only picks when it is alone in the prompt box. A digit that you type within
+0.6 seconds of the list showing up types as normal, so a key meant for your
+own prompt doesn't send a suggestion.
 
 ## How it works
 
-When Claude finishes a reply, the mod sends the end of the conversation to
-Haiku and asks for 3 one-line prompts. The list shows when Haiku answers,
-about 1 to 3 seconds later. Nothing waits for that call: the turn ends and
-you can type at once.
+When Claude finishes a reply, the mod forks the session and asks for 3
+prompts. A fork sends the conversation again with one more message at the
+end, and denies every tool. It uses the session's own model and reads the
+conversation from the prompt cache, so it sees the whole conversation,
+tool results included. The list shows about 1.5 to 3 seconds after the
+reply ends. Nothing waits for that call: the turn ends and you can type at
+once.
 
 The mod shows no list when:
 
 - the reply was from a subagent, was interrupted or ended on an error
-- you started typing, or sent a prompt, before Haiku answered
-- Haiku sent back fewer than 3 usable lines
+- you started typing, or sent a prompt, before the fork answered
+- the fork sent back fewer than 3 usable lines, which it does when the next
+  step isn't clear
 
 Another mod that draws in the same band, such as Token Weather, still shows
 under the list.
 
+## Turn off Claude Code's own suggestion
+
+Claude Code has its own prompt suggestion: one dim line in the prompt box
+after each reply. It makes the same kind of fork call. To pay for one call
+per reply, not two, turn it off in `~/.claude/settings.json`:
+
+```json
+{ "promptSuggestionEnabled": false }
+```
+
 ## Limits
 
-- While the list shows, you can't start a prompt with `0` to `3`. Press `0`
-  first, or type the digit after another character.
+- Each reply costs one request on the session's model. Most of its input is
+  the conversation, read from the prompt cache at the cache-read rate: about
+  29K tokens in a new session, and more as the conversation grows. It adds
+  about 230 new input tokens and a few lines of output.
+- To start your own prompt with `0` to `3` while the list shows, keep typing
+  after the digit. A digit followed by a pause of 0.4 seconds sends a
+  suggestion.
 - Claude reads a picked suggestion as your own words, but the transcript
   marks it as a prompt from the next-prompts plugin.
-- Each reply costs one Haiku call with about 3K to 5K input tokens. A setup
-  that blocks the `haiku` model shows no list.
 - The band draws in the terminal and the desktop app. Claude Code doesn't
   draw it in VS Code or the mobile app.
 - When two mods draw in this band, the one that runs first decides whether
