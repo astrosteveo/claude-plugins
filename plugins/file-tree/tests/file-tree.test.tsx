@@ -102,3 +102,64 @@ test('a file Claude changes through Bash is marked, with its git diff', async ($
   expect(String(code?.props.source)).toBe('@@ -1 +1 @@\n-old\n+new')
   await ui.unmount()
 })
+
+test('a file Bash reverts loses its mark', async ($, on) => {
+  let isAfter = false
+  on('session.cwd', () => ({ value: ROOT }))
+  on('fs.list', ($, e) => ({
+    value: (FILES[e.path] ?? []).map(entry => ({ ...entry, size: 0, mtimeMs: 0, isLink: false })),
+  }))
+  on('fs.stat', () => ({ value: { kind: 'file', size: 1, mtimeMs: 1, isLink: false } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('process.run', ($, e) => {
+    const run = (stdout: string) => ({
+      value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+    })
+    if (e.argv.includes('rev-parse')) return run(`${ROOT}\n`)
+    if (e.argv.includes('status')) return run(isAfter ? '' : ' M README.md\0')
+    return run('')
+  })
+  on('tool.call', ($, e) => {
+    if (e.tool === 'Bash') {
+      isAfter = true
+      return { result: { stdout: '', stderr: '', interrupted: false } }
+    }
+    return { result: { type: 'update', filePath: `${ROOT}/README.md`, content: '', structuredPatch: [], originalFile: '' } }
+  })
+
+  await $.tool.call({ tool: 'Edit', file_path: `${ROOT}/README.md`, old_string: 'a', new_string: 'b' })
+  await $.tool.call({ tool: 'Bash', command: 'git checkout README.md' })
+
+  const ui = await $.ui.mount({ plugin: 'file-tree', surface: 'terminal', ...PANE })
+  expect((await ui.find({ type: 'Text', text: /changed$/ }))?.text).toBe('0 changed')
+  await ui.unmount()
+})
+
+test('a file an Edit puts back to match git loses its mark', async ($, on) => {
+  let edits = 0
+  on('session.cwd', () => ({ value: ROOT }))
+  on('fs.list', ($, e) => ({
+    value: (FILES[e.path] ?? []).map(entry => ({ ...entry, size: 0, mtimeMs: 0, isLink: false })),
+  }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('process.run', ($, e) => ({
+    value: {
+      exitCode: 0,
+      stdout: e.argv.includes('status') && edits === 1 ? ' M README.md\0' : '',
+      stderr: '',
+      isStdoutTruncated: false,
+      isStderrTruncated: false,
+    },
+  }))
+  on('tool.call', () => {
+    edits++
+    return { result: { type: 'update', filePath: `${ROOT}/README.md`, content: '', structuredPatch: [], originalFile: '' } }
+  })
+
+  const ui = await $.ui.mount({ plugin: 'file-tree', surface: 'terminal', ...PANE })
+  await $.tool.call({ tool: 'Edit', file_path: `${ROOT}/README.md`, old_string: 'a', new_string: 'b' })
+  expect((await ui.find({ type: 'Text', text: /changed$/ }))?.text).toBe('1 changed')
+  await $.tool.call({ tool: 'Edit', file_path: `${ROOT}/README.md`, old_string: 'b', new_string: 'a' })
+  expect((await ui.find({ type: 'Text', text: /changed$/ }))?.text).toBe('0 changed')
+  await ui.unmount()
+})
