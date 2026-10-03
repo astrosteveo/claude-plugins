@@ -1,0 +1,14 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "token-weather",
+  "displayName": "Token Weather",
+  "version": "0.1.0",
+  "description": "A live forecast of the context window in the band above the prompt: how full it is, the last 12 turns and what the last turn added.",
+  "author": {
+    "name": "astrosteveo"
+  },
+  "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/token-weather",
+  "repository": "https://github.com/astrosteveo/claude-plugins",
+  "keywords": ["mod", "band", "context", "tokens", "usage"],
+  "types": "./types/index.d.ts"
+}

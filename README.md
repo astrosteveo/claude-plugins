@@ -12,6 +12,7 @@ maintained by astrosteveo.
 | [Consult](plugins/consult/README.md) | A mod: `/consult` asks a side copy of Claude how to answer it, or writes your next prompt, without adding to the main chat. |
 | [Memsync](plugins/memsync/README.md) | A mod: syncs auto memory, `CLAUDE.md` and user skills across machines through your own private git repo, with a `/memsync` pane that shows the sync state. |
 | [Plain English](plugins/plain-english/README.md) | A mod: makes Claude write plain, literal English, flags figurative phrases under a reply, and replaces the Plain Language output style. |
+| [Token Weather](plugins/token-weather/README.md) | A mod: a live forecast of the context window in the band above the prompt, with how full it is, the last 12 turns and what the last turn added. |
 
 ## Install
 
