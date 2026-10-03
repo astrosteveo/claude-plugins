@@ -31,6 +31,9 @@ Mods need Claude Code v2.1.287 or later.
 The band shows the current fill as soon as the mod loads. `/clear` empties
 it until the next turn.
 
+Another mod that draws in this band, such as Next Prompts, shows above the
+forecast.
+
 ## Limits
 
 - The tokens are the input of the last response, the same figure as the
