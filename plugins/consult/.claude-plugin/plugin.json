@@ -2,7 +2,7 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "consult",
   "displayName": "Consult",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Ask a side copy of Claude how to answer it, or have it write your next prompt, without adding to the main chat.",
   "author": {
     "name": "astrosteveo"

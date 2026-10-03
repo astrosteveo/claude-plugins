@@ -24,6 +24,11 @@ export type Thread = {
   filled: string
   /** Whether the latest draft is in the prompt box. */
   isFilled: boolean
+  /**
+   * Why the prompt box refused the latest draft, when Claude Code said:
+   * `no_composer` where the mod can't fill one, `dialog` while a dialog had it.
+   */
+  refusal?: 'no_composer' | 'dialog'
 }
 
 /** When the main thread last touched its prompt cache, and how long the cache is taken to last. */

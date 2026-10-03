@@ -15,7 +15,9 @@ Mods need Claude Code v2.1.287 or later.
 - `/consult close` hides the pane.
 
 The answer shows in a pane. The suggested reply or prompt goes into your
-prompt box, so you can edit it and press Enter.
+prompt box, so you can edit it and press Enter. If the box can't take it,
+the line over the draft in the pane says why, such as "a dialog was open".
+Copy the draft from the pane.
 
 ## Follow-ups
 

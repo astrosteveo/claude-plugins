@@ -178,6 +178,15 @@ function failure(r: { reason: string; status?: number | null; error?: string }):
   return FAILED[r.reason] ?? `No reply: ${r.reason}.`
 }
 
+/** Where the latest draft is, for the line over it in the pane. */
+export function draftNote(t: Thread): string {
+  if (t.isFilled) return 'in your prompt box, edit then send'
+  if (t.refusal === 'no_composer') return "the mod can't fill the prompt box here, copy from here"
+  if (t.refusal === 'dialog') return 'a dialog was open, copy from here'
+  if (t.filled) return 'kept your edits in the prompt box, copy from here'
+  return 'prompt box was busy, copy from here'
+}
+
 /** Asks for the latest turn of the thread and records the answer. */
 async function answer($: EngineInterface, run: number) {
   const thread = await read($, threadAtom)
@@ -190,13 +199,13 @@ async function answer($: EngineInterface, run: number) {
   } else {
     const { advice, draft } = splitReply(got.text)
     const turns = [...thread.turns, { who: 'claude' as const, text: advice, via: got.via }]
-    done = { status: 'done', error: '', turns, draft: draft || thread.draft, isFilled: false }
+    done = { status: 'done', error: '', turns, draft: draft || thread.draft, isFilled: false, refusal: undefined }
     if (draft) {
       // Only an empty box or our own last fill is ours to replace.
       const box = await $.prompt.read()
       if (!box.text.trim() || box.text === thread.filled) {
         const filled = await $.prompt.fill({ text: draft, mode: 'replace' })
-        if (filled.isFilled) done = { ...done, isFilled: true, filled: draft }
+        done = filled.isFilled ? { ...done, isFilled: true, filled: draft } : { ...done, refusal: filled.refusal }
       }
       if (done.isFilled) $.ui.toast(thread.mode === 'prompt' ? 'Prompt is in your prompt box.' : 'Suggested reply is in your prompt box.')
     }
@@ -273,7 +282,6 @@ export const register: Register = on => {
 
     const firstLabel = t.mode === 'prompt' ? 'Idea' : 'You'
     const draftLabel = t.mode === 'prompt' ? 'Prompt' : 'Suggested reply'
-    const draftNote = t.isFilled ? 'in your prompt box, edit then send' : t.filled ? 'kept your edits in the prompt box, copy from here' : 'prompt box was busy, copy from here'
     return (
       <Box flexDirection="column" gap={1}>
         {t.turns.map((turn, i) =>
@@ -293,7 +301,7 @@ export const register: Register = on => {
         {t.draft && t.status !== 'thinking' && (
           <Box flexDirection="column">
             <Text bold>
-              {draftLabel} ({draftNote})
+              {draftLabel} ({draftNote(t)})
             </Text>
             <Text>{t.draft}</Text>
           </Box>

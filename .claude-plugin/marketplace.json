@@ -29,7 +29,7 @@
       "name": "consult",
       "source": "./plugins/consult",
       "description": "Ask a side copy of Claude how to answer it, or have it write your next prompt, without adding to the main chat.",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "author": {
         "name": "astrosteveo"
       },

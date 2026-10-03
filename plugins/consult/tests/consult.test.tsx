@@ -1,7 +1,8 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
-import { DEFAULT_TTL, MARK, buildPrompt, condense, learnCache, parseArgs, pickRoute, splitReply } from '../hooks/register'
+import { DEFAULT_TTL, MARK, buildPrompt, condense, draftNote, learnCache, parseArgs, pickRoute, splitReply } from '../hooks/register'
+import type { Thread } from '../types'
 
 const ASKED = 'Should the cache live in Redis or in memory?'
 const NOW = 1_000_000_000
@@ -19,9 +20,9 @@ const usage = (read: number, fresh: number) => ({
   cache_creation_input_tokens: 0,
 })
 
-type Setup = { replies: string[]; box?: string; noFork?: true }
+type Setup = { replies: string[]; box?: string; noFork?: true; isRefused?: true }
 
-function setup(on: Parameters<TestBody>[1], { replies, box = '', noFork }: Setup) {
+function setup(on: Parameters<TestBody>[1], { replies, box = '', noFork, isRefused }: Setup) {
   const sent = { forks: [] as string[], completes: [] as string[], fills: [] as string[] }
   let draft = box
   const next = () => replies.shift() ?? 'nothing'
@@ -52,6 +53,8 @@ function setup(on: Parameters<TestBody>[1], { replies, box = '', noFork }: Setup
   on('prompt.read', () => ({ value: { text: draft, cursor: draft.length } }))
   on('prompt.fill', ($, e) => {
     sent.fills.push(e.text)
+    // Claude Code drops a cause a hook gives, so this refusal has none.
+    if (isRefused) return { isFilled: false }
     draft = e.text
     return { isFilled: true, text: e.text, cursor: e.text.length }
   })
@@ -161,6 +164,31 @@ test('follow-ups typed in the pane carry the thread and show in it', async ($, o
     expect(await ui.find({ type: 'Text', text })).toBeDefined()
   }
   await ui.unmount()
+})
+
+test('a box that refuses the draft leaves it in the pane to copy', async ($, on) => {
+  const { sent, clock } = setup(on, { replies: [`Memory is simpler.\n${MARK}\nUse memory for now.`], isRefused: true })
+  await start($)
+  await $.command.run(run('what do you mean?'))
+  await clock.settle()
+
+  expect(sent.fills).toEqual(['Use memory for now.'])
+  const ui = await $.ui.mount({ plugin: 'consult', surface: 'terminal', ...pane })
+  expect(await ui.find({ type: 'Text', text: /prompt box was busy, copy from here/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Use memory for now/ })).toBeDefined()
+  await ui.unmount()
+})
+
+// The test engine has no prompt box of its own, so only a unit test reaches
+// the causes Claude Code itself gives.
+test('the pane note says where the draft is', () => {
+  const thread: Thread = { run: 1, mode: 'advice', status: 'done', turns: [], error: '', draft: 'D', filled: '', isFilled: false }
+  expect(draftNote({ ...thread, isFilled: true, filled: 'D' })).toBe('in your prompt box, edit then send')
+  expect(draftNote({ ...thread, refusal: 'no_composer' })).toBe("the mod can't fill the prompt box here, copy from here")
+  expect(draftNote({ ...thread, refusal: 'dialog' })).toBe('a dialog was open, copy from here')
+  expect(draftNote({ ...thread, filled: 'older draft' })).toBe('kept your edits in the prompt box, copy from here')
+  // A refusal with no cause, such as another mod's hook, stays general.
+  expect(draftNote(thread)).toBe('prompt box was busy, copy from here')
 })
 
 test('routes follow the cache mark', () => {
