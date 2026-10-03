@@ -12,6 +12,7 @@ maintained by astrosteveo.
 | [Memsync](plugins/memsync/README.md) | A mod: syncs auto memory, `CLAUDE.md` and user skills across machines through your own private git repo, with a `/memsync` pane that shows the sync state. |
 | [Plain English](plugins/plain-english/README.md) | A mod: makes Claude write plain, literal English, flags figurative phrases under a reply, and replaces the Plain Language output style. |
 | [Token Weather](plugins/token-weather/README.md) | A mod: a live forecast of the context window in the band above the prompt, with how full it is, the last 12 turns and what the last turn added. |
+| [Next Prompts](plugins/next-prompts/README.md) | A mod: 3 suggested next prompts above the prompt after each reply. Type 1, 2 or 3 to send one, or 0 to dismiss the list. |
 
 ## Install
 
