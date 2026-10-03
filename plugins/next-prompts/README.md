@@ -15,8 +15,7 @@ Mods need Claude Code v2.1.287 or later.
 ```
 
 - Type `1`, `2` or `3` into the empty prompt box to send that suggestion as
-  your next prompt. It sends 0.4 seconds after the key, or at once if you
-  press Enter.
+  your next prompt. It sends 0.4 seconds after the key.
 - Type `0` to dismiss the list.
 - In fullscreen mode and in the desktop app, you can also click a line.
 - Type anything else to ignore the list. It goes away, your keys type as
@@ -65,7 +64,8 @@ per reply, not two, turn it off in `~/.claude/settings.json`:
   about 230 new input tokens and a few lines of output.
 - To start your own prompt with `0` to `3` while the list shows, keep typing
   after the digit. A digit followed by a pause of 0.4 seconds sends a
-  suggestion.
+  suggestion. A digit followed by Enter within 0.4 seconds is sent as your
+  own prompt.
 - Claude reads a picked suggestion as your own words, but the transcript
   marks it as a prompt from the next-prompts plugin.
 - The band draws in the terminal and the desktop app. Claude Code doesn't

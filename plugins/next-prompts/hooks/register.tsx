@@ -41,8 +41,8 @@ export function parseSuggestions(text: string): Suggestions {
 
 /**
  * A lone digit key from 0 to COUNT into an empty box. The digit lands in the
- * box, and if nothing follows it for 400 ms (or Enter does) the engine
- * presses the list's Button with that hotkey and empties the box.
+ * box, and if nothing follows it for 400 ms the engine presses the list's
+ * Button with that hotkey and empties the box.
  */
 export function isHotkey(e: PromptEditInput): boolean {
   if (e.text !== '' || !e.key || e.key.ctrl || e.key.meta || e.key.key !== e.inputText) return false
