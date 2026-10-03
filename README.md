@@ -7,7 +7,6 @@ maintained by astrosteveo.
 
 | Plugin | Purpose |
 | --- | --- |
-| [Workflow](plugins/workflow/README.md) | A small software team for one request: an orchestrator routes work through discovery, planning, implementation, and independent review of both the plan and the code. Includes the planner, implementer, and reviewer agents. |
 | [File Tree](plugins/file-tree/README.md) | A mod: a pane with the project's file tree that marks the files Claude creates or changes and shows their diffs, without leaving the terminal. |
 | [Consult](plugins/consult/README.md) | A mod: `/consult` asks a side copy of Claude how to answer it, or writes your next prompt, without adding to the main chat. |
 | [Memsync](plugins/memsync/README.md) | A mod: syncs auto memory, `CLAUDE.md` and user skills across machines through your own private git repo, with a `/memsync` pane that shows the sync state. |
@@ -20,23 +19,22 @@ Inside Claude Code, add the marketplace from GitHub and install a plugin:
 
 ```text
 /plugin marketplace add astrosteveo/claude-plugins
-/plugin install workflow@astrosteveo-plugins
+/plugin install file-tree@astrosteveo-plugins
 ```
 
 From a local checkout, register the checkout directory instead:
 
 ```text
 /plugin marketplace add /path/to/claude-plugins
-/plugin install workflow@astrosteveo-plugins
+/plugin install file-tree@astrosteveo-plugins
 ```
 
 The same commands work from a shell as `claude plugin marketplace add ...` and
 `claude plugin install ...`. Restart Claude Code or run `/reload-plugins` after
-installing. Plugin skills are namespaced as `/<plugin>:<skill>`, for example
-`/workflow:orchestrate`.
+installing. Plugin skills are namespaced as `/<plugin>:<skill>`.
 
 To try a plugin without installing it, start Claude Code with the plugin
-directory: `claude --plugin-dir ./plugins/workflow`.
+directory: `claude --plugin-dir ./plugins/file-tree`.
 
 ## Structure
 
