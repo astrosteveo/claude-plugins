@@ -516,7 +516,7 @@ export const register: Register = on => {
 
   // The band lists the predictions, the selected one marked; alt+↑/↓ cycle them
   // from the prompt, and the ring starts on the selected one when the band takes
-  // the keyboard (ctrl+x tab, or Tab once bound to abovePrompt:focus).
+  // the keyboard (ctrl+x tab).
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const p = await read($, pick)
     if (p === null || p.options.length === 0 || e.props.hasSurvey) return next(e)
@@ -547,7 +547,7 @@ export const register: Register = on => {
     )
   })
 
-  // The ring moving onto a row (the band focused with Tab) previews that prediction in the box.
+  // The ring moving onto a row (the band focused with ctrl+x tab) previews that prediction in the box.
   on('ui.focus', { component: 'AbovePrompt' }, async ($, e, next) => {
     const moved = await next(e)
     if (moved.deny === undefined && e.plugin === 'type-ahead' && e.element?.startsWith(ROW)) {
