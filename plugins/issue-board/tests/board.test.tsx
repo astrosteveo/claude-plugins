@@ -74,7 +74,7 @@ test('the pane lists the issues by filter and opens one to its boxes', async ($,
     const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
     const stdout =
       kind === 'repo'
-        ? 'astrosteveo/void-sector\n'
+        ? JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true })
         : e.argv.includes('closed')
           ? JSON.stringify([{ closedAt: yesterday }, { closedAt: yesterday }])
           : e.argv.includes('merged')
@@ -134,6 +134,50 @@ test('the pane lists the issues by filter and opens one to its boxes', async ($,
   }
 })
 
-test('the status line sums up the board', () => {
-  expect(summary([], [])).toBe('0 issues')
+test('the summary names what is open, and nothing when nothing is', () => {
+  expect(summary([], [])).toBeUndefined()
+  const issue = { number: 1, title: 'One', url: '', labels: [], assignees: [], checks: [], updatedAt: '' }
+  expect(summary([issue], [])).toBe('1 issue')
+})
+
+const HINT = { component: 'PromptHint', props: { isDraft: false, isWorking: false, hint: '? for shortcuts' } } as const
+const REFRESH = { command: 'issues', args: 'refresh', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
+
+test('the hint under the prompt carries the summary, and nothing with nothing open', async ($, on) => {
+  let repo = { nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true }
+  let issues: unknown[] = ISSUES
+  let prs: unknown[] = PRS
+  const issueCalls: string[][] = []
+  on('process.run', async (_$, e) => {
+    const kind = e.argv[1]
+    if (kind === 'issue') issueCalls.push([...e.argv])
+    const stdout = kind === 'repo' ? JSON.stringify(repo) : e.argv.includes('closed') || e.argv.includes('merged') ? '[]' : JSON.stringify(kind === 'issue' ? issues : prs)
+    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  // What the engine draws: its hint, then ` · ` and the tail the plugins added.
+  on('ui.render', { component: 'PromptHint' }, async ($$, e) => {
+    const { Text } = $$.ui.resolve(e)
+    return <Text>{e.props.tail ? `${e.props.hint} · ${e.props.tail}` : e.props.hint}</Text>
+  })
+  const hint = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...HINT })
+  const shows = async (text: string) => expect(await hint.drawn()).toMatchObject({ type: 'Text', children: [text] })
+
+  await $.command.run(REFRESH)
+  await shows('? for shortcuts · 2 issues · 1 bug · PR #335✓')
+
+  issues = []
+  prs = []
+  const reply = await $.command.run(REFRESH)
+  await shows('? for shortcuts')
+  expect(reply.text).toBe('Refreshed: nothing open.')
+
+  // A repo with issues turned off: no issue calls, and its pull requests still show.
+  repo = { ...repo, hasIssuesEnabled: false }
+  prs = PRS
+  issueCalls.length = 0
+  await $.command.run(REFRESH)
+  expect(issueCalls).toEqual([])
+  await shows('? for shortcuts · PR #335✓')
+
+  await hint.unmount()
 })

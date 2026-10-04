@@ -9,7 +9,9 @@ CLI, signed in, in the folder the session started in.
 
 ## Use it
 
-- The status line sums up the board, such as `35 issues · 1 bug · PR #335✓`.
+- The hint line under the prompt sums up the board in dim text, such as
+  `? for shortcuts · 35 issues · 1 bug · PR #335✓`. It shows nothing when
+  no issues or pull requests are open.
 - Run `/issues` to open the pane:
   - A header with the repo, when it last synced, and totals: issues, bugs,
     pull requests, failing CI, and how many task-list boxes are ticked.
@@ -55,6 +57,8 @@ The board refreshes every 5 minutes, and straight after Claude runs a
 ## Limits
 
 - It shows up to 300 open issues and 50 open pull requests.
+- In a repo with issues turned off, it shows only pull requests.
+- The summary under the prompt shows in the terminal only.
 - The pane opens only when you run `/issues`.
 
 ## Develop

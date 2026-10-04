@@ -39,7 +39,7 @@ test('the close-out prompts name each pull request and ask for a guarded merge',
 test('Close out sends one pull request, and Close out all asks before sending them all', async ($, on) => {
   on('process.run', async (_$, e) => {
     const kind = e.argv[1]
-    const stdout = kind === 'repo' ? 'astrosteveo/void-sector\n' : e.argv.includes('open') ? JSON.stringify(kind === 'pr' ? PRS : []) : '[]'
+    const stdout = kind === 'repo' ? JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true }) : e.argv.includes('open') ? JSON.stringify(kind === 'pr' ? PRS : []) : '[]'
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   const sent: string[] = []
