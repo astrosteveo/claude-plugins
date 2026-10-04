@@ -41,9 +41,23 @@ async function showPending($: EngineInterface) {
   $.ui.status(pendingLine(list.filter(one => one.status === 'pending').length))
 }
 
+// Keeps the question box in view as the list above it grows. A move that
+// does not land (a closed pane, a host that cannot scroll) never stops an ask.
+async function toEnd($: EngineInterface) {
+  let why: string | undefined
+  try {
+    why = (await $.ui.scroll({ in: PANE, to: 'end', block: 'end' })).deny
+  } catch (error) {
+    why = error instanceof Error ? error.message : String(error)
+  }
+  if (why !== undefined) $.ui.log(`ask: scroll to end: ${why}`, { to: 'debug' })
+}
+
+// Oldest first, so the newest ask sits just above the question box.
 async function run($: EngineInterface, ask: Ask) {
-  await update($, asks, list => [ask, ...list.filter(one => one.id !== ask.id)].slice(0, KEEP))
+  await update($, asks, list => [...list.filter(one => one.id !== ask.id), ask].slice(-KEEP))
   await showPending($)
+  await toEnd($)
 
   let change: Partial<Ask>
   try {
@@ -59,6 +73,7 @@ async function run($: EngineInterface, ask: Ask) {
   }
   await update($, asks, list => list.map(one => (one.id === ask.id ? { ...one, ...change } : one)))
   await showPending($)
+  await toEnd($)
   $.ui.toast(
     change.status === 'answered'
       ? `Answer ready: ${fit(ask.question, 48)}`
@@ -117,9 +132,56 @@ export const register: Register = on => {
     const typed = await read($, draft)
     const width = Math.max(20, e.props.bodyColumns)
 
+    // A chat: the asks fill the room above the question box, oldest first, so
+    // the box and its buttons sit at the bottom of the pane.
     return (
-      <Box flexDirection="column">
+      <Box flexDirection="column" minHeight={e.props.scroll.bodyRows}>
         <Text dimColor>Side questions. Answers stay here, out of the chat.</Text>
+        <Box key="asks" flexDirection="column" flexGrow={1} justifyContent="flex-end">
+          {list.length === 0 && <Text dimColor>Nothing asked yet.</Text>}
+          {list.map(one => (
+            <Box key={`ask-${one.id}`} flexDirection="column" marginTop={1}>
+              <Text dimColor>{'─'.repeat(width)}</Text>
+              <Text bold>› {one.question}</Text>
+              {one.status === 'pending' && <Text dimColor>thinking…</Text>}
+              {one.status === 'failed' && <Text color="red">{one.error ?? 'No answer.'}</Text>}
+              {one.status === 'answered' && <Markdown key={`answer-${one.id}`} text={one.answer || '(empty)'} />}
+              <Box gap={1}>
+                {one.prompts.map((prompt, i) => (
+                  <Button
+                    key={`use-${one.id}-${i}`}
+                    label={one.prompts.length === 1 ? 'Use prompt' : `Use ${i + 1}`}
+                    variant="primary"
+                    onPress={() => void use($, prompt)}
+                  />
+                ))}
+                {one.status === 'answered' && (
+                  <Button
+                    key={`copy-${one.id}`}
+                    label="Copy"
+                    onPress={press => void $.ui.copy({ text: one.answer ?? '', surface: press.surface })}
+                  />
+                )}
+                {one.status === 'failed' && (
+                  <Button
+                    key={`retry-${one.id}`}
+                    label="Retry"
+                    onPress={() => void run($, { ...one, status: 'pending', answer: undefined, prompts: [], error: undefined })}
+                  />
+                )}
+                <Button
+                  key={`remove-${one.id}`}
+                  label="Remove"
+                  onPress={async () => {
+                    await update($, asks, all => all.filter(other => other.id !== one.id))
+                    await showPending($)
+                  }}
+                />
+              </Box>
+            </Box>
+          ))}
+        </Box>
+        <Text dimColor>{'─'.repeat(width)}</Text>
         {'Input' in ui && (
           <ui.Input
             key="question"
@@ -144,48 +206,6 @@ export const register: Register = on => {
             />
           )}
         </Box>
-        {list.length === 0 && <Text dimColor>Nothing asked yet.</Text>}
-        {list.map(one => (
-          <Box key={`ask-${one.id}`} flexDirection="column" marginTop={1}>
-            <Text dimColor>{'─'.repeat(width)}</Text>
-            <Text bold>› {one.question}</Text>
-            {one.status === 'pending' && <Text dimColor>thinking…</Text>}
-            {one.status === 'failed' && <Text color="red">{one.error ?? 'No answer.'}</Text>}
-            {one.status === 'answered' && <Markdown key={`answer-${one.id}`} text={one.answer || '(empty)'} />}
-            <Box gap={1}>
-              {one.prompts.map((prompt, i) => (
-                <Button
-                  key={`use-${one.id}-${i}`}
-                  label={one.prompts.length === 1 ? 'Use prompt' : `Use ${i + 1}`}
-                  variant="primary"
-                  onPress={() => void use($, prompt)}
-                />
-              ))}
-              {one.status === 'answered' && (
-                <Button
-                  key={`copy-${one.id}`}
-                  label="Copy"
-                  onPress={press => void $.ui.copy({ text: one.answer ?? '', surface: press.surface })}
-                />
-              )}
-              {one.status === 'failed' && (
-                <Button
-                  key={`retry-${one.id}`}
-                  label="Retry"
-                  onPress={() => void run($, { ...one, status: 'pending', answer: undefined, prompts: [], error: undefined })}
-                />
-              )}
-              <Button
-                key={`remove-${one.id}`}
-                label="Remove"
-                onPress={async () => {
-                  await update($, asks, all => all.filter(other => other.id !== one.id))
-                  await showPending($)
-                }}
-              />
-            </Box>
-          </Box>
-        ))}
       </Box>
     )
   })

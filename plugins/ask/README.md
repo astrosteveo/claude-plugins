@@ -13,6 +13,12 @@ the question goes to a plain Sonnet call instead.
 
 ## Use it
 
+The pane reads like a chat. The question box sits at the bottom, with the
+**Suggest next prompts** and **Clear answered** buttons under it. Questions
+stack above it, oldest first, so the newest is just above the box. When you
+ask or an answer comes in, the pane scrolls to the bottom so the box stays in
+view.
+
 - `/ask` opens the pane with the cursor in the question box.
 - `/ask <question>` sends the question and opens the pane. You can keep
   working while Claude thinks. A toast tells you when the answer is ready.
