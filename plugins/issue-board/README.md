@@ -18,6 +18,11 @@ CLI, signed in, in the folder the session started in.
   - Open pull requests with a CI badge (`✓ PASS`, `✗ FAIL`, `◷ CI`), the
     review state, the branch, author, age and `+added −deleted` lines. Press
     one to open it on GitHub.
+  - **Close out** on a pull request sends Claude a message to see it
+    through: fix failing CI, answer review, and merge it, without bypassing
+    branch protection or force-pushing. **Close out all** (`m`) does the same
+    for every open pull request, one at a time, oldest first; it asks first,
+    `y` to send and `n` to cancel.
   - Open issues by `area:` label, each area with its count and how far along
     it is. Each issue has a progress bar of its task-list boxes, such as
     `━━━━━━ 2/4`, its labels in their GitHub colors, and how long since it
