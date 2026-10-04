@@ -24,6 +24,24 @@
         "pull-requests",
         "pane"
       ]
+    },
+    {
+      "name": "ask",
+      "source": "./plugins/ask",
+      "description": "Ask Claude a side question or for prompt ideas; it answers in a pane, in the background, and nothing lands in the chat.",
+      "version": "0.1.0",
+      "author": {
+        "name": "astrosteveo"
+      },
+      "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/ask",
+      "category": "productivity",
+      "tags": [
+        "mod",
+        "ask",
+        "side-question",
+        "prompts",
+        "pane"
+      ]
     }
   ]
 }
