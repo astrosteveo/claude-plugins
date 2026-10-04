@@ -5,9 +5,9 @@ maintained by astrosteveo.
 
 ## Available plugins
 
-| Plugin | Purpose |
+| Plugin | What it does |
 | --- | --- |
-| [Memsync](plugins/memsync/README.md) | A mod: syncs auto memory, `CLAUDE.md` and user skills across machines through your own private git repo, with a `/memsync` pane that shows the sync state. |
+| [issue-board](plugins/issue-board) | Open GitHub issues and pull requests in a pane and the status line, with acceptance progress and CI, and a button that hands an issue to Claude. |
 
 ## Install
 
@@ -15,14 +15,14 @@ Inside Claude Code, add the marketplace from GitHub and install a plugin:
 
 ```text
 /plugin marketplace add astrosteveo/claude-plugins
-/plugin install memsync@astrosteveo-plugins
+/plugin install issue-board@astrosteveo-plugins
 ```
 
 From a local checkout, register the checkout directory instead:
 
 ```text
 /plugin marketplace add /path/to/claude-plugins
-/plugin install memsync@astrosteveo-plugins
+/plugin install issue-board@astrosteveo-plugins
 ```
 
 The same commands work from a shell as `claude plugin marketplace add ...` and
@@ -30,7 +30,7 @@ The same commands work from a shell as `claude plugin marketplace add ...` and
 installing. Plugin skills are namespaced as `/<plugin>:<skill>`.
 
 To try a plugin without installing it, start Claude Code with the plugin
-directory: `claude --plugin-dir ./plugins/memsync`.
+directory: `claude --plugin-dir ./plugins/my-plugin`.
 
 ## Structure
 
@@ -120,15 +120,16 @@ repository is a catalog of plugins, each with its own manifest.
 
    ```text
    /plugin marketplace update astrosteveo-plugins
-   /plugin install my-plugin@astrosteveo-plugins
+   /plugin install issue-board@astrosteveo-plugins
    ```
 
 ## Validate
 
 `scripts/validate.sh` runs `claude plugin validate --strict` on the marketplace
-manifest and on every directory under `plugins/`. The GitHub Actions workflow
-runs the same script on pushes to `main` and on pull requests. Run it locally
-before committing.
+manifest and on every directory under `plugins/`. While there are no plugins it
+checks the marketplace without `--strict`, because an empty marketplace always
+warns that it has no plugins. The GitHub Actions workflow runs the same script
+on pushes to `main` and on pull requests. Run it locally before committing.
 
 ## Conventions
 

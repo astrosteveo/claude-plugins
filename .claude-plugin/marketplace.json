@@ -8,20 +8,20 @@
   },
   "plugins": [
     {
-      "name": "memsync",
-      "source": "./plugins/memsync",
-      "description": "Sync Claude Code auto memory, CLAUDE.md and user skills across machines through your own private git repo, with a /memsync pane that shows the sync state.",
-      "version": "0.2.1",
+      "name": "issue-board",
+      "source": "./plugins/issue-board",
+      "description": "The repository's open GitHub issues and pull requests in a pane and the status line, with acceptance progress and CI, and a button that hands an issue to Claude.",
+      "version": "0.1.0",
       "author": {
         "name": "astrosteveo"
       },
-      "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/memsync",
+      "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/issue-board",
       "category": "productivity",
       "tags": [
         "mod",
-        "memory",
-        "sync",
-        "git",
+        "github",
+        "issues",
+        "pull-requests",
         "pane"
       ]
     }
