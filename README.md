@@ -5,7 +5,9 @@ maintained by astrosteveo.
 
 ## Available plugins
 
-None yet. See [Add a plugin](#add-a-plugin).
+| Plugin | What it does |
+| --- | --- |
+| [issue-board](plugins/issue-board) | Open GitHub issues and pull requests in a pane and the status line, with acceptance progress and CI, and a button that hands an issue to Claude. |
 
 ## Install
 
@@ -13,14 +15,14 @@ Inside Claude Code, add the marketplace from GitHub and install a plugin:
 
 ```text
 /plugin marketplace add astrosteveo/claude-plugins
-/plugin install my-plugin@astrosteveo-plugins
+/plugin install issue-board@astrosteveo-plugins
 ```
 
 From a local checkout, register the checkout directory instead:
 
 ```text
 /plugin marketplace add /path/to/claude-plugins
-/plugin install my-plugin@astrosteveo-plugins
+/plugin install issue-board@astrosteveo-plugins
 ```
 
 The same commands work from a shell as `claude plugin marketplace add ...` and
@@ -118,7 +120,7 @@ repository is a catalog of plugins, each with its own manifest.
 
    ```text
    /plugin marketplace update astrosteveo-plugins
-   /plugin install my-plugin@astrosteveo-plugins
+   /plugin install issue-board@astrosteveo-plugins
    ```
 
 ## Validate
