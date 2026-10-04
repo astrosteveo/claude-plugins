@@ -8,6 +8,7 @@ maintained by astrosteveo.
 | Plugin | What it does |
 | --- | --- |
 | [issue-board](plugins/issue-board) | Open GitHub issues and pull requests in a pane and the status line, with acceptance progress and CI, and a button that hands an issue to Claude. |
+| [turn-recap](plugins/turn-recap) | Sums up each turn on its closing line (tools run, failures, files edited), and lists every file Claude edited this session in a `/touched` pane. |
 
 ## Install
 
