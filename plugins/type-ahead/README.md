@@ -3,15 +3,19 @@
 A Claude Code mod that predicts the rest of the prompt you are typing. Stop
 typing for a second and three likely ways your sentence goes on are listed
 above the prompt, written from the conversation so far. The selected one shows
-dim after your text in the box.
+dim after your text in the box. Before you type, it adds other likely next
+prompts to Claude Code's own suggestion.
 
 Mods need Claude Code v2.1.287 or later.
 
 ## Use it
 
 - Type at least four characters, then pause for a second. Haiku reads your
-  draft and the last six messages of the conversation and proposes three
-  continuations, each at most one sentence, the likeliest first.
+  draft and the last six turns of the conversation (what each said, and the
+  files and commands Claude's tools touched) and proposes up to three
+  continuations grounded in them, usually the rest of the clause or sentence,
+  the likeliest first. When it cannot tell where you are going it offers
+  fewer, or none.
 - They are listed in a band above the prompt. The selected one is marked `▸`
   and shows dim after your text in the box; the others are dim in the band.
 - **alt+↓ / alt+↑** (or ctrl+↓/↑) cycle through them from the prompt, wrapping
@@ -29,8 +33,25 @@ Mods need Claude Code v2.1.287 or later.
 - Run `/type-ahead` to turn predictions off or on. The choice is remembered
   across sessions.
 
+### Before you type
+
+After a turn Claude Code may suggest your next prompt, dim in the empty box.
+That suggestion stays as it is, and Haiku proposes up to two other likely next
+prompts beside it. All of them are listed in the band, Claude Code's first.
+
+- **alt+↓ / alt+↑** choose which one is the suggestion in the box.
+- **Tab** (or →) takes the one shown, as Claude Code always does.
+- **alt+→**, or a click on a row, puts that one in the box.
+- Typing anything takes the list down, and type-ahead takes over.
+
+This needs Claude Code's prompt suggestions on; with them off, the
+empty box gets no list.
+
 Slash commands, `!` shell lines and `#` notes get no prediction, nor does a
-caret anywhere but the end of the box.
+draft that ends a sentence (`.`, `?` or `!`) or a caret anywhere but the end
+of the box. Each prediction must repeat the last words of your draft before
+continuing it, so a reply that answers the draft instead of finishing it is
+never shown.
 
 ### Keybindings
 
@@ -74,7 +95,8 @@ focused button instead of moving to the next.
 - The preview is real text in the box, painted dim: the mod API places no
   overlay.
 - Each pause is one Haiku call of a few hundred tokens. Typing again before the
-  answer arrives cancels it.
+  answer arrives cancels it. Each suggestion Claude Code makes after a turn is
+  one more.
 
 ## Develop
 
@@ -87,7 +109,8 @@ claude --plugin-dir ./plugins/type-ahead
 The hooks module is `hooks/register.tsx`, and `types/index.d.ts` declares the
 state it keeps (the predictions on offer). The tests cover the decisions the
 hooks act on (what each key does to a prediction, the prompt sent to the
-model, how its reply becomes the predictions, narrowing, cycling, the band's
-rows) and the `/type-ahead` toggle: the test kit raises no prompt-box edits, so
-the keys themselves are tried by hand. Claude Code writes the API's type files
+model, how its reply becomes the predictions, the next prompts added to Claude
+Code's suggestion, narrowing, cycling, the band's rows) and the `/type-ahead`
+toggle: the test kit raises no prompt-box edits, so the keys themselves are
+tried by hand. Claude Code writes the API's type files
 into `.claude-plugin/types/` each time it loads the mod, and git ignores them.

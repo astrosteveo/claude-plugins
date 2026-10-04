@@ -2,8 +2,8 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "type-ahead",
   "displayName": "Type-ahead",
-  "version": "0.3.0",
-  "description": "Pause while typing a prompt and Haiku offers three ways your sentence could go on, listed above the prompt with the selected one previewed dim in the box: alt+↑/↓ cycle, alt+→ takes it, Enter sends what you typed.",
+  "version": "0.5.0",
+  "description": "Pause while typing a prompt and Haiku offers up to three ways your sentence could go on, drawn from the conversation, listed above the prompt with the selected one previewed dim in the box: alt+↑/↓ cycle, alt+→ takes it, Enter sends what you typed.",
   "author": {
     "name": "astrosteveo"
   },
