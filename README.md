@@ -8,7 +8,6 @@ maintained by astrosteveo.
 | Plugin | What it does |
 | --- | --- |
 | [issue-board](plugins/issue-board) | Open GitHub issues and pull requests in a pane and the status line, with acceptance progress and CI, and a button that hands an issue to Claude. |
-| [plain-english](plugins/plain-english) | Makes Claude write in short, plain English, and refuses commits, PRs, Markdown files and replies that show the usual signs of AI-written text. |
 
 ## Install
 
