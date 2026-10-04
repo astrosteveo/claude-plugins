@@ -1,4 +1,4 @@
-import type { Check, Ci, Filter, Issue, Label, PullRequest } from '../types'
+import type { Alert, Board, Check, Ci, Filter, Issue, Label, PullRequest, Working } from '../types'
 
 type RawLabel = { name: string; color?: string }
 type RawUser = { login: string }
@@ -209,3 +209,48 @@ export const startPrompt = (issue: Issue): string => {
   const boxes = open.length > 0 ? `\n\nIts open acceptance boxes:\n${open.map(check => `- ${check.text}`).join('\n')}` : ''
   return `Let's start on #${issue.number}: ${issue.title}. Read it with \`gh issue view ${issue.number}\` first.${boxes}`
 }
+
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000
+export const WEEKS = 12
+
+// The day `weeks` weeks before `now`, as GitHub's search reads a date.
+export const since = (now: number, weeks = WEEKS): string => new Date(now - weeks * WEEK_MS).toISOString().slice(0, 10)
+
+// How many of the times fall in each of the last `weeks` weeks, oldest first.
+export const weekly = (times: string[], now: number, weeks = WEEKS): number[] => {
+  const counts = Array.from({ length: weeks }, () => 0)
+  for (const iso of times) {
+    const back = Math.floor((now - Date.parse(iso)) / WEEK_MS)
+    if (back >= 0 && back < weeks) counts[weeks - 1 - back] = (counts[weeks - 1 - back] ?? 0) + 1
+  }
+  return counts
+}
+
+// The times under `field` in gh's JSON list, such as each issue's closedAt.
+export const timesOf = (json: string, field: string): string[] =>
+  (JSON.parse(json) as Record<string, unknown>[]).flatMap(raw => (typeof raw[field] === 'string' ? [raw[field] as string] : []))
+
+const BLOCKS = '▁▂▃▄▅▆▇█'
+
+// One block a week, as tall as that week against the busiest.
+export const spark = (counts: number[]): string => {
+  const top = Math.max(0, ...counts)
+  return counts.map(count => (top === 0 ? BLOCKS[0] : BLOCKS[Math.round((count / top) * (BLOCKS.length - 1))])).join('')
+}
+
+// What the band above the prompt raises, minus what the person waved off: failing CI, then the issue Claude is on.
+export const alertsOf = (board: Board, working: Working | null, dismissed: string[]): Alert[] => {
+  const alerts: Alert[] = board.prs
+    .filter(pr => pr.ci === 'fail')
+    .map(pr => ({ kind: 'ci' as const, key: `ci-${pr.number}-${pr.updatedAt}`, pr }))
+  if (working) {
+    const issue = board.issues.find(one => one.number === working.number)
+    if (!issue) alerts.push({ kind: 'closed', key: `closed-${working.number}`, working })
+    else if (issue.updatedAt > working.updatedAt) alerts.push({ kind: 'activity', key: `activity-${issue.number}-${issue.updatedAt}`, issue })
+  }
+  return alerts.filter(alert => !dismissed.includes(alert.key))
+}
+
+// The message the band's Fix button hands Claude for a pull request whose CI failed.
+export const fixPrompt = (pr: PullRequest): string =>
+  `CI is failing on PR #${pr.number}: ${pr.title} (branch \`${pr.branch}\`). Look at \`gh pr checks ${pr.number}\` and the failing run's log, then fix it.`

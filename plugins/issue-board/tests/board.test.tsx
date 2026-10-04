@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { ago, bar, checksOf, ciOf, fit, summary } from '../hooks/parse'
+import { ago, bar, checksOf, ciOf, fit, spark, summary, weekly } from '../hooks/parse'
 
 const ISSUES = [
   {
@@ -61,10 +61,25 @@ test('bars, ages and titles fit the pane', () => {
   expect(fit('short', 10)).toBe('short')
 })
 
+test('velocity counts each week and draws it as a sparkline', () => {
+  const at = Date.parse('2026-10-03T12:00:00Z')
+  expect(weekly(['2026-10-03T00:00:00Z', '2026-10-01T00:00:00Z', '2026-09-24T00:00:00Z', '2025-01-01T00:00:00Z'], at, 3)).toEqual([0, 1, 2])
+  expect(spark([0, 1, 2, 4])).toBe('▁▃▅█')
+  expect(spark([0, 0])).toBe('▁▁')
+})
+
 test('the pane lists the issues by filter and opens one to its boxes', async ($, on) => {
   on('process.run', async (_$, e) => {
     const kind = e.argv[1]
-    const stdout = kind === 'repo' ? 'astrosteveo/void-sector\n' : JSON.stringify(kind === 'issue' ? ISSUES : PRS)
+    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+    const stdout =
+      kind === 'repo'
+        ? 'astrosteveo/void-sector\n'
+        : e.argv.includes('closed')
+          ? JSON.stringify([{ closedAt: yesterday }, { closedAt: yesterday }])
+          : e.argv.includes('merged')
+            ? JSON.stringify([{ mergedAt: yesterday }])
+            : JSON.stringify(kind === 'issue' ? ISSUES : PRS)
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   const sent: string[] = []
@@ -86,10 +101,14 @@ test('the pane lists the issues by filter and opens one to its boxes', async ($,
     expect(await ui.find({ text: /approved/ })).toBeDefined()
     expect(await ui.find({ key: 'issue-289' })).toBeDefined()
     expect(await ui.find({ key: 'issue-315' })).toBeUndefined()
+    expect(await ui.find({ text: /^closed / })).toBeDefined()
+    expect((await ui.find({ text: /^ 2$/ }))?.props.bold).toBe(true)
+    // The hover preview is drawn hidden beside the row, shown by the surface on hover.
+    expect(await ui.find({ text: /^No acceptance boxes\. *$/ })).toBeDefined()
 
     await ui.press({ key: 'filter-future' })
     expect(await ui.find({ key: 'issue-315' })).toBeDefined()
-    expect(await ui.find({ text: /Goldens regenerated/ })).toBeUndefined()
+    expect(await ui.find({ key: 'start-315' })).toBeUndefined()
     await ui.press({ key: 'issue-315' })
     expect(await ui.find({ text: /Goldens regenerated/ })).toBeDefined()
     expect(await ui.find({ text: / 2\/3/ })).toBeDefined()

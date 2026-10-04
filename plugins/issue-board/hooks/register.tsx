@@ -1,14 +1,17 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Board, Filter, Issue, PullRequest } from '../types'
+import type { Alert, Board, Filter, Issue, PullRequest } from '../types'
 import {
+  WEEKS,
   ago,
+  alertsOf,
   bar,
   byArea,
   chipsOf,
   ciBadge,
   fit,
+  fixPrompt,
   hex,
   isBug,
   matches,
@@ -16,10 +19,14 @@ import {
   parsePrs,
   progress,
   reviewBadge,
+  since,
+  spark,
   startPrompt,
   sumProgress,
   summary,
+  timesOf,
   tone,
+  weekly,
 } from './parse'
 
 const PANE = 'issue-board'
@@ -31,6 +38,8 @@ const error = atom({ plugin: 'issue-board', key: 'error' } as const, null)
 const loading = atom({ plugin: 'issue-board', key: 'loading' } as const, false)
 const filter = atom({ plugin: 'issue-board', key: 'filter' } as const, 'active')
 const expanded = atom({ plugin: 'issue-board', key: 'expanded' } as const, [])
+const working = atom({ plugin: 'issue-board', key: 'working' } as const, null)
+const dismissed = atom({ plugin: 'issue-board', key: 'dismissed' } as const, [])
 
 const FILTERS: { id: Filter; label: string; hotkey: string }[] = [
   { id: 'active', label: 'Active', hotkey: 'a' },
@@ -45,11 +54,13 @@ const gh = async ($: EngineInterface, args: string[]): Promise<string> => {
   return stdout
 }
 
-const refresh = async ($: EngineInterface): Promise<void> => {
+// `seen`: the refresh follows Claude's own gh write, so the issue it is on changed by its hand, not news.
+const refresh = async ($: EngineInterface, seen = false): Promise<void> => {
   if (await read($, loading)) return
   await update($, loading, () => true)
   try {
-    const [repo, issues, prs] = await Promise.all([
+    const from = since(Date.now())
+    const [repo, issues, prs, closed, merged] = await Promise.all([
       gh($, ['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner']),
       gh($, ['issue', 'list', '--state', 'open', '--limit', '300', '--json', 'number,title,url,labels,assignees,body,updatedAt']),
       gh($, [
@@ -62,9 +73,24 @@ const refresh = async ($: EngineInterface): Promise<void> => {
         '--json',
         'number,title,url,author,headRefName,isDraft,statusCheckRollup,reviewDecision,additions,deletions,updatedAt',
       ]),
+      gh($, ['issue', 'list', '--state', 'closed', '--search', `closed:>=${from}`, '--limit', '500', '--json', 'closedAt']),
+      gh($, ['pr', 'list', '--state', 'merged', '--search', `merged:>=${from}`, '--limit', '500', '--json', 'mergedAt']),
     ])
-    const next: Board = { repo: repo.trim(), issues: parseIssues(issues), prs: parsePrs(prs), fetchedAt: Date.now() }
+    const fetchedAt = Date.now()
+    const next: Board = {
+      repo: repo.trim(),
+      issues: parseIssues(issues),
+      prs: parsePrs(prs),
+      velocity: { closed: weekly(timesOf(closed, 'closedAt'), fetchedAt), merged: weekly(timesOf(merged, 'mergedAt'), fetchedAt) },
+      fetchedAt,
+    }
     await update($, board, () => next)
+    if (seen) {
+      await update($, working, was => {
+        const issue = was && next.issues.find(one => one.number === was.number)
+        return was && issue ? { ...was, updatedAt: issue.updatedAt } : was
+      })
+    }
     await update($, error, () => null)
     $.ui.status(summary(next.issues, next.prs))
   } catch (cause) {
@@ -112,7 +138,7 @@ export const register: Register = on => {
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const ran = await next(e)
     const command = (e as { command?: unknown }).command
-    if (typeof command === 'string' && GH_WRITE.test(command)) void refresh($)
+    if (typeof command === 'string' && GH_WRITE.test(command)) void refresh($, true)
 
     return ran
   })
@@ -129,6 +155,7 @@ export const register: Register = on => {
     const clock = Date.now()
 
     const start = async (issue: Issue) => {
+      await update($, working, () => ({ number: issue.number, title: issue.title, updatedAt: issue.updatedAt }))
       await $.prompt.submit({ text: startPrompt(issue), asUser: true })
       $.ui.toast(`Sent #${issue.number} to Claude`)
     }
@@ -226,6 +253,23 @@ export const register: Register = on => {
       </Box>
     )
 
+    // A board kept from before velocity was fetched has none until it refreshes.
+    const velocity = now.velocity ?? { closed: [], merged: [] }
+    const trend = (label: string, color: string, counts: number[]) => (
+      <Text>
+        <Text dimColor>{`${label} `}</Text>
+        <Text color={color}>{spark(counts)}</Text>
+        <Text bold>{` ${counts.reduce((sum, count) => sum + count, 0)}`}</Text>
+      </Text>
+    )
+    const trends = velocity.closed.length > 0 && (
+      <Box flexDirection="row" gap={3} flexWrap="wrap">
+        {trend('closed', 'success', velocity.closed)}
+        {trend('merged', 'suggestion', velocity.merged)}
+        <Text dimColor>{`last ${WEEKS} weeks`}</Text>
+      </Box>
+    )
+
     const tabs = (
       <Box flexDirection="row" gap={1} marginTop={1}>
         {FILTERS.map(one => (
@@ -289,6 +333,7 @@ export const register: Register = on => {
       const [filled, empty] = bar(step, 6)
       return (
         <Box key={`row-${issue.number}`} flexDirection="row" justifyContent="space-between">
+          {!isOpen && peek(issue)}
           <Box flexDirection="row">
             <Text color={tone(step)}>{filled}</Text>
             <Text color="inactive" dimColor>
@@ -312,6 +357,45 @@ export const register: Register = on => {
             ))}
             <Text dimColor>{age.padStart(3)}</Text>
           </Box>
+        </Box>
+      )
+    }
+
+    // What hovering a row shows above it: the title, how far along, and the boxes still open.
+    // Every line is padded to the card's width so it covers the rows it is painted over.
+    const peek = (issue: Issue) => {
+      const step = progress(issue.checks)
+      const cardWidth = Math.min(60, width - 14)
+      const inner = cardWidth - 4
+      const todo = issue.checks.filter(check => !check.done)
+      const listed = todo.slice(0, 4)
+      const lines: { text: string; color?: string; dim?: boolean; bold?: boolean }[] = [
+        { text: fit(issue.title, inner), bold: true },
+        step.total === 0
+          ? { text: 'No acceptance boxes.', dim: true }
+          : { text: `${step.done}/${step.total} ticked · ${todo.length} to go`, color: tone(step) },
+        ...listed.map(check => ({ text: fit(`☐ ${check.text}`, inner) })),
+        ...(todo.length > listed.length ? [{ text: `+${todo.length - listed.length} more`, dim: true }] : []),
+        { text: '⏎ open · ▶ Start inside', dim: true },
+      ]
+      return (
+        <Box
+          position="absolute"
+          top={-(lines.length + 2)}
+          left={13}
+          width={cardWidth}
+          display="none"
+          hover={{ display: 'flex' }}
+          flexDirection="column"
+          borderStyle="round"
+          borderColor="claude"
+          paddingX={1}
+        >
+          {lines.map(line => (
+            <Text color={line.color} dimColor={line.dim} bold={line.bold}>
+              {line.text.padEnd(inner)}
+            </Text>
+          ))}
         </Box>
       )
     }
@@ -391,6 +475,7 @@ export const register: Register = on => {
       <Box flexDirection="column">
         {header}
         {stats}
+        {trends}
         {tabs}
         {failure && (
           <Box marginTop={1}>
@@ -433,5 +518,90 @@ export const register: Register = on => {
         </Box>
       </Box>
     )
+  })
+
+  // The band above the prompt: a pull request whose CI failed, or news on the issue Claude is on.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const now = await read($, board)
+    if (e.props.hasSurvey || !now) return next(e)
+    const alerts = alertsOf(now, await read($, working), await read($, dismissed))
+    if (alerts.length === 0) return next(e)
+
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const width = e.props.bodyColumns
+    const clock = Date.now()
+    const dismiss = (alert: Alert) => async () => {
+      await update($, dismissed, list => [...list.slice(-50), alert.key])
+      if (alert.kind === 'closed') await update($, working, () => null)
+    }
+
+    const line = (alert: Alert) => {
+      switch (alert.kind) {
+        case 'ci': {
+          const { pr } = alert
+          const fix = () => (e.props.isWorking ? $.prompt.fill({ text: fixPrompt(pr) }) : $.prompt.submit({ text: fixPrompt(pr), asUser: true }))
+          return (
+            <Box flexDirection="row" gap={1}>
+              <Text color="error" inverse bold>
+                {' ✗ CI '}
+              </Text>
+              <Text>
+                <Text color="suggestion" bold>{`#${pr.number} `}</Text>
+                <Text>{fit(pr.title, Math.max(12, width - 44))}</Text>
+                <Text dimColor>{` failing on ${fit(pr.branch, 20)}`}</Text>
+              </Text>
+              <Button key={`fix-${pr.number}`} variant="primary" onPress={() => void fix()}>
+                Fix
+              </Button>
+              <Button key={`checks-${pr.number}`} dimColor onPress={() => void browse($, 'pr', pr.number)}>
+                Open
+              </Button>
+              <Button key={`dismiss-${alert.key}`} dimColor onPress={() => void dismiss(alert)()}>
+                ✕
+              </Button>
+            </Box>
+          )
+        }
+        case 'activity': {
+          const { issue } = alert
+          return (
+            <Box flexDirection="row" gap={1}>
+              <Text color="warning" inverse bold>
+                {' ● NEW '}
+              </Text>
+              <Text>
+                <Text color="claude" bold>{`#${issue.number} `}</Text>
+                <Text>{fit(issue.title, Math.max(12, width - 44))}</Text>
+                <Text dimColor>{` changed ${ago(issue.updatedAt, clock)} ago`}</Text>
+              </Text>
+              <Button key={`view-${issue.number}`} variant="primary" onPress={() => void browse($, 'issue', issue.number)}>
+                View
+              </Button>
+              <Button key={`dismiss-${alert.key}`} dimColor onPress={() => void dismiss(alert)()}>
+                ✕
+              </Button>
+            </Box>
+          )
+        }
+        case 'closed':
+          return (
+            <Box flexDirection="row" gap={1}>
+              <Text color="success" inverse bold>
+                {' ✓ DONE '}
+              </Text>
+              <Text>
+                <Text color="claude" bold>{`#${alert.working.number} `}</Text>
+                <Text>{fit(alert.working.title, Math.max(12, width - 30))}</Text>
+                <Text dimColor> is closed</Text>
+              </Text>
+              <Button key={`dismiss-${alert.key}`} dimColor onPress={() => void dismiss(alert)()}>
+                ✕
+              </Button>
+            </Box>
+          )
+      }
+    }
+
+    return <Box flexDirection="column">{alerts.slice(0, 3).map(line)}</Box>
   })
 }
