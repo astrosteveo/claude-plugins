@@ -11,6 +11,11 @@ conversation, so Claude knows what you are working on. The prompt cache serves
 that history, so a question costs little. If the session has no reply yet,
 the question goes to a plain Sonnet call instead.
 
+The main conversation never sees the pane, so each question also brings the
+last three answered questions from the pane with it. A follow-up like "any
+others?" then knows what Claude already said. Long answers are cut short so
+this stays small.
+
 ## Use it
 
 The pane reads like a chat. The question box sits at the bottom, with the
@@ -24,7 +29,8 @@ view.
   working while Claude thinks. A toast tells you when the answer is ready.
 - **Suggest next prompts** asks Claude for three prompts you could send next.
 - When Claude suggests prompts, each one gets a **Use** button. It puts that
-  prompt in the prompt box, ready to edit or send.
+  prompt in the prompt box, ready to edit or send. When there are too many
+  buttons for one line, they wrap onto the next.
 - **Copy** copies an answer. **Remove** drops one. **Retry** runs a failed one
   again. **Clear answered** keeps only the questions still running.
 

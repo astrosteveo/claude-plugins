@@ -1,7 +1,8 @@
 import type { On, OpEventResult } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { SUGGEST, fit, framed, pendingLine, split } from '../hooks/parse'
+import type { Ask } from '../types'
+import { SUGGEST, earlier, fit, framed, pendingLine, split } from '../hooks/parse'
 
 const USAGE = { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 9000, cache_creation_input_tokens: 0 }
 const PANE = { component: 'Pane', requestId: 'ask', props: { title: 'Ask', isFocused: true, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} } } as const
@@ -21,6 +22,18 @@ function scrolls(on: On) {
     return { value: undefined }
   })
   return moves
+}
+
+// Each button row's flexWrap, by its key.
+function wrapsOf(node: unknown, out: Record<string, unknown> = {}): Record<string, unknown> {
+  if (Array.isArray(node)) for (const child of node) wrapsOf(child, out)
+  else if (node !== null && typeof node === 'object') {
+    const { props, children } = node as { props?: { key?: unknown; flexWrap?: unknown }; children?: unknown }
+    const key = props?.key
+    if (typeof key === 'string' && (key === 'controls' || key.startsWith('actions-'))) out[key] = props?.flexWrap
+    wrapsOf(children ?? [], out)
+  }
+  return out
 }
 
 // The drawn tree as a flat list in drawing order: each text, and each key as `#key`.
@@ -52,6 +65,28 @@ test('the question is framed as an aside and asks for tagged prompts', () => {
   expect(fit('a  long\nquestion here', 10)).toBe('a long qu…')
   expect(pendingLine(0)).toBeUndefined()
   expect(pendingLine(2)).toBe('ask: 2 thinking…')
+})
+
+test('a question carries the last few answered asks, oldest first, within the caps', () => {
+  const ask = (id: string, status: Ask['status'], answer?: string): Ask => ({ id, question: `Q${id}?`, status, answer, prompts: [], askedAt: 0 })
+  const list = [ask('1', 'answered', 'A1'), ask('2', 'answered', 'A2'), ask('3', 'failed'), ask('4', 'answered', 'A4'), ask('5', 'pending'), ask('6', 'answered', 'A6'), ask('7', 'pending')]
+  expect(earlier(list, '7')).toEqual([
+    { question: 'Q2?', answer: 'A2' },
+    { question: 'Q4?', answer: 'A4' },
+    { question: 'Q6?', answer: 'A6' },
+  ])
+  // A retried ask leaves itself out.
+  expect(earlier(list, '6').map(one => one.question)).toEqual(['Q1?', 'Q2?', 'Q4?'])
+  expect(earlier([ask('1', 'pending')], '1')).toEqual([])
+  // Each answer is cut, and the oldest dropped until the rest fit.
+  const long = [ask('1', 'answered', 'x'.repeat(3000)), ask('2', 'answered', 'y'.repeat(3000)), ask('3', 'answered', 'z'.repeat(3000))]
+  const kept = earlier(long, 'new')
+  expect(kept.map(one => one.question)).toEqual(['Q2?', 'Q3?'])
+  expect(kept[0]?.answer.length).toBe(1500)
+
+  const asked = framed('Any others?', [{ question: 'Ideas?', answer: 'Write tests.' }])
+  expect(asked).toMatch(/<earlier>\nQ: Ideas\?\nA: Write tests\.\n\n<\/earlier>\n\nAny others\?$/)
+  expect(framed('Any others?')).not.toMatch(/<earlier>/)
 })
 
 test('a question asked in the pane is answered there, and its prompt goes to the box', async ($, on) => {
@@ -104,7 +139,11 @@ test('a question asked in the pane is answered there, and its prompt goes to the
 test('the pane reads like a chat: oldest ask first, the question box and its buttons at the bottom', async ($, on) => {
   mock.clock(on, { now: 1_000 })
   const moves = scrolls(on)
-  on('model.fork', async (_$, e) => ({ value: { isAnswered: true, text: `Re: ${e.prompt.split('\n').at(-1)}`, usage: USAGE } }) as const)
+  const forked: string[] = []
+  on('model.fork', async (_$, e) => {
+    forked.push(e.prompt)
+    return { value: { isAnswered: true, text: `Re: ${e.prompt.split('\n').at(-1)}`, usage: USAGE } } as const
+  })
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'ask', surface, ...PANE })
@@ -114,6 +153,9 @@ test('the pane reads like a chat: oldest ask first, the question box and its but
     moves.length = 0
     await ui.input({ key: 'question', text: 'First?' })
     await ui.input({ key: 'question', text: 'Second?' })
+    // The follow-up carries the first exchange; the first carries none.
+    expect(forked.at(-2)).not.toMatch(/<earlier>/)
+    expect(forked.at(-1)).toMatch(/<earlier>\nQ: First\?\nA: Re: First\?\n/)
     // Each ask scrolls to the end twice: once asked, once answered.
     expect(moves).toEqual(['ask', 'ask', 'ask', 'ask'])
 
@@ -127,6 +169,12 @@ test('the pane reads like a chat: oldest ask first, the question box and its but
     expect(at('Second?')).toBeLessThan(at('#question'))
     expect(at('#question')).toBeLessThan(at('#suggest'))
     expect(at('#suggest')).toBeLessThan(at('#clear'))
+
+    // Button rows wrap rather than run past a narrow pane.
+    const rows = wrapsOf(await ui.drawn())
+    expect(Object.keys(rows).filter(key => key.startsWith('actions-')).length).toBe(2)
+    expect(Object.values(rows).every(wrap => wrap === 'wrap')).toBe(true)
+    expect(rows.controls).toBe('wrap')
 
     await ui.press({ key: 'clear' })
     await ui.unmount()

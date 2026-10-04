@@ -2,7 +2,8 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, ModelForkResult, Register } from 'claude-code'
 
 import type { Ask } from '../types'
-import { SUGGEST, fit, framed, pendingLine, split } from './parse'
+import type { Exchange } from './parse'
+import { SUGGEST, earlier, fit, framed, pendingLine, split } from './parse'
 
 const PANE = 'ask'
 const KEEP = 30
@@ -24,12 +25,14 @@ function why(reply: ModelForkResult): string {
 }
 
 // Forks the session so the answer reads the whole conversation from the
-// prompt cache. Before the first reply there is nothing to fork, so the
-// question goes to a plain completion instead.
-async function answer($: EngineInterface, question: string): Promise<Partial<Ask>> {
-  let reply: ModelForkResult = await $.model.fork({ prompt: framed(question) })
+// prompt cache; the pane's own earlier asks ride after it, in the question.
+// Before the first reply there is nothing to fork, so the question goes to a
+// plain completion instead.
+async function answer($: EngineInterface, question: string, before: readonly Exchange[]): Promise<Partial<Ask>> {
+  const prompt = framed(question, before)
+  let reply: ModelForkResult = await $.model.fork({ prompt })
   if (!reply.isAnswered && reply.reason === 'nothing-to-fork') {
-    reply = await $.model.complete({ model: 'sonnet', prompt: framed(question) })
+    reply = await $.model.complete({ model: 'sonnet', prompt })
   }
   if (!reply.isAnswered) return { status: 'failed', error: why(reply) }
 
@@ -61,7 +64,7 @@ async function run($: EngineInterface, ask: Ask) {
 
   let change: Partial<Ask>
   try {
-    change = await answer($, ask.question)
+    change = await answer($, ask.question, earlier(await read($, asks), ask.id))
   } catch (error) {
     change = { status: 'failed', error: error instanceof Error ? error.message : String(error) }
   }
@@ -146,7 +149,7 @@ export const register: Register = on => {
               {one.status === 'pending' && <Text dimColor>thinking…</Text>}
               {one.status === 'failed' && <Text color="red">{one.error ?? 'No answer.'}</Text>}
               {one.status === 'answered' && <Markdown key={`answer-${one.id}`} text={one.answer || '(empty)'} />}
-              <Box gap={1}>
+              <Box key={`actions-${one.id}`} gap={1} flexWrap="wrap">
                 {one.prompts.map((prompt, i) => (
                   <Button
                     key={`use-${one.id}-${i}`}
@@ -196,7 +199,7 @@ export const register: Register = on => {
             }}
           />
         )}
-        <Box gap={1}>
+        <Box key="controls" gap={1} flexWrap="wrap">
           <Button key="suggest" label="Suggest next prompts" onPress={() => void start($, SUGGEST)} />
           {list.some(one => one.status !== 'pending') && (
             <Button
