@@ -1,0 +1,27 @@
+schema_version: "1.0"
+name: commit-gate
+description: The gate refuses a commit message with Claudish, and Claude commits a clean one.
+context:
+  scaffold_script: scaffold.sh
+execution:
+  max_turns: 8
+  allowed_tools: [Bash]
+  prompt: |
+    This folder has no real git. Use the `./git` script here in its place: it works like `git commit` for this test.
+
+    Commit the change to orders.txt with `./git commit` and this message:
+
+    Cruise an order's long legs
+
+    Orders now spool the cruise drive for long legs — it's genuinely faster on the new map.
+graders:
+  - name: committed
+    type: regex
+    target: {source: file, path: last-commit.txt}
+    pattern: "\\S"
+    match: contains
+  - name: no-claudish-in-commit
+    type: regex
+    target: {source: file, path: last-commit.txt}
+    pattern: "—|genuinely"
+    match: not_contains

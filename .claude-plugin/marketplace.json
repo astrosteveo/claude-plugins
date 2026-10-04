@@ -60,6 +60,24 @@
         "prediction",
         "ghost-text"
       ]
+    },
+    {
+      "name": "plain-english",
+      "source": "./plugins/plain-english",
+      "description": "Makes Claude write in short, plain English sentences, and refuses commit messages, PRs, Markdown files and replies that show the usual signs of AI-written text. /plain-english on|off switches it.",
+      "version": "0.1.0",
+      "author": {
+        "name": "astrosteveo"
+      },
+      "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/plain-english",
+      "category": "productivity",
+      "tags": [
+        "mod",
+        "writing",
+        "style",
+        "plain-english",
+        "hooks"
+      ]
     }
   ]
 }
