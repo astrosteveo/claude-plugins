@@ -195,12 +195,14 @@ export const fit = (text: string, width: number): string => {
   return chars.length <= width ? text : `${chars.slice(0, Math.max(0, width - 1)).join('')}…`
 }
 
-export const summary = (issues: Issue[], prs: PullRequest[]): string => {
+// The board in a line, such as `35 issues · 1 bug · PR #335✓`; undefined with nothing open, so nothing shows.
+export const summary = (issues: Issue[], prs: PullRequest[]): string | undefined => {
   const bugs = issues.filter(isBug).length
-  const parts = [`${issues.length} issues`]
+  const parts: string[] = []
+  if (issues.length > 0) parts.push(`${issues.length} issue${issues.length === 1 ? '' : 's'}`)
   if (bugs > 0) parts.push(`${bugs} bug${bugs === 1 ? '' : 's'}`)
   if (prs.length > 0) parts.push(`PR ${prs.map(pr => `#${pr.number}${ciMark[pr.ci]}`).join(' ')}`)
-  return parts.join(' · ')
+  return parts.length > 0 ? parts.join(' · ') : undefined
 }
 
 // The message the Start and Draft buttons hand Claude for an issue.

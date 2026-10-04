@@ -63,9 +63,11 @@ const refresh = async ($: EngineInterface, seen = false): Promise<void> => {
   await update($, loading, () => true)
   try {
     const from = since(Date.now())
-    const [repo, issues, prs, closed, merged] = await Promise.all([
-      gh($, ['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner']),
-      gh($, ['issue', 'list', '--state', 'open', '--limit', '300', '--json', 'number,title,url,labels,assignees,body,updatedAt']),
+    // First, so a folder that isn't a GitHub repo stops at one call, and a repo with issues turned off skips them.
+    const repo = JSON.parse(await gh($, ['repo', 'view', '--json', 'nameWithOwner,hasIssuesEnabled'])) as { nameWithOwner: string; hasIssuesEnabled: boolean }
+    const listIssues = (args: string[]) => (repo.hasIssuesEnabled ? gh($, ['issue', 'list', ...args]) : Promise.resolve('[]'))
+    const [issues, prs, closed, merged] = await Promise.all([
+      listIssues(['--state', 'open', '--limit', '300', '--json', 'number,title,url,labels,assignees,body,updatedAt']),
       gh($, [
         'pr',
         'list',
@@ -76,12 +78,12 @@ const refresh = async ($: EngineInterface, seen = false): Promise<void> => {
         '--json',
         'number,title,url,author,headRefName,isDraft,statusCheckRollup,reviewDecision,additions,deletions,updatedAt',
       ]),
-      gh($, ['issue', 'list', '--state', 'closed', '--search', `closed:>=${from}`, '--limit', '500', '--json', 'closedAt']),
+      listIssues(['--state', 'closed', '--search', `closed:>=${from}`, '--limit', '500', '--json', 'closedAt']),
       gh($, ['pr', 'list', '--state', 'merged', '--search', `merged:>=${from}`, '--limit', '500', '--json', 'mergedAt']),
     ])
     const fetchedAt = Date.now()
     const next: Board = {
-      repo: repo.trim(),
+      repo: repo.nameWithOwner,
       issues: parseIssues(issues),
       prs: parsePrs(prs),
       velocity: { closed: weekly(timesOf(closed, 'closedAt'), fetchedAt), merged: weekly(timesOf(merged, 'mergedAt'), fetchedAt) },
@@ -95,7 +97,6 @@ const refresh = async ($: EngineInterface, seen = false): Promise<void> => {
       })
     }
     await update($, error, () => null)
-    $.ui.status(summary(next.issues, next.prs))
   } catch (cause) {
     await update($, error, () => (cause instanceof Error ? cause.message : String(cause)))
   } finally {
@@ -119,6 +120,8 @@ export const register: Register = on => {
       description: 'Show open issues and pull requests in a pane',
       argumentHint: '[refresh]',
     })
+    // Earlier versions pinned the summary to the status line; a reload would leave it there.
+    $.ui.status(undefined)
     void refresh($)
     $.clock.every(REFRESH_MS, () => void refresh($))
 
@@ -129,7 +132,9 @@ export const register: Register = on => {
     if (e.args.trim() === 'refresh') {
       await refresh($)
       const now = await read($, board)
-      return { text: now ? `Refreshed: ${summary(now.issues, now.prs)}.` : `Couldn't refresh: ${(await read($, error)) ?? 'unknown error'}` }
+      return {
+        text: now ? `Refreshed: ${summary(now.issues, now.prs) ?? 'nothing open'}.` : `Couldn't refresh: ${(await read($, error)) ?? 'unknown error'}`,
+      }
     }
     await $.ui.open({ id: PANE, title: 'Issues', focus: true })
     if ((await read($, board)) === null) void refresh($)
@@ -560,6 +565,17 @@ export const register: Register = on => {
         </Box>
       </Box>
     )
+  })
+
+  // The board in a line, dim at the end of the hint under the prompt; nothing when nothing is open.
+  // The engine puts its own ` · ` between the hint and the tail, so the tail doesn't start with one.
+  // Not `$.ui.status`: the status line draws as a warning, and an open issue isn't one.
+  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
+    const now = await read($, board)
+    const text = now && summary(now.issues, now.prs)
+    if (!text) return next(e)
+
+    return next({ ...e, props: { ...e.props, tail: e.props.tail ? `${e.props.tail} · ${text}` : text } })
   })
 
   // The band above the prompt: a pull request whose CI failed, or news on the issue Claude is on.

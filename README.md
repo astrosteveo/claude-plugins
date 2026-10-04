@@ -7,7 +7,7 @@ maintained by astrosteveo.
 
 | Plugin | What it does |
 | --- | --- |
-| [issue-board](plugins/issue-board) | Open GitHub issues and pull requests in a pane and the status line, with acceptance progress and CI, and a button that hands an issue to Claude. |
+| [issue-board](plugins/issue-board) | Open GitHub issues and pull requests in a pane and under the prompt, with acceptance progress and CI, and a button that hands an issue to Claude. |
 | [ask](plugins/ask) | Ask Claude a side question or for prompt ideas; it answers in a pane, in the background, and nothing lands in the chat. |
 
 ## Install
