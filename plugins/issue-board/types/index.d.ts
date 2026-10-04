@@ -61,6 +61,8 @@ declare module 'claude-code' {
       expanded: number[]
       working: Working | null
       dismissed: string[]
+      // Close out all was pressed and waits on its confirm.
+      confirming: boolean
     }
   }
 }

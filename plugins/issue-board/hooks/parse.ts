@@ -254,3 +254,29 @@ export const alertsOf = (board: Board, working: Working | null, dismissed: strin
 // The message the band's Fix button hands Claude for a pull request whose CI failed.
 export const fixPrompt = (pr: PullRequest): string =>
   `CI is failing on PR #${pr.number}: ${pr.title} (branch \`${pr.branch}\`). Look at \`gh pr checks ${pr.number}\` and the failing run's log, then fix it.`
+
+const CLOSE_OUT_RULES =
+  "Follow the repository's contributing guidelines, merge only once its required checks pass, and don't bypass branch protection or force-push. If it can't be merged, say what's blocking it."
+
+// One pull request handed to Claude to see through: CI green, review answered, merged.
+export const closeOutPrompt = (pr: PullRequest): string => {
+  const draft = pr.isDraft ? ' It is a draft: finish it and mark it ready first.' : ''
+  return (
+    `Close out PR #${pr.number}: ${pr.title} (branch \`${pr.branch}\`). Read it with \`gh pr view ${pr.number}\` and \`gh pr checks ${pr.number}\`, ` +
+    `fix any failing CI and answer any review on its branch, then merge it.${draft} ${CLOSE_OUT_RULES}`
+  )
+}
+
+// Every open pull request, merged one at a time, oldest first, each brought up to date with what merged before it.
+export const closeOutAllPrompt = (prs: PullRequest[]): string => {
+  const list = [...prs]
+    .sort((a, b) => a.number - b.number)
+    .map(pr => `- #${pr.number}: ${pr.title} (\`${pr.branch}\`, CI ${pr.ci}${pr.isDraft ? ', draft' : ''})`)
+    .join('\n')
+  return (
+    `Close out all ${prs.length} open pull ${prs.length === 1 ? 'request' : 'requests'} and merge them:\n${list}\n\n` +
+    'Take them one at a time, oldest first. For each, read it with `gh pr view` and `gh pr checks`, fix any failing CI and answer any review, ' +
+    'bring its branch up to date with what merged before it, and merge it once its checks pass. Finish a draft and mark it ready first. ' +
+    `${CLOSE_OUT_RULES} Then move on to the next, and end with which merged and which didn't.`
+  )
+}

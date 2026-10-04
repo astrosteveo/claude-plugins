@@ -10,6 +10,8 @@ import {
   byArea,
   chipsOf,
   ciBadge,
+  closeOutAllPrompt,
+  closeOutPrompt,
   fit,
   fixPrompt,
   hex,
@@ -40,6 +42,7 @@ const filter = atom({ plugin: 'issue-board', key: 'filter' } as const, 'active')
 const expanded = atom({ plugin: 'issue-board', key: 'expanded' } as const, [])
 const working = atom({ plugin: 'issue-board', key: 'working' } as const, null)
 const dismissed = atom({ plugin: 'issue-board', key: 'dismissed' } as const, [])
+const confirming = atom({ plugin: 'issue-board', key: 'confirming' } as const, false)
 
 const FILTERS: { id: Filter; label: string; hotkey: string }[] = [
   { id: 'active', label: 'Active', hotkey: 'a' },
@@ -152,6 +155,7 @@ export const register: Register = on => {
     const busy = await read($, loading)
     const chosen = await read($, filter)
     const open = await read($, expanded)
+    const arming = await read($, confirming)
     const clock = Date.now()
 
     const start = async (issue: Issue) => {
@@ -159,6 +163,19 @@ export const register: Register = on => {
       await $.prompt.submit({ text: startPrompt(issue), asUser: true })
       $.ui.toast(`Sent #${issue.number} to Claude`)
     }
+
+    const closeOut = async (pr: PullRequest) => {
+      await $.prompt.submit({ text: closeOutPrompt(pr), asUser: true })
+      $.ui.toast(`Sent PR #${pr.number} to Claude to close out`)
+    }
+
+    // Close out all merges every open pull request, so it asks once more before it goes.
+    const closeOutAll = async (prs: PullRequest[]) => {
+      await update($, confirming, () => false)
+      await $.prompt.submit({ text: closeOutAllPrompt(prs), asUser: true })
+      $.ui.toast(`Sent ${prs.length} ${prs.length === 1 ? 'PR' : 'PRs'} to Claude to close out`)
+    }
+    const arm = (to: boolean) => () => void update($, confirming, () => to)
 
     const toggle = (number: number) => () =>
       void update($, expanded, list => (list.includes(number) ? list.filter(one => one !== number) : [...list, number]))
@@ -310,11 +327,16 @@ export const register: Register = on => {
               </Text>
             )}
           </Box>
-          <Box flexDirection="row" gap={1} paddingLeft={[...badge.text].length + 1}>
-            <Text dimColor>{`⎇ ${fit(pr.branch, Math.max(10, Math.floor(width / 3)))}`}</Text>
-            {pr.author && <Text dimColor>{`· @${pr.author}`}</Text>}
-            {pr.updatedAt && <Text dimColor>{`· ${ago(pr.updatedAt, clock)}`}</Text>}
-            {review && <Text color={review.color}>{`· ${review.text}`}</Text>}
+          <Box flexDirection="row" justifyContent="space-between" paddingLeft={[...badge.text].length + 1}>
+            <Box flexDirection="row" gap={1}>
+              <Text dimColor>{`⎇ ${fit(pr.branch, Math.max(10, Math.floor(width / 3)))}`}</Text>
+              {pr.author && <Text dimColor>{`· @${pr.author}`}</Text>}
+              {pr.updatedAt && <Text dimColor>{`· ${ago(pr.updatedAt, clock)}`}</Text>}
+              {review && <Text color={review.color}>{`· ${review.text}`}</Text>}
+            </Box>
+            <Button key={`close-out-${pr.number}`} dimColor hover={{ dimColor: false, color: 'suggestion' }} onPress={() => void closeOut(pr)}>
+              ⇲ Close out
+            </Button>
           </Box>
         </Box>
       )
@@ -485,6 +507,24 @@ export const register: Register = on => {
 
         {rule('Pull requests', `${now.prs.length} open`, 'suggestion')}
         {now.prs.length === 0 && <Text dimColor>No pull requests open.</Text>}
+        {now.prs.length > 0 &&
+          (arming ? (
+            <Box flexDirection="row" gap={1} flexWrap="wrap">
+              <Text color="warning">{`Close out and merge all ${now.prs.length} open ${now.prs.length === 1 ? 'PR' : 'PRs'}?`}</Text>
+              <Button key="close-out-all-yes" variant="primary" hotkey="y" onPress={() => void closeOutAll(now.prs)}>
+                Yes, merge them
+              </Button>
+              <Button key="close-out-all-no" dimColor hotkey="n" onPress={arm(false)}>
+                Cancel
+              </Button>
+            </Box>
+          ) : (
+            <Box flexDirection="row">
+              <Button key="close-out-all" dimColor hotkey="m" onPress={arm(true)}>
+                {`⇶ Close out all ${now.prs.length}`}
+              </Button>
+            </Box>
+          ))}
         {now.prs.map(prRow)}
 
         {shown.length === 0 && (
@@ -511,9 +551,11 @@ export const register: Register = on => {
 
         <Box marginTop={1}>
           <Text dimColor>
-            {single
-              ? 's start · d draft · o open on GitHub · x close · r refresh'
-              : 'a active · f future · b bugs · l all · r refresh · ⏎ open an issue'}
+            {arming
+              ? 'y merge every open PR · n cancel'
+              : single
+                ? 's start · d draft · o open on GitHub · x close · r refresh'
+                : `a active · f future · b bugs · l all · r refresh · ⏎ open an issue${now.prs.length > 0 ? ' · m close out all PRs' : ''}`}
           </Text>
         </Box>
       </Box>
