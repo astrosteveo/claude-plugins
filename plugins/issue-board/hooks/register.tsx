@@ -362,7 +362,8 @@ export const register: Register = on => {
     }
 
     // What hovering a row shows above it: the title, how far along, and the boxes still open.
-    // Every line is padded to the card's width so it covers the rows it is painted over.
+    // Every line is padded to the card's width, its margins spaces rather than paddingX, so it covers the rows it is
+    // painted over: the surface paints a floating box's text and border but leaves its padding showing what is beneath.
     const peek = (issue: Issue) => {
       const step = progress(issue.checks)
       const cardWidth = Math.min(60, width - 14)
@@ -389,11 +390,10 @@ export const register: Register = on => {
           flexDirection="column"
           borderStyle="round"
           borderColor="claude"
-          paddingX={1}
         >
           {lines.map(line => (
             <Text color={line.color} dimColor={line.dim} bold={line.bold}>
-              {line.text.padEnd(inner)}
+              {` ${line.text.padEnd(inner)} `}
             </Text>
           ))}
         </Box>
