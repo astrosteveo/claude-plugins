@@ -1,0 +1,20 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "plain-english",
+  "displayName": "Plain English",
+  "version": "0.1.0",
+  "description": "Makes Claude write in short, plain English sentences, and refuses commit messages, PRs, Markdown files and replies that show the usual signs of AI-written text. /plain-english on|off switches it.",
+  "author": {
+    "name": "astrosteveo"
+  },
+  "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/plain-english",
+  "repository": "https://github.com/astrosteveo/claude-plugins",
+  "keywords": [
+    "mod",
+    "writing",
+    "style",
+    "plain-english",
+    "system-prompt",
+    "hooks"
+  ]
+}

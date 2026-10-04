@@ -8,3 +8,5 @@ __pycache__/
 *.pyc
 # Type files Claude Code writes on each load of a mod
 .claude-plugin/types/
+# Eval results from claude plugin eval
+evals/results/
