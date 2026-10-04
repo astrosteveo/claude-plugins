@@ -46,8 +46,8 @@
     {
       "name": "type-ahead",
       "source": "./plugins/type-ahead",
-      "description": "Pause while typing a prompt and Haiku predicts the rest of your sentence from the conversation, shown dim after your text: Enter takes it, a second Enter sends.",
-      "version": "0.1.0",
+      "description": "Pause while typing a prompt and Haiku offers three ways your sentence could go on, listed above the prompt with the selected one previewed dim in the box: alt+↑/↓ cycle, Enter takes it.",
+      "version": "0.2.0",
       "author": {
         "name": "astrosteveo"
       },
