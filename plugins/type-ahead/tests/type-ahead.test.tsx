@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { ClientKeyEvent, PromptEditInput, SessionMessage } from 'claude-code'
 
-import { anchorOf, buildPrompt, continuationOf, editGhost, isPredictable } from '../hooks/register'
+import { anchorOf, buildPrompt, continuationOf, editGhost, isPredictable, narrow, optionsOf, rowLabel, step } from '../hooks/register'
 import type { Ghost } from '../hooks/register'
 
 // The kit raises no `prompt.edit` (keys come from the terminal), so the edit
@@ -72,8 +72,14 @@ describe('the model call', () => {
     expect(prompt).toContain('Developer: the login page 500s')
     expect(prompt).toContain('Claude: Found it: refreshSession() throws')
     expect(prompt).toContain('<unfinished_message>\nfix refresh\n</unfinished_message>')
-    expect(prompt).toContain('Begin your reply with exactly: refresh')
-    expect(buildPrompt('fix the ', [])).toContain('begin your reply directly with the next word')
+    expect(prompt).toContain('Begin each line with exactly: refresh')
+    expect(buildPrompt('fix the ', [])).toContain('begin each line directly with the next word')
+  })
+
+  test('each line of the reply is one prediction, three at most, no repeats', async () => {
+    const reply = 'refreshSession to return null\n2. refreshSession tests\n- refresh token handling\nrefreshSession to return null\nrefresh the cache'
+    expect(optionsOf('fix refresh', reply)).toEqual(['Session to return null', 'Session tests', ' token handling'])
+    expect(optionsOf('fix refresh', 'nothing useful\n\n')).toEqual([])
   })
 
   test('the reply becomes the ghost after the anchor', async () => {
@@ -94,6 +100,48 @@ describe('the model call', () => {
     expect(isPredictable('ok', 2)).toBe(false)
     expect(isPredictable('/model opus', 11)).toBe(false)
     expect(isPredictable('!ls -la', 7)).toBe(false)
+  })
+})
+
+describe('the band', () => {
+  const p = { base: 'handle', options: [' the null token', ' the expired cookie', ' a retry'], selected: 1 }
+
+  test('typing narrows the predictions to those that still fit, keeping the selected one', async () => {
+    expect(narrow(p, ' the ')).toEqual({ base: 'handle the ', options: ['null token', 'expired cookie'], selected: 1 })
+    expect(narrow({ ...p, selected: 2 }, ' a')).toEqual({ base: 'handle a', options: [' retry'], selected: 0 })
+  })
+
+  test('alt+↑/↓ step through the predictions, wrapping at either end', async () => {
+    expect(step(p, 1)).toBe(2)
+    expect(step({ ...p, selected: 2 }, 1)).toBe(0)
+    expect(step({ ...p, selected: 0 }, -1)).toBe(2)
+    expect(step({ ...p, options: [] }, 1)).toBe(0)
+  })
+
+  test('each row marks the selected prediction and fits the band', async () => {
+    expect(rowLabel(p, 1, 80)).toBe('▸ handle the expired cookie')
+    expect(rowLabel(p, 0, 80)).toBe('  handle the null token')
+    expect(rowLabel(p, 1, 12)).toBe('▸ handle th…')
+    const long = { ...p, base: 'please look at the session refresh code and handle' }
+    expect(rowLabel(long, 1, 200)).toBe('▸ … refresh code and handle the expired cookie')
+  })
+
+  test('with no predictions the band is left to the plugins beneath', async ($, on) => {
+    on('ui.render', ($, e) => {
+      const { Text } = $.ui.resolve(e)
+      return <Text>beneath</Text>
+    })
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const band = await $.ui.mount({
+        plugin: 'type-ahead',
+        surface,
+        component: 'AbovePrompt',
+        props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 }, view: {} },
+      })
+      expect(await band.find({ type: 'Text', text: 'beneath' })).toBeDefined()
+      expect(await band.find({ type: 'Button' })).toBeUndefined()
+      await band.unmount()
+    }
   })
 })
 
