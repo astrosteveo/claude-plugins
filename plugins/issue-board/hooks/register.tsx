@@ -1,8 +1,26 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Board, Ci, Filter, Issue } from '../types'
-import { byArea, ciMark, clockTime, isBug, matches, parseIssues, parsePrs, progressOf, startPrompt, summary } from './parse'
+import type { Board, Filter, Issue, PullRequest } from '../types'
+import {
+  ago,
+  bar,
+  byArea,
+  chipsOf,
+  ciBadge,
+  fit,
+  hex,
+  isBug,
+  matches,
+  parseIssues,
+  parsePrs,
+  progress,
+  reviewBadge,
+  startPrompt,
+  sumProgress,
+  summary,
+  tone,
+} from './parse'
 
 const PANE = 'issue-board'
 const REFRESH_MS = 5 * 60 * 1000
@@ -21,8 +39,6 @@ const FILTERS: { id: Filter; label: string; hotkey: string }[] = [
   { id: 'all', label: 'All', hotkey: 'l' },
 ]
 
-const CI_COLOR: Record<Ci, string> = { pass: 'green', fail: 'red', pending: 'yellow', none: 'gray' }
-
 const gh = async ($: EngineInterface, args: string[]): Promise<string> => {
   const { exitCode, stdout, stderr } = await $.process.run(['gh', ...args], { timeoutMs: 60_000 })
   if (exitCode !== 0) throw new Error(stderr.trim().split('\n')[0] || `gh ${args[0]} exited ${exitCode}`)
@@ -35,8 +51,17 @@ const refresh = async ($: EngineInterface): Promise<void> => {
   try {
     const [repo, issues, prs] = await Promise.all([
       gh($, ['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner']),
-      gh($, ['issue', 'list', '--state', 'open', '--limit', '300', '--json', 'number,title,labels,body,updatedAt']),
-      gh($, ['pr', 'list', '--state', 'open', '--limit', '50', '--json', 'number,title,headRefName,isDraft,statusCheckRollup,reviewDecision']),
+      gh($, ['issue', 'list', '--state', 'open', '--limit', '300', '--json', 'number,title,url,labels,assignees,body,updatedAt']),
+      gh($, [
+        'pr',
+        'list',
+        '--state',
+        'open',
+        '--limit',
+        '50',
+        '--json',
+        'number,title,url,author,headRefName,isDraft,statusCheckRollup,reviewDecision,additions,deletions,updatedAt',
+      ]),
     ])
     const next: Board = { repo: repo.trim(), issues: parseIssues(issues), prs: parsePrs(prs), fetchedAt: Date.now() }
     await update($, board, () => next)
@@ -46,6 +71,15 @@ const refresh = async ($: EngineInterface): Promise<void> => {
     await update($, error, () => (cause instanceof Error ? cause.message : String(cause)))
   } finally {
     await update($, loading, () => false)
+  }
+}
+
+const browse = async ($: EngineInterface, kind: 'issue' | 'pr', number: number): Promise<void> => {
+  try {
+    await gh($, [kind, 'view', String(number), '--web'])
+    $.ui.toast(`Opened #${number} in the browser`)
+  } catch (cause) {
+    $.ui.toast(`Couldn't open #${number}: ${cause instanceof Error ? cause.message : String(cause)}`)
   }
 }
 
@@ -85,11 +119,14 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
+    const width = Math.max(40, e.props.bodyColumns)
+    const roomy = width >= 72
     const now = await read($, board)
     const failure = await read($, error)
     const busy = await read($, loading)
     const chosen = await read($, filter)
     const open = await read($, expanded)
+    const clock = Date.now()
 
     const start = async (issue: Issue) => {
       await $.prompt.submit({ text: startPrompt(issue), asUser: true })
@@ -99,11 +136,40 @@ export const register: Register = on => {
     const toggle = (number: number) => () =>
       void update($, expanded, list => (list.includes(number) ? list.filter(one => one !== number) : [...list, number]))
 
+    // A section's heading: its name, a rule across the pane, and what sits at its right.
+    const rule = (title: string, right: string, color = 'claude') => (
+      <Box flexDirection="row" marginTop={1}>
+        <Text bold color={color}>
+          {title}
+        </Text>
+        <Text dimColor>{` ${'─'.repeat(Math.max(1, width - [...title].length - [...right].length - 2))} `}</Text>
+        <Text dimColor>{right}</Text>
+      </Box>
+    )
+
+    const meter = (done: number, total: number, cells: number) => {
+      const [filled, empty] = bar({ done, total }, cells)
+      return (
+        <Text>
+          <Text color={tone({ done, total })}>{filled}</Text>
+          <Text color="inactive" dimColor>
+            {empty}
+          </Text>
+        </Text>
+      )
+    }
+
     const header = (
       <Box flexDirection="row" justifyContent="space-between">
-        <Text bold>{now ? now.repo : 'Issues'}</Text>
+        <Text>
+          <Text color="claude">◆ </Text>
+          <Text bold>{now ? now.repo : 'GitHub'}</Text>
+          <Text dimColor>{now ? '  issues & pull requests' : ''}</Text>
+        </Text>
         <Box flexDirection="row" gap={1}>
-          <Text dimColor>{busy ? 'refreshing…' : now ? `updated ${clockTime(now.fetchedAt)}` : ''}</Text>
+          <Text color={busy ? 'warning' : undefined} dimColor={!busy}>
+            {busy ? '◌ syncing…' : now ? `⟳ ${ago(new Date(now.fetchedAt).toISOString(), clock)}` : ''}
+          </Text>
           <Button key="refresh" hotkey="r" dimColor onPress={() => void refresh($)}>
             Refresh
           </Button>
@@ -115,84 +181,256 @@ export const register: Register = on => {
       return (
         <Box flexDirection="column">
           {header}
-          {failure ? <Text color="red">gh: {failure}</Text> : <Text dimColor>Loading issues…</Text>}
+          {failure ? (
+            <Box flexDirection="column" borderStyle="round" borderColor="error" paddingX={1} marginTop={1}>
+              <Text color="error" bold>
+                ✗ Couldn't reach GitHub
+              </Text>
+              <Text>{failure}</Text>
+              <Text dimColor>Check `gh auth status`, then press r.</Text>
+            </Box>
+          ) : (
+            <Box marginTop={1}>
+              <Text dimColor>◌ Fetching issues and pull requests…</Text>
+            </Box>
+          )}
         </Box>
       )
     }
 
     const shown = now.issues.filter(issue => matches(chosen, issue))
-    const row = (issue: Issue) => (
-      <Box flexDirection="column">
-        <Box flexDirection="row" gap={1}>
-          <Text color={issue.checks.length > 0 && issue.checks.every(check => check.done) ? 'green' : undefined} dimColor={issue.checks.length === 0}>
-            {progressOf(issue.checks)}
+    const bugs = now.issues.filter(isBug).length
+    const failing = now.prs.filter(pr => pr.ci === 'fail').length
+    const overall = sumProgress(shown)
+
+    const stat = (glyph: string, color: string, value: number, label: string) => (
+      <Text>
+        <Text color={color}>{glyph}</Text>
+        <Text bold>{` ${value}`}</Text>
+        <Text dimColor>{` ${label}`}</Text>
+      </Text>
+    )
+
+    const stats = (
+      <Box flexDirection="row" gap={3} flexWrap="wrap">
+        {stat('●', 'claude', now.issues.length, now.issues.length === 1 ? 'issue' : 'issues')}
+        {stat('▲', bugs > 0 ? 'error' : 'inactive', bugs, bugs === 1 ? 'bug' : 'bugs')}
+        {stat('⇄', 'suggestion', now.prs.length, now.prs.length === 1 ? 'PR' : 'PRs')}
+        {failing > 0 && stat('✗', 'error', failing, 'failing')}
+        {overall.total > 0 && (
+          <Text>
+            {meter(overall.done, overall.total, 10)}
+            <Text dimColor>{` ${Math.round((overall.done / overall.total) * 100)}% ticked`}</Text>
           </Text>
-          {isBug(issue) && <Text color="red">bug</Text>}
-          <Button key={`issue-${issue.number}`} plain dimColor={!open.includes(issue.number)} onPress={toggle(issue.number)}>
-            {`#${issue.number} ${issue.title}`}
-          </Button>
-        </Box>
-        {open.includes(issue.number) && (
-          <Box flexDirection="column" paddingLeft={6}>
-            {issue.checks.length === 0 && <Text dimColor>No acceptance boxes.</Text>}
-            {issue.checks.map(check => (
-              <Text color={check.done ? 'green' : undefined} dimColor={check.done}>
-                {check.done ? '✓' : '○'} {check.text}
-              </Text>
-            ))}
-            <Text dimColor>
-              {issue.labels.join(', ')} · updated {issue.updatedAt.slice(0, 10)}
-            </Text>
-            <Box flexDirection="row" gap={1}>
-              <Button key={`start-${issue.number}`} variant="primary" onPress={() => void start(issue)}>
-                Start
-              </Button>
-              <Button key={`draft-${issue.number}`} dimColor onPress={() => void $.prompt.fill({ text: startPrompt(issue) })}>
-                Draft
-              </Button>
-            </Box>
-          </Box>
         )}
       </Box>
     )
 
+    const tabs = (
+      <Box flexDirection="row" gap={1} marginTop={1}>
+        {FILTERS.map(one => (
+          <Button
+            key={`filter-${one.id}`}
+            hotkey={one.hotkey}
+            variant={one.id === chosen ? 'primary' : undefined}
+            dimColor={one.id !== chosen}
+            onPress={() => void update($, filter, () => one.id)}
+          >
+            {`${one.label} ${now.issues.filter(issue => matches(one.id, issue)).length}`}
+          </Button>
+        ))}
+      </Box>
+    )
+
+    const prRow = (pr: PullRequest) => {
+      const badge = ciBadge[pr.ci]
+      const review = reviewBadge(pr)
+      const size = `+${pr.additions} −${pr.deletions}`
+      const titleRoom = width - [...badge.text].length - String(pr.number).length - 3 - (roomy ? size.length + 2 : 0)
+      return (
+        <Box key={`pr-row-${pr.number}`} flexDirection="column" marginTop={1}>
+          <Box flexDirection="row" justifyContent="space-between">
+            <Box flexDirection="row" gap={1}>
+              <Text color={badge.color} inverse bold>
+                {badge.text}
+              </Text>
+              <Text color="suggestion" bold>{`#${pr.number}`}</Text>
+              <Button key={`pr-${pr.number}`} plain hover={{ color: 'claude', bold: true }} onPress={() => void browse($, 'pr', pr.number)}>
+                {fit(pr.title, titleRoom)}
+              </Button>
+            </Box>
+            {roomy && (
+              <Text>
+                <Text color="success">{`+${pr.additions}`}</Text>
+                <Text color="error">{` −${pr.deletions}`}</Text>
+              </Text>
+            )}
+          </Box>
+          <Box flexDirection="row" gap={1} paddingLeft={[...badge.text].length + 1}>
+            <Text dimColor>{`⎇ ${fit(pr.branch, Math.max(10, Math.floor(width / 3)))}`}</Text>
+            {pr.author && <Text dimColor>{`· @${pr.author}`}</Text>}
+            {pr.updatedAt && <Text dimColor>{`· ${ago(pr.updatedAt, clock)}`}</Text>}
+            {review && <Text color={review.color}>{`· ${review.text}`}</Text>}
+          </Box>
+        </Box>
+      )
+    }
+
+    // One issue on one line: its progress, number, title, chips and age; the title opens it.
+    const issueRow = (issue: Issue) => {
+      const isOpen = open.includes(issue.number)
+      const step = progress(issue.checks)
+      const bug = isBug(issue)
+      const chips = roomy ? chipsOf(issue).slice(0, 2) : []
+      const age = ago(issue.updatedAt, clock)
+      const count = step.total > 0 ? `${step.done}/${step.total}`.padEnd(5) : '     '
+      const right = chips.reduce((sum, chip) => sum + chip.name.length + 3, 0) + age.padStart(3).length
+      const left = 6 + 1 + 5 + 1 + (bug ? 2 : 0) + String(issue.number).length + 2
+      const [filled, empty] = bar(step, 6)
+      return (
+        <Box key={`row-${issue.number}`} flexDirection="row" justifyContent="space-between">
+          <Box flexDirection="row">
+            <Text color={tone(step)}>{filled}</Text>
+            <Text color="inactive" dimColor>
+              {empty}
+            </Text>
+            <Text color={tone(step)} dimColor={step.total === 0}>{` ${count} `}</Text>
+            {bug && <Text color="error">▲ </Text>}
+            <Text color={isOpen ? 'claude' : undefined} dimColor={!isOpen} hover={{ dimColor: false, color: 'claude' }}>
+              {`#${issue.number} `}
+            </Text>
+            <Button key={`issue-${issue.number}`} plain hover={{ bold: true }} onPress={toggle(issue.number)}>
+              {fit(issue.title, width - left - right - 1)}
+            </Button>
+          </Box>
+          <Box flexDirection="row" gap={1}>
+            {chips.map(chip => (
+              <Text>
+                <Text color={hex(chip)}>●</Text>
+                <Text dimColor>{` ${chip.name}`}</Text>
+              </Text>
+            ))}
+            <Text dimColor>{age.padStart(3)}</Text>
+          </Box>
+        </Box>
+      )
+    }
+
+    // An opened issue: a card with its labels, its boxes and what to do with it.
+    const issueCard = (issue: Issue, hotkeys: boolean) => {
+      const step = progress(issue.checks)
+      return (
+        <Box flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1} marginLeft={2} marginBottom={1}>
+          <Text bold wrap="wrap">
+            {issue.title}
+          </Text>
+          <Box flexDirection="row" gap={2} flexWrap="wrap">
+            {issue.labels.map(label => (
+              <Text>
+                <Text color={hex(label)}>●</Text>
+                <Text dimColor>{` ${label.name}`}</Text>
+              </Text>
+            ))}
+            {issue.assignees.map(login => (
+              <Text color="suggestion">{`@${login}`}</Text>
+            ))}
+            <Text dimColor>{`updated ${ago(issue.updatedAt, clock)} ago`}</Text>
+          </Box>
+          {step.total > 0 ? (
+            <Box flexDirection="column" marginTop={1}>
+              <Text>
+                {meter(step.done, step.total, Math.max(10, Math.min(30, width - 24)))}
+                <Text bold>{` ${step.done}/${step.total}`}</Text>
+                <Text dimColor>{` · ${Math.round((step.done / step.total) * 100)}%`}</Text>
+              </Text>
+              {issue.checks.map(check =>
+                check.done ? (
+                  <Text>
+                    <Text color="success">{'✔ '}</Text>
+                    <Text dimColor strikethrough>
+                      {check.text}
+                    </Text>
+                  </Text>
+                ) : (
+                  <Text>
+                    <Text color="warning">{'☐ '}</Text>
+                    <Text>{check.text}</Text>
+                  </Text>
+                ),
+              )}
+            </Box>
+          ) : (
+            <Box marginTop={1}>
+              <Text dimColor italic>
+                No acceptance boxes in this issue.
+              </Text>
+            </Box>
+          )}
+          <Box flexDirection="row" gap={1} marginTop={1}>
+            <Button key={`start-${issue.number}`} variant="primary" hotkey={hotkeys ? 's' : undefined} onPress={() => void start(issue)}>
+              ▶ Start
+            </Button>
+            <Button key={`draft-${issue.number}`} hotkey={hotkeys ? 'd' : undefined} onPress={() => void $.prompt.fill({ text: startPrompt(issue) })}>
+              ✎ Draft
+            </Button>
+            <Button key={`web-${issue.number}`} dimColor hotkey={hotkeys ? 'o' : undefined} onPress={() => void browse($, 'issue', issue.number)}>
+              ↗ GitHub
+            </Button>
+            <Button key={`close-${issue.number}`} dimColor hotkey={hotkeys ? 'x' : undefined} onPress={toggle(issue.number)}>
+              Close
+            </Button>
+          </Box>
+        </Box>
+      )
+    }
+
+    const single = open.filter(number => shown.some(issue => issue.number === number)).length === 1
+    const filterName = FILTERS.find(one => one.id === chosen)?.label ?? ''
+
     return (
       <Box flexDirection="column">
         {header}
-        <Box flexDirection="row" gap={1} marginBottom={1}>
-          {FILTERS.map(one => (
-            <Button key={`filter-${one.id}`} hotkey={one.hotkey} variant={one.id === chosen ? 'primary' : undefined} onPress={() => void update($, filter, () => one.id)}>
-              {`${one.label} ${now.issues.filter(issue => matches(one.id, issue)).length}`}
-            </Button>
-          ))}
-        </Box>
-        {failure && <Text color="red">Last refresh failed: {failure}</Text>}
-
-        <Text bold>Pull requests</Text>
-        {now.prs.length === 0 && <Text dimColor>None open.</Text>}
-        {now.prs.map(pr => (
-          <Box flexDirection="row" gap={1}>
-            <Text color={CI_COLOR[pr.ci]}>{ciMark[pr.ci]}</Text>
-            <Text>{`#${pr.number} ${pr.title}`}</Text>
-            <Text dimColor>
-              {pr.branch}
-              {pr.isDraft ? ' · draft' : ''}
-              {pr.review ? ` · ${pr.review.toLowerCase().replace('_', ' ')}` : ''}
-            </Text>
-          </Box>
-        ))}
-
-        {shown.length === 0 && (
+        {stats}
+        {tabs}
+        {failure && (
           <Box marginTop={1}>
-            <Text dimColor>No open issues here.</Text>
+            <Text color="error">{`✗ Last refresh failed: ${failure}`}</Text>
           </Box>
         )}
-        {byArea(shown).map(([area, issues]) => (
-          <Box flexDirection="column" marginTop={1}>
-            <Text bold>{`${area} (${issues.length})`}</Text>
-            {issues.map(row)}
+
+        {rule('Pull requests', `${now.prs.length} open`, 'suggestion')}
+        {now.prs.length === 0 && <Text dimColor>No pull requests open.</Text>}
+        {now.prs.map(prRow)}
+
+        {shown.length === 0 && (
+          <Box flexDirection="column" alignItems="center" marginTop={2}>
+            <Text color="success">✓</Text>
+            <Text dimColor>{`Nothing open under ${filterName}.`}</Text>
           </Box>
-        ))}
+        )}
+        {byArea(shown).map(([area, issues]) => {
+          const sum = sumProgress(issues)
+          const right = `${issues.length} · ${sum.total > 0 ? `${Math.round((sum.done / sum.total) * 100)}%` : '—'}`
+          return (
+            <Box flexDirection="column">
+              {rule(area, right)}
+              {issues.map(issue => (
+                <Box flexDirection="column">
+                  {issueRow(issue)}
+                  {open.includes(issue.number) && issueCard(issue, single)}
+                </Box>
+              ))}
+            </Box>
+          )
+        })}
+
+        <Box marginTop={1}>
+          <Text dimColor>
+            {single
+              ? 's start · d draft · o open on GitHub · x close · r refresh'
+              : 'a active · f future · b bugs · l all · r refresh · ⏎ open an issue'}
+          </Text>
+        </Box>
       </Box>
     )
   })

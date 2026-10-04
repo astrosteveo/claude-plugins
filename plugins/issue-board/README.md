@@ -11,16 +11,26 @@ CLI, signed in, in the folder the session started in.
 
 - The status line sums up the board, such as `35 issues · 1 bug · PR #335✓`.
 - Run `/issues` to open the pane:
-  - Open pull requests with their CI (`✓` passed, `✗` failed, `…` running)
-    and review state.
-  - Open issues by `area:` label, each with how many of its task-list boxes
-    are ticked, such as `2/4`. Bugs come first, then issues under way.
+  - A header with the repo, when it last synced, and totals: issues, bugs,
+    pull requests, failing CI, and how many task-list boxes are ticked.
+  - Open pull requests with a CI badge (`✓ PASS`, `✗ FAIL`, `◷ CI`), the
+    review state, the branch, author, age and `+added −deleted` lines. Press
+    one to open it on GitHub.
+  - Open issues by `area:` label, each area with its count and how far along
+    it is. Each issue has a progress bar of its task-list boxes, such as
+    `━━━━━━ 2/4`, its labels in their GitHub colors, and how long since it
+    changed. Bugs come first, marked `▲`, then issues under way.
   - `a` Active (not labelled `future`), `f` Future, `b` Bugs, `l` All, and
     `r` refreshes.
-- Press Enter on an issue, or click it, to show its boxes. Then:
-  - **Start** sends Claude a message to start on the issue, with its unticked
-    boxes.
-  - **Draft** puts the same message in the prompt box to edit first.
+- Press Enter on an issue, or click it, to open its card: every label and
+  assignee, a progress bar and its boxes. Then:
+  - **Start** (`s`) sends Claude a message to start on the issue, with its
+    unticked boxes.
+  - **Draft** (`d`) puts the same message in the prompt box to edit first.
+  - **GitHub** (`o`) opens the issue in the browser, and **Close** (`x`)
+    folds the card.
+
+  The letter keys work while one card is open.
 - `/issues refresh` refreshes and replies with the summary.
 
 The board refreshes every 5 minutes, and straight after Claude runs a
