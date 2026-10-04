@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { ClientKeyEvent, PromptEditInput, SessionMessage } from 'claude-code'
 
-import { anchorOf, buildPrompt, continuationOf, editGhost, isPredictable, narrow, optionsOf, rowLabel, step } from '../hooks/register'
+import { alternativesOf, anchorOf, buildNextPrompt, buildPrompt, continuationOf, editGhost, isPredictable, narrow, optionsOf, rowLabel, step } from '../hooks/register'
 import type { Ghost } from '../hooks/register'
 
 // The kit raises no `prompt.edit` (keys come from the terminal), so the edit
@@ -64,48 +64,113 @@ describe('editGhost', () => {
 
 describe('the model call', () => {
   const messages: SessionMessage[] = [
-    { role: 'user', text: 'the login page 500s when the session cookie expires', toolUses: [] },
+    {
+      role: 'user',
+      text: '<system-reminder>\nToday is Thursday.\n</system-reminder>\nthe login page 500s when the session cookie expires',
+      toolUses: [],
+    },
+    { role: 'user', text: '<command-name>/clear</command-name>', toolUses: [] },
+    {
+      role: 'assistant',
+      text: 'Let me look.',
+      toolUses: [{ tool_use_id: 't1', tool: 'Read', input: { file_path: 'src/auth/session.ts' } }],
+    },
     { role: 'user', text: '', toolUses: [] },
-    { role: 'assistant', text: 'Found it: refreshSession() throws on a null token.', toolUses: [] },
+    {
+      role: 'assistant',
+      text: 'Found it: refreshSession() throws on a null token.',
+      toolUses: [{ tool_use_id: 't2', tool: 'Bash', input: { command: 'npm test -- session\nmore' } }],
+    },
   ]
 
   test('the prompt carries the conversation, the draft and the anchor', async () => {
-    const prompt = buildPrompt('fix refresh', messages)
+    const prompt = buildPrompt('please fix refresh', messages)
     expect(prompt).toContain('Developer: the login page 500s')
-    expect(prompt).toContain('Claude: Found it: refreshSession() throws')
-    expect(prompt).toContain('<unfinished_message>\nfix refresh\n</unfinished_message>')
-    expect(prompt).toContain('Begin each line with exactly: refresh')
-    expect(buildPrompt('fix the ', [])).toContain('begin each line directly with the next word')
+    expect(prompt).toContain('<draft>\nplease fix refresh\n</draft>')
+    expect(prompt).toContain('Anchor: please fix refresh\nIts last word may be unfinished')
+    expect(buildPrompt('so we fix the ', [])).toContain('Anchor: we fix the\nThe draft ends with a space')
+  })
+
+  test("Claude Code's markup is not the developer's, and a Claude turn names the tools it ran", async () => {
+    const prompt = buildPrompt('fix refresh', messages)
+    expect(prompt).not.toContain('system-reminder')
+    expect(prompt).not.toContain('/clear')
+    expect(prompt).toContain(
+      'Claude: [ran Read src/auth/session.ts · Bash npm test -- session] Let me look.\n\nFound it: refreshSession() throws',
+    )
   })
 
   test('each line of the reply is one prediction, three at most, no repeats', async () => {
-    const reply = 'refreshSession to return null\n2. refreshSession tests\n- refresh token handling\nrefreshSession to return null\nrefresh the cache'
+    const reply = 'fix refreshSession to return null\n2. fix refreshSession tests\n- fix refresh token handling\nfix refreshSession to return null\nfix refresh the cache'
     expect(optionsOf('fix refresh', reply)).toEqual(['Session to return null', 'Session tests', ' token handling'])
+    expect(optionsOf('fix refresh', '"fix refresh tokens"')).toEqual([' tokens'])
     expect(optionsOf('fix refresh', 'nothing useful\n\n')).toEqual([])
   })
 
+  test('a reply to the draft, not a continuation of it, is no prediction', async () => {
+    const reply = 'Your message got cut off! What next?\n\nDo you want to:\n- Skip it and add a TODO?'
+    expect(optionsOf('skip it for now and ', reply)).toEqual([])
+  })
+
   test('the reply becomes the ghost after the anchor', async () => {
-    expect(anchorOf('fix the au')).toBe('au')
-    expect(anchorOf('fix the ')).toBe('')
-    expect(continuationOf('fix the au', 'auth bug')).toBe('th bug')
-    expect(continuationOf('fix the ', '  auth bug\nand more')).toBe('auth bug')
-    expect(continuationOf('fix the au', 'the auth bug')).toBeUndefined()
-    expect(continuationOf('fix the au', 'au')).toBeUndefined()
-    // A reply that restates the whole draft is cut back to what follows it.
-    expect(continuationOf('hello this is ', 'hello this is go, read the trace')).toBe('go, read the trace')
+    expect(anchorOf('please fix the au')).toBe('fix the au')
+    expect(anchorOf('please fix the ')).toBe('please fix the')
+    expect(anchorOf('first line\nok')).toBe('ok')
     expect(continuationOf('fix the au', 'fix the auth bug')).toBe('th bug')
+    expect(continuationOf('fix the ', '  fix the auth bug\nand more')).toBe('auth bug')
+    expect(continuationOf('fix the ', 'auth bug')).toBeUndefined()
+    // After a space the next word stands alone.
+    expect(continuationOf('fix the ', 'fix theme colors')).toBeUndefined()
+    expect(continuationOf('fix the au', 'the auth bug')).toBeUndefined()
+    expect(continuationOf('fix the au', 'fix the au')).toBeUndefined()
+    expect(continuationOf('fix the au', 'fix the au.')).toBeUndefined()
+    // A reply that restates the whole draft is cut back to what follows it.
+    expect(continuationOf('ok so hello this is ', 'ok so hello this is go, read the trace')).toBe('go, read the trace')
+    expect(continuationOf('please fix the au', 'please fix the auth bug')).toBe('th bug')
     expect(continuationOf('hello this is ', 'hello this is')).toBeUndefined()
     const long = continuationOf('a', 'a' + ' word'.repeat(40))
     expect(long?.length).toBeLessThanOrEqual(120)
     expect(long?.endsWith('word')).toBe(true)
   })
 
-  test('only prose at the end of the box is predicted', async () => {
+  test('only unfinished prose at the end of the box is predicted', async () => {
     expect(isPredictable('fix it', 6)).toBe(true)
     expect(isPredictable('fix it', 3)).toBe(false)
     expect(isPredictable('ok', 2)).toBe(false)
     expect(isPredictable('/model opus', 11)).toBe(false)
     expect(isPredictable('!ls -la', 7)).toBe(false)
+    expect(isPredictable('looks good. ', 12)).toBe(false)
+    expect(isPredictable('why is it slow?', 15)).toBe(false)
+  })
+})
+
+describe('next prompts in an empty box', () => {
+  const messages: SessionMessage[] = [
+    { role: 'user', text: 'add a --dry-run flag to the deploy script', toolUses: [] },
+    { role: 'assistant', text: 'Done: scripts/deploy.sh now takes --dry-run.', toolUses: [] },
+  ]
+
+  test("the prompt carries the conversation and Claude Code's guess", async () => {
+    const prompt = buildNextPrompt('run it with --dry-run', messages)
+    expect(prompt).toContain('Claude: Done: scripts/deploy.sh now takes --dry-run.')
+    expect(prompt).toContain("Claude Code's guess at the developer's next message: run it with --dry-run")
+  })
+
+  test("the reply's dash lines become the alternatives, the guess and repeats left out", async () => {
+    const reply = 'Here are two:\n- add a test for it\n- Run it with --dry-run\n- "commit it"\n- add a test for it\n- also:'
+    expect(alternativesOf('run it with --dry-run', reply)).toEqual(['add a test for it', 'commit it'])
+    expect(alternativesOf('run it', 'Sure! I would suggest testing it.')).toEqual([])
+    expect(alternativesOf('run it', '- ' + 'word '.repeat(30))).toEqual([])
+  })
+
+  test("Claude Code's suggestion goes through as it was proposed", async ($, on) => {
+    const proposed: string[] = []
+    on('prompt.suggest', (_$, e) => {
+      proposed.push(e.text)
+      return { isShown: false }
+    })
+    expect(await $.prompt.suggest({ text: 'run the tests' })).toEqual({ isShown: false })
+    expect(proposed).toEqual(['run the tests'])
   })
 })
 
@@ -122,6 +187,10 @@ describe('the band', () => {
     expect(step({ ...p, selected: 2 }, 1)).toBe(0)
     expect(step({ ...p, selected: 0 }, -1)).toBe(2)
     expect(step({ ...p, options: [] }, 1)).toBe(0)
+  })
+
+  test('next prompts in an empty box are listed whole', async () => {
+    expect(rowLabel({ base: '', options: ['run the tests', 'commit it'], selected: 1 }, 1, 80)).toBe('▸ commit it')
   })
 
   test('each row marks the selected prediction and fits the band', async () => {
