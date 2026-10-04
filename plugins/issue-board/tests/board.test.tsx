@@ -104,7 +104,7 @@ test('the pane lists the issues by filter and opens one to its boxes', async ($,
     expect(await ui.find({ text: /^closed / })).toBeDefined()
     expect((await ui.find({ text: /^ 2$/ }))?.props.bold).toBe(true)
     // The hover preview is drawn hidden beside the row, shown by the surface on hover.
-    expect(await ui.find({ text: /^No acceptance boxes\. *$/ })).toBeDefined()
+    expect(await ui.find({ text: /^ No acceptance boxes\. +$/ })).toBeDefined()
 
     await ui.press({ key: 'filter-future' })
     expect(await ui.find({ key: 'issue-315' })).toBeDefined()
