@@ -69,18 +69,6 @@ to it in `~/.claude/keybindings.json`:
 
 alt+→ and ctrl+→ then no longer move the caret by a word in the prompt.
 
-Optionally, two more make Tab jump from the prompt into the list, and Tab or →
-take the row under the ring there:
-
-```json
-{ "context": "Chat", "bindings": { "tab": "abovePrompt:focus" } },
-{ "context": "AbovePrompt", "bindings": { "tab": "abovePrompt:press", "right": "abovePrompt:press" } }
-```
-
-They apply to every band above the prompt, not only this one: Tab in the
-prompt enters any band that is showing, and in a band Tab and → press the
-focused button instead of moving to the next.
-
 ## Limits
 
 - No mod hears Tab, →, Esc or the plain arrows in the prompt box while the
