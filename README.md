@@ -8,9 +8,7 @@ maintained by astrosteveo.
 | Plugin | What it does |
 | --- | --- |
 | [issue-board](plugins/issue-board) | Open GitHub issues and pull requests in a pane and the status line, with acceptance progress and CI, and a button that hands an issue to Claude. |
-| [turn-recap](plugins/turn-recap) | Sums up each turn on its closing line (tools run, failures, files edited), and lists every file Claude edited this session in a `/touched` pane. |
 | [plain-english](plugins/plain-english) | Makes Claude write in short, plain English, and refuses commits, PRs, Markdown files and replies that show the usual signs of AI-written text. |
-| [type-ahead](plugins/type-ahead) | Pause while typing a prompt and Haiku offers three ways your sentence could go on, listed above the prompt with the selected one previewed dim; alt+↑/↓ cycle, alt+→ takes it. |
 
 ## Install
 

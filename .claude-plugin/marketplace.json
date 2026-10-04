@@ -26,42 +26,6 @@
       ]
     },
     {
-      "name": "turn-recap",
-      "source": "./plugins/turn-recap",
-      "description": "Sums up each turn on its 'Baked for 3s' line (tools run, failures, files edited), and lists every file Claude edited this session in a /touched pane.",
-      "version": "0.1.0",
-      "author": {
-        "name": "astrosteveo"
-      },
-      "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/turn-recap",
-      "category": "productivity",
-      "tags": [
-        "mod",
-        "turn",
-        "summary",
-        "files",
-        "pane"
-      ]
-    },
-    {
-      "name": "type-ahead",
-      "source": "./plugins/type-ahead",
-      "description": "Pause while typing a prompt and Haiku offers up to three ways your sentence could go on, drawn from the conversation, listed above the prompt with the selected one previewed dim in the box: alt+↑/↓ cycle, alt+→ takes it, Enter sends what you typed.",
-      "version": "0.5.0",
-      "author": {
-        "name": "astrosteveo"
-      },
-      "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/type-ahead",
-      "category": "productivity",
-      "tags": [
-        "mod",
-        "prompt",
-        "autocomplete",
-        "prediction",
-        "ghost-text"
-      ]
-    },
-    {
       "name": "plain-english",
       "source": "./plugins/plain-english",
       "description": "Makes Claude write in short, plain English sentences, and refuses commit messages, PRs, Markdown files and replies that show the usual signs of AI-written text. /plain-english on|off switches it.",
