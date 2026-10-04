@@ -9,6 +9,7 @@ maintained by astrosteveo.
 | --- | --- |
 | [issue-board](plugins/issue-board) | Open GitHub issues and pull requests in a pane and the status line, with acceptance progress and CI, and a button that hands an issue to Claude. |
 | [turn-recap](plugins/turn-recap) | Sums up each turn on its closing line (tools run, failures, files edited), and lists every file Claude edited this session in a `/touched` pane. |
+| [type-ahead](plugins/type-ahead) | Pause while typing a prompt and Haiku predicts the rest of your sentence, shown dim after your text; Enter takes it. |
 
 ## Install
 

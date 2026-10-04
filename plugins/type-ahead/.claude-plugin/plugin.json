@@ -1,0 +1,13 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "type-ahead",
+  "displayName": "Type-ahead",
+  "version": "0.1.0",
+  "description": "Pause while typing a prompt and Haiku predicts the rest of your sentence from the conversation, shown dim after your text: Enter takes it, a second Enter sends.",
+  "author": {
+    "name": "astrosteveo"
+  },
+  "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/type-ahead",
+  "repository": "https://github.com/astrosteveo/claude-plugins",
+  "keywords": ["mod", "prompt", "autocomplete", "prediction", "ghost-text"]
+}

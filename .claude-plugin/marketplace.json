@@ -42,6 +42,24 @@
         "files",
         "pane"
       ]
+    },
+    {
+      "name": "type-ahead",
+      "source": "./plugins/type-ahead",
+      "description": "Pause while typing a prompt and Haiku predicts the rest of your sentence from the conversation, shown dim after your text: Enter takes it, a second Enter sends.",
+      "version": "0.1.0",
+      "author": {
+        "name": "astrosteveo"
+      },
+      "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/type-ahead",
+      "category": "productivity",
+      "tags": [
+        "mod",
+        "prompt",
+        "autocomplete",
+        "prediction",
+        "ghost-text"
+      ]
     }
   ]
 }
