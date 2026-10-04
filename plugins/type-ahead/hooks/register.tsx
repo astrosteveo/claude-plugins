@@ -19,10 +19,13 @@ const HISTORY_CHARS = 1200
 const LEAD_CHARS = 24
 const MODEL = 'haiku'
 const STORE_ENABLED = 'enabled'
-/** How long after a held send the accepted text goes back in the box. */
-const REFILL_MS = 50
-/** The line shown when Enter takes a prediction instead of sending. */
-export const ACCEPTED = 'Took the prediction: Enter again to send it.'
+/**
+ * The engine action whose key takes the selected prediction from the prompt.
+ * Claude Code mounts its handler only while the diff panel is open: the person
+ * binds alt+→ to it in the Global context (see README) and the band's take
+ * Button claims it.
+ */
+const ACCEPT_ACTION = 'app:cycleDiffBase'
 /**
  * Engine actions whose chords cycle the predictions from the prompt. Claude
  * Code binds both to ctrl+↑/↓ and alt+↑/↓ for its diff panel's file list, and
@@ -80,7 +83,12 @@ export function anchorOf(draft: string): string {
  */
 export function continuationOf(draft: string, reply: string): string | undefined {
   const anchor = anchorOf(draft)
-  const line = reply.replace(/^\s+/, '').split('\n')[0] ?? ''
+  let line = reply.replace(/^\s+/, '').split('\n')[0] ?? ''
+  // A line that restates the whole draft continues after it, from the anchor on.
+  const typed = draft.trim()
+  if (typed.length > anchor.length && line.startsWith(typed)) {
+    line = anchor + line.slice(typed.length)
+  }
   if (!line.startsWith(anchor)) return undefined
   let rest = line.slice(anchor.length)
   if (anchor === '') rest = rest.trimStart()
@@ -134,7 +142,8 @@ export function buildPrompt(draft: string, messages: readonly SessionMessage[]):
 export function editGhost(ghost: Ghost, e: PromptEditInput): GhostEdit {
   if (e.text !== ghost.base + ghost.text) return { kind: 'stale' }
   const key = e.key
-  if (key !== undefined && ACCEPT_KEYS.has(key.key) && !key.ctrl && !key.meta && !key.shift) {
+  // alt or ctrl with them takes it too; shift is the selection's.
+  if (key !== undefined && ACCEPT_KEYS.has(key.key) && !key.shift) {
     return { kind: 'accept' }
   }
   // A cursor move or a deletion takes the ghost down and nothing more.
@@ -255,14 +264,11 @@ async function take($: EngineInterface, i: number) {
   cancel()
   asked++
   await update($, pick, () => null)
-  await $.prompt.fill({ text: p.base + option, mode: 'replace' })
-}
-
-/** Puts accepted text back in the box once the held send has emptied it. */
-function refill($: EngineInterface, text: string) {
-  $.clock.after(REFILL_MS, () => {
-    void $.prompt.fill({ text, mode: 'replace' })
-  })
+  // Rewriting the same text keeps the preview's dim paint: the box keeps a
+  // fill's decorations until its draft changes. Back to the typed text first,
+  // then the prediction after it, unpainted.
+  await $.prompt.fill({ text: p.base, mode: 'replace' })
+  await $.prompt.fill({ text: option, mode: 'append', decorations: [] })
 }
 
 export const register: Register = on => {
@@ -333,17 +339,15 @@ export const register: Register = on => {
     return box
   })
 
-  // Enter in the prompt takes the selected prediction: the send is held and the
-  // box gets the whole text back, so a second Enter sends it.
+  // Enter sends what was typed: the preview never leaves with the prompt.
   on('prompt.submit', async ($, e, next) => {
     const p = await read($, pick)
     cancel()
     asked++
     if (p !== null) await update($, pick, () => null)
     const option = p?.options[p.selected]
-    if (p !== null && option !== undefined && e.origin.kind === 'composer' && e.text === p.base + option) {
-      refill($, e.text)
-      return { drop: ACCEPTED }
+    if (p !== null && option !== undefined && e.text === p.base + option) {
+      return next({ ...e, text: p.base })
     }
     return next(e)
   })
@@ -367,11 +371,13 @@ export const register: Register = on => {
           ),
         )}
         <Box flexDirection="row">
+          <Button key="take" plain dimColor action={ACCEPT_ACTION} label="alt+→ take" onPress={() => void take($, p.selected)} />
+          <Text dimColor> · </Text>
           <Button key="prev" plain dimColor action={PREV_ACTION} label="alt+↑" onPress={() => void cycle($, -1)} />
           <Text dimColor>/</Text>
           <Button key="next" plain dimColor action={NEXT_ACTION} label="alt+↓" onPress={() => void cycle($, 1)} />
           <Text dimColor wrap="truncate-end">
-            {' '}cycle · Enter take · Backspace dismiss
+            {' '}cycle · Backspace dismiss · Enter sends what you typed
           </Text>
         </Box>
         {beneath}

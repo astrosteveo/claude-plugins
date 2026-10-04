@@ -31,8 +31,10 @@ describe('editGhost', () => {
     }
   })
 
-  test('a modified accept key is no accept', async () => {
-    expect(editGhost(GHOST, edit('', { key: { key: 'right', ctrl: true } }))).toEqual({ kind: 'dismiss' })
+  test('alt+→ and ctrl+→ take the ghost; shift+→ only takes it down', async () => {
+    expect(editGhost(GHOST, edit('', { key: { key: 'right', meta: true } }))).toEqual({ kind: 'accept' })
+    expect(editGhost(GHOST, edit('', { key: { key: 'right', ctrl: true } }))).toEqual({ kind: 'accept' })
+    expect(editGhost(GHOST, edit('', { key: { key: 'right', shift: true } }))).toEqual({ kind: 'dismiss' })
   })
 
   test('Backspace and cursor moves take the ghost down only', async () => {
@@ -89,6 +91,10 @@ describe('the model call', () => {
     expect(continuationOf('fix the ', '  auth bug\nand more')).toBe('auth bug')
     expect(continuationOf('fix the au', 'the auth bug')).toBeUndefined()
     expect(continuationOf('fix the au', 'au')).toBeUndefined()
+    // A reply that restates the whole draft is cut back to what follows it.
+    expect(continuationOf('hello this is ', 'hello this is go, read the trace')).toBe('go, read the trace')
+    expect(continuationOf('fix the au', 'fix the auth bug')).toBe('th bug')
+    expect(continuationOf('hello this is ', 'hello this is')).toBeUndefined()
     const long = continuationOf('a', 'a' + ' word'.repeat(40))
     expect(long?.length).toBeLessThanOrEqual(120)
     expect(long?.endsWith('word')).toBe(true)
