@@ -24,6 +24,24 @@
         "pull-requests",
         "pane"
       ]
+    },
+    {
+      "name": "turn-recap",
+      "source": "./plugins/turn-recap",
+      "description": "Sums up each turn on its 'Baked for 3s' line (tools run, failures, files edited), and lists every file Claude edited this session in a /touched pane.",
+      "version": "0.1.0",
+      "author": {
+        "name": "astrosteveo"
+      },
+      "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/turn-recap",
+      "category": "productivity",
+      "tags": [
+        "mod",
+        "turn",
+        "summary",
+        "files",
+        "pane"
+      ]
     }
   ]
 }
