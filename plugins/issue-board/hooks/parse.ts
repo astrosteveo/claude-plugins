@@ -1,4 +1,4 @@
-import type { Alert, Board, BoxTask, Check, Ci, Comment, Draft, Field, Filter, GroupBy, Issue, Known, Label, Project, PullRequest, Suggestion, Working } from '../types'
+import type { Alert, Board, BoxTask, Check, Ci, Comment, Draft, Field, Filter, GroupBy, Issue, Known, Label, Project, PullRequest, RunWatch, Suggestion, Worker, Working } from '../types'
 import { isLater, isNow, priorityRank } from './project'
 
 type RawLabel = { name: string; color?: string }
@@ -958,3 +958,78 @@ export const boxOf = (issue: Issue, task: BoxTask): { box: number; done: boolean
   const check = issue.checks[at]
   return check ? { box: at + 1, done: check.done } : null
 }
+
+// The repository a GitHub relay event is about, from the `owner/name#12` it names its pull request by, or its repo
+// field; null when it names none.
+export const eventRepoOf = (data: Record<string, unknown>): string | null => {
+  for (const key of ['pr', 'pull_request', 'repo', 'repository']) {
+    const value = data[key]
+    const named = typeof value === 'string' ? /^([\w.-]+\/[\w.-]+?)(?:#\d+)?$/.exec(value.trim())?.[1] : undefined
+    if (named) return named
+  }
+  return null
+}
+
+// The runs `gh run list --json databaseId,status,workflowName` lists that haven't completed.
+export const liveRunsOf = (json: string): { id: number; workflow: string }[] =>
+  (JSON.parse(json) as { databaseId?: unknown; status?: unknown; workflowName?: unknown }[]).flatMap(run =>
+    typeof run.databaseId === 'number' && typeof run.status === 'string' && run.status !== 'completed'
+      ? [{ id: run.databaseId, workflow: typeof run.workflowName === 'string' ? run.workflowName : 'CI' }]
+      : [],
+  )
+
+// How far a run has got, from what `gh run watch` has written so far: it draws the run again every few seconds, so
+// the last drawing's JOBS list counts. Each job is a line, `✓ build in 32s (ID 1)`, its steps indented under it; `✓`
+// passed, `X` failed, `-` skipped, `*` still running. Null before it has drawn a job.
+export const runProgressOf = (output: string): Pick<RunWatch, 'done' | 'total' | 'failed' | 'running' | 'step'> | null => {
+  const text = output.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\r/g, '')
+  const at = text.lastIndexOf('JOBS\n')
+  if (at < 0) return null
+  const jobs: { mark: string; name: string; step: string | null }[] = []
+  for (const line of text.slice(at + 'JOBS\n'.length).split('\n')) {
+    if (/^(ANNOTATIONS|Refreshing run status)/.test(line)) break
+    const job = /^([✓X*\-!]) (.+?)(?: in \S+)? \(ID \d+\)\s*$/.exec(line)
+    if (job) {
+      jobs.push({ mark: job[1] ?? '', name: job[2] ?? '', step: null })
+      continue
+    }
+    const step = /^\s+\* (.+?)\s*$/.exec(line)
+    const last = jobs.at(-1)
+    if (step && last && last.mark === '*' && !last.step) last.step = step[1] ?? null
+  }
+  if (jobs.length === 0) return null
+  const running = jobs.find(job => job.mark === '*')
+  return {
+    done: jobs.filter(job => job.mark !== '*').length,
+    total: jobs.length,
+    failed: jobs.filter(job => job.mark === 'X').length,
+    running: running?.name ?? null,
+    step: running?.step ?? null,
+  }
+}
+
+// The system prompt of the agent Start in background sets on an issue: it works alone, in a worktree of its own, and
+// leaves a pull request for the person.
+export const WORKER_PROMPT = [
+  'You work on one GitHub issue of this repository, in the background, in a git worktree of your own. The person is not watching.',
+  "Don't ask the person anything. When something needs their decision, stop and say what it is.",
+  '1. Read the issue and its comments with `gh issue view <number> --comments`.',
+  '2. Make a branch for it from the default branch, named for the issue, such as `fix/<number>-short-name` or `feat/<number>-short-name`.',
+  "3. Do the work. Follow the repository's CLAUDE.md and contributing guidelines, and run its tests and checks.",
+  '4. When you finish an acceptance box and have checked it, tick it with the mcp__issue-board__tick tool.',
+  '5. Commit, push the branch and open a pull request. Write `Closes #<number>` in its body only if every acceptance box is ticked by then, and `Refs #<number>` otherwise.',
+  "Don't merge, don't force-push, and don't push to the default branch.",
+  'End with a short report in plain sentences: the pull request, what you did, and what is left.',
+].join('\n')
+
+// A background agent's status on an issue's row.
+export const workerBadge = (status: Worker['status']): { text: string; color: string } =>
+  status === 'completed'
+    ? { text: '⚙ done', color: 'success' }
+    : status === 'failed'
+      ? { text: '⚙ failed', color: 'error' }
+      : status === 'killed'
+        ? { text: '⚙ stopped', color: 'inactive' }
+        : status === 'waiting' || status === 'idle'
+          ? { text: '⚙ waiting', color: 'warning' }
+          : { text: '⚙ working', color: 'claude' }

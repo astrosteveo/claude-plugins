@@ -94,6 +94,20 @@ export type Working = { number: number; title: string; updatedAt: string; sessio
 // band asks whether to tick the box.
 export type BoxTask = { id: string; number: number; box: number; text: string; done: boolean }
 
+// A CI run on the branch the folder has checked out, as `gh run watch` last drew it: its jobs done of all, how many
+// failed, and the job running with its step.
+export type RunWatch = { id: number; workflow: string; branch: string; done: number; total: number; failed: number; running: string | null; step: string | null }
+
+// A background agent Start in background set on an issue, with where its loop stands, as `$.agent.list()` says, and
+// the last thing it answered.
+export type Worker = {
+  number: number
+  agentId: string
+  status: 'pending' | 'running' | 'waiting' | 'idle' | 'completed' | 'failed' | 'killed'
+  startedAt: number
+  answer: string | null
+}
+
 // An issue Claude drafted from the conversation, waiting for the person to file it.
 // With `children`, an epic: the parent issue, and the sub-issues created under it.
 export type Draft = { title: string; body: string; labels: string[]; children?: { title: string; body: string; labels: string[] }[] }
@@ -230,6 +244,10 @@ declare module 'claude-code' {
       tasks: BoxTask[]
       // The Inbox's suggestions and picks.
       triage: Triage
+      // The CI runs on the checked-out branch being watched.
+      runs: RunWatch[]
+      // The background agents Start in background set going in this session.
+      workers: Worker[]
     }
   }
 }
