@@ -1077,9 +1077,13 @@ export const register: Register = on => {
     // What hovering a row shows above it: the title, how far along, and the boxes still open.
     // Every line is padded to the card's width, its margins spaces rather than paddingX, so it covers the rows it is
     // painted over: the surface paints a floating box's text and border but leaves its padding showing what is beneath.
+    // It sits at the pane's right, leaving the rows above their bar, number and the start of their title, so the
+    // pointer moving up the list reaches the row above rather than the card. A pane without that room shows none.
+    const PEEK_CLEAR = 28
     const peek = (issue: Issue) => {
       const step = progress(issue.checks)
-      const cardWidth = Math.min(60, width - 14)
+      const cardWidth = Math.min(56, width - PEEK_CLEAR)
+      if (cardWidth < 30) return null
       const inner = cardWidth - 4
       const todo = issue.checks.filter(check => !check.done)
       const listed = todo.slice(0, 4)
@@ -1096,7 +1100,7 @@ export const register: Register = on => {
         <Box
           position="absolute"
           top={-(lines.length + 2)}
-          left={13}
+          left={width - cardWidth}
           width={cardWidth}
           display="none"
           hover={{ display: 'flex' }}
