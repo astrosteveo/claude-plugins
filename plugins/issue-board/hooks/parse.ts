@@ -602,6 +602,7 @@ export const workingSection = (working: Working): string =>
   [
     `The person is working on GitHub issue #${working.number}: ${working.title}. They handed it to you from the issue board.`,
     `When you finish and check an acceptance box of #${working.number}, tick it with the mcp__issue-board__tick tool. The mcp__issue-board__issues tool with number ${working.number} lists its boxes.`,
+    `Change its Status, labels, assignee, parent or milestone, comment on it or close it with the mcp__issue-board__issue_update tool; moving its Status needs no permission.`,
     `When you open a pull request for #${working.number}, write \`Closes #${working.number}\` in its body only if every acceptance box of #${working.number} is ticked by then.`,
     `Otherwise write \`Refs #${working.number}\`, so the issue stays open for what is left. If the repository's contributing guidelines say otherwise, follow them.`,
   ].join(' ')
@@ -649,6 +650,66 @@ export const parseDraft = (text: string, labels: string[]): Draft | null => {
 
 // Every label the board's issues carry, sorted: the ones a draft may use.
 export const labelsOf = (issues: Issue[]): string[] => [...new Set(issues.flatMap(issue => issue.labels.map(label => label.name)))].sort()
+
+// A change to an issue, from its card or from Claude's issue_update tool. `parent` and `milestone` set as null remove
+// them; `assign` and `unassign` take logins, or `@me` for the signed-in user.
+export type IssueChanges = {
+  status?: string
+  priority?: string
+  addLabels?: string[]
+  removeLabels?: string[]
+  assign?: string[]
+  unassign?: string[]
+  parent?: number | null
+  milestone?: string | null
+  comment?: string
+  close?: 'completed' | 'not planned'
+  reopen?: boolean
+}
+
+const listed = (values: string[] | undefined): string => (values ?? []).filter(Boolean).join(',')
+
+// The gh commands a change takes, in order: the edit, then the comment, then the close or reopen, so a comment made
+// with a close lands before it. Status and Priority are the project's, set apart from these.
+export const commandsOf = (number: number, changes: IssueChanges): { argv: string[]; stdin?: string }[] => {
+  const id = String(number)
+  const edit = [
+    ...(listed(changes.addLabels) ? ['--add-label', listed(changes.addLabels)] : []),
+    ...(listed(changes.removeLabels) ? ['--remove-label', listed(changes.removeLabels)] : []),
+    ...(listed(changes.assign) ? ['--add-assignee', listed(changes.assign)] : []),
+    ...(listed(changes.unassign) ? ['--remove-assignee', listed(changes.unassign)] : []),
+    ...(changes.parent === null ? ['--remove-parent'] : changes.parent !== undefined ? ['--parent', String(changes.parent)] : []),
+    ...(changes.milestone === null ? ['--remove-milestone'] : changes.milestone !== undefined ? ['--milestone', changes.milestone] : []),
+  ]
+  return [
+    ...(edit.length > 0 ? [{ argv: ['issue', 'edit', id, ...edit] }] : []),
+    ...(changes.comment?.trim() ? [{ argv: ['issue', 'comment', id, '--body-file', '-'], stdin: changes.comment.trim() }] : []),
+    ...(changes.close ? [{ argv: ['issue', 'close', id, '--reason', changes.close] }] : []),
+    ...(changes.reopen && !changes.close ? [{ argv: ['issue', 'reopen', id] }] : []),
+  ]
+}
+
+// What a change did, in a sentence each, for a toast and for Claude.
+export const changesText = (number: number, changes: IssueChanges): string => {
+  const said = [
+    changes.status ? `moved to ${changes.status}` : '',
+    changes.priority ? `set to ${changes.priority}` : '',
+    listed(changes.addLabels) ? `labelled ${listed(changes.addLabels).replace(/,/g, ', ')}` : '',
+    listed(changes.removeLabels) ? `unlabelled ${listed(changes.removeLabels).replace(/,/g, ', ')}` : '',
+    listed(changes.assign) ? `assigned ${listed(changes.assign).replace(/,/g, ', ')}` : '',
+    listed(changes.unassign) ? `unassigned ${listed(changes.unassign).replace(/,/g, ', ')}` : '',
+    changes.parent === null ? 'taken out of its epic' : changes.parent !== undefined ? `put under #${changes.parent}` : '',
+    changes.milestone === null ? 'taken off its milestone' : changes.milestone !== undefined ? `put on the milestone ${changes.milestone}` : '',
+    changes.comment?.trim() ? 'commented on' : '',
+    changes.close ? `closed as ${changes.close}` : '',
+    changes.reopen && !changes.close ? 'reopened' : '',
+  ].filter(Boolean)
+  return said.length > 0 ? `#${number} ${said.join(', ')}.` : `Nothing to change on #${number}.`
+}
+
+// Whether a change only moves an issue's Status, which the issue Claude is on may do without asking.
+export const statusOnly = (changes: IssueChanges): boolean =>
+  Boolean(changes.status) && commandsOf(0, changes).length === 0 && !changes.priority
 
 // An issue's or pull request's page on GitHub: the URL gh gave, or one made from the repo for a board saved without it.
 export const pageOf = (repo: string, kind: 'issues' | 'pull', item: { number: number; url: string }): string =>

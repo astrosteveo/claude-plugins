@@ -65,6 +65,18 @@ CLI, signed in, in the folder the session started in.
   - **Start** (`s`) sends Claude a message to start on the issue, with its
     unticked boxes. It also moves the issue to In progress in the project,
     adding it to the project if it isn't there, and assigns it to you.
+  - **⚙ Change** opens the card's editor. Each change is made on GitHub as
+    soon as you press it, and the board reads GitHub again straight after:
+    - **Labels**: the repo's labels, the ones the issue has highlighted;
+      press one to add or take it off.
+    - **Assignee**: assign yourself or unassign yourself.
+    - **Epic**: type an epic's number to put the issue under it, or take it
+      out of its epic.
+    - **Milestone**: the repo's open milestones; press one to put the issue
+      on it, or the highlighted one to take it off.
+    - **Comment**: write one and press Enter to post it.
+    - **Close**: as completed or as not planned. Closing an epic with open
+      sub-issues takes a second press, and says how many are open.
   - **Edit first** (`e`) puts the same message in the prompt box to edit
     first.
   - **↗ GitHub** opens the issue in the browser.
@@ -187,6 +199,10 @@ stays quiet there.
     progress bars fill in as Claude works. It reads the body fresh before it
     edits, so it doesn't overwrite other changes. Claude Code asks before it
     runs, as with any tool that changes something, unless you allow it.
+  - `issue_update` makes the same changes as the card's editor, plus Status
+    and Priority, and the board shows them at once. Moving the Status of the
+    issue you pressed Start on doesn't ask for permission; any other change
+    asks, unless you allow it.
 - After you press Start, a short note in the system prompt names the issue.
   It tells Claude to tick boxes as it finishes them. In the pull request,
   Claude writes `Closes #<number>` only if every box is ticked by then, and
