@@ -212,7 +212,9 @@ polling as well.
 The board is saved for each repository. A new session shows the last board
 straight away, and still knows the issue you were working on. The issues'
 text isn't saved, to keep the save small, so cards show it once the first
-refresh is done.
+refresh is done. `/clear`, `/new` and `/resume` start a new session too: the
+board shows its saved copy again and refreshes at once, so you don't need to
+press Refresh.
 
 ## Permissions
 

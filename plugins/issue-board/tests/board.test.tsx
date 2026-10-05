@@ -283,6 +283,8 @@ test('the pane opens to close on Esc, and Collapse folds the card', async ($, on
   })
   await $.command.run({ command: 'issues', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
   expect(opened).toEqual([{ id: 'issue-board', title: 'Issues', focus: true, closeOnEscape: true }])
+  // The pane reads GitHub as it opens: wait for that read.
+  await $.command.run(REFRESH)
 
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   await ui.press({ key: 'filter-all' })

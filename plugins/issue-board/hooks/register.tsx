@@ -325,16 +325,17 @@ const save = async ($: EngineInterface): Promise<void> => {
   }
 }
 
-// A new session paints the last board at once and still knows the issue Claude was on; a reload keeps its own.
+// A new session paints the last board at once and still knows the issue Claude was on; a reload keeps its own. What a
+// refresh wrote meanwhile stays: it is newer than the saved copy.
 const restore = async ($: EngineInterface): Promise<void> => {
   if ((await read($, board)) !== null) return
   try {
     const saved = (await $.store.get(await keyOf($))) as Partial<Saved> | undefined
     if (!saved) return
-    if (saved.board) await update($, board, () => saved.board ?? null)
-    if (saved.working) await update($, working, () => saved.working ?? null)
-    if (saved.dismissed) await update($, dismissed, () => saved.dismissed ?? [])
-    if (saved.viewer) await update($, viewer, () => saved.viewer ?? null)
+    if (saved.board) await update($, board, now => now ?? saved.board ?? null)
+    if (saved.working) await update($, working, now => now ?? saved.working ?? null)
+    if (saved.dismissed) await update($, dismissed, now => (now.length > 0 ? now : (saved.dismissed ?? [])))
+    if (saved.viewer) await update($, viewer, now => now ?? saved.viewer ?? null)
   } catch (cause) {
     $.ui.log(`issue-board: couldn't read the saved board: ${messageOf(cause)}`, { to: 'debug' })
   }
@@ -377,9 +378,39 @@ const fetchIssues = async ($: EngineInterface, nameWithOwner: string): Promise<{
   return pull(false)
 }
 
-// `seen`: the refresh follows Claude's own gh write, so the issue it is on changed by its hand, not news.
-const refresh = async ($: EngineInterface, seen = false): Promise<void> => {
-  if (await read($, loading)) return
+// The refresh under way, if any. A module variable, not state: /clear empties the state while a refresh may still run,
+// and a reload starts the module over while the state stays. Neither must leave the board waiting on a refresh that
+// nobody runs.
+let refreshing: Promise<void> | undefined
+
+// How many times the session started over in this process, and whether it did since the board last read its saved copy
+// and GitHub. A /clear (or /new, its alias) or a /resume starts a new session in the same process: the host empties
+// every plugin's state, and no `session.start` follows.
+let restarts = 0
+let restarted = false
+
+// Reads GitHub into the board. A refresh asked for while one runs waits for that one. `seen`: the refresh follows
+// Claude's own gh write, so the issue it is on changed by its hand, not news.
+const refresh = ($: EngineInterface, seen = false): Promise<void> => {
+  if (refreshing) return refreshing
+  const began = restarts
+  const run = readGitHub($, seen).finally(() => {
+    refreshing = undefined
+  })
+  refreshing = run
+  // The session started over while it ran, so some of what it wrote went with the old state: read GitHub again.
+  return run.then(() => (restarts === began ? undefined : refresh($, seen)))
+}
+
+// A new session in the same process: the board shows its saved copy at once, checks access again, and reads GitHub.
+const begin = async ($: EngineInterface): Promise<void> => {
+  restarted = false
+  await restore($)
+  void checkAccess($)
+  await refresh($)
+}
+
+const readGitHub = async ($: EngineInterface, seen: boolean): Promise<void> => {
   await update($, loading, () => true)
   readTouches = touches
   const before = await read($, board)
@@ -837,7 +868,7 @@ const refreshAfter = async ($: EngineInterface): Promise<void> => {
 
 // Waits out a refresh under way, up to ten seconds.
 const settle = async ($: EngineInterface): Promise<void> => {
-  for (let tries = 0; tries < 50 && (await read($, loading)); tries += 1) await $.clock.sleep(200)
+  for (let tries = 0; tries < 50 && refreshing; tries += 1) await $.clock.sleep(200)
 }
 
 // The issue Claude is on, when this session started it: the one the notes and the next step are about.
@@ -1287,6 +1318,20 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // A /clear (or /new, its alias) or a /resume ends this session and starts another in the same process. As the old
+  // one ends, the host empties the board's state, and no session.start follows.
+  on('session.end', { reason: ['clear', 'resume'] }, async ($, e, next) => {
+    restarts += 1
+    restarted = true
+    return next(e)
+  })
+
+  // The new session's SessionStart hooks run once its state is empty: the board fills it again.
+  on('classic.SessionStart', async ($, e, next) => {
+    if (restarted) void begin($)
+    return next(e)
+  })
+
   on('command.run', { command: 'issues' }, async ($, e) => {
     const asked = /^new\b\s*(epic\b)?\s*([\s\S]*)$/.exec(e.args.trim())
     if (asked) {
@@ -1411,6 +1456,8 @@ export const register: Register = on => {
   // note of what changed on GitHub to the issue Claude is on since the last prompt. The system prompt stays as it is.
   on('prompt.submit', async ($, e, next) => {
     nextStep = null
+    // The session started over and no SessionStart hook has run since: the first prompt fills the board again.
+    if (restarted) void begin($)
     const added: string[] = []
     try {
       const now = await read($, board)
