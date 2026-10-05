@@ -113,6 +113,37 @@ test('what an event, a run list and a watch drawing say', () => {
   expect(runProgressOf(`${RUNNING}${ENDED}`)).toEqual({ done: 2, total: 2, failed: 1, running: null, step: null })
   expect(runProgressOf(`\x1b[1mJOBS\x1b[0m\n\x1b[32m✓\x1b[0m build (ID 1)\n`)).toEqual({ done: 1, total: 1, failed: 0, running: null, step: null })
 
+  // What gh 2.102 wrote watching this repo's own CI: no line between one drawing and the next.
+  const real = [
+    'Refreshing run status every 5 seconds. Press Ctrl+C to quit.',
+    '',
+    '* feat/47-live-board Validate plugins astrosteveo/claude-plugins#75 · 37261969398',
+    'Triggered via pull_request less than a minute ago',
+    '',
+    'JOBS',
+    '* validate (ID 111610885572)',
+    '  ✓ Set up job',
+    '  ✓ Install Claude Code',
+    '  * Validate marketplace and plugins',
+    '  * Post Run actions/checkout@v4',
+  ]
+  const after = [
+    '✓ feat/47-live-board Validate plugins astrosteveo/claude-plugins#75 · 37261969398',
+    'Triggered via pull_request less than a minute ago',
+    '',
+    'JOBS',
+    '✓ validate in 11s (ID 111610885572)',
+    '  ✓ Set up job',
+    '  ✓ Complete job',
+    '',
+    'ANNOTATIONS',
+    '! Node.js 20 is deprecated.',
+    'validate: .github#2',
+    '',
+  ]
+  expect(runProgressOf(real.join('\n'))).toEqual({ done: 0, total: 1, failed: 0, running: 'validate', step: 'Validate marketplace and plugins' })
+  expect(runProgressOf([...real, ...after].join('\n'))).toEqual({ done: 1, total: 1, failed: 0, running: null, step: null })
+
   expect(workerBadge('running')).toEqual({ text: '⚙ working', color: 'claude' })
   expect(workerBadge('completed')).toEqual({ text: '⚙ done', color: 'success' })
 })
