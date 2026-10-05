@@ -150,6 +150,22 @@ CLI, signed in, in the folder the session started in.
   makes the parent, then each sub-issue under it with `--parent`, and adds
   them all to the repo's project.
 
+  **✎ Edit** (`e`) on the draft opens its editor, on the card itself. For an
+  epic, it edits the parent issue.
+  - **Title**: a text field. Enter in it saves.
+  - **Labels**: the repo's labels, with the draft's highlighted. Press one
+    to add it or take it off.
+  - **Body**: a text field for each line. Enter in a line adds a new line
+    under it. A line you empty is left out. A field shows one line of text,
+    so the field you are in shows its whole line under it when the line is
+    too long to fit.
+
+  **✓ Save** puts your changes on the card. **Cancel** or Esc drops them.
+  You can't save a draft with an empty title. Create and Discard come back
+  once the editor is closed, so what gets created is what the card shows.
+  The mobile app has no text field, so there the editor changes only the
+  labels.
+
   A created issue joins the repo's project at Inbox. While it's being
   created the draft says so, and pressing Create again does nothing. A
   project's own "Item added to project" automation may set its Status
