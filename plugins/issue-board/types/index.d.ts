@@ -11,6 +11,8 @@ export type Issue = {
   assignees: string[]
   checks: Check[]
   updatedAt: string
+  // The issue's text as written; empty on a board saved between sessions, until it refreshes.
+  body: string
 }
 
 export type Ci = 'pass' | 'fail' | 'pending' | 'none'
@@ -32,6 +34,8 @@ export type PullRequest = {
   // The names of the checks that failed, and the Actions runs they belong to.
   failing: string[]
   runs: number[]
+  // The issues it says it closes or refers to (`Closes #N`, `Refs #N`), in order.
+  issues: number[]
 }
 
 // Issues closed and pull requests merged each week, oldest week first.
@@ -91,6 +95,8 @@ declare module 'claude-code' {
       drafting: boolean
       // The last permission check; null until one has run.
       access: Access | null
+      // The pull request whose details are open in the pane.
+      openPr: number | null
     }
   }
 }
