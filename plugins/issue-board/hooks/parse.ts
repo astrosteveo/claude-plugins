@@ -1039,6 +1039,25 @@ export const WORKER_PROMPT = [
   'End with a short report in plain sentences: the pull request, what you did, and what is left.',
 ].join('\n')
 
+// The agent type Start in background runs, as `$.agent.register` names it.
+export const WORKER = 'issue-board:worker'
+
+// What Start in background sends Claude: dispatch the board's agent on the issue, and leave the work to it.
+export const backgroundPrompt = (issue: Issue): string =>
+  [
+    `Dispatch a background agent to work on #${issue.number}: ${issue.title}. Don't work on the issue yourself.`,
+    `Use the Agent tool with subagent_type \`${WORKER}\`, name \`issue-${issue.number}\`, description \`#${issue.number} ${issue.title}\`, and this prompt:`,
+    '',
+    startPrompt(issue),
+  ].join('\n')
+
+// The issue a spawn of the board's agent works on: by its name `issue-<n>`, else by the `#<n>` its description or
+// prompt starts with.
+export const workerIssueOf = (spawn: { name?: string; description: string; prompt: string }): number | undefined => {
+  const found = /^issue-(\d+)$/.exec(spawn.name ?? '') ?? /^#(\d+)\b/.exec(spawn.description.trim()) ?? /#(\d+)\b/.exec(spawn.prompt)
+  return found ? Number(found[1]) : undefined
+}
+
 // A background agent's status on an issue's row.
 export const workerBadge = (status: Worker['status']): { text: string; color: string } =>
   status === 'completed'
