@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { ago, bar, checksOf, ciOf, fit, issuesOf, proseOf, spark, summary, weekly } from '../hooks/parse'
+import { ago, bar, cells, checksOf, ciOf, fit, issuesOf, pad, proseOf, spark, summary, weekly } from '../hooks/parse'
 import { graphPage, isIssuesQuery } from './graph'
 
 test("a card's text leaves out its boxes, and a pull request names the issues it is for", () => {
@@ -68,6 +68,41 @@ test('bars, ages and titles fit the pane', () => {
   expect(ago('2026-09-01T12:00:00Z', at)).toBe('4w')
   expect(fit('Lay Kessik out for play', 10)).toBe('Lay Kessi…')
   expect(fit('short', 10)).toBe('short')
+})
+
+test('text is measured in terminal cells: an emoji or a wide character takes two, a combining mark none', () => {
+  expect(cells('marked ⛔')).toBe(9)
+  expect(cells('星系')).toBe(4)
+  expect(cells('é')).toBe(1)
+  expect(cells('☐ box')).toBe(5)
+  // Cut at the cell, never past it: ⛔ wouldn't fit in the last cell before the ellipsis.
+  expect(fit('is marked ⛔ #301', 12)).toBe('is marked …')
+  expect(cells(fit('is marked ⛔ #301', 13))).toBeLessThanOrEqual(13)
+  expect(fit('is marked ⛔', 12)).toBe('is marked ⛔')
+  expect(pad('⛔ go', 6)).toBe('⛔ go ')
+  expect(cells(pad('⛔ go', 6))).toBe(6)
+})
+
+test("a preview line holding an emoji keeps the card's width, so nothing shows through it", async ($, on) => {
+  const blocked = {
+    number: 42,
+    title: 'Show epics as parent issues with sub-issues',
+    labels: [{ name: 'enhancement', color: 'a2eeef' }],
+    body: '- [ ] A blocked row shows `⛔ #N`.\n- [ ] Ready ones come first.',
+    updatedAt: '2026-10-03T20:00:00Z',
+  }
+  on('process.run', async (_$, e) => {
+    const stdout = isIssuesQuery(e.argv) ? graphPage([blocked]) : e.argv[1] === 'repo' ? JSON.stringify({ nameWithOwner: 'astrosteveo/claude-plugins', hasIssuesEnabled: true }) : '[]'
+    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  await $.command.run({ command: 'issues', args: 'refresh', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  const preview = (await ui.findAll({ type: 'Box' })).find(box => box.props.position === 'absolute')
+  const lines = (await ui.findAll({ type: 'Text' })).filter(text => text.props.wrap === 'truncate-end')
+  expect(lines.some(line => line.text.includes('⛔'))).toBe(true)
+  // Each line fills the card's inside exactly: its width less the two border cells.
+  expect(lines.map(line => cells(line.text))).toEqual(lines.map(() => Number(preview?.props.width) - 2))
+  await ui.unmount()
 })
 
 test('velocity counts each week and draws it as a sparkline', () => {
