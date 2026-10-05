@@ -46,7 +46,8 @@ CLI, signed in, in the folder the session started in.
     since it changed, and the pull request for it with its CI, such as
     `⇄ #51 ✓`. Within a group the most pressing priority comes first, then
     bugs, marked `▲`, then issues under way. Hover over an issue to preview
-    its open boxes without opening it.
+    its open boxes without opening it. The preview opens at the pane's right,
+    so the rows above stay clear to move the pointer up to.
 - Press Enter on an issue, or click it, to open its card: every label and
   assignee, its epic, milestone and open blockers, a row of buttons each for
   **Status** and **Priority** (press one to set it in the project; the one

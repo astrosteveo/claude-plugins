@@ -123,8 +123,12 @@ test('the pane lists the issues by filter and opens one to its boxes', async ($,
     expect(await ui.find({ key: 'issue-315' })).toBeUndefined()
     expect(await ui.find({ text: /^closed / })).toBeDefined()
     expect((await ui.find({ text: /^ 2$/ }))?.props.bold).toBe(true)
-    // The hover preview is drawn hidden beside the row, shown by the surface on hover.
+    // The hover preview is drawn hidden beside the row, shown by the surface on hover. It sits at the pane's right, so
+    // the rows above keep their bar, number and the start of their title clear for the pointer moving up.
     expect(await ui.find({ text: /^ No acceptance boxes\. +$/ })).toBeDefined()
+    const previews = (await ui.findAll({ type: 'Box' })).filter(box => box.props.position === 'absolute')
+    expect(previews.length).toBeGreaterThan(0)
+    expect(previews.every(box => box.props.left === 44 && box.props.width === 56)).toBe(true)
 
     await ui.press({ key: 'filter-future' })
     expect(await ui.find({ key: 'issue-315' })).toBeDefined()
@@ -165,7 +169,12 @@ test('the pane lists the issues by filter and opens one to its boxes', async ($,
   expect((await narrow.find({ text: /^ 2$/ }))?.props.bold).toBe(true)
   expect(await narrow.find({ text: /^closed / })).toBeUndefined()
   expect(await narrow.find({ text: /^ \d+%$/ })).toBeUndefined()
+  // Its preview narrows to keep the left of the rows clear; a pane too narrow for both shows none.
+  expect((await narrow.findAll({ type: 'Box' })).filter(box => box.props.position === 'absolute').map(box => [box.props.left, box.props.width])).toContainEqual([28, 52])
   await narrow.unmount()
+  const slim = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE, props: { ...PANE.props, bodyColumns: 50 } })
+  expect((await slim.findAll({ type: 'Box' })).filter(box => box.props.position === 'absolute')).toEqual([])
+  await slim.unmount()
 })
 
 test('the summary names what is open, and nothing when nothing is', () => {
