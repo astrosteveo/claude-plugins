@@ -26,6 +26,7 @@ import {
   issueText,
   labelsOf,
   nextPageOf,
+  pad,
   pageOf,
   proseOf,
   matches,
@@ -1109,8 +1110,10 @@ export const register: Register = on => {
           borderColor="claude"
         >
           {lines.map(line => (
-            <Text color={line.color} dimColor={line.dim} bold={line.bold}>
-              {` ${line.text.padEnd(inner)} `}
+            // Padded in cells, and cut rather than wrapped should a character still be measured wrong: a wrapped line
+            // would leave the rows beneath showing through and make the card a line taller than its place above the row.
+            <Text color={line.color} dimColor={line.dim} bold={line.bold} wrap="truncate-end">
+              {` ${pad(fit(line.text, inner), inner)} `}
             </Text>
           ))}
         </Box>

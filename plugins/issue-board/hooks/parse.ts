@@ -363,12 +363,34 @@ export const ago = (iso: string, now: number): string => {
   return `${Math.floor(days / 365)}y`
 }
 
-// `text` cut to `width` cells, an ellipsis standing in for what was cut.
+// Characters a terminal draws two cells wide: emoji shown as emoji, such as ⛔, and East Asian wide characters.
+const WIDE = /\p{Emoji_Presentation}|[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿ꀀ-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦\u{20000}-\u{3FFFD}]/u
+// Characters drawn on the one before them, taking no cell: combining marks, variation selectors, the emoji joiner.
+const ZERO = /\p{Mn}|\p{Me}|[​-‍︀-️]/u
+
+const cellsOf = (char: string): number => (ZERO.test(char) ? 0 : WIDE.test(char) ? 2 : 1)
+
+// How many terminal cells `text` takes, which isn't its length when it holds emoji or wide characters.
+export const cells = (text: string): number => [...text].reduce((sum, char) => sum + cellsOf(char), 0)
+
+// `text` cut to `width` cells, an ellipsis standing in for what was cut. Counted in cells, so a line holding ⛔ isn't a
+// cell wider than it should be and doesn't wrap.
 export const fit = (text: string, width: number): string => {
-  const chars = [...text]
   if (width <= 0) return ''
-  return chars.length <= width ? text : `${chars.slice(0, Math.max(0, width - 1)).join('')}…`
+  if (cells(text) <= width) return text
+  let kept = ''
+  let used = 0
+  for (const char of text) {
+    const size = cellsOf(char)
+    if (used + size > width - 1) break
+    kept += char
+    used += size
+  }
+  return `${kept}…`
 }
+
+// `text` padded with spaces to `width` cells.
+export const pad = (text: string, width: number): string => `${text}${' '.repeat(Math.max(0, width - cells(text)))}`
 
 // The board in a line, such as `35 issues · 1 bug · PR #335✓`; undefined with nothing open, so nothing shows.
 export const summary = (issues: Issue[], prs: PullRequest[]): string | undefined => {
