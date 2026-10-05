@@ -25,6 +25,8 @@ type RawPr = {
   additions?: number
   deletions?: number
   updatedAt?: string
+  body?: string | null
+  closingIssuesReferences?: { number: number }[] | null
 }
 
 const BOX = /^\s*[-*]\s+\[([ xX])\]\s+(.*)$/
@@ -46,7 +48,25 @@ export const parseIssues = (json: string): Issue[] =>
     assignees: (raw.assignees ?? []).map(user => user.login),
     checks: checksOf(raw.body),
     updatedAt: raw.updatedAt,
+    body: raw.body ?? '',
   }))
+
+const HEADING = /^\s{0,3}#{1,6}\s/
+const MARKDOWN_LIMIT = 10_000
+
+// The body as the card shows it: without its task-list boxes, which the card lists as buttons of their own, and
+// without a heading left with nothing under it, such as `## Acceptance` once its boxes are gone.
+export const proseOf = (body: string): string => {
+  const lines = body.split(/\r?\n/).filter(line => !BOX.test(line))
+  const kept = lines.filter((line, index) => {
+    if (!HEADING.test(line)) return true
+    const rest = lines.slice(index + 1)
+    const end = rest.findIndex(next => HEADING.test(next))
+    return (end < 0 ? rest : rest.slice(0, end)).some(next => next.trim() !== '')
+  })
+  const text = kept.join('\n').replace(/\n{3,}/g, '\n\n').trim()
+  return text.length <= MARKDOWN_LIMIT ? text : `${text.slice(0, MARKDOWN_LIMIT - 1)}…`
+}
 
 export const ciOf = (rollup: RawCheck[] | null): Ci => {
   const checks = rollup ?? []
@@ -87,7 +107,16 @@ export const parsePrs = (json: string): PullRequest[] =>
     updatedAt: raw.updatedAt ?? '',
     sha: raw.headRefOid ?? '',
     ...failingOf(raw.statusCheckRollup),
+    issues: issuesOf(raw.closingIssuesReferences ?? [], raw.body ?? ''),
   }))
+
+// `Closes #N` and its kin, and `Refs #N`: a pull request saying which issue it is for, closing it or not.
+const REFERENCE = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs?)\b:?\s+#(\d+)/gi
+
+// The issues a pull request is for: the ones GitHub links as closing, then the ones its body refers to.
+export const issuesOf = (closing: { number: number }[], body: string): number[] => [
+  ...new Set([...closing.map(one => one.number), ...[...body.matchAll(REFERENCE)].map(match => Number(match[1]))]),
+]
 
 const hasLabel = (issue: Issue, name: string): boolean => issue.labels.some(label => label.name === name)
 

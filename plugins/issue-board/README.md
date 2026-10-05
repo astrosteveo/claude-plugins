@@ -13,43 +13,47 @@ CLI, signed in, in the folder the session started in.
   `? for shortcuts · 35 issues · 1 bug · PR #335✓`. It shows nothing when
   no issues or pull requests are open.
 - Run `/issues` to open the pane:
-  - A header with the repo, when it last synced, and totals: issues, bugs,
-    pull requests, failing CI, and how many task-list boxes are ticked.
-  - Sparklines of the issues closed and pull requests merged each week over
-    the last 12 weeks, such as `closed ▁▂▅▃▇█▁▂▅▃▇█ 41`.
-  - **▶ Working on**: the issue you pressed Start on, with its progress.
-  - Open pull requests with a CI badge (`✓ PASS`, `✗ FAIL`, `◷ CI`), the
-    review state, the branch, author, age and `+added −deleted` lines. A
-    failing pull request names its failing checks, and `◆ this branch` marks
-    the one for the branch you have checked out. **↗ GitHub** opens it on
-    GitHub.
+  - A header line with the repo, its totals (issues, bugs, pull requests,
+    failing CI) and when it last synced. In a wide pane it also shows how
+    many task-list boxes are ticked, and sparklines of the issues closed and
+    pull requests merged each week over the last 12 weeks, such as
+    `closed ▁▂▅▃▇█▁▂▅▃▇█ 41`.
+  - **▶ Working on**: the issue you pressed Start on, with its progress. When
+    a pull request says it is for that issue (`Closes #N` or `Refs #N`), the
+    line names it with its CI.
+  - Open pull requests, one row each: a CI badge (`✓ PASS`, `✗ FAIL`,
+    `◷ CI`), the title, a dot for the review state, and `◆` on the one for the
+    branch you have checked out. Press the title for its details: the branch,
+    author, age, review, failing checks, the issues it is for, and
+    **↗ GitHub**.
   - **Finish & merge** on a pull request sends Claude a message to see it
     through: fix failing CI, answer review, and merge it, without bypassing
-    branch protection or force-pushing. **Merge all…** (`m`) does the same
-    for every open pull request, one at a time, oldest first. It asks first:
-    `y` to send and `n` to cancel.
+    branch protection or force-pushing. **Merge all…** (`m`), in the pull
+    requests' heading, does the same for every open pull request, one at a
+    time, oldest first. It asks first: `y` to send and `n` to cancel.
+  - The Issues heading, with its filters: `1` Active (not labelled `future`),
+    `2` Future, `3` Bugs, `4` Mine (assigned to you) and `5` All. A search
+    field after them keeps the issues whose title, number or labels hold every
+    word you type. Tab to it or click it. The mobile app has no text field, so
+    it has no search. `r` refreshes.
   - Open issues by `area:` label, each area with its count and how far along
     it is. Each issue has a progress bar of its task-list boxes, such as
     `━━━━━━ 2/4`, its labels in their GitHub colors, and how long since it
     changed. Bugs come first, marked `▲`, then issues under way. Hover over
     an issue to preview its open boxes without opening it.
-  - `1` Active (not labelled `future`), `2` Future, `3` Bugs, `4` Mine
-    (assigned to you), `5` All, and `r` refreshes.
-  - A search field after the filters keeps the issues whose title, number or
-    labels hold every word you type. Tab to it or click it. The mobile app has
-    no text field, so it has no search.
 - Press Enter on an issue, or click it, to open its card: every label and
-  assignee, a progress bar and its boxes. Press a box to tick or untick it on
-  GitHub. Then:
+  assignee, the issue's text, a progress bar and its boxes. One card is open
+  at a time, and opening one scrolls it into view. Press a box to tick or
+  untick it on GitHub. Then:
   - **Start** (`s`) sends Claude a message to start on the issue, with its
     unticked boxes.
   - **Edit first** (`e`) puts the same message in the prompt box to edit
     first.
   - **↗ GitHub** opens the issue in the browser.
-  - **Collapse** (`x` or Esc) folds the card. With no card open, Esc closes
-    the pane.
+  - **Collapse** (`x` or Esc) folds the card. Esc also folds a pull
+    request's details. With nothing open, Esc closes the pane.
 
-  The letter keys work while one card is open.
+  The letter keys work while the card is open.
 - `/issues refresh` refreshes and replies with the summary.
 - `/issues check` checks that `gh` has what the board needs, and says how to
   fix anything missing. See [Permissions](#permissions).
@@ -79,7 +83,9 @@ CI is running, and straight after Claude runs a `gh issue` or `gh pr` command
 that changes something.
 
 The board is saved for each repository. A new session shows the last board
-straight away, and still knows the issue you were working on.
+straight away, and still knows the issue you were working on. The issues'
+text isn't saved, to keep the save small, so cards show it once the first
+refresh is done.
 
 ## Permissions
 

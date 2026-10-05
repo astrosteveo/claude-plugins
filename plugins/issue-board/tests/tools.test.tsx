@@ -58,6 +58,8 @@ const pr = (ci: 'pass' | 'pending' | 'fail', sha = 'abc123') => ({
   deletions: 1,
   author: { login: 'astrosteveo' },
   updatedAt: '2026-10-03T20:00:00Z',
+  body: 'Glides in from cruise. Refs #315.',
+  closingIssuesReferences: [],
 })
 
 const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} } } as const
@@ -195,7 +197,12 @@ test('Start names the issue in the system prompt; the pane searches, filters Min
   expect((await $.prompt.compose(COMPOSE)).sections.map(section => section.id)).toEqual(['intro'])
 
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
-  expect(await ui.find({ text: /◆ this branch/ })).toBeDefined()
+  // The row marks this branch's pull request; its details say so in words, and which issue it is for.
+  expect(await ui.find({ text: /^◆$/ })).toBeDefined()
+  await ui.press({ key: 'pr-335' })
+  expect(await ui.find({ text: /^· ◆ this branch$/ })).toBeDefined()
+  expect(await ui.find({ text: /^· for #315$/ })).toBeDefined()
+  await ui.press({ key: 'pr-335' })
 
   await ui.press({ key: 'filter-mine' })
   expect(await ui.find({ key: 'issue-315' })).toBeDefined()
@@ -218,6 +225,9 @@ test('Start names the issue in the system prompt; the pane searches, filters Min
   expect(sections.map(section => section.id)).toEqual(['intro', 'issue-board:working'])
   expect(sections.at(-1)?.text).toMatch(/^The person is working on GitHub issue #315: Lay Kessik out for play\./)
   expect(await ui.find({ text: /▶ Working on/ })).toBeDefined()
+  // Its pull request, which refers to it, and that pull request's CI.
+  expect(await ui.find({ text: /^PR #335 $/ })).toBeDefined()
+  expect(await ui.find({ text: /^✓ PASS$/ })).toBeDefined()
 
   // Ticking the last box changes the issue, not the note, so the prompt cache holds.
   await ui.press({ key: 'box-315-2' })

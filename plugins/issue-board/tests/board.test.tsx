@@ -1,6 +1,14 @@
 import { expect, test } from 'claude-code/testing'
 
-import { ago, bar, checksOf, ciOf, fit, spark, summary, weekly } from '../hooks/parse'
+import { ago, bar, checksOf, ciOf, fit, issuesOf, proseOf, spark, summary, weekly } from '../hooks/parse'
+
+test("a card's text leaves out its boxes, and a pull request names the issues it is for", () => {
+  expect(proseOf('Why it matters.\n\n## Acceptance\n\n- [ ] One\n- [x] Two\n\n## Notes\n\nKeep this.')).toBe('Why it matters.\n\n## Notes\n\nKeep this.')
+  expect(proseOf('## Acceptance\r\n\r\n- [ ] Only boxes\r\n')).toBe('')
+  expect(proseOf('x'.repeat(12_000))).toHaveLength(10_000)
+  expect(issuesOf([{ number: 344 }], 'Fixes #12, then refs #344 and see #9. Closes: #13')).toEqual([344, 12, 13])
+  expect(issuesOf([], '')).toEqual([])
+})
 
 const ISSUES = [
   {
@@ -8,7 +16,7 @@ const ISSUES = [
     title: 'Lay Kessik out for play',
     labels: [{ name: 'enhancement', color: 'a2eeef' }, { name: 'area:simulation', color: '0e8a16' }, { name: 'future', color: 'c5def5' }],
     assignees: [{ login: 'astrosteveo' }],
-    body: '## Acceptance\n\n- [x] Layout in place\n- [X] Old saves load\n- [ ] Goldens regenerated',
+    body: 'Kessik needs a layout for play.\n\n## Acceptance\n\n- [x] Layout in place\n- [X] Old saves load\n- [ ] Goldens regenerated',
     updatedAt: '2026-10-03T20:00:00Z',
   },
   {
@@ -97,11 +105,17 @@ test('the pane lists the issues by filter and opens one to its boxes', async ($,
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'issue-board', surface, ...PANE })
     expect(await ui.find({ text: /^Glide in to a planet$/ })).toBeDefined()
-    // A board without URLs links to the page the repo gives.
-    expect((await ui.findAll({ type: 'Link' })).map(link => link.props.href)).toEqual(['https://github.com/astrosteveo/void-sector/pull/335'])
     expect((await ui.findAll({ type: 'Button' })).filter(one => one.key?.startsWith('filter-')).map(one => one.props.hotkey)).toEqual(['1', '2', '3', '4', '5'])
     expect(await ui.find({ text: / ✓ PASS / })).toBeDefined()
-    expect(await ui.find({ text: /approved/ })).toBeDefined()
+    // A pull request is one row; its title opens its details, link included, beneath it.
+    expect(await ui.find({ type: 'Link' })).toBeUndefined()
+    expect(await ui.find({ text: /approved/ })).toBeUndefined()
+    await ui.press({ key: 'pr-335' })
+    expect(await ui.find({ text: /^· ● approved$/ })).toBeDefined()
+    // A board without URLs links to the page the repo gives.
+    expect((await ui.findAll({ type: 'Link' })).map(link => link.props.href)).toEqual(['https://github.com/astrosteveo/void-sector/pull/335'])
+    await ui.press({ key: 'pr-335' })
+    expect(await ui.find({ text: /approved/ })).toBeUndefined()
     expect(await ui.find({ key: 'issue-289' })).toBeDefined()
     expect(await ui.find({ key: 'issue-315' })).toBeUndefined()
     expect(await ui.find({ text: /^closed / })).toBeDefined()
@@ -120,29 +134,40 @@ test('the pane lists the issues by filter and opens one to its boxes', async ($,
     expect(await ui.find({ key: 'draft-315' })).toMatchObject({ text: '✎ Edit first', props: { hotkey: 'e' } })
     expect(await ui.find({ key: 'close-315' })).toMatchObject({ text: 'Collapse', props: { hotkey: 'x' } })
     expect((await ui.findAll({ type: 'Link' })).map(link => link.props.href)).toContain('https://github.com/astrosteveo/void-sector/issues/315')
+    // The card shows the issue's text, without the boxes it lists as buttons or the heading they leave empty.
+    expect((await ui.find({ type: 'Markdown' }))?.props.text).toBe('Kessik needs a layout for play.')
+    // Opening it also scrolls it into view: the engine resolves that against a real window, which a test hasn't.
+    expect(await ui.find({ key: 'card-315' })).toBeDefined()
 
     await ui.press({ key: 'start-315' })
     expect(sent.at(-1)).toMatch(/^Let's start on #315: Lay Kessik out for play\./)
     expect(sent.at(-1)).toMatch(/- Goldens regenerated$/)
     expect(sent.at(-1)).not.toMatch(/Layout in place/)
 
-    // Two cards open: neither takes the s/e/x keys, and the tree still draws.
+    // One card at a time: opening another folds the first, and the new one takes the letter keys.
     await ui.press({ key: 'filter-all' })
     await ui.press({ key: 'issue-289' })
-    expect(await ui.drawn()).toMatchObject({ type: 'Box' })
-    expect((await ui.find({ key: 'start-289' }))?.props.hotkey).toBeUndefined()
-    expect(await ui.find({ text: /^1 active/ })).toBeDefined()
+    expect(await ui.find({ key: 'start-315' })).toBeUndefined()
+    expect((await ui.find({ key: 'start-289' }))?.props.hotkey).toBe('s')
+    expect(await ui.find({ text: /^s start/ })).toBeDefined()
 
     await ui.press({ key: 'issue-289' })
-    await ui.press({ key: 'issue-315' })
+    expect(await ui.find({ text: /^1 active/ })).toBeDefined()
     await ui.press({ key: 'filter-active' })
     await ui.unmount()
   }
+
+  // A narrow pane keeps its one header line and leaves out the sparklines and the ticked meter.
+  const narrow = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE, props: { ...PANE.props, bodyColumns: 80 } })
+  expect((await narrow.find({ text: /^ 2$/ }))?.props.bold).toBe(true)
+  expect(await narrow.find({ text: /^closed / })).toBeUndefined()
+  expect(await narrow.find({ text: /^ \d+%$/ })).toBeUndefined()
+  await narrow.unmount()
 })
 
 test('the summary names what is open, and nothing when nothing is', () => {
   expect(summary([], [])).toBeUndefined()
-  const issue = { number: 1, title: 'One', url: '', labels: [], assignees: [], checks: [], updatedAt: '' }
+  const issue = { number: 1, title: 'One', url: '', labels: [], assignees: [], checks: [], updatedAt: '', body: '' }
   expect(summary([issue], [])).toBe('1 issue')
 })
 

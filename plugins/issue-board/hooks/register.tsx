@@ -25,6 +25,7 @@ import {
   issueText,
   labelsOf,
   pageOf,
+  proseOf,
   matches,
   parseDraft,
   parseIssues,
@@ -71,6 +72,7 @@ const branch = atom({ plugin: 'issue-board', key: 'branch' } as const, null)
 const greened = atom({ plugin: 'issue-board', key: 'greened' } as const, [])
 const draft = atom({ plugin: 'issue-board', key: 'draft' } as const, null)
 const drafting = atom({ plugin: 'issue-board', key: 'drafting' } as const, false)
+const openPr = atom({ plugin: 'issue-board', key: 'openPr' } as const, null)
 const access = atom({ plugin: 'issue-board', key: 'access' } as const, null)
 
 const FILTERS: { id: Filter; label: string; hotkey: string }[] = [
@@ -159,7 +161,10 @@ const keyOf = async ($: EngineInterface): Promise<string> => {
 
 const save = async ($: EngineInterface): Promise<void> => {
   try {
-    const saved: Saved = { board: await read($, board), working: await read($, working), dismissed: await read($, dismissed), viewer: await read($, viewer) }
+    // Without the issues' bodies, which the next refresh brings back, to keep the store small.
+    const now = await read($, board)
+    const kept = now && { ...now, issues: now.issues.map(issue => ({ ...issue, body: '' })) }
+    const saved: Saved = { board: kept, working: await read($, working), dismissed: await read($, dismissed), viewer: await read($, viewer) }
     await $.store.set(await keyOf($), saved)
   } catch (cause) {
     $.ui.log(`issue-board: couldn't save the board: ${messageOf(cause)}`, { to: 'debug' })
@@ -203,7 +208,7 @@ const refresh = async ($: EngineInterface, seen = false): Promise<void> => {
         '--limit',
         '50',
         '--json',
-        'number,title,url,author,headRefName,headRefOid,isDraft,statusCheckRollup,reviewDecision,additions,deletions,updatedAt',
+        'number,title,url,author,headRefName,headRefOid,isDraft,statusCheckRollup,reviewDecision,additions,deletions,updatedAt,body,closingIssuesReferences',
       ]),
       listIssues(['--state', 'closed', '--search', `closed:>=${from}`, '--limit', '500', '--json', 'closedAt']),
       gh($, ['pr', 'list', '--state', 'merged', '--search', `merged:>=${from}`, '--limit', '500', '--json', 'mergedAt']),
@@ -425,11 +430,13 @@ export const register: Register = on => {
     }
   })
 
-  // Esc, or the pane's close mark: with a card open it collapses the cards and keeps the pane; with none the pane
-  // closes. The engine stamps both as the person's close, so they step back alike.
+  // Esc, or the pane's close mark: with an issue's card or a pull request's details open it folds them and keeps the
+  // pane; with nothing open the pane closes. The engine stamps both as the person's close, so they step back alike.
   on('ui.close', { id: PANE }, async ($, e, next) => {
-    if (e.origin.kind !== 'person' || (await read($, expanded)).length === 0) return next(e)
+    const folding = (await read($, expanded)).length > 0 || (await read($, openPr)) !== null
+    if (e.origin.kind !== 'person' || !folding) return next(e)
     await update($, expanded, () => [])
+    await update($, openPr, () => null)
     return { value: undefined }
   })
 
@@ -505,6 +512,8 @@ export const register: Register = on => {
     const problems = (await read($, access))?.problems ?? []
     const width = Math.max(40, e.props.bodyColumns)
     const roomy = width >= 72
+    // Room for the sparklines and the ticked meter.
+    const wide = width >= 100
     const now = await read($, board)
     const failure = await read($, error)
     const busy = await read($, loading)
@@ -517,6 +526,7 @@ export const register: Register = on => {
     const doing = await read($, working)
     const made = await read($, draft)
     const thinking = await read($, drafting)
+    const shownPr = await read($, openPr)
     const clock = Date.now()
     const elements = $.ui.resolve(e)
     const Input = 'Input' in elements ? elements.Input : undefined
@@ -554,8 +564,13 @@ export const register: Register = on => {
     }
     const arm = (to: boolean) => () => void update($, confirming, () => to)
 
-    const toggle = (number: number) => () =>
-      void update($, expanded, list => (list.includes(number) ? list.filter(one => one !== number) : [...list, number]))
+    // One card at a time, so its letter keys always work; an opened card is scrolled into view.
+    const toggle = (number: number) => async () => {
+      const opening = !open.includes(number)
+      await update($, expanded, () => (opening ? [number] : []))
+      if (opening) await $.ui.scroll({ to: { key: `card-${number}` }, in: PANE }).catch(() => undefined)
+    }
+    const togglePr = (number: number) => () => void update($, openPr, was => (was === number ? null : number))
 
     // A section's heading: its name, a rule across the pane, and what sits at its right.
     const rule = (title: string, right: string, color = 'claude') => (
@@ -580,21 +595,28 @@ export const register: Register = on => {
       )
     }
 
+    // The header's right: when the board last synced, and Refresh.
+    const sync = (
+      <Box flexDirection="row" gap={1}>
+        <Text color={busy ? 'warning' : undefined} dimColor={!busy}>
+          {busy ? '◌ syncing…' : now ? `⟳ ${ago(new Date(now.fetchedAt).toISOString(), clock)}` : ''}
+        </Text>
+        <Button key="refresh" hotkey="r" dimColor onPress={() => void refresh($)}>
+          Refresh
+        </Button>
+      </Box>
+    )
+    const repoName = (
+      <Text>
+        <Text color="claude">◆ </Text>
+        <Text bold>{now ? now.repo : 'GitHub'}</Text>
+      </Text>
+    )
+    // Before there is a board: the repo and the sync, nothing to total yet.
     const header = (
       <Box flexDirection="row" justifyContent="space-between">
-        <Text>
-          <Text color="claude">◆ </Text>
-          <Text bold>{now ? now.repo : 'GitHub'}</Text>
-          <Text dimColor>{now ? '  issues & pull requests' : ''}</Text>
-        </Text>
-        <Box flexDirection="row" gap={1}>
-          <Text color={busy ? 'warning' : undefined} dimColor={!busy}>
-            {busy ? '◌ syncing…' : now ? `⟳ ${ago(new Date(now.fetchedAt).toISOString(), clock)}` : ''}
-          </Text>
-          <Button key="refresh" hotkey="r" dimColor onPress={() => void refresh($)}>
-            Refresh
-          </Button>
-        </Box>
+        {repoName}
+        {sync}
       </Box>
     )
 
@@ -667,18 +689,23 @@ export const register: Register = on => {
       </Text>
     )
 
-    const stats = (
-      <Box flexDirection="row" gap={3} flexWrap="wrap">
-        {stat('●', 'claude', now.issues.length, now.issues.length === 1 ? 'issue' : 'issues')}
-        {stat('▲', bugs > 0 ? 'error' : 'inactive', bugs, bugs === 1 ? 'bug' : 'bugs')}
-        {stat('⇄', 'suggestion', now.prs.length, now.prs.length === 1 ? 'PR' : 'PRs')}
-        {failing > 0 && stat('✗', 'error', failing, 'failing')}
-        {overall.total > 0 && (
-          <Text>
-            {meter(overall.done, overall.total, 10)}
-            <Text dimColor>{` ${Math.round((overall.done / overall.total) * 100)}% ticked`}</Text>
-          </Text>
-        )}
+    // One line: the repo and its totals at the left, the sync at the right. The ticked meter needs the room.
+    const topLine = (
+      <Box flexDirection="row" justifyContent="space-between">
+        <Box flexDirection="row" gap={2}>
+          {repoName}
+          {stat('●', 'claude', now.issues.length, now.issues.length === 1 ? 'issue' : 'issues')}
+          {stat('▲', bugs > 0 ? 'error' : 'inactive', bugs, bugs === 1 ? 'bug' : 'bugs')}
+          {stat('⇄', 'suggestion', now.prs.length, now.prs.length === 1 ? 'PR' : 'PRs')}
+          {failing > 0 && stat('✗', 'error', failing, 'failing')}
+          {wide && overall.total > 0 && (
+            <Text>
+              {meter(overall.done, overall.total, 6)}
+              <Text dimColor>{` ${Math.round((overall.done / overall.total) * 100)}%`}</Text>
+            </Text>
+          )}
+        </Box>
+        {sync}
       </Box>
     )
 
@@ -691,7 +718,7 @@ export const register: Register = on => {
         <Text bold>{` ${counts.reduce((sum, count) => sum + count, 0)}`}</Text>
       </Text>
     )
-    const trends = velocity.closed.length > 0 && (
+    const trends = wide && velocity.closed.length > 0 && (
       <Box flexDirection="row" gap={3} flexWrap="wrap">
         {trend('closed', 'success', velocity.closed)}
         {trend('merged', 'suggestion', velocity.merged)}
@@ -699,8 +726,12 @@ export const register: Register = on => {
       </Box>
     )
 
-    const tabs = (
-      <Box flexDirection="row" gap={1} marginTop={1}>
+    // The Issues heading: its filters and the search, which act on the issues below it alone.
+    const issuesHeading = (
+      <Box flexDirection="row" gap={1} marginTop={1} flexWrap="wrap">
+        <Text bold color="claude">
+          Issues
+        </Text>
         {FILTERS.map(one => (
           <Button
             key={`filter-${one.id}`}
@@ -726,20 +757,28 @@ export const register: Register = on => {
       </Box>
     )
 
-    // The issue Claude is on, with how far along it is.
+    // The issue Claude is on, with how far along it is, and the pull request for it with that pull request's CI.
     const workingIssue = doing ? now.issues.find(issue => issue.number === doing.number) : undefined
     const workingStep = workingIssue && progress(workingIssue.checks)
+    const workingPr = workingIssue && now.prs.find(pr => (pr.issues ?? []).includes(workingIssue.number))
     const workingLine = workingIssue && workingStep && (
       <Box flexDirection="row" gap={1} marginTop={1}>
         <Text color="claude" bold>
           ▶ Working on
         </Text>
         <Text color="claude">{`#${workingIssue.number}`}</Text>
-        <Text>{fit(workingIssue.title, Math.max(12, width - 34))}</Text>
+        <Text>{fit(workingIssue.title, Math.max(12, width - (workingPr ? 52 : 34)))}</Text>
         {workingStep.total > 0 && (
           <Text>
             {meter(workingStep.done, workingStep.total, 8)}
             <Text dimColor>{` ${workingStep.done}/${workingStep.total}`}</Text>
+          </Text>
+        )}
+        {workingPr && (
+          <Text>
+            <Text dimColor>· </Text>
+            <Text color="suggestion" bold>{`PR #${workingPr.number} `}</Text>
+            <Text color={ciBadge[workingPr.ci].color}>{ciBadge[workingPr.ci].text.trim()}</Text>
           </Text>
         )}
       </Box>
@@ -775,48 +814,62 @@ export const register: Register = on => {
       )
     )
 
+    // A pull request on one row: CI, number, title, a review mark and whether it is this branch's, then Finish & merge.
+    // The title opens its details beneath: branch, author, age, review, failing checks and its link.
     const prRow = (pr: PullRequest) => {
       const badge = ciBadge[pr.ci]
       const review = reviewBadge(pr)
+      const isOpen = shownPr === pr.number
+      const mine = here !== null && pr.branch === here
       const size = `+${pr.additions} −${pr.deletions}`
-      const titleRoom = width - [...badge.text].length - String(pr.number).length - 3 - (roomy ? size.length + 2 : 0)
+      const right = 18 + (roomy ? size.length + 1 : 0)
+      const titleRoom = width - [...badge.text].length - String(pr.number).length - 3 - (review ? 2 : 0) - (mine ? 2 : 0) - right
       return (
-        <Box key={`pr-row-${pr.number}`} flexDirection="column" marginTop={1}>
+        <Box key={`pr-row-${pr.number}`} flexDirection="column">
           <Box flexDirection="row" justifyContent="space-between">
             <Box flexDirection="row" gap={1}>
               <Text color={badge.color} inverse bold>
                 {badge.text}
               </Text>
               <Text color="suggestion" bold>{`#${pr.number}`}</Text>
-              <Text>{fit(pr.title, titleRoom)}</Text>
-            </Box>
-            {roomy && (
-              <Text>
-                <Text color="success">{`+${pr.additions}`}</Text>
-                <Text color="error">{` −${pr.deletions}`}</Text>
-              </Text>
-            )}
-          </Box>
-          <Box flexDirection="row" justifyContent="space-between" paddingLeft={[...badge.text].length + 1}>
-            <Box flexDirection="row" gap={1}>
-              <Text dimColor>{`⎇ ${fit(pr.branch, Math.max(10, Math.floor(width / 3)))}`}</Text>
-              {pr.author && <Text dimColor>{`· @${pr.author}`}</Text>}
-              {pr.updatedAt && <Text dimColor>{`· ${ago(pr.updatedAt, clock)}`}</Text>}
-              {review && <Text color={review.color}>{`· ${review.text}`}</Text>}
-              {pr.ci === 'fail' && (pr.failing ?? []).length > 0 && <Text color="error">{`· ${fit(pr.failing.join(', '), 30)}`}</Text>}
-              {here !== null && pr.branch === here && (
+              <Button key={`pr-${pr.number}`} plain hover={{ bold: true }} onPress={togglePr(pr.number)}>
+                {fit(pr.title, Math.max(12, titleRoom))}
+              </Button>
+              {review && <Text color={review.color}>{pr.isDraft ? '◌' : review.text.slice(0, 1)}</Text>}
+              {mine && (
                 <Text color="claude" bold>
-                  · ◆ this branch
+                  ◆
                 </Text>
               )}
             </Box>
             <Box flexDirection="row" gap={1}>
-              <Link href={pageOf(now.repo, 'pull', pr)} label="↗ GitHub" />
+              {roomy && (
+                <Text>
+                  <Text color="success">{`+${pr.additions}`}</Text>
+                  <Text color="error">{` −${pr.deletions}`}</Text>
+                </Text>
+              )}
               <Button key={`close-out-${pr.number}`} dimColor hover={{ dimColor: false, color: 'suggestion' }} onPress={() => void closeOut(pr)}>
                 ⇲ Finish & merge
               </Button>
             </Box>
           </Box>
+          {isOpen && (
+            <Box key={`pr-detail-${pr.number}`} flexDirection="row" flexWrap="wrap" gap={1} paddingLeft={[...badge.text].length + 1} marginBottom={1}>
+              <Text dimColor>{`⎇ ${fit(pr.branch, Math.max(10, Math.floor(width / 3)))}`}</Text>
+              {pr.author && <Text dimColor>{`· @${pr.author}`}</Text>}
+              {pr.updatedAt && <Text dimColor>{`· ${ago(pr.updatedAt, clock)}`}</Text>}
+              {review && <Text color={review.color}>{`· ${review.text}`}</Text>}
+              {pr.ci === 'fail' && (pr.failing ?? []).length > 0 && <Text color="error">{`· ${fit(pr.failing.join(', '), 30)}`}</Text>}
+              {(pr.issues ?? []).length > 0 && <Text dimColor>{`· for ${pr.issues.map(number => `#${number}`).join(', ')}`}</Text>}
+              {mine && (
+                <Text color="claude" bold>
+                  · ◆ this branch
+                </Text>
+              )}
+              <Link href={pageOf(now.repo, 'pull', pr)} label="↗ GitHub" />
+            </Box>
+          )}
         </Box>
       )
     }
@@ -901,11 +954,12 @@ export const register: Register = on => {
       )
     }
 
-    // An opened issue: a card with its labels, its boxes and what to do with it.
+    // An opened issue: a card with its labels, its text, its boxes and what to do with it.
     const issueCard = (issue: Issue, hotkeys: boolean) => {
       const step = progress(issue.checks)
+      const prose = proseOf(issue.body ?? '')
       return (
-        <Box flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1} marginLeft={2} marginBottom={1}>
+        <Box key={`card-${issue.number}`} flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1} marginLeft={2} marginBottom={1}>
           <Text bold wrap="wrap">
             {issue.title}
           </Text>
@@ -921,6 +975,11 @@ export const register: Register = on => {
             ))}
             <Text dimColor>{`updated ${ago(issue.updatedAt, clock)} ago`}</Text>
           </Box>
+          {prose && (
+            <Box marginTop={1}>
+              <Markdown key={`body-${issue.number}`} text={prose} />
+            </Box>
+          )}
           {step.total > 0 ? (
             <Box flexDirection="column" marginTop={1}>
               <Text>
@@ -971,40 +1030,44 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column">
-        {header}
-        {setupCard}
-        {stats}
+        {topLine}
         {trends}
         {workingLine}
+        {setupCard}
         {draftCard}
-        {tabs}
         {failure && (
           <Box marginTop={1}>
             <Text color="error">{`✗ Last refresh failed: ${failure}`}</Text>
           </Box>
         )}
 
-        {rule('Pull requests', `${now.prs.length} open`, 'suggestion')}
-        {now.prs.length === 0 && <Text dimColor>No pull requests open.</Text>}
-        {now.prs.length > 0 &&
-          (arming ? (
-            <Box flexDirection="row" gap={1} flexWrap="wrap">
-              <Text color="warning">{`Finish and merge all ${now.prs.length} open ${now.prs.length === 1 ? 'PR' : 'PRs'}?`}</Text>
-              <Button key="close-out-all-yes" variant="primary" hotkey="y" onPress={() => void closeOutAll(now.prs)}>
-                Yes, merge them
-              </Button>
-              <Button key="close-out-all-no" dimColor hotkey="n" onPress={arm(false)}>
-                Cancel
-              </Button>
-            </Box>
-          ) : (
-            <Box flexDirection="row">
-              <Button key="close-out-all" dimColor hotkey="m" onPress={arm(true)}>
-                {`⇶ Merge all ${now.prs.length}…`}
-              </Button>
-            </Box>
-          ))}
+        <Box flexDirection="row" justifyContent="space-between" marginTop={1}>
+          <Text>
+            <Text bold color="suggestion">
+              Pull requests
+            </Text>
+            <Text dimColor>{now.prs.length > 0 ? ` ${now.prs.length} open` : ' none open'}</Text>
+          </Text>
+          {now.prs.length > 0 && !arming && (
+            <Button key="close-out-all" dimColor hotkey="m" onPress={arm(true)}>
+              {`⇶ Merge all ${now.prs.length}…`}
+            </Button>
+          )}
+        </Box>
+        {arming && (
+          <Box flexDirection="row" gap={1} flexWrap="wrap">
+            <Text color="warning">{`Finish and merge all ${now.prs.length} open ${now.prs.length === 1 ? 'PR' : 'PRs'}?`}</Text>
+            <Button key="close-out-all-yes" variant="primary" hotkey="y" onPress={() => void closeOutAll(now.prs)}>
+              Yes, merge them
+            </Button>
+            <Button key="close-out-all-no" dimColor hotkey="n" onPress={arm(false)}>
+              Cancel
+            </Button>
+          </Box>
+        )}
         {now.prs.map(prRow)}
+
+        {issuesHeading}
 
         {shown.length === 0 && (
           <Box flexDirection="column" alignItems="center" marginTop={2}>
