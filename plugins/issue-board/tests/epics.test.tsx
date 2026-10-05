@@ -125,7 +125,8 @@ test('/issues new epic drafts a parent and its sub-issues, and creates each one 
   expect(await ui.find({ text: /^Check saves on load$/ })).toBeDefined()
   expect(await ui.find({ key: 'draft-file' })).toMatchObject({ text: '✚ Create the epic and 2 sub-issues' })
 
-  await ui.press({ key: 'draft-file' })
+  // Pressed twice before the first has done: the epic is created once.
+  await Promise.allSettled([ui.press({ key: 'draft-file' }), ui.press({ key: 'draft-file' })])
   await clock.settle()
   expect(gh.created.map(args => [args[1], args.includes('--parent') ? args[args.indexOf('--parent') + 1] : null])).toEqual([
     ['Saves survive a crash', null],

@@ -107,6 +107,12 @@ CLI, signed in, in the folder the session started in.
   sub-issues that finish it, each with its own Acceptance list. Creating it
   makes the parent, then each sub-issue under it with `--parent`, and adds
   them all to the repo's project.
+
+  A created issue joins the repo's project at Inbox. While it's being
+  created the draft says so, and pressing Create again does nothing. A
+  project's own "Item added to project" automation may set its Status
+  instead: `/issues setup` says to set that to Inbox when the project still
+  has GitHub's Todo.
 - Claude closing an epic with `gh issue close` while some of its sub-issues
   are open asks you first, whatever your permission rules allow, and says
   how many are open.

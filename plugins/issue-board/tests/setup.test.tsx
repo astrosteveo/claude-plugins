@@ -205,7 +205,10 @@ test('setup on a fresh repo shows its plan, changes nothing until Apply, then ma
   expect(await ui.find({ text: /^⚙ Set up astrosteveo\/void-sector for the board$/ })).toBeDefined()
   expect(await ui.find({ text: /^none is linked to astrosteveo\/void-sector$/ })).toBeDefined()
   expect(await ui.find({ text: /^Create the labels area:client, area:server$/ })).toBeDefined()
-  expect(await ui.find({ text: /Turn on by hand, in the project's Workflows settings: Item closed, Auto-add to project, Auto-add sub-issues to project\./ })).toBeDefined()
+  expect(await ui.find({ text: /^In the project's Workflows settings, by hand:$/ })).toBeDefined()
+  expect(await ui.find({ text: /^ {2}· turn on Item closed, Auto-add to project, Auto-add sub-issues to project$/ })).toBeDefined()
+  // A new project's Status keeps GitHub's Todo, which its automation sets on new issues unless told Inbox.
+  expect(await ui.find({ text: /^ {2}· set Item added to project to Inbox/ })).toBeDefined()
   expect(gh.writes).toEqual([])
 
   // The area labels are the person's to change.
