@@ -96,7 +96,10 @@ test('the pane lists the issues by filter and opens one to its boxes', async ($,
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'issue-board', surface, ...PANE })
-    expect((await ui.find({ key: 'pr-335' }))?.text).toBe('Glide in to a planet')
+    expect(await ui.find({ text: /^Glide in to a planet$/ })).toBeDefined()
+    // A board without URLs links to the page the repo gives.
+    expect((await ui.findAll({ type: 'Link' })).map(link => link.props.href)).toEqual(['https://github.com/astrosteveo/void-sector/pull/335'])
+    expect((await ui.findAll({ type: 'Button' })).filter(one => one.key?.startsWith('filter-')).map(one => one.props.hotkey)).toEqual(['1', '2', '3', '4', '5'])
     expect(await ui.find({ text: / ✓ PASS / })).toBeDefined()
     expect(await ui.find({ text: /approved/ })).toBeDefined()
     expect(await ui.find({ key: 'issue-289' })).toBeDefined()
@@ -114,18 +117,21 @@ test('the pane lists the issues by filter and opens one to its boxes', async ($,
     expect(await ui.find({ text: / 2\/3/ })).toBeDefined()
     expect(await ui.find({ text: /@astrosteveo/ })).toBeDefined()
     expect(await ui.find({ text: /^s start/ })).toBeDefined()
+    expect(await ui.find({ key: 'draft-315' })).toMatchObject({ text: '✎ Edit first', props: { hotkey: 'e' } })
+    expect(await ui.find({ key: 'close-315' })).toMatchObject({ text: 'Collapse', props: { hotkey: 'x' } })
+    expect((await ui.findAll({ type: 'Link' })).map(link => link.props.href)).toContain('https://github.com/astrosteveo/void-sector/issues/315')
 
     await ui.press({ key: 'start-315' })
     expect(sent.at(-1)).toMatch(/^Let's start on #315: Lay Kessik out for play\./)
     expect(sent.at(-1)).toMatch(/- Goldens regenerated$/)
     expect(sent.at(-1)).not.toMatch(/Layout in place/)
 
-    // Two cards open: neither takes the s/d/o/x keys, and the tree still draws.
+    // Two cards open: neither takes the s/e/x keys, and the tree still draws.
     await ui.press({ key: 'filter-all' })
     await ui.press({ key: 'issue-289' })
     expect(await ui.drawn()).toMatchObject({ type: 'Box' })
     expect((await ui.find({ key: 'start-289' }))?.props.hotkey).toBeUndefined()
-    expect(await ui.find({ text: /^a active/ })).toBeDefined()
+    expect(await ui.find({ text: /^1 active/ })).toBeDefined()
 
     await ui.press({ key: 'issue-289' })
     await ui.press({ key: 'issue-315' })
@@ -180,4 +186,32 @@ test('the hint under the prompt carries the summary, and nothing with nothing op
   await shows('? for shortcuts · PR #335✓')
 
   await hint.unmount()
+})
+
+// The person's Esc reaches plugins as their close of the pane, which a test can't raise: the ui.close hook that turns
+// it into a collapse while a card is open is left to the live session.
+test('the pane opens to close on Esc, and Collapse folds the card', async ($, on) => {
+  on('process.run', async (_$, e) => {
+    const kind = e.argv[1]
+    const stdout = kind === 'repo' ? JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true }) : e.argv.includes('closed') || e.argv.includes('merged') ? '[]' : JSON.stringify(kind === 'issue' ? ISSUES : PRS)
+    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  const opened: unknown[] = []
+  on('ui.open', async (_$, e) => {
+    opened.push(e)
+    return { value: { isPlaced: true as const } }
+  })
+  await $.command.run({ command: 'issues', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
+  expect(opened).toEqual([{ id: 'issue-board', title: 'Issues', focus: true, closeOnEscape: true }])
+
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'filter-all' })
+  await ui.press({ key: 'issue-315' })
+  expect(await ui.find({ key: 'start-315' })).toBeDefined()
+  expect(await ui.find({ text: /x or esc collapse/ })).toBeDefined()
+
+  await ui.press({ key: 'close-315' })
+  expect(await ui.find({ key: 'start-315' })).toBeUndefined()
+  expect(await ui.find({ key: 'issue-315' })).toBeDefined()
+  await ui.unmount()
 })

@@ -432,3 +432,7 @@ export const parseDraft = (text: string, labels: string[]): Draft | null => {
 
 // Every label the board's issues carry, sorted: the ones a draft may use.
 export const labelsOf = (issues: Issue[]): string[] => [...new Set(issues.flatMap(issue => issue.labels.map(label => label.name)))].sort()
+
+// An issue's or pull request's page on GitHub: the URL gh gave, or one made from the repo for a board saved without it.
+export const pageOf = (repo: string, kind: 'issues' | 'pull', item: { number: number; url: string }): string =>
+  item.url || `https://github.com/${repo}/${kind}/${item.number}`

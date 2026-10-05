@@ -24,6 +24,7 @@ import {
   isBug,
   issueText,
   labelsOf,
+  pageOf,
   matches,
   parseDraft,
   parseIssues,
@@ -73,11 +74,11 @@ const drafting = atom({ plugin: 'issue-board', key: 'drafting' } as const, false
 const access = atom({ plugin: 'issue-board', key: 'access' } as const, null)
 
 const FILTERS: { id: Filter; label: string; hotkey: string }[] = [
-  { id: 'active', label: 'Active', hotkey: 'a' },
-  { id: 'future', label: 'Future', hotkey: 'f' },
-  { id: 'bugs', label: 'Bugs', hotkey: 'b' },
-  { id: 'mine', label: 'Mine', hotkey: 'i' },
-  { id: 'all', label: 'All', hotkey: 'l' },
+  { id: 'active', label: 'Active', hotkey: '1' },
+  { id: 'future', label: 'Future', hotkey: '2' },
+  { id: 'bugs', label: 'Bugs', hotkey: '3' },
+  { id: 'mine', label: 'Mine', hotkey: '4' },
+  { id: 'all', label: 'All', hotkey: '5' },
 ]
 
 const gh = async ($: EngineInterface, args: string[], stdin?: string): Promise<string> => {
@@ -300,7 +301,7 @@ const fileDraft = async ($: EngineInterface, made: Draft): Promise<void> => {
     const url = (await gh($, ['issue', 'create', '--title', made.title, '--body-file', '-', ...made.labels.flatMap(label => ['--label', label])], made.body)).trim()
     await update($, draft, () => null)
     const number = /\/issues\/(\d+)$/.exec(url)?.[1]
-    $.ui.toast(number ? `Filed #${number}` : 'Filed the issue')
+    $.ui.toast(number ? `Created #${number}` : 'Created the issue')
     void refresh($)
   } catch (cause) {
     $.ui.toast(`Couldn't file the issue: ${messageOf(cause)}`)
@@ -327,14 +328,8 @@ const dismissProblem = async ($: EngineInterface, problem: Problem): Promise<voi
   await save($)
 }
 
-const browse = async ($: EngineInterface, kind: 'issue' | 'pr', number: number): Promise<void> => {
-  try {
-    await gh($, [kind, 'view', String(number), '--web'])
-    $.ui.toast(`Opened #${number} in the browser`)
-  } catch (cause) {
-    $.ui.toast(`Couldn't open #${number}: ${messageOf(cause)}`)
-  }
-}
+// How the pane opens: Esc steps back through it, a card first, then the pane (the ui.close hook).
+const OPEN = { id: PANE, title: 'Issues', focus: true, closeOnEscape: true } as const
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
@@ -392,9 +387,9 @@ export const register: Register = on => {
   on('command.run', { command: 'issues' }, async ($, e) => {
     const asked = /^new\b\s*([\s\S]*)$/.exec(e.args.trim())
     if (asked) {
-      await $.ui.open({ id: PANE, title: 'Issues', focus: true })
+      await $.ui.open(OPEN)
       void draftIssue($, (asked[1] ?? '').trim())
-      return { text: 'Drafting an issue from the conversation. It shows at the top of the issues pane to check before you file it.' }
+      return { text: 'Drafting an issue from the conversation. It shows at the top of the issues pane to check before you create it.' }
     }
     if (e.args.trim() === 'check') {
       const problems = await checkAccess($)
@@ -422,10 +417,20 @@ export const register: Register = on => {
         text: now ? `Refreshed: ${summary(now.issues, now.prs) ?? 'nothing open'}.` : `Couldn't refresh: ${(await read($, error)) ?? 'unknown error'}`,
       }
     }
-    await $.ui.open({ id: PANE, title: 'Issues', focus: true })
+    await $.ui.open(OPEN)
     if ((await read($, board)) === null) void refresh($)
 
-    return { text: 'Issues pane opened. a/f/b/i/l filter, r refreshes, Enter on an issue opens it, then Start sends it to Claude. /issues new drafts an issue from the conversation.' }
+    return {
+      text: 'Issues pane opened. 1-5 filter, r refreshes, Enter on an issue opens it, then Start sends it to Claude, and Esc collapses it. /issues new drafts an issue from the conversation.',
+    }
+  })
+
+  // Esc, or the pane's close mark: with a card open it collapses the cards and keeps the pane; with none the pane
+  // closes. The engine stamps both as the person's close, so they step back alike.
+  on('ui.close', { id: PANE }, async ($, e, next) => {
+    if (e.origin.kind !== 'person' || (await read($, expanded)).length === 0) return next(e)
+    await update($, expanded, () => [])
+    return { value: undefined }
   })
 
   // The model filing, editing or merging through gh: show the change straight away. A checkout moves the branch marker.
@@ -538,14 +543,14 @@ export const register: Register = on => {
 
     const closeOut = async (pr: PullRequest) => {
       await $.prompt.submit({ text: closeOutPrompt(pr), asUser: true })
-      $.ui.toast(`Sent PR #${pr.number} to Claude to close out`)
+      $.ui.toast(`Sent PR #${pr.number} to Claude to finish and merge`)
     }
 
-    // Close out all merges every open pull request, so it asks once more before it goes.
+    // Merge all merges every open pull request, so it asks once more before it goes.
     const closeOutAll = async (prs: PullRequest[]) => {
       await update($, confirming, () => false)
       await $.prompt.submit({ text: closeOutAllPrompt(prs), asUser: true })
-      $.ui.toast(`Sent ${prs.length} ${prs.length === 1 ? 'PR' : 'PRs'} to Claude to close out`)
+      $.ui.toast(`Sent ${prs.length} ${prs.length === 1 ? 'PR' : 'PRs'} to Claude to finish and merge`)
     }
     const arm = (to: boolean) => () => void update($, confirming, () => to)
 
@@ -760,7 +765,7 @@ export const register: Register = on => {
           </Box>
           <Box flexDirection="row" gap={1} marginTop={1}>
             <Button key="draft-file" variant="primary" hotkey="c" onPress={() => void fileDraft($, made)}>
-              ✚ File it
+              ✚ Create issue
             </Button>
             <Button key="draft-discard" dimColor onPress={() => void update($, draft, () => null)}>
               Discard
@@ -783,9 +788,7 @@ export const register: Register = on => {
                 {badge.text}
               </Text>
               <Text color="suggestion" bold>{`#${pr.number}`}</Text>
-              <Button key={`pr-${pr.number}`} plain hover={{ color: 'claude', bold: true }} onPress={() => void browse($, 'pr', pr.number)}>
-                {fit(pr.title, titleRoom)}
-              </Button>
+              <Text>{fit(pr.title, titleRoom)}</Text>
             </Box>
             {roomy && (
               <Text>
@@ -807,9 +810,12 @@ export const register: Register = on => {
                 </Text>
               )}
             </Box>
-            <Button key={`close-out-${pr.number}`} dimColor hover={{ dimColor: false, color: 'suggestion' }} onPress={() => void closeOut(pr)}>
-              ⇲ Close out
-            </Button>
+            <Box flexDirection="row" gap={1}>
+              <Link href={pageOf(now.repo, 'pull', pr)} label="↗ GitHub" />
+              <Button key={`close-out-${pr.number}`} dimColor hover={{ dimColor: false, color: 'suggestion' }} onPress={() => void closeOut(pr)}>
+                ⇲ Finish & merge
+              </Button>
+            </Box>
           </Box>
         </Box>
       )
@@ -948,14 +954,12 @@ export const register: Register = on => {
             <Button key={`start-${issue.number}`} variant="primary" hotkey={hotkeys ? 's' : undefined} onPress={() => void start(issue)}>
               ▶ Start
             </Button>
-            <Button key={`draft-${issue.number}`} hotkey={hotkeys ? 'd' : undefined} onPress={() => void $.prompt.fill({ text: startPrompt(issue) })}>
-              ✎ Draft
+            <Button key={`draft-${issue.number}`} hotkey={hotkeys ? 'e' : undefined} onPress={() => void $.prompt.fill({ text: startPrompt(issue) })}>
+              ✎ Edit first
             </Button>
-            <Button key={`web-${issue.number}`} dimColor hotkey={hotkeys ? 'o' : undefined} onPress={() => void browse($, 'issue', issue.number)}>
-              ↗ GitHub
-            </Button>
+            <Link href={pageOf(now.repo, 'issues', issue)} label="↗ GitHub" />
             <Button key={`close-${issue.number}`} dimColor hotkey={hotkeys ? 'x' : undefined} onPress={toggle(issue.number)}>
-              Close
+              Collapse
             </Button>
           </Box>
         </Box>
@@ -985,7 +989,7 @@ export const register: Register = on => {
         {now.prs.length > 0 &&
           (arming ? (
             <Box flexDirection="row" gap={1} flexWrap="wrap">
-              <Text color="warning">{`Close out and merge all ${now.prs.length} open ${now.prs.length === 1 ? 'PR' : 'PRs'}?`}</Text>
+              <Text color="warning">{`Finish and merge all ${now.prs.length} open ${now.prs.length === 1 ? 'PR' : 'PRs'}?`}</Text>
               <Button key="close-out-all-yes" variant="primary" hotkey="y" onPress={() => void closeOutAll(now.prs)}>
                 Yes, merge them
               </Button>
@@ -996,7 +1000,7 @@ export const register: Register = on => {
           ) : (
             <Box flexDirection="row">
               <Button key="close-out-all" dimColor hotkey="m" onPress={arm(true)}>
-                {`⇶ Close out all ${now.prs.length}`}
+                {`⇶ Merge all ${now.prs.length}…`}
               </Button>
             </Box>
           ))}
@@ -1029,8 +1033,8 @@ export const register: Register = on => {
             {arming
               ? 'y merge every open PR · n cancel'
               : single
-                ? 's start · d draft · o open on GitHub · x close · press a box to tick it · r refresh'
-                : `a active · f future · b bugs · i mine · l all · r refresh · ⏎ open an issue${now.prs.length > 0 ? ' · m close out all PRs' : ''}${made ? ' · c file the draft' : ''}`}
+                ? 's start · e edit first · x or esc collapse · press a box to tick it · r refresh'
+                : `1 active · 2 future · 3 bugs · 4 mine · 5 all · r refresh · ⏎ open an issue${now.prs.length > 0 ? ' · m merge all PRs' : ''}${made ? ' · c create the issue' : ''}`}
           </Text>
         </Box>
       </Box>
@@ -1068,6 +1072,7 @@ export const register: Register = on => {
     const { Box, Text, Button, Link } = $.ui.resolve(e)
     const width = e.props.bodyColumns
     const clock = Date.now()
+    const repo = now?.repo ?? ''
     const dismiss = (alert: Alert) => async () => {
       await update($, dismissed, list => [...list.slice(-50), alert.key])
       if (alert.kind === 'closed') await update($, working, () => null)
@@ -1098,9 +1103,7 @@ export const register: Register = on => {
               <Button key={`fix-${pr.number}`} variant="primary" onPress={() => void hand(fixPrompt(pr))}>
                 Fix
               </Button>
-              <Button key={`checks-${pr.number}`} dimColor onPress={() => void browse($, 'pr', pr.number)}>
-                Open
-              </Button>
+              <Link href={pageOf(repo, 'pull', pr)} label="↗ GitHub" />
               <Button key={`dismiss-${alert.key}`} dimColor onPress={() => void dismiss(alert)()}>
                 ✕
               </Button>
@@ -1116,15 +1119,13 @@ export const register: Register = on => {
               </Text>
               <Text>
                 <Text color="suggestion" bold>{`#${pr.number} `}</Text>
-                <Text>{fit(pr.title, Math.max(12, width - 48))}</Text>
+                <Text>{fit(pr.title, Math.max(12, width - 57))}</Text>
                 <Text dimColor>{` passed on ${fit(pr.branch, 20)}`}</Text>
               </Text>
               <Button key={`merge-${pr.number}`} variant="primary" onPress={() => void hand(closeOutPrompt(pr))}>
-                Merge
+                Finish & merge
               </Button>
-              <Button key={`open-${pr.number}`} dimColor onPress={() => void browse($, 'pr', pr.number)}>
-                Open
-              </Button>
+              <Link href={pageOf(repo, 'pull', pr)} label="↗ GitHub" />
               <Button key={`dismiss-${alert.key}`} dimColor onPress={() => void dismiss(alert)()}>
                 ✕
               </Button>
@@ -1143,9 +1144,7 @@ export const register: Register = on => {
                 <Text>{fit(issue.title, Math.max(12, width - 44))}</Text>
                 <Text dimColor>{` changed ${ago(issue.updatedAt, clock)} ago`}</Text>
               </Text>
-              <Button key={`view-${issue.number}`} variant="primary" onPress={() => void browse($, 'issue', issue.number)}>
-                View
-              </Button>
+              <Link href={pageOf(repo, 'issues', issue)} label="↗ GitHub" />
               <Button key={`dismiss-${alert.key}`} dimColor onPress={() => void dismiss(alert)()}>
                 ✕
               </Button>

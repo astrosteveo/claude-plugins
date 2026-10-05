@@ -59,10 +59,10 @@ test('Close out sends one pull request, and Close out all asks before sending th
     expect(sent).toEqual([expect.stringMatching(/^Close out PR #335: /)])
 
     // The first press only asks; Cancel puts the button back without sending anything.
-    expect((await ui.find({ key: 'close-out-all' }))?.text).toBe('⇶ Close out all 2')
+    expect((await ui.find({ key: 'close-out-all' }))?.text).toBe('⇶ Merge all 2…')
     await ui.press({ key: 'close-out-all' })
     expect(sent).toHaveLength(1)
-    expect(await ui.find({ text: /^Close out and merge all 2 open PRs\?$/ })).toBeDefined()
+    expect(await ui.find({ text: /^Finish and merge all 2 open PRs\?$/ })).toBeDefined()
     expect(await ui.find({ text: /^y merge every open PR/ })).toBeDefined()
     await ui.press({ key: 'close-out-all-no' })
     expect(await ui.find({ key: 'close-out-all-yes' })).toBeUndefined()
