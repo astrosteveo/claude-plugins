@@ -121,8 +121,10 @@ stays quiet there.
     edits, so it doesn't overwrite other changes. Claude Code asks before it
     runs, as with any tool that changes something, unless you allow it.
 - After you press Start, a short note in the system prompt names the issue.
-  It tells Claude to tick boxes as it finishes them, and to write
-  `Closes #<number>` in the pull request. The note survives compaction. It
+  It tells Claude to tick boxes as it finishes them. In the pull request,
+  Claude writes `Closes #<number>` only if every box is ticked by then, and
+  `Refs #<number>` otherwise, so the issue stays open for what is left. The
+  repository's contributing guidelines come first. The note survives compaction. It
   covers only the session where you pressed Start, and changes only when you
   start another issue, so Claude Code's prompt cache keeps working.
 

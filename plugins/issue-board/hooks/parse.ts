@@ -395,12 +395,14 @@ export const boardText = (board: Board, issues: Issue[], label: string, clock: n
 }
 
 // The system prompt's section while Claude works on an issue the person started this session. It names the issue and
-// nothing that changes as the work goes on, so the prompt cache holds until the person starts another.
+// nothing that changes as the work goes on, so the prompt cache holds until the person starts another. `Closes` only
+// when the pull request finishes the issue: some repos keep an issue open for verification, and say `Refs` until then.
 export const workingSection = (working: Working): string =>
   [
     `The person is working on GitHub issue #${working.number}: ${working.title}. They handed it to you from the issue board.`,
     `When you finish and check an acceptance box of #${working.number}, tick it with the mcp__issue-board__tick tool. The mcp__issue-board__issues tool with number ${working.number} lists its boxes.`,
-    `When you open a pull request that resolves #${working.number}, write \`Closes #${working.number}\` in its body.`,
+    `When you open a pull request for #${working.number}, write \`Closes #${working.number}\` in its body only if every acceptance box of #${working.number} is ticked by then.`,
+    `Otherwise write \`Refs #${working.number}\`, so the issue stays open for what is left. If the repository's contributing guidelines say otherwise, follow them.`,
   ].join(' ')
 
 // What `/issues new` asks Claude for, over the conversation so far.
