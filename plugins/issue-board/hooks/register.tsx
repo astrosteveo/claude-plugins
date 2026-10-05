@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, ModelForkResult, Register, Timer, UiCopyArgs } from 'claude-code'
 
-import type { Alert, Board, Draft, Filter, GroupBy, Issue, Problem, Project, PullRequest, SavedSetup, Setup, SetupProject, SetupStep, Working } from '../types'
+import type { Alert, Board, BoxTask, Check, Comment, Draft, Filter, GroupBy, Issue, Known, Problem, Project, PullRequest, SavedSetup, Setup, SetupProject, SetupStep, Working } from '../types'
 import type { IssueChanges } from './parse'
 import { authOf, problemsOf, problemsText, repoOf } from './access'
 import { ADD_ITEM, SET_FIELD, issuesQuery, optionOf, startedOf } from './project'
@@ -28,12 +28,14 @@ import {
 import {
   THREADS_QUERY,
   WEEKS,
+  absorbed,
   ago,
   alertsOf,
   answerPrompt,
   areaOf,
   bar,
   boardText,
+  boxOf,
   cells,
   changesText,
   checksOf,
@@ -50,7 +52,13 @@ import {
   groupsOf,
   hex,
   isBug,
+  issueOfBranch,
+  knownOf,
+  mentionText,
+  mentionsOf,
+  newsOf,
   nextOf,
+  nextStepOf,
   issueText,
   labelsOf,
   nextPageOf,
@@ -81,13 +89,13 @@ import {
   weekly,
   wentGreen,
   workingSection,
+  writesGitHub,
 } from './parse'
 
 const PANE = 'issue-board'
 const REFRESH_MS = 5 * 60 * 1000
 // While a pull request's CI runs, the board looks again this often, so its pass or failure shows soon after.
 const WATCH_MS = 30 * 1000
-const GH_WRITE = /\bgh\s+(issue|pr)\s+(create|edit|close|reopen|merge|comment|ready|review)\b/
 // `gh issue close 35`, the issue it closes.
 const CLOSE = /\bgh\s+issue\s+close\s+#?(\d+)\b/
 // Commands that may leave the folder on another branch.
@@ -149,6 +157,7 @@ const access = atom({ plugin: 'issue-board', key: 'access' } as const, null)
 const groupBy = atom({ plugin: 'issue-board', key: 'groupBy' } as const, null)
 const unfolded = atom({ plugin: 'issue-board', key: 'unfolded' } as const, [])
 const setup = atom({ plugin: 'issue-board', key: 'setup' } as const, null)
+const tasks = atom({ plugin: 'issue-board', key: 'tasks' } as const, [])
 
 // The filters; with a project, the first two read Priority and say so.
 const FILTERS: { id: Filter; label: string; planned: string; hotkey: string }[] = [
@@ -165,8 +174,8 @@ const GROUPINGS: { id: GroupBy; label: string }[] = [
   { id: 'area', label: 'Area' },
 ]
 
-const gh = async ($: EngineInterface, args: string[], stdin?: string): Promise<string> => {
-  const { exitCode, stdout, stderr } = await $.process.run(['gh', ...args], { timeoutMs: 60_000, ...(stdin === undefined ? {} : { stdin }) })
+const gh = async ($: EngineInterface, args: string[], stdin?: string, timeoutMs = 60_000): Promise<string> => {
+  const { exitCode, stdout, stderr } = await $.process.run(['gh', ...args], { timeoutMs, ...(stdin === undefined ? {} : { stdin }) })
   if (exitCode !== 0) throw new Error(stderr.trim().split('\n')[0] || `gh ${args[0]} exited ${exitCode}`)
   return stdout
 }
@@ -221,6 +230,37 @@ const currentBranch = async ($: EngineInterface): Promise<string | null> => {
   } catch {
     return null
   }
+}
+
+// How many times Claude ran git or gh this session, and how many it had when the board last began reading GitHub: a
+// turn that ends with more reads it again.
+let touches = 0
+let readTouches = 0
+
+// The next step the prompt box suggests after Claude's last turn, if any. The engine's own guess gives way to it.
+let nextStep: string | null = null
+
+// Makes an issue the one Claude is on in this session: the system prompt names it, and the next prompts note what
+// changes on it from here.
+const track = async ($: EngineInterface, issue: Issue): Promise<void> => {
+  const sessionId = await $.session.id().catch(() => undefined)
+  const known = knownOf(issue, (await read($, board))?.prs ?? [])
+  await update($, working, () => ({ number: issue.number, title: issue.title, updatedAt: issue.updatedAt, ...(sessionId ? { sessionId } : {}), known }))
+  await save($)
+}
+
+// The branch the folder has checked out. Moving to a branch named for an issue open on the board, such as
+// `fix/315-glide`, makes that issue the one Claude is on, unless it already is in this session.
+const followBranch = async ($: EngineInterface, name: string | null): Promise<void> => {
+  const was = await read($, branch)
+  await update($, branch, () => name)
+  const number = name === was ? null : issueOfBranch(name)
+  const issue = number === null ? undefined : (await read($, board))?.issues.find(one => one.number === number)
+  if (!issue) return
+  const doing = await read($, working)
+  if (doing?.number === issue.number && doing.sessionId !== undefined && doing.sessionId === (await $.session.id().catch(() => undefined))) return
+  await track($, issue)
+  $.ui.toast(`Working on #${issue.number} now: the branch ${name} is for it`)
 }
 
 // The next refresh: soon while a pull request's CI runs, every five minutes otherwise. Each refresh sets the next one.
@@ -321,6 +361,7 @@ const fetchIssues = async ($: EngineInterface, nameWithOwner: string): Promise<{
 const refresh = async ($: EngineInterface, seen = false): Promise<void> => {
   if (await read($, loading)) return
   await update($, loading, () => true)
+  readTouches = touches
   const before = await read($, board)
   let after = before
   try {
@@ -362,7 +403,7 @@ const refresh = async ($: EngineInterface, seen = false): Promise<void> => {
     after = next
     await update($, board, () => next)
     if (login !== known) await update($, viewer, () => login)
-    await update($, branch, () => current)
+    await followBranch($, current)
     // Merge all's confirm waits on pull requests that are all gone now.
     if (next.prs.length === 0) await update($, confirming, () => false)
     const green = wentGreen(before, next)
@@ -397,21 +438,22 @@ const take = async ($: EngineInterface, fresh: Issue): Promise<void> => {
 }
 
 // Ticks or unticks boxes in an issue's body, read fresh from GitHub so an edit made meanwhile isn't lost. One at a
-// time: two presses in a row would otherwise each write the body the other read.
+// time: two presses in a row would otherwise each write the body the other read. Answers what it did, and the boxes as
+// GitHub had them just before.
 let ticking: Promise<unknown> = Promise.resolve()
-const tick = ($: EngineInterface, number: number, boxes: number[], done: boolean): Promise<string> => {
+const tick = ($: EngineInterface, number: number, boxes: number[], done: boolean): Promise<{ text: string; before: Check[] }> => {
   const run = ticking.then(async () => {
     const raw = JSON.parse(await gh($, ['issue', 'view', String(number), '--json', 'body'])) as { body: string | null }
+    const before = checksOf(raw.body)
     const edit = tickBody(raw.body ?? '', boxes, done)
-    const total = checksOf(raw.body).length
-    if (edit.missing.length > 0) throw new Error(`#${number} has ${total} ${total === 1 ? 'box' : 'boxes'}, so there is no box ${edit.missing.join(', ')}`)
+    if (edit.missing.length > 0) throw new Error(`#${number} has ${before.length} ${before.length === 1 ? 'box' : 'boxes'}, so there is no box ${edit.missing.join(', ')}`)
     if (edit.changed.length > 0) await gh($, ['issue', 'edit', String(number), '--body-file', '-'], edit.body)
     const [fresh] = parseIssues(`[${await gh($, ['issue', 'view', String(number), '--json', ISSUE_FIELDS])}]`)
     if (fresh) await take($, fresh)
     const step = progress(checksOf(edit.body))
     const tally = `#${number} has ${step.done}/${step.total} ticked.`
-    if (edit.changed.length === 0) return `Nothing changed: ${boxes.length === 1 ? 'that box was' : 'those boxes were'} already ${done ? 'ticked' : 'unticked'}. ${tally}`
-    return `${done ? 'Ticked' : 'Unticked'} ${edit.changed.length === 1 ? 'box' : 'boxes'} ${edit.changed.join(', ')}. ${tally}`
+    if (edit.changed.length === 0) return { text: `Nothing changed: ${boxes.length === 1 ? 'that box was' : 'those boxes were'} already ${done ? 'ticked' : 'unticked'}. ${tally}`, before }
+    return { text: `${done ? 'Ticked' : 'Unticked'} ${edit.changed.length === 1 ? 'box' : 'boxes'} ${edit.changed.join(', ')}. ${tally}`, before }
   })
   ticking = run.catch(() => undefined)
   return run
@@ -726,8 +768,120 @@ const pick = async ($: EngineInterface, issue: Issue, field: 'status' | 'priorit
 // Reads GitHub again straight after a change, waiting out a refresh already under way, which may have read GitHub
 // before the change. `seen`: the change was the person's or Claude's own, so the band doesn't call it news.
 const refreshAfter = async ($: EngineInterface): Promise<void> => {
-  for (let tries = 0; tries < 50 && (await read($, loading)); tries += 1) await $.clock.sleep(200)
+  await settle($)
   await refresh($, true)
+}
+
+// Waits out a refresh under way, up to ten seconds.
+const settle = async ($: EngineInterface): Promise<void> => {
+  for (let tries = 0; tries < 50 && (await read($, loading)); tries += 1) await $.clock.sleep(200)
+}
+
+// The issue Claude is on, when this session started it: the one the notes and the next step are about.
+const doingHere = async ($: EngineInterface): Promise<Working | null> => {
+  const doing = await read($, working)
+  return doing?.sessionId && doing.sessionId === (await $.session.id().catch(() => undefined)) ? doing : null
+}
+
+// The board's copy of the issue Claude is on, as Claude's own change to it begins; null before Claude knows it.
+const copyOf = async ($: EngineInterface): Promise<Known | null> => {
+  const now = await read($, board)
+  const doing = await read($, working)
+  return now && doing?.known ? knownOf(now.issues.find(one => one.number === doing.number), now.prs) : null
+}
+
+// Claude's own change to the issue it is on isn't news to it: what changed from `before` to `after` (the board's copy
+// now, when not given) goes into what Claude knows.
+const absorb = async ($: EngineInterface, before: Known | null, after?: Known): Promise<void> => {
+  const now = await read($, board)
+  if (!now || !before) return
+  await update($, working, was =>
+    was?.known ? { ...was, known: absorbed(was.known, before, after ?? knownOf(now.issues.find(one => one.number === was.number), now.prs)) } : was,
+  )
+  await save($)
+}
+
+// The comments of an issue, when the board counts more than Claude knows of; none when gh can't say in ten seconds,
+// and the note then says how to read them.
+const newComments = async ($: EngineInterface, number: number, was: Known, now: Known): Promise<Comment[]> => {
+  if (now.comments === null || was.comments === null || now.comments <= was.comments) return []
+  try {
+    return commentsOf(await gh($, ['issue', 'view', String(number), '--json', 'comments'], undefined, 10_000))
+  } catch {
+    return []
+  }
+}
+
+// What changed on GitHub to the issue Claude is on since its last prompt, as a note for the next one; what Claude knows
+// then moves on to the board's copy. Null with nothing to say, or before Claude knows anything of it.
+const newsFor = async ($: EngineInterface, now: Board): Promise<string | null> => {
+  const doing = await doingHere($)
+  if (!doing) return null
+  const current = knownOf(now.issues.find(one => one.number === doing.number), now.prs)
+  const note = doing.known ? newsOf(doing.number, doing.known, current, await newComments($, doing.number, doing.known, current)) : null
+  if (JSON.stringify(doing.known) !== JSON.stringify(current)) {
+    await update($, working, was => (was?.number === doing.number ? { ...was, known: current } : was))
+    await save($)
+  }
+  return note
+}
+
+// Start makes a task in Claude's task list for each open box that has none yet, so the list follows the issue; when
+// Claude completes one, the band asks whether to tick its box. Answers how many tasks the issue has: none where the
+// session keeps no task list.
+const makeTasks = async ($: EngineInterface, issue: Issue): Promise<number> => {
+  const had = (await read($, tasks)).filter(one => one.number === issue.number)
+  const made: BoxTask[] = []
+  for (const [index, check] of issue.checks.entries()) {
+    if (check.done || had.some(one => one.text === check.text)) continue
+    try {
+      const answer = await $.tool.call({
+        tool: 'TaskCreate',
+        subject: fit(check.text, 80),
+        description: `Box ${index + 1} of #${issue.number}, ${issue.title}: ${check.text}`,
+        metadata: { issue: issue.number, box: index + 1 },
+      })
+      const id = answer.deny === undefined && !answer.isError ? (answer.result as { task?: { id?: unknown } } | undefined)?.task?.id : undefined
+      if (typeof id !== 'string') break
+      made.push({ id, number: issue.number, box: index + 1, text: check.text, done: false })
+    } catch (cause) {
+      $.ui.log(`issue-board: couldn't make a task for a box of #${issue.number}: ${messageOf(cause)}`, { to: 'debug' })
+      break
+    }
+  }
+  if (made.length > 0) await update($, tasks, list => [...list, ...made])
+  return had.length + made.length
+}
+
+// After Claude's turn: the board reads GitHub again if Claude ran git or gh since it last did, then the prompt box
+// suggests the next step for the issue Claude is on, such as opening its pull request once every box is ticked.
+const afterTurn = async ($: EngineInterface): Promise<void> => {
+  await settle($)
+  if (touches > readTouches) await refresh($)
+  const now = await read($, board)
+  const step = now ? nextStepOf(now, await doingHere($)) : null
+  nextStep = step
+  // The box takes a suggestion once the turn has wound down: a few tries, while no new prompt has come.
+  for (let tries = 0; step && nextStep === step && tries < 3; tries += 1) {
+    if ((await $.prompt.suggest({ text: step }).catch(() => ({ isShown: false }))).isShown) break
+    await $.clock.sleep(1000)
+  }
+}
+
+// The task Claude completed, its box ticked from the band.
+const tickTask = async ($: EngineInterface, task: BoxTask): Promise<void> => {
+  const issue = (await read($, board))?.issues.find(one => one.number === task.number)
+  const at = issue && boxOf(issue, task)
+  try {
+    if (!at) throw new Error(`#${task.number} has no box "${fit(task.text, 40)}" open on the board`)
+    await tick($, task.number, [at.box], true)
+    await update($, tasks, list => list.filter(one => one.id !== task.id))
+    $.ui.toast(`Ticked box ${at.box} on #${task.number}`)
+  } catch (cause) {
+    const message = messageOf(cause)
+    $.ui.toast(`Couldn't tick the box on #${task.number}: ${message}`)
+    if (ACCESS_ERROR.test(message)) void checkAccess($, message)
+  }
 }
 
 // Makes a change to an issue, from its card or from Claude's issue_update tool: Status and Priority in the project,
@@ -935,15 +1089,70 @@ export const register: Register = on => {
     return { value: undefined }
   })
 
-  // The model filing, editing or merging through gh: show the change straight away. A checkout moves the branch marker.
+  // Claude changing GitHub through gh or a push: show the change straight away, and a change Claude made through gh to
+  // the issue it is on isn't news to it. A checkout moves the branch marker, and to a branch named for an issue, the
+  // issue Claude is on. Any git or gh has the board read GitHub again when the turn ends.
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const ran = await next(e)
     const command = (e as { command?: unknown }).command
-    if (typeof command === 'string' && GH_WRITE.test(command)) void refresh($, true)
-    else if (typeof command === 'string' && GIT_MOVE.test(command)) void currentBranch($).then(now => update($, branch, () => now))
+    if (typeof command !== 'string') return ran
+    if (/\b(git|gh)\b/.test(command)) touches += 1
+    if (writesGitHub(command)) {
+      // What Claude's gh changed can't be told apart from others' changes since the board last read GitHub.
+      const copy = /\bgh\b/.test(command) ? await copyOf($) : null
+      void refreshAfter($).then(() => absorb($, copy))
+    } else if (GIT_MOVE.test(command)) void currentBranch($).then(now => followBranch($, now))
 
     return ran
   })
+
+  // A worktree is a checkout too: Claude Code names its branch after the worktree, such as `worktree-fix+315-glide`.
+  on('tool.call', { tool: ['EnterWorktree', 'ExitWorktree'] }, async ($, e, next) => {
+    const ran = await next(e)
+    void currentBranch($).then(now => followBranch($, now))
+    return ran
+  })
+
+  // Claude completing or deleting a task Start made for a box: a completed one has the band ask whether to tick it.
+  on('tool.call', { tool: 'TaskUpdate' }, async ($, e, next) => {
+    const ran = await next(e)
+    const { taskId, status } = e as { taskId?: unknown; status?: unknown }
+    const failed = ran.deny !== undefined || ran.isError === true || (ran.result as { success?: unknown } | undefined)?.success === false
+    if (failed || typeof taskId !== 'string' || typeof status !== 'string' || !(await read($, tasks)).some(one => one.id === taskId)) return ran
+    await update($, tasks, list => (status === 'deleted' ? list.filter(one => one.id !== taskId) : list.map(one => (one.id === taskId ? { ...one, done: status === 'completed' } : one))))
+    return ran
+  })
+
+  // A prompt carries, unseen by the person, the board's copy of each issue or pull request it names as `#123`, and a
+  // note of what changed on GitHub to the issue Claude is on since the last prompt. The system prompt stays as it is.
+  on('prompt.submit', async ($, e, next) => {
+    nextStep = null
+    const added: string[] = []
+    try {
+      const now = await read($, board)
+      if (now) {
+        const note = await newsFor($, now)
+        if (note) added.push(note)
+        // A background task's notice quotes its command, which may name an issue nobody asked about.
+        for (const number of e.origin.kind === 'task-notification' ? [] : mentionsOf(e.text)) {
+          const copy = mentionText(now, number, Date.now())
+          if (copy) added.push(copy)
+        }
+      }
+    } catch (cause) {
+      $.ui.log(`issue-board: couldn't add the board to the prompt: ${messageOf(cause)}`, { to: 'debug' })
+    }
+    return next(added.length > 0 ? { ...e, context: [...(e.context ?? []), ...added] } : e)
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    const ended = await next(e)
+    if (e.agentId === undefined) void afterTurn($)
+    return ended
+  })
+
+  // The engine's guess at the next prompt gives way to the board's next step for the issue Claude is on.
+  on('prompt.suggest', async ($, e, next) => (e.origin.kind === 'suggestion' && nextStep ? next({ ...e, text: nextStep }) : next(e)))
 
   on('tool.call', { tool: ISSUES_TOOL }, async ($, e) => {
     const input = e as unknown as { number?: number; filter?: Filter; area?: string; query?: string }
@@ -982,7 +1191,11 @@ export const register: Register = on => {
       return { deny: 'Give the issue number and the boxes to tick, counted from 1.' }
     }
     try {
-      return { result: await tick($, number, boxes as number[], input.done !== false) }
+      const copy = await copyOf($)
+      const { text, before } = await tick($, number, boxes as number[], input.done !== false)
+      // Only the boxes Claude changed: the body was read fresh, so what others changed meanwhile stays news.
+      if ((await read($, working))?.number === number) await absorb($, copy && { ...copy, checks: before })
+      return { result: text }
     } catch (cause) {
       const message = messageOf(cause)
       const problems = ACCESS_ERROR.test(message) ? await checkAccess($, message) : []
@@ -995,7 +1208,14 @@ export const register: Register = on => {
     if (!changes) return { deny: 'Give the issue number, and what to change on it.' }
     const { number, ...rest } = changes
     try {
-      return { result: await applyChanges($, number, rest) }
+      const copy = (await read($, working))?.number === number ? await copyOf($) : null
+      const result = await applyChanges($, number, rest)
+      // What the tool changed that Claude is told of: a comment, and closing or reopening.
+      if (copy) {
+        const closed = rest.close ? true : rest.reopen ? false : copy.closed
+        await absorb($, copy, { ...copy, comments: copy.comments === null ? null : copy.comments + (rest.comment ? 1 : 0), closed })
+      }
+      return { result }
     } catch (cause) {
       const message = messageOf(cause)
       const problems = ACCESS_ERROR.test(message) ? await checkAccess($, message) : []
@@ -1080,10 +1300,9 @@ export const register: Register = on => {
     const Markdown = elements.Markdown
 
     const start = async (issue: Issue) => {
-      const sessionId = await $.session.id().catch(() => undefined)
-      await update($, working, () => ({ number: issue.number, title: issue.title, updatedAt: issue.updatedAt, ...(sessionId ? { sessionId } : {}) }))
-      await save($)
-      await $.prompt.submit({ text: startPrompt(issue), asUser: true })
+      await track($, issue)
+      const listed = await makeTasks($, issue)
+      await $.prompt.submit({ text: startPrompt(issue, listed > 0), asUser: true })
       $.ui.toast(`Sent #${issue.number} to Claude`)
       await claim($, issue)
     }
@@ -2129,7 +2348,13 @@ export const register: Register = on => {
     const alerts = now ? alertsOf(now, doing, gone, await read($, greened)) : []
     // The issue Claude is on, while it is open and nothing else about it is being said.
     const workingIssue = now && doing && !alerts.some(alert => alert.kind === 'activity') ? now.issues.find(issue => issue.number === doing.number) : undefined
-    if (problems.length === 0 && alerts.length === 0 && !workingIssue) return next(e)
+    // Tasks Claude completed whose boxes are still open: the band asks whether to tick them.
+    const offers = (now ? await read($, tasks) : []).flatMap(task => {
+      const issue = task.done ? now?.issues.find(one => one.number === task.number) : undefined
+      const at = issue && boxOf(issue, task)
+      return at && !at.done ? [{ task, box: at.box }] : []
+    })
+    if (problems.length === 0 && alerts.length === 0 && offers.length === 0 && !workingIssue) return next(e)
 
     const { Box, Text, Button, Link } = $.ui.resolve(e)
     const width = e.props.bodyColumns
@@ -2232,6 +2457,26 @@ export const register: Register = on => {
       }
     }
 
+    const offerLine = ({ task, box }: { task: BoxTask; box: number }) => (
+      <Box key={`offer-${task.id}`} flexDirection="row" gap={1}>
+        <Text color="success" inverse bold>
+          {' ☑ TICK? '}
+        </Text>
+        <Text>
+          <Text color="claude" bold>{`#${task.number} `}</Text>
+          <Text dimColor>{`box ${box} `}</Text>
+          <Text>{fit(task.text, Math.max(12, width - 52))}</Text>
+          <Text dimColor> is done</Text>
+        </Text>
+        <Button key={`tick-task-${task.id}`} variant="primary" onPress={() => void tickTask($, task)}>
+          {`Tick box ${box}`}
+        </Button>
+        <Button key={`skip-task-${task.id}`} dimColor onPress={() => void update($, tasks, list => list.filter(one => one.id !== task.id))}>
+          ✕
+        </Button>
+      </Box>
+    )
+
     const workingStep = workingIssue && progress(workingIssue.checks)
     const [filled, empty] = workingStep ? bar(workingStep, 8) : ['', '']
     const workingRow = workingIssue && workingStep && (
@@ -2290,6 +2535,7 @@ export const register: Register = on => {
       <Box flexDirection="column">
         {problems.slice(0, 2).map(problemLine)}
         {alerts.slice(0, 3).map(line)}
+        {offers.slice(0, 3).map(offerLine)}
         {workingRow}
       </Box>
     )
