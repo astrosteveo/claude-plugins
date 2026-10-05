@@ -121,6 +121,7 @@ const world = (on: On) => {
     }
     if (argv[1] === 'issue' && argv[2] === 'view') {
       const fields = argv[argv.indexOf('--json') + 1]
+      if (fields === 'id') return answer(JSON.stringify({ id: `I_${argv[3]}` }))
       return answer(JSON.stringify(fields === 'body' ? { body: state.body } : issue(state.body, '2026-10-04T09:00:00Z')))
     }
     if (argv.includes('closed') || argv.includes('merged')) return answer('[]')
@@ -307,10 +308,11 @@ test('the band says when CI passes and offers Merge, and shows the issue Claude 
   await band.unmount()
 })
 
-test('/issues new drafts an issue from the conversation and files it on request', async ($, on) => {
+test('/issues new drafts an issue from the conversation and files it on request, into the project at Inbox', async ($, on) => {
   mock.store(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   const gh = world(on)
+  gh.project = true
   const asked: string[] = []
   on('model.fork', async (_$, e) => {
     asked.push(e.prompt)
@@ -333,6 +335,11 @@ test('/issues new drafts an issue from the conversation and files it on request'
       argv: ['gh', 'issue', 'create', '--title', 'Saves drop the hangar', '--body-file', '-', '--label', 'enhancement'],
       stdin: 'Loading loses it.\n\n## Acceptance\n- [ ] Hangar loads',
     },
+  ])
+  // Added to the project, then set to Inbox, whatever the project's own automation would set.
+  expect(gh.fields.map(one => [one.content ?? one.item, one.option ?? null])).toEqual([
+    ['I_340', null],
+    ['PVTI_340', optionId('Inbox')],
   ])
   expect(await ui.find({ text: /New issue · draft/ })).toBeUndefined()
   await ui.unmount()

@@ -13,6 +13,7 @@ import {
   PROJECT_QUERY,
   UPDATE_FIELD,
   areasOf,
+  addsAsTodo,
   automationsOff,
   factsOf,
   mergeStatuses,
@@ -100,6 +101,7 @@ const branch = atom({ plugin: 'issue-board', key: 'branch' } as const, null)
 const greened = atom({ plugin: 'issue-board', key: 'greened' } as const, [])
 const draft = atom({ plugin: 'issue-board', key: 'draft' } as const, null)
 const drafting = atom({ plugin: 'issue-board', key: 'drafting' } as const, false)
+const creating = atom({ plugin: 'issue-board', key: 'creating' } as const, false)
 const openPr = atom({ plugin: 'issue-board', key: 'openPr' } as const, null)
 const access = atom({ plugin: 'issue-board', key: 'access' } as const, null)
 const groupBy = atom({ plugin: 'issue-board', key: 'groupBy' } as const, null)
@@ -407,25 +409,42 @@ const createIssue = async ($: EngineInterface, one: { title: string; body: strin
   return number
 }
 
-// Creates the draft: the issue, or an epic's parent then each sub-issue under it. Each joins the repo's project, so it
-// shows under its Status at once, whether or not the project adds new issues by itself.
+// Creates the draft: the issue, or an epic's parent then each sub-issue under it. Each joins the repo's project at
+// Inbox, so it shows under its Status at once. One creation at a time: a second press while one runs, or a Create
+// that comes in after it's done, would make the issues again.
+// Checked and set with nothing awaited between, so two presses in a row can't both get through, as two reads of the
+// `creating` state can; that state only tells the pane to say so.
+let filing = false
 const fileDraft = async ($: EngineInterface, made: Draft): Promise<void> => {
+  if (filing) return
+  filing = true
+  await update($, creating, () => true)
   try {
     const number = await createIssue($, made)
+    // The parent exists now: should a sub-issue fail, Create mustn't make the parent again.
+    await update($, draft, () => null)
     const children: number[] = []
     for (const child of made.children ?? []) children.push(await createIssue($, child, number))
-    await update($, draft, () => null)
     const project = (await read($, board))?.project
+    const inbox = optionOf(project?.status, 'Inbox')
     if (project) {
       for (const one of [number, ...children]) {
         const { id } = JSON.parse(await gh($, ['issue', 'view', String(one), '--json', 'id'])) as { id: string }
-        await gh($, ['api', 'graphql', '-f', `query=${ADD_ITEM}`, '-f', `project=${project.id}`, '-f', `content=${id}`])
+        const added = JSON.parse(await gh($, ['api', 'graphql', '-f', `query=${ADD_ITEM}`, '-f', `project=${project.id}`, '-f', `content=${id}`])) as {
+          data?: { addProjectV2ItemById?: { item?: { id?: string } } }
+        }
+        const item = added.data?.addProjectV2ItemById?.item?.id
+        if (item && project.status && inbox) {
+          await gh($, ['api', 'graphql', '-f', `query=${SET_FIELD}`, '-f', `project=${project.id}`, '-f', `item=${item}`, '-f', `field=${project.status.id}`, '-f', `option=${inbox.id}`])
+        }
       }
     }
     $.ui.toast(children.length > 0 ? `Created epic #${number} with ${children.length} sub-issues` : `Created #${number}`)
-    void refresh($)
   } catch (cause) {
     $.ui.toast(`Couldn't create the issue: ${messageOf(cause)}`)
+  } finally {
+    filing = false
+    await update($, creating, () => false)
     void refresh($)
   }
 }
@@ -887,6 +906,7 @@ export const register: Register = on => {
     const doing = await read($, working)
     const made = await read($, draft)
     const thinking = await read($, drafting)
+    const making = await read($, creating)
     const shownPr = await read($, openPr)
     const planned = await read($, setup)
     const picked = await read($, groupBy)
@@ -1101,9 +1121,15 @@ export const register: Register = on => {
                 />
               </Box>
             )}
-            {manual.length > 0 && (
-              <Box flexDirection="row" gap={1} flexWrap="wrap" marginTop={1}>
-                <Text color="warning" wrap="wrap">{`Turn on by hand, in the project's Workflows settings: ${manual.join(', ')}.`}</Text>
+            {(manual.length > 0 || addsAsTodo(chosenProject)) && (
+              <Box flexDirection="column" marginTop={1}>
+                <Text color="warning">In the project's Workflows settings, by hand:</Text>
+                {manual.length > 0 && <Text color="warning" wrap="wrap">{`  · turn on ${manual.join(', ')}`}</Text>}
+                {addsAsTodo(chosenProject) && (
+                  <Text color="warning" wrap="wrap">
+                    {"  · set Item added to project to Inbox: it sets GitHub's Todo on new issues"}
+                  </Text>
+                )}
                 {chosenProject && <Link href={`${chosenProject.url}/workflows`} label="↗ Workflows" />}
               </Box>
             )}
@@ -1329,14 +1355,20 @@ export const register: Register = on => {
               })}
             </Box>
           )}
-          <Box flexDirection="row" gap={1} marginTop={1}>
-            <Button key="draft-file" variant="primary" hotkey="c" onPress={() => void fileDraft($, made)}>
-              {made.children ? `✚ Create the epic and ${made.children.length} sub-issues` : '✚ Create issue'}
-            </Button>
-            <Button key="draft-discard" dimColor onPress={() => void update($, draft, () => null)}>
-              Discard
-            </Button>
-          </Box>
+          {making ? (
+            <Box marginTop={1}>
+              <Text color="warning">{made.children ? '◌ Creating the epic and its sub-issues…' : '◌ Creating the issue…'}</Text>
+            </Box>
+          ) : (
+            <Box flexDirection="row" gap={1} marginTop={1}>
+              <Button key="draft-file" variant="primary" hotkey="c" onPress={() => void fileDraft($, made)}>
+                {made.children ? `✚ Create the epic and ${made.children.length} sub-issues` : '✚ Create issue'}
+              </Button>
+              <Button key="draft-discard" dimColor onPress={() => void update($, draft, () => null)}>
+                Discard
+              </Button>
+            </Box>
+          )}
         </Box>
       )
     )

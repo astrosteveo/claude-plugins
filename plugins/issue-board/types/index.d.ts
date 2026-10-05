@@ -168,6 +168,8 @@ declare module 'claude-code' {
       greened: string[]
       draft: Draft | null
       drafting: boolean
+      // The draft is being created on GitHub: Create waits, so a second press doesn't create it again.
+      creating: boolean
       // The last permission check; null until one has run.
       access: Access | null
       // The pull request whose details are open in the pane.

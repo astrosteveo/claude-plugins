@@ -188,6 +188,11 @@ export const stepsOf = (facts: SetupFacts, chosen: string | null, typed: string)
 export const automationsOff = (project: SetupProject | undefined): string[] =>
   project ? AUTOMATIONS.filter(name => project.workflows.some(one => one.name === name && !one.enabled)) : AUTOMATIONS
 
+// Whether the project still has GitHub's own Todo, which its "Item added to project" automation sets on new issues
+// unless told otherwise. The API can't read or change what it sets, so setup asks the person to set it to Inbox.
+export const addsAsTodo = (project: SetupProject | undefined): boolean =>
+  (project?.status?.options ?? [{ name: 'Todo' }]).some(option => option.name.toLowerCase() === 'todo')
+
 // Which Status option means what, for the board to save: the board's names matched whatever their case.
 export const rolesOf = (options: SetupOption[]): NonNullable<SavedSetup['status']>['roles'] => {
   const find = (name: string) => options.find(one => same(one.name, name))?.id
