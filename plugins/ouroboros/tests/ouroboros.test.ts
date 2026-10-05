@@ -43,3 +43,28 @@ test('a correction is friction, a plain prompt is not', async ($, on) => {
   expect(await ui.find({ text: /run the tests first/ })).toBeDefined()
   await ui.unmount()
 })
+
+test('a new install adopts the genome of the copy it replaces and merges friction', async ($, on) => {
+  const old = {
+    genome: [{ id: 'old-gene', title: 'An inherited gene', why: 'It evolved before', acceptedAt: 1 }],
+    friction: [{ at: 10, turn: 1, kind: 'error', tool: 'Bash', detail: 'from the old copy' }],
+  }
+  mock.store(on, { auto: false, friction: [{ at: 20, turn: 2, kind: 'correction', detail: 'from this copy' }] })
+  mock.clock(on)
+  mock.env(on, { HOME: '/home/someone' })
+  on('command.register', () => ({ value: { command: 'ouroboros' } }))
+  on('agent.register', () => ({ value: { agent: 'ouroboros:geneticist' } }))
+  on('fs.list', () => ({
+    value: [{ name: 'ouroboros_inline-abc.json', kind: 'file', size: 1, mtimeMs: 1, isLink: false }],
+  }))
+  on('fs.read', () => ({ value: JSON.stringify(old) }))
+  on('fs.exists', () => ({ value: false }))
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ text: /An inherited gene/ })).toBeDefined()
+  expect(await ui.find({ text: /2 friction/ })).toBeDefined()
+  await ui.unmount()
+})

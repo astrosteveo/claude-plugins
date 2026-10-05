@@ -181,8 +181,9 @@ async function delist($: EngineInterface, market: Market, id: string): Promise<v
 }
 
 // The store is kept per install: carry the genome over from a copy of Ouroboros run before.
+// Keys this store already has win, and the two friction logs are merged.
 async function adoptStore($: EngineInterface): Promise<void> {
-  if ((await $.store.keys()).length > 0) return
+  if ((await $.store.get('genome')) !== undefined) return
   const dir = `${await $.env.get('HOME')}/.claude/plugins/store`
   const own = new RegExp(`^${$.plugin.name}_`)
   const files = (await $.fs.list(dir).catch(() => [])).filter(f => own.test(f.name)).sort((a, b) => b.mtimeMs - a.mtimeMs)
@@ -190,7 +191,15 @@ async function adoptStore($: EngineInterface): Promise<void> {
     try {
       const kept = JSON.parse(String(await $.fs.read(`${dir}/${file.name}`))) as Record<string, unknown>
       if (kept.genome === undefined) continue
-      for (const [key, value] of Object.entries(kept)) await $.store.set(key, value)
+      for (const [key, value] of Object.entries(kept)) {
+        const mine = await $.store.get(key)
+        if (key === 'friction' && Array.isArray(mine) && Array.isArray(value)) {
+          const merged = [...(value as Friction[]), ...(mine as Friction[])].sort((a, b) => a.at - b.at)
+          await $.store.set(key, merged.slice(-200))
+        } else if (mine === undefined) {
+          await $.store.set(key, value)
+        }
+      }
       $.ui.log(`Ouroboros adopted its genome from ${file.name}.`)
       return
     } catch {
@@ -355,7 +364,6 @@ async function excise($: EngineInterface, id: string): Promise<void> {
 // A marketplace keeps its genes in its own folder, so nothing is written there.
 async function rehydrate($: EngineInterface): Promise<void> {
   if ((await $.state.get(genomeRef)).version !== 0) return
-  await adoptStore($)
   const genes = ((await $.store.get('genome')) as GeneRecord[] | undefined) ?? []
   const kept = ((await $.store.get('friction')) as Friction[] | undefined) ?? []
   await $.state.set(genomeRef, genes)
@@ -385,6 +393,7 @@ export const register: Register = on => {
       maxTurns: 60,
       omitClaudeMd: true,
     })
+    await adoptStore($)
     await rehydrate($)
     await refreshStatus($)
     return next(e)
