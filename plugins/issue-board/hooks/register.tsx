@@ -30,6 +30,7 @@ import {
   areaOf,
   bar,
   boardText,
+  cells,
   checksOf,
   chipsOf,
   ciBadge,
@@ -42,6 +43,7 @@ import {
   groupsOf,
   hex,
   isBug,
+  nextOf,
   issueText,
   labelsOf,
   nextPageOf,
@@ -76,6 +78,8 @@ const REFRESH_MS = 5 * 60 * 1000
 // While a pull request's CI runs, the board looks again this often, so its pass or failure shows soon after.
 const WATCH_MS = 30 * 1000
 const GH_WRITE = /\bgh\s+(issue|pr)\s+(create|edit|close|reopen|merge|comment|ready|review)\b/
+// `gh issue close 35`, the issue it closes.
+const CLOSE = /\bgh\s+issue\s+close\s+#?(\d+)\b/
 // Commands that may leave the folder on another branch.
 const GIT_MOVE = /\bgit\s+(checkout|switch|worktree)\b|\bgh\s+pr\s+checkout\b/
 const ISSUE_FIELDS = 'number,title,url,labels,assignees,body,updatedAt'
@@ -366,37 +370,63 @@ const tick = ($: EngineInterface, number: number, boxes: number[], done: boolean
   return run
 }
 
-// Asks Claude, over the conversation so far, for an issue to file; the draft waits in the pane for the person.
-const draftIssue = async ($: EngineInterface, what: string): Promise<void> => {
+// Asks Claude, over the conversation so far, for an issue to file, or with `epic` a parent and its sub-issues; the draft
+// waits in the pane for the person.
+const draftIssue = async ($: EngineInterface, what: string, epic = false): Promise<void> => {
   if (await read($, drafting)) return
   await update($, drafting, () => true)
   await update($, draft, () => null)
   try {
     const labels = labelsOf((await read($, board))?.issues ?? [])
-    const prompt = draftPrompt(what, labels)
+    const prompt = draftPrompt(what, labels, epic)
     let reply: ModelForkResult = await $.model.fork({ prompt })
-    if (!reply.isAnswered && reply.reason === 'nothing-to-fork' && what) reply = await $.model.complete({ model: 'sonnet', prompt })
+    if (!reply.isAnswered && reply.reason === 'nothing-to-fork' && what) reply = await $.model.complete({ model: 'sonnet', prompt, maxTokens: epic ? 4096 : 1024 })
     if (!reply.isAnswered) {
-      $.ui.toast(reply.reason === 'nothing-to-fork' ? 'Nothing to draft from yet. Say what it is about: /issues new <what>' : `Couldn't draft the issue: ${reply.reason}`)
+      $.ui.toast(reply.reason === 'nothing-to-fork' ? `Nothing to draft from yet. Say what it is about: /issues new ${epic ? 'epic ' : ''}<what>` : `Couldn't draft the issue: ${reply.reason}`)
       return
     }
     const made = parseDraft(reply.text, labels)
     if (made) await update($, draft, () => made)
-    else $.ui.toast("Claude's draft didn't come back as an issue. Try /issues new again.")
+    else $.ui.toast(`Claude's draft didn't come back as ${epic ? 'an epic' : 'an issue'}. Try /issues new again.`)
   } finally {
     await update($, drafting, () => false)
   }
 }
 
+// Creates one issue; with `parent`, as its sub-issue. Answers its number.
+const createIssue = async ($: EngineInterface, one: { title: string; body: string; labels: string[] }, parent?: number): Promise<number> => {
+  const url = (
+    await gh(
+      $,
+      ['issue', 'create', '--title', one.title, '--body-file', '-', ...one.labels.flatMap(label => ['--label', label]), ...(parent ? ['--parent', String(parent)] : [])],
+      one.body,
+    )
+  ).trim()
+  const number = Number(/\/issues\/(\d+)$/.exec(url)?.[1])
+  if (!number) throw new Error(`gh didn't say which issue it created: ${url}`)
+  return number
+}
+
+// Creates the draft: the issue, or an epic's parent then each sub-issue under it. Each joins the repo's project, so it
+// shows under its Status at once, whether or not the project adds new issues by itself.
 const fileDraft = async ($: EngineInterface, made: Draft): Promise<void> => {
   try {
-    const url = (await gh($, ['issue', 'create', '--title', made.title, '--body-file', '-', ...made.labels.flatMap(label => ['--label', label])], made.body)).trim()
+    const number = await createIssue($, made)
+    const children: number[] = []
+    for (const child of made.children ?? []) children.push(await createIssue($, child, number))
     await update($, draft, () => null)
-    const number = /\/issues\/(\d+)$/.exec(url)?.[1]
-    $.ui.toast(number ? `Created #${number}` : 'Created the issue')
+    const project = (await read($, board))?.project
+    if (project) {
+      for (const one of [number, ...children]) {
+        const { id } = JSON.parse(await gh($, ['issue', 'view', String(one), '--json', 'id'])) as { id: string }
+        await gh($, ['api', 'graphql', '-f', `query=${ADD_ITEM}`, '-f', `project=${project.id}`, '-f', `content=${id}`])
+      }
+    }
+    $.ui.toast(children.length > 0 ? `Created epic #${number} with ${children.length} sub-issues` : `Created #${number}`)
     void refresh($)
   } catch (cause) {
-    $.ui.toast(`Couldn't file the issue: ${messageOf(cause)}`)
+    $.ui.toast(`Couldn't create the issue: ${messageOf(cause)}`)
+    void refresh($)
   }
 }
 
@@ -634,7 +664,7 @@ export const register: Register = on => {
     await $.command.register({
       name: 'issues',
       description: 'Show open issues and pull requests in a pane',
-      argumentHint: '[refresh | check | setup | new <what it is about>]',
+      argumentHint: '[refresh | check | setup | new [epic] <what it is about>]',
     })
     await $.tool.register({
       name: 'issues',
@@ -684,11 +714,16 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'issues' }, async ($, e) => {
-    const asked = /^new\b\s*([\s\S]*)$/.exec(e.args.trim())
+    const asked = /^new\b\s*(epic\b)?\s*([\s\S]*)$/.exec(e.args.trim())
     if (asked) {
+      const epic = asked[1] !== undefined
       await $.ui.open(OPEN)
-      void draftIssue($, (asked[1] ?? '').trim())
-      return { text: 'Drafting an issue from the conversation. It shows at the top of the issues pane to check before you create it.' }
+      void draftIssue($, (asked[2] ?? '').trim(), epic)
+      return {
+        text: epic
+          ? 'Drafting an epic and its sub-issues from the conversation. They show at the top of the issues pane to check before you create them.'
+          : 'Drafting an issue from the conversation. It shows at the top of the issues pane to check before you create it.',
+      }
     }
     if (e.args.trim() === 'setup') {
       await $.ui.open(OPEN)
@@ -805,6 +840,22 @@ export const register: Register = on => {
   on('tool.check', { tool: ISSUES_TOOL }, async ($, e, next) => {
     const verdict = await next(e)
     return verdict.decision === 'ask' ? { decision: 'allow' as const } : verdict
+  })
+
+  // Closing an epic whose sub-issues are still open asks the person first, whatever their rules allow: the sub-issues
+  // would stay open under a closed parent. A rule that denies the command still stands.
+  on('tool.check', { tool: 'Bash' }, async ($, e, next) => {
+    const verdict = await next(e)
+    const command = (e.input as { command?: unknown }).command
+    if (verdict.decision === 'deny' || typeof command !== 'string' || !CLOSE.test(command)) return verdict
+    const issues = (await read($, board))?.issues ?? []
+    const epics = [...command.matchAll(new RegExp(CLOSE.source, 'g'))].flatMap(match => {
+      const issue = issues.find(one => one.number === Number(match[1]))
+      const open = (issue?.subIssues?.total ?? 0) - (issue?.subIssues?.completed ?? 0)
+      return issue && open > 0 ? [`#${issue.number} is an epic with ${open} open ${open === 1 ? 'sub-issue' : 'sub-issues'}`] : []
+    })
+    if (epics.length === 0) return verdict
+    return { decision: 'ask' as const, reason: `${epics.join('; ')}. Closing it leaves them open under a closed epic.` }
   })
 
   // While Claude works on an issue the person started in this session, the system prompt names it, so compaction
@@ -1254,7 +1305,7 @@ export const register: Register = on => {
       made && (
         <Box flexDirection="column" borderStyle="round" borderColor="suggestion" paddingX={1} marginTop={1}>
           <Text color="suggestion" bold>
-            New issue · draft
+            {made.children ? `New epic · draft · ${made.children.length} sub-issues` : 'New issue · draft'}
           </Text>
           <Text bold wrap="wrap">
             {made.title}
@@ -1263,9 +1314,24 @@ export const register: Register = on => {
           <Box marginTop={1}>
             <Markdown text={made.body} />
           </Box>
+          {made.children && (
+            <Box flexDirection="column" marginTop={1}>
+              <Text bold>Sub-issues</Text>
+              {made.children.map((child, index) => {
+                const boxes = checksOf(child.body).length
+                return (
+                  <Text key={`draft-child-${index + 1}`} wrap="wrap">
+                    <Text dimColor>{`${index + 1}. `}</Text>
+                    <Text>{child.title}</Text>
+                    <Text dimColor>{boxes > 0 ? ` · ${boxes} ${boxes === 1 ? 'box' : 'boxes'}` : ''}</Text>
+                  </Text>
+                )
+              })}
+            </Box>
+          )}
           <Box flexDirection="row" gap={1} marginTop={1}>
             <Button key="draft-file" variant="primary" hotkey="c" onPress={() => void fileDraft($, made)}>
-              ✚ Create issue
+              {made.children ? `✚ Create the epic and ${made.children.length} sub-issues` : '✚ Create issue'}
             </Button>
             <Button key="draft-discard" dimColor onPress={() => void update($, draft, () => null)}>
               Discard
@@ -1357,7 +1423,11 @@ export const register: Register = on => {
       const linked = prsFor(issue, now.prs)[0]
       const pr = linked ? `⇄ #${linked.number} ${ciBadge[linked.ci].text.trim().split(' ')[0]}` : ''
       const tag = project && issue.priority ? `${fit(issue.priority, 3)} ` : ''
-      const right = chips.reduce((sum, chip) => sum + chip.name.length + 3, 0) + age.padStart(3).length + (pr ? pr.length + 1 : 0)
+      // The open issue it waits on, if any: the first, and how many more.
+      const blockers = issue.blockedBy ?? []
+      const blocked = blockers.length > 0 ? `⛔ #${blockers[0]}${blockers.length > 1 ? ` +${blockers.length - 1}` : ''}` : ''
+      const right =
+        chips.reduce((sum, chip) => sum + cells(chip.name) + 3, 0) + age.padStart(3).length + (pr ? cells(pr) + 1 : 0) + (blocked ? cells(blocked) + 1 : 0)
       const left = 6 + 1 + 5 + 1 + (bug ? 2 : 0) + tag.length + String(issue.number).length + 2
       const [filled, empty] = bar(step, 6)
       return (
@@ -1379,6 +1449,7 @@ export const register: Register = on => {
             </Button>
           </Box>
           <Box flexDirection="row" gap={1}>
+            {blocked && <Text color="warning">{blocked}</Text>}
             {linked && <Text color={ciBadge[linked.ci].color}>{pr}</Text>}
             {chips.map(chip => (
               <Text>
@@ -1459,6 +1530,8 @@ export const register: Register = on => {
     const issueCard = (issue: Issue, hotkeys: boolean) => {
       const step = progress(issue.checks)
       const prose = proseOf(issue.body ?? '')
+      // An epic's card: Next starts its first ready sub-issue.
+      const epicNext = (issue.subIssues?.total ?? 0) > 0 ? nextOf(now.issues, issue.number, project) : undefined
       return (
         <Box key={`card-${issue.number}`} flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1} marginLeft={2} marginBottom={1}>
           <Text bold wrap="wrap">
@@ -1479,6 +1552,7 @@ export const register: Register = on => {
             ))}
             <Text dimColor>{`updated ${ago(issue.updatedAt, clock)} ago`}</Text>
             {issue.parent && <Text dimColor>{`in #${issue.parent.number}`}</Text>}
+            {(issue.subIssues?.total ?? 0) > 0 && <Text dimColor>{`epic · ${issue.subIssues?.completed}/${issue.subIssues?.total} sub-issues closed`}</Text>}
             {issue.milestone && <Text dimColor>{`⚑ ${issue.milestone}`}</Text>}
             {(issue.blockedBy ?? []).length > 0 && <Text color="warning">{`blocked by ${issue.blockedBy?.map(number => `#${number}`).join(', ')}`}</Text>}
           </Box>
@@ -1526,6 +1600,11 @@ export const register: Register = on => {
             <Button key={`start-${issue.number}`} variant="primary" hotkey={hotkeys ? 's' : undefined} onPress={() => void start(issue)}>
               ▶ Start
             </Button>
+            {epicNext && (
+              <Button key={`next-${issue.number}`} onPress={() => void start(epicNext)}>
+                {`▶ Next: #${epicNext.number}`}
+              </Button>
+            )}
             <Button key={`draft-${issue.number}`} hotkey={hotkeys ? 'e' : undefined} onPress={() => void $.prompt.fill({ text: startPrompt(issue) })}>
               ✎ Edit first
             </Button>
@@ -1606,6 +1685,29 @@ export const register: Register = on => {
                   </Button>
                   <Text dimColor>{shut ? `${group.issues.length} folded` : right}</Text>
                 </Box>
+              ) : group.epic ? (
+                // An epic: how many of its sub-issues are closed, as a bar, and Next, which starts the first ready one.
+                (() => {
+                  const epic = group.epic
+                  const next = nextOf(now.issues, epic.number, project)
+                  const closed = `${epic.completed}/${epic.total} closed`
+                  return (
+                    <Box flexDirection="row" justifyContent="space-between" marginTop={1}>
+                      <Text bold color="claude">
+                        {fit(group.title, Math.max(12, width - 12 - cells(closed) - (next ? 10 : 0) - 4))}
+                      </Text>
+                      <Box flexDirection="row" gap={1}>
+                        {meter(epic.completed, epic.total, 10)}
+                        <Text dimColor>{closed}</Text>
+                        {next && (
+                          <Button key={`next-${epic.number}`} dimColor hover={{ dimColor: false, color: 'claude' }} onPress={() => void start(next)}>
+                            ▶ Next
+                          </Button>
+                        )}
+                      </Box>
+                    </Box>
+                  )
+                })()
               ) : (
                 rule(fit(group.title, Math.max(12, width - right.length - 6)), right)
               )}

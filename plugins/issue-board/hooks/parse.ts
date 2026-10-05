@@ -177,13 +177,32 @@ export const byArea = (issues: Issue[]): [string, Issue[]][] => {
     .map(([area, list]) => [area, [...list].sort((a, b) => rank(a) - rank(b) || b.number - a.number)])
 }
 
-// The most pressing first: by priority when there is a project, then bugs, issues under way and the newest.
-export const sortIssues = (issues: Issue[], project: Project | null = null): Issue[] =>
-  [...issues].sort((a, b) => priorityRank(project, a.priority) - priorityRank(project, b.priority) || rank(a) - rank(b) || b.number - a.number)
+// Whether an issue waits on another that is still open.
+export const isBlocked = (issue: Issue): boolean => (issue.blockedBy ?? []).length > 0
+
+// The most pressing first: by priority when there is a project, then bugs, issues under way and the newest. With
+// `readyFirst`, as within an epic, the ones nothing blocks come before the ones that wait, and the oldest before the
+// newest: an epic's sub-issues are mostly written in the order they're meant to be done.
+export const sortIssues = (issues: Issue[], project: Project | null = null, readyFirst = false): Issue[] =>
+  [...issues].sort(
+    (a, b) =>
+      (readyFirst ? Number(isBlocked(a)) - Number(isBlocked(b)) : 0) ||
+      priorityRank(project, a.priority) - priorityRank(project, b.priority) ||
+      rank(a) - rank(b) ||
+      (readyFirst ? a.number - b.number : b.number - a.number),
+  )
+
+// The sub-issue an epic's Next starts: the first open one nothing blocks, in the order the epic lists them.
+export const nextOf = (issues: Issue[], epic: number, project: Project | null = null): Issue | undefined =>
+  sortIssues(
+    issues.filter(issue => issue.parent?.number === epic),
+    project,
+    true,
+  ).find(issue => !isBlocked(issue))
 
 // A heading of the issue list and the issues under it. `folded`: drawn shut until the person opens it, as Backlog is.
 // `epic`: the parent the group is for, so its row isn't drawn again beneath it.
-export type Group = { key: string; title: string; issues: Issue[]; folded: boolean; epic?: { total: number; completed: number } }
+export type Group = { key: string; title: string; issues: Issue[]; folded: boolean; epic?: { number: number; total: number; completed: number } }
 
 // The issues in groups: by the project's Status in the project's order, by the epic they are sub-issues of, or by
 // `area:` label. Issues that don't fit a group come last, under No status, No epic or other.
@@ -207,9 +226,13 @@ export const groupsOf = (issues: Issue[], by: GroupBy, project: Project | null =
       .map(parent => ({
         key: `epic:${parent.number}`,
         title: `#${parent.number} ${parent.title}`,
-        issues: sortIssues(issues.filter(issue => issue.parent?.number === parent.number), project),
+        issues: sortIssues(
+          issues.filter(issue => issue.parent?.number === parent.number),
+          project,
+          true,
+        ),
         folded: false,
-        epic: { total: parent.total, completed: parent.completed },
+        epic: { number: parent.number, total: parent.total, completed: parent.completed },
       }))
     // An open epic is its group's heading, so it isn't listed again under No epic.
     const rest = sortIssues(issues.filter(issue => !issue.parent && !parents.has(issue.number)), project)
@@ -583,26 +606,42 @@ export const workingSection = (working: Working): string =>
     `Otherwise write \`Refs #${working.number}\`, so the issue stays open for what is left. If the repository's contributing guidelines say otherwise, follow them.`,
   ].join(' ')
 
-// What `/issues new` asks Claude for, over the conversation so far.
-export const draftPrompt = (what: string, labels: string[]): string =>
+// What `/issues new` asks Claude for, over the conversation so far. With `epic`, a parent issue and its sub-issues.
+export const draftPrompt = (what: string, labels: string[], epic = false): string =>
   [
-    `Draft a GitHub issue for this repository${what ? ` about: ${what}` : ' from what we have discussed'}.`,
-    'Answer with one JSON object and nothing else: {"title": "...", "body": "...", "labels": ["..."]}.',
-    'Write the title as a short, plain sentence. In the body, say what is wrong or wanted and why, in plain sentences.',
-    'End the body with a "## Acceptance" section of task-list boxes ("- [ ] ..."), one checkable outcome each.',
+    epic
+      ? `Draft an epic for this repository${what ? ` about: ${what}` : ' from what we have discussed'}: a parent GitHub issue and the sub-issues that, closed, finish it.`
+      : `Draft a GitHub issue for this repository${what ? ` about: ${what}` : ' from what we have discussed'}.`,
+    epic
+      ? 'Answer with one JSON object and nothing else: {"title": "...", "body": "...", "labels": ["..."], "children": [{"title": "...", "body": "...", "labels": ["..."]}]}.'
+      : 'Answer with one JSON object and nothing else: {"title": "...", "body": "...", "labels": ["..."]}.',
+    'Write each title as a short, plain sentence. In each body, say what is wrong or wanted and why, in plain sentences.',
+    epic
+      ? 'The parent body says what the whole is for and the order to do the parts in. Each sub-issue is one piece of work, and its body ends with a "## Acceptance" section of task-list boxes ("- [ ] ..."), one checkable outcome each.'
+      : 'End the body with a "## Acceptance" section of task-list boxes ("- [ ] ..."), one checkable outcome each.',
     labels.length > 0 ? `Choose labels only from this list, or none: ${labels.join(', ')}.` : 'Leave labels empty.',
   ].join(' ')
 
-// The draft in Claude's reply, its labels kept to the ones the repository has; null when the reply holds none.
+type RawDraft = { title?: unknown; body?: unknown; labels?: unknown }
+
+// One issue of a draft, its labels kept to the ones the repository has; null when it has no title or body.
+const draftOf = (raw: RawDraft, labels: string[]): Omit<Draft, 'children'> | null => {
+  if (typeof raw.title !== 'string' || raw.title.trim() === '' || typeof raw.body !== 'string') return null
+  const picked = Array.isArray(raw.labels) ? raw.labels.filter((one): one is string => typeof one === 'string' && labels.includes(one)) : []
+  return { title: raw.title.trim(), body: raw.body.trim(), labels: [...new Set(picked)] }
+}
+
+// The draft in Claude's reply; null when the reply holds none. An epic's sub-issues come as `children`.
 export const parseDraft = (text: string, labels: string[]): Draft | null => {
   const start = text.indexOf('{')
   const end = text.lastIndexOf('}')
   if (start < 0 || end <= start) return null
   try {
-    const raw = JSON.parse(text.slice(start, end + 1)) as { title?: unknown; body?: unknown; labels?: unknown }
-    if (typeof raw.title !== 'string' || raw.title.trim() === '' || typeof raw.body !== 'string') return null
-    const picked = Array.isArray(raw.labels) ? raw.labels.filter((one): one is string => typeof one === 'string' && labels.includes(one)) : []
-    return { title: raw.title.trim(), body: raw.body.trim(), labels: [...new Set(picked)] }
+    const raw = JSON.parse(text.slice(start, end + 1)) as RawDraft & { children?: unknown }
+    const parent = draftOf(raw, labels)
+    if (!parent) return null
+    const children = Array.isArray(raw.children) ? raw.children.flatMap(child => (child && typeof child === 'object' ? [draftOf(child as RawDraft, labels)] : [])).filter(one => one !== null) : []
+    return children.length > 0 ? { ...parent, children } : parent
   } catch {
     return null
   }
