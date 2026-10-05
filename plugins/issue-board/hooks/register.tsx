@@ -1542,6 +1542,13 @@ export const register: Register = on => {
     const elements = $.ui.resolve(e)
     const Input = 'Input' in elements ? elements.Input : undefined
     const Markdown = elements.Markdown
+    // A link in a row stays on one line: squeezed, it ends in an ellipsis rather than breaking down the pane a letter a
+    // line. A click still opens the whole address.
+    const link = (href: string, label = '↗ GitHub') => (
+      <Text wrap="truncate-end">
+        <Link href={href} label={label} />
+      </Text>
+    )
 
     const start = async (issue: Issue) => {
       await track($, issue)
@@ -1711,7 +1718,7 @@ export const register: Register = on => {
                     {`${one.title} #${one.number}`}
                   </Button>
                 ))}
-              {chosenProject && <Link href={chosenProject.url} label="↗ GitHub" />}
+              {chosenProject && link(chosenProject.url)}
             </Box>
             {planned.steps.length === 0 ? (
               <Text color="success">✓ Nothing to change: the repo and its project are set up for the board.</Text>
@@ -2068,7 +2075,7 @@ export const register: Register = on => {
                   · ◆ this branch
                 </Text>
               )}
-              <Link href={pageOf(now.repo, 'pull', pr)} label="↗ GitHub" />
+              {link(pageOf(now.repo, 'pull', pr))}
             </Box>
           )}
         </Box>
@@ -2466,16 +2473,20 @@ export const register: Register = on => {
               </Text>
               {issue.checks.map((check, index) => (
                 <Box key={`box-row-${issue.number}-${index + 1}`} flexDirection="row">
-                  <Text color={check.done ? 'success' : 'warning'}>{check.done ? '✔ ' : '☐ '}</Text>
-                  <Button
-                    key={`box-${issue.number}-${index + 1}`}
-                    plain
-                    dimColor={check.done}
-                    hover={{ bold: true }}
-                    onPress={() => void flip(issue, index + 1, !check.done)}
-                  >
-                    {check.text}
-                  </Button>
+                  <Box flexShrink={0}>
+                    <Text color={check.done ? 'success' : 'warning'}>{check.done ? '✔ ' : '☐ '}</Text>
+                  </Box>
+                  <Box flexShrink={1}>
+                    <Button
+                      key={`box-${issue.number}-${index + 1}`}
+                      plain
+                      dimColor={check.done}
+                      hover={{ bold: true }}
+                      onPress={() => void flip(issue, index + 1, !check.done)}
+                    >
+                      {check.text}
+                    </Button>
+                  </Box>
                 </Box>
               ))}
             </Box>
@@ -2500,7 +2511,7 @@ export const register: Register = on => {
               )}
             </Box>
           )}
-          <Box flexDirection="row" gap={1} marginTop={1}>
+          <Box flexDirection="row" gap={1} marginTop={1} flexWrap="wrap">
             <Button key={`start-${issue.number}`} variant="primary" hotkey={hotkeys ? 's' : undefined} onPress={() => void start(issue)}>
               ▶ Start
             </Button>
@@ -2520,7 +2531,7 @@ export const register: Register = on => {
             <Button key={`edit-${issue.number}`} variant={changing === issue.number ? 'primary' : undefined} dimColor={changing !== issue.number} onPress={openEditor(issue.number)}>
               ⚙ Change
             </Button>
-            <Link href={pageOf(now.repo, 'issues', issue)} label="↗ GitHub" />
+            {link(pageOf(now.repo, 'issues', issue))}
             <Button key={`close-${issue.number}`} dimColor hotkey={hotkeys ? 'x' : undefined} onPress={toggle(issue.number)}>
               Collapse
             </Button>
@@ -2722,6 +2733,12 @@ export const register: Register = on => {
 
     const { Box, Text, Button, Link } = $.ui.resolve(e)
     const width = e.props.bodyColumns
+    // A link on one line, as in the pane: an ellipsis where the row is short of room.
+    const link = (href: string, label = '↗ GitHub') => (
+      <Text wrap="truncate-end">
+        <Link href={href} label={label} />
+      </Text>
+    )
     const clock = Date.now()
     const repo = now?.repo ?? ''
     const dismiss = (alert: Alert) => async () => {
@@ -2754,7 +2771,7 @@ export const register: Register = on => {
               <Button key={`fix-${pr.number}`} variant="primary" onPress={() => void hand(fixPrompt(pr))}>
                 Fix
               </Button>
-              <Link href={pageOf(repo, 'pull', pr)} label="↗ GitHub" />
+              {link(pageOf(repo, 'pull', pr))}
               <Button key={`dismiss-${alert.key}`} dimColor onPress={() => void dismiss(alert)()}>
                 ✕
               </Button>
@@ -2776,7 +2793,7 @@ export const register: Register = on => {
               <Button key={`merge-${pr.number}`} variant="primary" onPress={() => void hand(closeOutPrompt(pr))}>
                 Finish & merge
               </Button>
-              <Link href={pageOf(repo, 'pull', pr)} label="↗ GitHub" />
+              {link(pageOf(repo, 'pull', pr))}
               <Button key={`dismiss-${alert.key}`} dimColor onPress={() => void dismiss(alert)()}>
                 ✕
               </Button>
@@ -2795,7 +2812,7 @@ export const register: Register = on => {
                 <Text>{fit(issue.title, Math.max(12, width - 44))}</Text>
                 <Text dimColor>{` changed ${ago(issue.updatedAt, clock)} ago`}</Text>
               </Text>
-              <Link href={pageOf(repo, 'issues', issue)} label="↗ GitHub" />
+              {link(pageOf(repo, 'issues', issue))}
               <Button key={`dismiss-${alert.key}`} dimColor onPress={() => void dismiss(alert)()}>
                 ✕
               </Button>
@@ -2884,7 +2901,7 @@ export const register: Register = on => {
               Copy command
             </Button>
           )}
-          {problem.url && !problem.command && <Link href={problem.url} label="↗ Open page" />}
+          {problem.url && !problem.command && link(problem.url, '↗ Open page')}
           <Button key={`recheck-${problem.id}`} dimColor onPress={() => void recheck($)}>
             Check again
           </Button>
