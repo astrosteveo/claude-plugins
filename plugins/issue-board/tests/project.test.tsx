@@ -60,7 +60,7 @@ test('one query reads each issue with its Status, Priority, epic, sub-issues, bl
 
   // Epic groups sub-issues under their parent with its count of closed sub-issues; the rest under No epic.
   expect(groupsOf(issues, 'epic', project).map(group => [group.title, group.epic, group.issues.map(issue => issue.number)])).toEqual([
-    ['#299 Make space feel vast', { total: 8, completed: 2 }, [301]],
+    ['#299 Make space feel vast', { number: 299, total: 8, completed: 2 }, [301]],
     ['No epic', undefined, [302]],
   ])
   // Status groups in the project's order, Backlog folded, the unplanned under No status.

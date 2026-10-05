@@ -16,6 +16,7 @@ type Raw = {
   blockedBy?: { number: number; state: string }[]
   prs?: number[]
   milestone?: string
+  subIssues?: { total: number; completed: number }
 }
 
 const option = (prefix: string) => (name: string, index: number) => ({ id: `${prefix}${index}`, name })
@@ -56,7 +57,7 @@ const node = (raw: Raw, project: boolean) => ({
   assignees: { nodes: raw.assignees ?? [] },
   milestone: raw.milestone ? { title: raw.milestone } : null,
   parent: raw.parent ? { number: raw.parent.number, title: raw.parent.title, subIssuesSummary: { total: raw.parent.total, completed: raw.parent.completed } } : null,
-  subIssuesSummary: { total: 0, completed: 0 },
+  subIssuesSummary: raw.subIssues ?? { total: 0, completed: 0 },
   blockedBy: { nodes: raw.blockedBy ?? [] },
   closedByPullRequestsReferences: { nodes: (raw.prs ?? []).map(number => ({ number })) },
   ...(project

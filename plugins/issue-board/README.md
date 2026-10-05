@@ -41,6 +41,12 @@ CLI, signed in, in the folder the session started in.
     Status (the default, in the project's order), by the epic they are
     sub-issues of, or by `area:` label. Backlog is folded: press it to open
     it.
+  - An epic is a parent issue with sub-issues, GitHub's own. Grouped by
+    epic, each epic's heading has a bar of its sub-issues closed so far,
+    such as `6/12 closed`, and **▶ Next**, which starts Claude on the first
+    sub-issue nothing blocks. Within an epic, the sub-issues nothing blocks
+    come first, oldest first. Issues in no epic are under No epic. An issue
+    waiting on an open one shows `⛔ #N`.
   - Each issue has a progress bar of its task-list boxes, such as
     `━━━━━━ 2/4`, its priority, its labels in their GitHub colors, how long
     since it changed, and the pull request for it with its CI, such as
@@ -97,6 +103,13 @@ CLI, signed in, in the folder the session started in.
   hangar`. The draft shows at the top of the pane. **Create issue** (`c`)
   creates it on GitHub, and **Discard** drops it. Nothing is created until
   you press Create issue.
+- `/issues new epic <what>` drafts an epic instead: a parent issue and the
+  sub-issues that finish it, each with its own Acceptance list. Creating it
+  makes the parent, then each sub-issue under it with `--parent`, and adds
+  them all to the repo's project.
+- Claude closing an epic with `gh issue close` while some of its sub-issues
+  are open asks you first, whatever your permission rules allow, and says
+  how many are open.
 - A band above the prompt speaks up, without the pane open, when:
   - a pull request's CI fails. It names the failing checks. **Fix** hands
     Claude the failure to fix (into the prompt box while Claude is busy),

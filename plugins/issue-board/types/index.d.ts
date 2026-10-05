@@ -74,7 +74,8 @@ export type Board = {
 export type Working = { number: number; title: string; updatedAt: string; sessionId?: string }
 
 // An issue Claude drafted from the conversation, waiting for the person to file it.
-export type Draft = { title: string; body: string; labels: string[] }
+// With `children`, an epic: the parent issue, and the sub-issues created under it.
+export type Draft = { title: string; body: string; labels: string[]; children?: { title: string; body: string; labels: string[] }[] }
 
 // Something the band above the prompt raises; `key` changes when it happens again.
 export type Alert =
