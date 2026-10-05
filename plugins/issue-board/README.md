@@ -80,7 +80,10 @@ CLI, signed in, in the folder the session started in.
   - **Start** (`s`) sends Claude a message to start on the issue, with its
     unticked boxes. It makes a task in Claude's task list for each of those
     boxes. It also moves the issue to In progress in the project, adding it
-    to the project if it isn't there, and assigns it to you.
+    to the project if it isn't there, and assigns it to you. Once pressed,
+    the button says `▶ Starting…` and then `▶ Started`, so it can't send
+    the issue twice. It comes back in a new session, or when you start
+    another issue.
   - **⚙ Start in background** (`b`) asks Claude to hand the issue to a
     background agent, so you and Claude can go on with something else.
     Claude dispatches the board's own agent, `issue-board:worker`, with
@@ -89,12 +92,20 @@ CLI, signed in, in the folder the session started in.
     it, does the work, ticks boxes as it finishes them, and opens a pull
     request, with `Closes` or `Refs` as Start's note says. It doesn't merge
     or force-push. The issue moves to In progress and is assigned to you,
-    as with Start. Once the agent starts, the issue's row shows it:
-    `⚙ working`, `⚙ waiting`, `⚙ done`, `⚙ failed` or `⚙ stopped`, and its
-    card shows the agent's last answer. The board follows any agent of this
-    type that names its issue, so Claude can also dispatch one when you ask.
-    One agent works on an issue at a time. The agent asks for permission as
-    any background agent does, so allow what it needs, or it stops to wait.
+    as with Start. Until the agent starts, the button says
+    `⚙ Starting in background…`. It comes back if the start is refused, or
+    after five minutes with no agent. Once the agent starts, the issue's
+    row shows it: `⚙ working`, `⚙ waiting`, `⚙ done`, `⚙ failed` or
+    `⚙ stopped`, and its card shows the agent's last answer. While the
+    agent works there is no button, so one agent works on an issue at a
+    time. The board follows any agent of this type that names its issue,
+    so Claude can also dispatch one when you ask. When the agent ends, a
+    line in the conversation says it is done, failed or was stopped. The
+    line names the issue, gives the agent's last answer, and links its
+    pull request when there is one. Claude gets the same news as a message
+    from the board, so it can tell you what the agent did and what's left.
+    The agent asks for permission as any background agent does, so allow
+    what it needs, or it stops to wait.
   - **⚙ Change** opens the card's editor. Each change is made on GitHub as
     soon as you press it, and the board reads GitHub again straight after:
     - **Labels**: the repo's labels, the ones the issue has highlighted;

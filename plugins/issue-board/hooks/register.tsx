@@ -1,8 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, ModelForkResult, Register, Timer, UiCopyArgs } from 'claude-code'
 
-import type { Alert, Board, BoxTask, Check, Comment, Draft, DraftEdit, Filter, GroupBy, Issue, Known, Problem, Project, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
-import type { IssueChanges } from './parse'
+import type { Alert, Board, BoxTask, Check, Comment, Draft, DraftEdit, Filter, GroupBy, Issue, Known, Launch, Problem, Project, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
+import type { Ended, IssueChanges } from './parse'
 import { authOf, problemsOf, problemsText, repoOf } from './access'
 import { ADD_ITEM, SET_FIELD, issuesQuery, optionOf, startedOf } from './project'
 import {
@@ -51,11 +51,13 @@ import {
   draftBody,
   draftLines,
   draftPrompt,
+  endedLine,
   eventRepoOf,
   fit,
   fixPrompt,
   greenKey,
   groupsOf,
+  handoffPrompt,
   hex,
   isBug,
   isInbox,
@@ -75,6 +77,7 @@ import {
   proseOf,
   matches,
   mergeNoteOf,
+  named,
   parseDraft,
   parseGraph,
   parseIssues,
@@ -102,6 +105,7 @@ import {
   wentGreen,
   workerBadge,
   workerIssueOf,
+  workerPrOf,
   workingSection,
   writesGitHub,
 } from './parse'
@@ -177,6 +181,7 @@ const tasks = atom({ plugin: 'issue-board', key: 'tasks' } as const, [])
 const triage = atom({ plugin: 'issue-board', key: 'triage' } as const, { suggestions: [], picks: [], areas: [], asking: false, failed: null })
 const runs = atom({ plugin: 'issue-board', key: 'runs' } as const, [])
 const workers = atom({ plugin: 'issue-board', key: 'workers' } as const, [])
+const launching = atom({ plugin: 'issue-board', key: 'launching' } as const, [])
 
 // The filters; with a project, the first two read Priority and say so.
 const FILTERS: { id: Filter; label: string; planned: string; hotkey: string }[] = [
@@ -262,10 +267,10 @@ let nextStep: string | null = null
 
 // Makes an issue the one Claude is on in this session: the system prompt names it, and the next prompts note what
 // changes on it from here.
-const track = async ($: EngineInterface, issue: Issue): Promise<void> => {
+const track = async ($: EngineInterface, issue: Issue, started = false): Promise<void> => {
   const sessionId = await $.session.id().catch(() => undefined)
   const known = knownOf(issue, (await read($, board))?.prs ?? [])
-  await update($, working, () => ({ number: issue.number, title: issue.title, updatedAt: issue.updatedAt, ...(sessionId ? { sessionId } : {}), known }))
+  await update($, working, () => ({ number: issue.number, title: issue.title, updatedAt: issue.updatedAt, ...(sessionId ? { sessionId } : {}), known, ...(started ? { started } : {}) }))
   await save($)
 }
 
@@ -1029,16 +1034,20 @@ const watchRun = async ($: EngineInterface, run: { id: number; workflow: string 
 // Where a background agent's loop may still move on from.
 const ACTIVE: readonly Worker['status'][] = ['pending', 'running', 'waiting', 'idle']
 
-// While a background agent works, the board asks where each stands every 10 seconds, and stops once none works.
+// While a background agent works, the board asks where each stands every 10 seconds, and stops once none works. An
+// agent the list shows ended may still answer; when no answer has come 10 seconds later, the board says how it ended
+// without one.
 let workerTimer: Timer | undefined
 const checkWorkers = async ($: EngineInterface): Promise<void> => {
   const listed = await $.agent.list().catch(() => [])
-  await update($, workers, list =>
-    list.map(one => {
-      const info = listed.find(agent => agent.id === one.agentId)
-      return info && one.status !== info.status && ACTIVE.includes(one.status) ? { ...one, status: info.status } : one
-    }),
-  )
+  const moved = (await read($, workers)).flatMap(one => {
+    const info = listed.find(agent => agent.id === one.agentId)
+    return info && one.status !== info.status && ACTIVE.includes(one.status) ? [{ agentId: one.agentId, status: info.status }] : []
+  })
+  if (moved.length > 0) await update($, workers, list => list.map(one => ({ ...one, status: moved.find(to => to.agentId === one.agentId)?.status ?? one.status })))
+  for (const { agentId, status } of moved) {
+    if (status === 'completed' || status === 'failed' || status === 'killed') $.clock.after(10_000, () => void handOff($, agentId, status, null))
+  }
   if (!(await read($, workers)).some(one => ACTIVE.includes(one.status))) {
     workerTimer?.cancel()
     workerTimer = undefined
@@ -1048,34 +1057,84 @@ const pollWorkers = ($: EngineInterface): void => {
   if (!workerTimer) workerTimer = $.clock.every(10_000, () => void checkWorkers($))
 }
 
-// Start in background: Claude dispatches an agent of the board's own type on the issue, to work it in a git worktree
-// of its own, in the background, and leave a pull request. The issue moves to In progress and is assigned, as Start
-// does.
-const startInBackground = async ($: EngineInterface, issue: Issue): Promise<void> => {
-  await $.prompt.submit({ text: backgroundPrompt(issue), asUser: true })
-  $.ui.toast(`Asked Claude to start a background agent on #${issue.number}`)
-  await claim($, issue)
+// The Starts pressed and not yet under way, read at once so a second press finds the first; `launching` draws them.
+const pressed = new Set<string>()
+
+// A Start on an issue is under way, or failed to get there: its button comes back.
+const landed = async ($: EngineInterface, number: number, how: Launch['how']): Promise<void> => {
+  pressed.delete(`${how}-${number}`)
+  await update($, launching, list => list.filter(one => one.number !== number || one.how !== how))
 }
+
+// A Start on an issue, from the press until the work is under way: its button says so meanwhile, and another press of
+// it does nothing. `work` resolves true once the work is under way, or false when it waits on something else to land it.
+const launch = async ($: EngineInterface, issue: Issue, how: Launch['how'], work: () => Promise<boolean>): Promise<void> => {
+  const key = `${how}-${issue.number}`
+  if (pressed.has(key)) return
+  pressed.add(key)
+  await update($, launching, list => [...list, { number: issue.number, how }])
+  let done = true
+  try {
+    done = await work()
+  } finally {
+    if (done) await landed($, issue.number, how)
+  }
+}
+
+// How long Start in background waits for Claude to start the agent before its button comes back.
+const DISPATCH_MS = 5 * 60 * 1000
+
+// Start in background: Claude dispatches an agent of the board's own type on the issue, to work it in a git worktree
+// of its own, in the background, and leave a pull request. The button says it is starting until the agent starts, the
+// spawn is refused, or five minutes pass. The issue moves to In progress and is assigned, as Start does.
+const startInBackground = ($: EngineInterface, issue: Issue): Promise<void> =>
+  launch($, issue, 'background', async () => {
+    await $.prompt.submit({ text: backgroundPrompt(issue), asUser: true })
+    $.ui.toast(`Asked Claude to start a background agent on #${issue.number}`)
+    $.clock.after(DISPATCH_MS, () => void landed($, issue.number, 'background'))
+    await claim($, issue)
+    return false
+  })
 
 // A spawn of the board's agent, by Claude or anyone: once it starts, the issue's row follows it.
 const workerStarted = async ($: EngineInterface, number: number, agentId: string): Promise<void> => {
-  const worker: Worker = { number, agentId, status: 'running', startedAt: Date.now(), answer: null }
+  const title = (await read($, board))?.issues.find(one => one.number === number)?.title
+  const worker: Worker = { number, ...(title ? { title } : {}), agentId, status: 'running', startedAt: Date.now(), answer: null }
   await update($, workers, list => [...list.filter(one => one.number !== number), worker])
   pollWorkers($)
   $.ui.toast(`Started a background agent on #${number}`)
 }
 
-// A background agent's answer is its loop's last turn: it is done, stopped or failed, and the board reads GitHub, where
-// it may have opened a pull request.
-const workerEnded = async ($: EngineInterface, agentId: string, answer: string, reason: string): Promise<void> => {
+// A background agent's answer is its loop's last turn: it is done, stopped or failed.
+const workerEnded = ($: EngineInterface, agentId: string, answer: string, reason: string): Promise<void> =>
+  handOff($, agentId, reason === 'answer' ? 'completed' : reason === 'aborted' ? 'killed' : 'failed', answer)
+
+// The agents whose end the conversation was told of, read at once so the answer and the list's word don't both tell it.
+const told = new Set<string>()
+
+// A background agent ended: the board reads GitHub, where it may have opened a pull request, then a line in the
+// conversation tells the person how it ended, with what it said and its pull request, and Claude gets the same as a
+// prompt of the board's, so it can follow up. Once an agent.
+const handOff = async ($: EngineInterface, agentId: string, status: Ended, answer: string | null): Promise<void> => {
+  if (told.has(agentId)) return
+  told.add(agentId)
   const worker = (await read($, workers)).find(one => one.agentId === agentId)
-  if (!worker) return
-  const status: Worker['status'] = reason === 'answer' ? 'completed' : reason === 'aborted' ? 'killed' : 'failed'
-  const said = answer.trim()
-  await update($, workers, list => list.map(one => (one.agentId === agentId ? { ...one, status, answer: said ? fit(said, 600) : null } : one)))
+  if (!worker || worker.told) return
+  const said = answer?.trim() || null
+  await update($, workers, list => list.map(one => (one.agentId === agentId ? { ...one, status, answer: said ? fit(said, 600) : one.answer, told: true } : one)))
   $.ui.toast(`The background agent on #${worker.number} ${status === 'completed' ? 'finished' : status === 'killed' ? 'was stopped' : 'failed'}`)
   await settle($)
   await refresh($)
+  const now = await read($, board)
+  const issue = { number: worker.number, title: worker.title ?? now?.issues.find(one => one.number === worker.number)?.title ?? '' }
+  const pr = workerPrOf(worker.number, now?.prs ?? [], said ?? '')
+  $.ui.log(endedLine(issue, status, said, pr))
+  try {
+    const sent = await $.prompt.submit({ text: handoffPrompt(issue, status, said, pr) })
+    if (sent.drop !== undefined) throw new Error(sent.drop)
+  } catch (cause) {
+    $.ui.log(`issue-board: couldn't tell Claude the background agent on #${worker.number} ended: ${messageOf(cause)}`, { to: 'debug' })
+  }
 }
 
 // The task Claude completed, its box ticked from the band.
@@ -1488,6 +1547,7 @@ export const register: Register = on => {
     const started = await next(e)
     if (e.subagentType !== WORKER) return started
     const number = workerIssueOf(e)
+    if (number !== undefined) await landed($, number, 'background')
     if (started.deny !== undefined) {
       $.ui.toast(`Couldn't start a background agent${number ? ` on #${number}` : ''}: ${started.deny}`)
       return started
@@ -1660,6 +1720,9 @@ export const register: Register = on => {
     const triaged = await read($, triage)
     const watched = await read($, runs)
     const working$ = await read($, workers)
+    const launches = await read($, launching)
+    // The issue Start sent Claude in this session: its Start says so rather than starting it again.
+    const startedHere = doing?.started && doing.sessionId !== undefined && doing.sessionId === (await $.session.id().catch(() => undefined)) ? doing.number : null
     const clock = Date.now()
     const elements = $.ui.resolve(e)
     // The mobile app draws no text field: its table hands out one that draws nothing.
@@ -1673,13 +1736,16 @@ export const register: Register = on => {
       </Text>
     )
 
-    const start = async (issue: Issue) => {
-      await track($, issue)
-      const listed = await makeTasks($, issue)
-      await $.prompt.submit({ text: startPrompt(issue, listed > 0), asUser: true })
-      $.ui.toast(`Sent #${issue.number} to Claude`)
-      await claim($, issue)
-    }
+    // Start: the issue is the one Claude is on, and Claude gets it. Its button says so from the press on.
+    const start = (issue: Issue) =>
+      launch($, issue, 'start', async () => {
+        await track($, issue, true)
+        const listed = await makeTasks($, issue)
+        await $.prompt.submit({ text: startPrompt(issue, listed > 0), asUser: true })
+        $.ui.toast(`Sent #${issue.number} to Claude`)
+        await claim($, issue)
+        return true
+      })
 
     const flip = async (issue: Issue, box: number, done: boolean) => {
       try {
@@ -2752,10 +2818,24 @@ export const register: Register = on => {
             </Box>
           )}
           <Box flexDirection="row" gap={1} marginTop={1} flexWrap="wrap">
-            <Button key={`start-${issue.number}`} variant="primary" hotkey={hotkeys ? 's' : undefined} onPress={() => void start(issue)}>
-              ▶ Start
-            </Button>
-            {!(worker && ACTIVE.includes(worker.status)) && (
+            {launches.some(one => one.number === issue.number && one.how === 'start') ? (
+              <Text key={`starting-${issue.number}`} color="claude">
+                ▶ Starting…
+              </Text>
+            ) : startedHere === issue.number ? (
+              <Text key={`started-${issue.number}`} color="claude">
+                ▶ Started
+              </Text>
+            ) : (
+              <Button key={`start-${issue.number}`} variant="primary" hotkey={hotkeys ? 's' : undefined} onPress={() => void start(issue)}>
+                ▶ Start
+              </Button>
+            )}
+            {worker && ACTIVE.includes(worker.status) ? null : launches.some(one => one.number === issue.number && one.how === 'background') ? (
+              <Text key={`starting-background-${issue.number}`} color="claude">
+                ⚙ Starting in background…
+              </Text>
+            ) : (
               <Button key={`background-${issue.number}`} hotkey={hotkeys ? 'b' : undefined} onPress={() => void startInBackground($, issue)}>
                 ⚙ Start in background
               </Button>

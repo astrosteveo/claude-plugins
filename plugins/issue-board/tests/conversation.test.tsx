@@ -227,8 +227,9 @@ test('Start makes a task per open box; a task Claude completes has the band ask 
   ])
   expect(gh.prompts.find(prompt => prompt.text.startsWith("Let's start on #315"))?.text).toMatch(/Each is a task in your task list too/)
 
-  // Start again makes no second set.
-  await pane.press({ key: 'start-315' })
+  // Start isn't offered again: its button says it started, and there's no second set.
+  expect(await pane.find({ key: 'start-315' })).toBeUndefined()
+  expect(await pane.find({ text: /^▶ Started$/ })).toBeDefined()
   expect(gh.tasks.length).toBe(2)
 
   // Claude completes the task for box 3: the band asks, and Tick ticks it on GitHub.

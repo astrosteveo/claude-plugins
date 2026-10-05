@@ -86,8 +86,9 @@ export type Board = {
 export type Known = { checks: Check[]; comments: number | null; prs: { number: number; ci: Ci; sha: string }[]; closed: boolean }
 
 // The issue Start handed Claude, and when it last changed as of then; `sessionId` is the session that started it.
-// `known` is absent until the first prompt in a session that started it.
-export type Working = { number: number; title: string; updatedAt: string; sessionId?: string; known?: Known }
+// `known` is absent until the first prompt in a session that started it. `started`: Start sent it to Claude, rather
+// than a checkout of a branch named for it making it the one.
+export type Working = { number: number; title: string; updatedAt: string; sessionId?: string; known?: Known; started?: boolean }
 
 // A task Start made in Claude's task list for an open box of an issue, by the task's id. `box` counts from 1, as the
 // tick tool does, and `text` finds the box again should the body change. `done`: Claude completed the task, so the
@@ -102,11 +103,18 @@ export type RunWatch = { id: number; workflow: string; branch: string; done: num
 // the last thing it answered.
 export type Worker = {
   number: number
+  // The issue's title when the agent started, so the line at its end names it; absent on an older board.
+  title?: string
   agentId: string
   status: 'pending' | 'running' | 'waiting' | 'idle' | 'completed' | 'failed' | 'killed'
   startedAt: number
   answer: string | null
+  // True once the conversation and Claude were told how it ended.
+  told?: boolean
 }
+
+// A Start or Start in background pressed on an issue, from the press until the work is under way.
+export type Launch = { number: number; how: 'start' | 'background' }
 
 // An issue Claude drafted from the conversation, waiting for the person to file it.
 // With `children`, an epic: the parent issue, and the sub-issues created under it.
@@ -257,6 +265,8 @@ declare module 'claude-code' {
       runs: RunWatch[]
       // The background agents Start in background set going in this session.
       workers: Worker[]
+      // The Starts pressed that aren't under way yet: their buttons say so, and don't start the work again.
+      launching: Launch[]
     }
   }
 }
