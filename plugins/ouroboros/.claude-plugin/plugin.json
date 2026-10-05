@@ -1,0 +1,14 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "ouroboros",
+  "displayName": "Ouroboros",
+  "version": "0.1.0",
+  "description": "A harness that rewrites itself: it records where a session goes wrong, has a subagent write a hook that fixes it, tests that hook, and installs it as a plugin of its own once you accept it.",
+  "author": {
+    "name": "astrosteveo"
+  },
+  "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/ouroboros",
+  "repository": "https://github.com/astrosteveo/claude-plugins",
+  "keywords": ["mod", "hooks", "self-modifying", "subagent", "pane"],
+  "types": "./types/index.d.ts"
+}

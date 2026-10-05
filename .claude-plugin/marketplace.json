@@ -42,6 +42,39 @@
         "prompts",
         "pane"
       ]
+    },
+    {
+      "name": "ouroboros",
+      "source": "./plugins/ouroboros",
+      "description": "A harness that rewrites itself: it records where a session goes wrong, has a subagent write a hook that fixes it, tests that hook, and installs it as a plugin of its own once you accept it.",
+      "version": "0.1.0",
+      "author": {
+        "name": "astrosteveo"
+      },
+      "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/ouroboros",
+      "category": "productivity",
+      "tags": [
+        "mod",
+        "hooks",
+        "self-modifying",
+        "subagent",
+        "pane"
+      ]
+    },
+    {
+      "name": "ouroboros-gene-validate-plugin-on-edit",
+      "source": "./plugins/ouroboros-gene-validate-plugin-on-edit",
+      "description": "Validate a plugin right after editing its files",
+      "version": "0.1.0",
+      "author": {
+        "name": "astrosteveo"
+      },
+      "category": "productivity",
+      "tags": [
+        "mod",
+        "ouroboros",
+        "gene"
+      ]
     }
   ]
 }
