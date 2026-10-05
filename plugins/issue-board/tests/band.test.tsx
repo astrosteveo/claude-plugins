@@ -67,7 +67,7 @@ test('the band raises failing CI, news on the issue Claude is on, and its closin
   issues = [issue('2026-10-04T08:00:00Z')]
   await $.command.run(REFRESH)
   expect(await band.find({ text: / ● NEW / })).toBeDefined()
-  expect(await band.find({ key: 'view-315' })).toBeDefined()
+  expect((await band.find({ type: 'Link' }))?.props).toMatchObject({ href: 'https://github.com/astrosteveo/void-sector/issues/315', label: '↗ GitHub' })
 
   issues = []
   await $.command.run(REFRESH)

@@ -21,20 +21,20 @@ CLI, signed in, in the folder the session started in.
   - Open pull requests with a CI badge (`✓ PASS`, `✗ FAIL`, `◷ CI`), the
     review state, the branch, author, age and `+added −deleted` lines. A
     failing pull request names its failing checks, and `◆ this branch` marks
-    the one for the branch you have checked out. Press one to open it on
+    the one for the branch you have checked out. **↗ GitHub** opens it on
     GitHub.
-  - **Close out** on a pull request sends Claude a message to see it
+  - **Finish & merge** on a pull request sends Claude a message to see it
     through: fix failing CI, answer review, and merge it, without bypassing
-    branch protection or force-pushing. **Close out all** (`m`) does the same
-    for every open pull request, one at a time, oldest first; it asks first,
+    branch protection or force-pushing. **Merge all…** (`m`) does the same
+    for every open pull request, one at a time, oldest first. It asks first:
     `y` to send and `n` to cancel.
   - Open issues by `area:` label, each area with its count and how far along
     it is. Each issue has a progress bar of its task-list boxes, such as
     `━━━━━━ 2/4`, its labels in their GitHub colors, and how long since it
     changed. Bugs come first, marked `▲`, then issues under way. Hover over
     an issue to preview its open boxes without opening it.
-  - `a` Active (not labelled `future`), `f` Future, `b` Bugs, `i` Mine
-    (assigned to you), `l` All, and `r` refreshes.
+  - `1` Active (not labelled `future`), `2` Future, `3` Bugs, `4` Mine
+    (assigned to you), `5` All, and `r` refreshes.
   - A search field after the filters keeps the issues whose title, number or
     labels hold every word you type. Tab to it or click it. The mobile app has
     no text field, so it has no search.
@@ -43,9 +43,11 @@ CLI, signed in, in the folder the session started in.
   GitHub. Then:
   - **Start** (`s`) sends Claude a message to start on the issue, with its
     unticked boxes.
-  - **Draft** (`d`) puts the same message in the prompt box to edit first.
-  - **GitHub** (`o`) opens the issue in the browser, and **Close** (`x`)
-    folds the card.
+  - **Edit first** (`e`) puts the same message in the prompt box to edit
+    first.
+  - **↗ GitHub** opens the issue in the browser.
+  - **Collapse** (`x` or Esc) folds the card. With no card open, Esc closes
+    the pane.
 
   The letter keys work while one card is open.
 - `/issues refresh` refreshes and replies with the summary.
@@ -54,18 +56,18 @@ CLI, signed in, in the folder the session started in.
 - `/issues new` asks Claude to draft an issue from the conversation so far:
   a title, a body with an `## Acceptance` list of boxes, and labels the repo
   already uses. Add what it is about, as in `/issues new saves lose the
-  hangar`. The draft shows at the top of the pane. **File it** (`c`) creates
-  it on GitHub, and **Discard** drops it. Nothing is filed until you press
-  File it.
+  hangar`. The draft shows at the top of the pane. **Create issue** (`c`)
+  creates it on GitHub, and **Discard** drops it. Nothing is created until
+  you press Create issue.
 - A band above the prompt speaks up, without the pane open, when:
   - a pull request's CI fails. It names the failing checks. **Fix** hands
     Claude the failure to fix (into the prompt box while Claude is busy),
-    with the command that prints the failing log, and **Open** opens it on
-    GitHub;
-  - a pull request's CI passes after the board saw it running. **Merge**
-    hands it to Claude to merge, as Close out does, and **Open** opens it;
+    with the command that prints the failing log, and **↗ GitHub** opens it;
+  - a pull request's CI passes after the board saw it running. **Finish &
+    merge** hands it to Claude to merge, as in the pane, and **↗ GitHub**
+    opens it;
   - the issue you pressed Start on changes on GitHub, other than by Claude's
-    own changes or yours from the board. **View** opens it;
+    own changes or yours from the board. **↗ GitHub** opens it;
   - that issue is closed.
 
   `✕` waves an alert off until it happens again. While you work on an issue,
