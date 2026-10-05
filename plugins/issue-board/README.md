@@ -69,6 +69,28 @@ CLI, signed in, in the folder the session started in.
 - `/issues refresh` refreshes and replies with the summary.
 - `/issues check` checks that `gh` has what the board needs, and says how to
   fix anything missing. See [Permissions](#permissions).
+- `/issues setup` prepares the repo and its GitHub Project for the board. It
+  reads them, then lists at the top of the pane what it would change. Nothing
+  changes until you press **Apply**:
+  - It turns on issues if they're off.
+  - It uses the project linked to the repo. With several, you pick one; with
+    none, it creates one named after the repo and links it.
+  - It adds the board's Status options (Inbox, Backlog, Ready, In progress,
+    Verification, Done) that are missing, keeping the ones there as they are,
+    so issues keep their Status. It creates a Priority field (P0, P1, P2) if
+    there isn't one.
+  - It creates the `bug` label, and `area:` labels from a list it suggests
+    from the repo's folders, which you can edit, when the repo has none.
+  - It adds the open issues that aren't in the project, and sets Inbox on
+    the ones with no Status.
+
+  It never deletes or renames anything. GitHub's API can't turn on project
+  automations, so it lists the ones that are off ("Item closed", "Auto-add
+  to project", "Auto-add sub-issues to project") with a link to their
+  settings. Without an issue template that has an Acceptance list, **Have
+  Claude add one** asks Claude for one as a pull request to review. Setup
+  saves the project and its fields for the repo, so the board keeps reading
+  that project when several are linked. Esc or Cancel closes it.
 - `/issues new` asks Claude to draft an issue from the conversation so far:
   a title, a body with an `## Acceptance` list of boxes, and labels the repo
   already uses. Add what it is about, as in `/issues new saves lose the

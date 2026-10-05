@@ -96,6 +96,55 @@ export type Problem = { id: string; title: string; detail: string; fix: string; 
 // What the last permission check found. `repo` and `permission` are null when gh couldn't say.
 export type Access = { login: string | null; repo: string | null; permission: string | null; problems: Problem[]; checkedAt: number }
 
+// A single-select option as GitHub keeps it; `id` absent on one setup is adding.
+export type SetupOption = { id?: string; name: string; color: string; description: string }
+
+// A project linked to the repo, as setup reads it.
+export type SetupProject = {
+  id: string
+  number: number
+  title: string
+  url: string
+  status: { id: string; options: SetupOption[] } | null
+  priority: { id: string; options: SetupOption[] } | null
+  // The project's automations by name, and whether each is on.
+  workflows: { name: string; enabled: boolean }[]
+}
+
+// What setup read: the repo, its linked projects, its labels, its open issues and their place in each project, the
+// `area:` labels it suggests, and whether an issue template with an Acceptance list is there.
+export type SetupFacts = {
+  repo: { id: string; name: string; ownerId: string; hasIssues: boolean; permission: string | null }
+  projects: SetupProject[]
+  labels: string[]
+  issues: { id: string; number: number; items: { project: string; item: string; status: string | null }[] }[]
+  suggested: string[]
+  hasTemplate: boolean
+}
+
+// One change setup makes. `state` is how it went once Apply ran.
+export type SetupStep = {
+  id: 'issues' | 'project' | 'status' | 'priority' | 'bug' | 'areas' | 'items' | 'inbox'
+  title: string
+  state?: 'running' | 'done' | 'failed' | 'skipped'
+  message?: string
+}
+
+// Setup in the pane: reading, the plan waiting on Apply, Apply running, or done; `failed` when it couldn't read.
+// `chosen` is the project picked among several (or null to create one), `areas` what the area field holds.
+export type Setup =
+  | { phase: 'reading' }
+  | { phase: 'failed'; message: string }
+  | { phase: 'ready' | 'applying' | 'done'; facts: SetupFacts; chosen: string | null; areas: string; steps: SetupStep[] }
+
+// What setup saves for a repo: the project the board reads, its fields, and which Status option means what.
+export type SavedSetup = {
+  project: { id: string; number: number; title: string }
+  status: { id: string; roles: Partial<Record<'inbox' | 'backlog' | 'ready' | 'started' | 'verification' | 'done', string>> } | null
+  priority: { id: string } | null
+  at: number
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'issue-board': {
@@ -126,6 +175,8 @@ declare module 'claude-code' {
       groupBy: GroupBy | null
       // The folded groups the person unfolded, such as Backlog.
       unfolded: string[]
+      // `/issues setup` while it shows in the pane; null otherwise.
+      setup: Setup | null
     }
   }
 }
