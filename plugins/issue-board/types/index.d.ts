@@ -170,6 +170,14 @@ declare module 'claude-code' {
       drafting: boolean
       // The draft is being created on GitHub: Create waits, so a second press doesn't create it again.
       creating: boolean
+      // The issue whose card has its editor open.
+      editing: number | null
+      // What the editor offers: the repo's labels and open milestones; null until it first opens.
+      palette: { labels: string[]; milestones: string[] } | null
+      // An epic whose Close was pressed once while it has open sub-issues; the next press closes it.
+      closing: number | null
+      // What the editor's fields hold: the comment being written, and the epic number typed.
+      typing: { comment: string; parent: string }
       // The last permission check; null until one has run.
       access: Access | null
       // The pull request whose details are open in the pane.

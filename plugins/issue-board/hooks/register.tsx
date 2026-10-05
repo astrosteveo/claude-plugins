@@ -2,6 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, ModelForkResult, Register, Timer, UiCopyArgs } from 'claude-code'
 
 import type { Alert, Board, Draft, Filter, GroupBy, Issue, Problem, Project, PullRequest, SavedSetup, Setup, SetupProject, SetupStep, Working } from '../types'
+import type { IssueChanges } from './parse'
 import { authOf, problemsOf, problemsText, repoOf } from './access'
 import { ADD_ITEM, SET_FIELD, issuesQuery, optionOf, startedOf } from './project'
 import {
@@ -32,11 +33,13 @@ import {
   bar,
   boardText,
   cells,
+  changesText,
   checksOf,
   chipsOf,
   ciBadge,
   closeOutAllPrompt,
   closeOutPrompt,
+  commandsOf,
   draftPrompt,
   fit,
   fixPrompt,
@@ -64,6 +67,7 @@ import {
   since,
   spark,
   startPrompt,
+  statusOnly,
   sumProgress,
   summary,
   tickBody,
@@ -86,6 +90,34 @@ const GIT_MOVE = /\bgit\s+(checkout|switch|worktree)\b|\bgh\s+pr\s+checkout\b/
 const ISSUE_FIELDS = 'number,title,url,labels,assignees,body,updatedAt'
 const ISSUES_TOOL = 'mcp__issue-board__issues'
 const TICK_TOOL = 'mcp__issue-board__tick'
+const UPDATE_TOOL = 'mcp__issue-board__issue_update'
+
+const strings = (value: unknown): string[] | undefined =>
+  Array.isArray(value) ? value.filter((one): one is string => typeof one === 'string' && one.trim() !== '').map(one => one.trim()) : undefined
+
+// The issue_update tool's input as a change; null without an issue number. A parent of 0 and an empty milestone remove
+// them, as the tool says.
+const changesOf = (input: unknown): (IssueChanges & { number: number }) | null => {
+  const raw = (input ?? {}) as Record<string, unknown>
+  if (typeof raw.number !== 'number' || !Number.isInteger(raw.number) || raw.number < 1) return null
+  const text = (value: unknown) => (typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined)
+  const changes: IssueChanges & { number: number } = { number: raw.number }
+  const status = text(raw.status)
+  const priority = text(raw.priority)
+  if (status) changes.status = status
+  if (priority) changes.priority = priority
+  for (const key of ['addLabels', 'removeLabels', 'assign', 'unassign'] as const) {
+    const list = strings(raw[key])
+    if (list?.length) changes[key] = list
+  }
+  if (typeof raw.parent === 'number') changes.parent = raw.parent > 0 ? raw.parent : null
+  if (typeof raw.milestone === 'string') changes.milestone = raw.milestone.trim() || null
+  const comment = text(raw.comment)
+  if (comment) changes.comment = comment
+  if (raw.close === 'completed' || raw.close === 'not planned') changes.close = raw.close
+  if (raw.reopen === true) changes.reopen = true
+  return changes
+}
 
 const board = atom({ plugin: 'issue-board', key: 'board' } as const, null)
 const error = atom({ plugin: 'issue-board', key: 'error' } as const, null)
@@ -102,6 +134,10 @@ const greened = atom({ plugin: 'issue-board', key: 'greened' } as const, [])
 const draft = atom({ plugin: 'issue-board', key: 'draft' } as const, null)
 const drafting = atom({ plugin: 'issue-board', key: 'drafting' } as const, false)
 const creating = atom({ plugin: 'issue-board', key: 'creating' } as const, false)
+const editing = atom({ plugin: 'issue-board', key: 'editing' } as const, null)
+const palette = atom({ plugin: 'issue-board', key: 'palette' } as const, null)
+const closing = atom({ plugin: 'issue-board', key: 'closing' } as const, null)
+const typing = atom({ plugin: 'issue-board', key: 'typing' } as const, { comment: '', parent: '' })
 const openPr = atom({ plugin: 'issue-board', key: 'openPr' } as const, null)
 const access = atom({ plugin: 'issue-board', key: 'access' } as const, null)
 const groupBy = atom({ plugin: 'issue-board', key: 'groupBy' } as const, null)
@@ -678,6 +714,54 @@ const pick = async ($: EngineInterface, issue: Issue, field: 'status' | 'priorit
   }
 }
 
+// Reads GitHub again straight after a change, waiting out a refresh already under way, which may have read GitHub
+// before the change. `seen`: the change was the person's or Claude's own, so the band doesn't call it news.
+const refreshAfter = async ($: EngineInterface): Promise<void> => {
+  for (let tries = 0; tries < 50 && (await read($, loading)); tries += 1) await $.clock.sleep(200)
+  await refresh($, true)
+}
+
+// Makes a change to an issue, from its card or from Claude's issue_update tool: Status and Priority in the project,
+// then the gh edit, comment and close, then the board read again so it shows. Answers what it did.
+const applyChanges = async ($: EngineInterface, number: number, changes: IssueChanges): Promise<string> => {
+  const issue = (await read($, board))?.issues.find(one => one.number === number)
+  for (const field of ['status', 'priority'] as const) {
+    const value = changes[field]
+    if (!value) continue
+    if (!issue) throw new Error(`#${number} isn't open on the board, so its ${field === 'status' ? 'Status' : 'Priority'} can't be set`)
+    await setField($, issue, field, value)
+  }
+  for (const command of commandsOf(number, changes)) await gh($, command.argv, command.stdin)
+  await refreshAfter($)
+  return changesText(number, changes)
+}
+
+// A change made on a card: said in a toast, and an error that may be a missing permission checked.
+const change = async ($: EngineInterface, number: number, changes: IssueChanges): Promise<void> => {
+  try {
+    $.ui.toast(await applyChanges($, number, changes))
+  } catch (cause) {
+    const message = messageOf(cause)
+    $.ui.toast(`Couldn't change #${number}: ${message}`)
+    if (ACCESS_ERROR.test(message)) void checkAccess($, message)
+  }
+}
+
+// What the card's editor offers: the repo's labels and open milestones, read when it opens.
+const loadPalette = async ($: EngineInterface): Promise<void> => {
+  try {
+    const repo = (await read($, board))?.repo
+    if (!repo) return
+    const [labels, milestones] = await Promise.all([
+      gh($, ['label', 'list', '-R', repo, '--limit', '100', '--json', 'name']).then(out => (JSON.parse(out) as { name: string }[]).map(one => one.name).sort()),
+      gh($, ['api', `repos/${repo}/milestones?state=open&per_page=50`]).then(out => (JSON.parse(out) as { title: string }[]).map(one => one.title)),
+    ])
+    await update($, palette, () => ({ labels, milestones }))
+  } catch (cause) {
+    $.ui.toast(`Couldn't read the repo's labels and milestones: ${messageOf(cause)}`)
+  }
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -721,6 +805,31 @@ export const register: Register = on => {
           done: { type: 'boolean', description: 'true (the default) ticks them; false unticks them.' },
         },
         required: ['number', 'boxes'],
+      },
+    })
+    await $.tool.register({
+      name: 'issue_update',
+      description:
+        "Changes a GitHub issue of this repository and updates the issue board at once: its Status and Priority in the repo's GitHub Project, labels, assignees, " +
+        'parent (the epic it is a sub-issue of), milestone, a comment, closing it as completed or not planned, or reopening it. Give only what changes. ' +
+        'Moving the Status of the issue the person started needs no permission; any other change asks.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          number: { type: 'integer', description: 'The issue.' },
+          status: { type: 'string', description: "A Status option of the repo's project, such as In progress, Verification or Done." },
+          priority: { type: 'string', description: "A Priority option of the repo's project, such as P0, P1 or P2." },
+          addLabels: { type: 'array', items: { type: 'string' }, description: 'Labels to add.' },
+          removeLabels: { type: 'array', items: { type: 'string' }, description: 'Labels to take off.' },
+          assign: { type: 'array', items: { type: 'string' }, description: 'GitHub logins to assign; @me for the signed-in user.' },
+          unassign: { type: 'array', items: { type: 'string' }, description: 'GitHub logins to unassign; @me for the signed-in user.' },
+          parent: { type: 'integer', minimum: 0, description: 'The epic to put it under, by number; 0 takes it out of its epic.' },
+          milestone: { type: 'string', description: 'The milestone to put it on, by title; an empty string takes it off its milestone.' },
+          comment: { type: 'string', description: 'A comment to add, in Markdown.' },
+          close: { type: 'string', enum: ['completed', 'not planned'], description: 'Close it, saying why.' },
+          reopen: { type: 'boolean', description: 'true reopens a closed issue.' },
+        },
+        required: ['number'],
       },
     })
     // Earlier versions pinned the summary to the status line; a reload would leave it there.
@@ -796,6 +905,7 @@ export const register: Register = on => {
     const folding = (await read($, expanded)).length > 0 || (await read($, openPr)) !== null
     if (!folding) return next(e)
     await update($, expanded, () => [])
+    await update($, editing, () => null)
     await update($, openPr, () => null)
     return { value: undefined }
   })
@@ -855,6 +965,29 @@ export const register: Register = on => {
     }
   })
 
+  on('tool.call', { tool: UPDATE_TOOL }, async ($, e) => {
+    const changes = changesOf(e)
+    if (!changes) return { deny: 'Give the issue number, and what to change on it.' }
+    const { number, ...rest } = changes
+    try {
+      return { result: await applyChanges($, number, rest) }
+    } catch (cause) {
+      const message = messageOf(cause)
+      const problems = ACCESS_ERROR.test(message) ? await checkAccess($, message) : []
+      return { deny: `Couldn't change #${number}: ${message}${problems.length > 0 ? `\n${problemsText(problems)}` : ''}` }
+    }
+  })
+
+  // Moving the Status of the issue the person started is part of working on it, so it doesn't ask. Any other change
+  // asks, as a tool that changes something does; a rule that allows or denies still stands.
+  on('tool.check', { tool: UPDATE_TOOL }, async ($, e, next) => {
+    const verdict = await next(e)
+    if (verdict.decision !== 'ask') return verdict
+    const changes = changesOf(e.input)
+    const doing = await read($, working)
+    return changes && doing && changes.number === doing.number && statusOnly(changes) ? { decision: 'allow' as const } : verdict
+  })
+
   // Reading the board changes nothing, so it needs no permission prompt; a rule that denies it still stands.
   on('tool.check', { tool: ISSUES_TOOL }, async ($, e, next) => {
     const verdict = await next(e)
@@ -907,6 +1040,10 @@ export const register: Register = on => {
     const made = await read($, draft)
     const thinking = await read($, drafting)
     const making = await read($, creating)
+    const changing = await read($, editing)
+    const offered = await read($, palette)
+    const armedClose = await read($, closing)
+    const fields = await read($, typing)
     const shownPr = await read($, openPr)
     const planned = await read($, setup)
     const picked = await read($, groupBy)
@@ -958,6 +1095,7 @@ export const register: Register = on => {
     const toggle = (number: number) => async () => {
       const opening = !open.includes(number)
       await update($, expanded, () => (opening ? [number] : []))
+      await update($, editing, () => null)
       if (opening) await $.ui.scroll({ to: { key: `card-${number}` }, in: PANE }).catch(() => undefined)
     }
     const togglePr = (number: number) => () => void update($, openPr, was => (was === number ? null : number))
@@ -1558,6 +1696,124 @@ export const register: Register = on => {
       </Box>
     )
 
+    // Change opens the card's editor, and reads the repo's labels and milestones the first time.
+    const openEditor = (number: number) => async () => {
+      const opening = changing !== number
+      await update($, editing, () => (opening ? number : null))
+      await update($, closing, () => null)
+      if (opening && !offered) await loadPalette($)
+    }
+
+    // The card's editor: each row a change made on GitHub as soon as it's pressed or entered. Closing an epic whose
+    // sub-issues are still open takes a second press.
+    const editor = (issue: Issue) => {
+      const n = issue.number
+      const me = who ?? '@me'
+      const mine = issue.assignees.includes(me)
+      const open = (issue.subIssues?.total ?? 0) - (issue.subIssues?.completed ?? 0)
+      const labels = [...new Set([...(offered?.labels ?? labelsOf(now.issues)), ...issue.labels.map(label => label.name)])].sort()
+      const closeAs = (reason: 'completed' | 'not planned') => async () => {
+        if (open > 0 && armedClose !== n) {
+          await update($, closing, () => n)
+          return
+        }
+        await update($, closing, () => null)
+        await update($, editing, () => null)
+        await change($, n, { close: reason })
+      }
+      const row = (label: string) => <Text dimColor>{label.padEnd(9)}</Text>
+      return (
+        <Box key={`editor-${n}`} flexDirection="column" marginTop={1}>
+          <Box flexDirection="row" gap={1} flexWrap="wrap">
+            {row('Labels')}
+            {labels.map(name => {
+              const has = issue.labels.some(label => label.name === name)
+              return (
+                <Button key={`label-${n}-${name}`} variant={has ? 'primary' : undefined} dimColor={!has} onPress={() => void change($, n, has ? { removeLabels: [name] } : { addLabels: [name] })}>
+                  {name}
+                </Button>
+              )
+            })}
+          </Box>
+          <Box flexDirection="row" gap={1} flexWrap="wrap">
+            {row('Assignee')}
+            {issue.assignees.filter(login => login !== me).map(login => (
+              <Text color="suggestion">{`@${login}`}</Text>
+            ))}
+            <Button key={`assign-${n}`} dimColor={mine} onPress={() => void change($, n, mine ? { unassign: ['@me'] } : { assign: ['@me'] })}>
+              {mine ? `Unassign me (@${me})` : 'Assign me'}
+            </Button>
+          </Box>
+          <Box flexDirection="row" gap={1} flexWrap="wrap">
+            {row('Epic')}
+            <Text>{issue.parent ? `#${issue.parent.number} ${fit(issue.parent.title, 30)}` : 'none'}</Text>
+            {issue.parent && (
+              <Button key={`unparent-${n}`} dimColor onPress={() => void change($, n, { parent: null })}>
+                Take out
+              </Button>
+            )}
+            {Input && (
+              <Input
+                key={`parent-${n}`}
+                label="put under #"
+                placeholder="epic number"
+                value={fields.parent}
+                submitLabel="set"
+                onInput={text => void update($, typing, was => ({ ...was, parent: text }))}
+                onSubmit={text => {
+                  const parent = Number(text.replace(/^#/, '').trim())
+                  if (!Number.isInteger(parent) || parent < 1) return
+                  void update($, typing, was => ({ ...was, parent: '' })).then(() => change($, n, { parent }))
+                }}
+              />
+            )}
+          </Box>
+          <Box flexDirection="row" gap={1} flexWrap="wrap">
+            {row('Milestone')}
+            {!offered && <Text dimColor>reading…</Text>}
+            {offered && offered.milestones.length === 0 && <Text dimColor>none in this repo</Text>}
+            {(offered?.milestones ?? []).map(title => {
+              const has = issue.milestone === title
+              return (
+                <Button key={`milestone-${n}-${title}`} variant={has ? 'primary' : undefined} dimColor={!has} onPress={() => void change($, n, { milestone: has ? null : title })}>
+                  {title}
+                </Button>
+              )
+            })}
+          </Box>
+          {Input && (
+            <Box flexDirection="row" gap={1}>
+              {row('Comment')}
+              <Input
+                key={`comment-${n}`}
+                label=""
+                placeholder="write a comment, Enter posts it"
+                value={fields.comment}
+                submitLabel="post"
+                onInput={text => void update($, typing, was => ({ ...was, comment: text }))}
+                onSubmit={text => {
+                  if (!text.trim()) return
+                  void update($, typing, was => ({ ...was, comment: '' })).then(() => change($, n, { comment: text }))
+                }}
+              />
+            </Box>
+          )}
+          <Box flexDirection="row" gap={1} flexWrap="wrap">
+            {row('Close')}
+            <Button key={`close-completed-${n}`} dimColor onPress={() => void closeAs('completed')()}>
+              as completed
+            </Button>
+            <Button key={`close-not-planned-${n}`} dimColor onPress={() => void closeAs('not planned')()}>
+              as not planned
+            </Button>
+          </Box>
+          {armedClose === n && (
+            <Text color="warning" wrap="wrap">{`#${n} is an epic with ${open} open ${open === 1 ? 'sub-issue' : 'sub-issues'}. Closing it leaves them open under a closed epic. Press again to close it anyway.`}</Text>
+          )}
+        </Box>
+      )
+    }
+
     // An opened issue: a card with its labels, its text, its boxes and what to do with it.
     const issueCard = (issue: Issue, hotkeys: boolean) => {
       const step = progress(issue.checks)
@@ -1640,11 +1896,15 @@ export const register: Register = on => {
             <Button key={`draft-${issue.number}`} hotkey={hotkeys ? 'e' : undefined} onPress={() => void $.prompt.fill({ text: startPrompt(issue) })}>
               ✎ Edit first
             </Button>
+            <Button key={`edit-${issue.number}`} variant={changing === issue.number ? 'primary' : undefined} dimColor={changing !== issue.number} onPress={openEditor(issue.number)}>
+              ⚙ Change
+            </Button>
             <Link href={pageOf(now.repo, 'issues', issue)} label="↗ GitHub" />
             <Button key={`close-${issue.number}`} dimColor hotkey={hotkeys ? 'x' : undefined} onPress={toggle(issue.number)}>
               Collapse
             </Button>
           </Box>
+          {changing === issue.number && editor(issue)}
         </Box>
       )
     }
