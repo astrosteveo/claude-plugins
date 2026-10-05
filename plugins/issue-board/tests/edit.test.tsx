@@ -127,8 +127,8 @@ test("the card's editor changes labels, assignee and milestone, comments, and as
   await ui.press({ key: 'assign-43' })
   await ui.press({ key: 'milestone-43-Launch' })
   await ui.press({ key: 'unparent-43' })
-  await ui.input({ key: 'comment-43', text: 'Looks right.', kind: 'change' })
-  await ui.input({ key: 'comment-43', text: 'Looks right.', kind: 'submit' })
+  await ui.input({ key: 'reply-43', text: 'Looks right.', kind: 'change' })
+  await ui.input({ key: 'reply-43', text: 'Looks right.', kind: 'submit' })
   await ui.input({ key: 'parent-43', text: '#35', kind: 'submit' })
   expect(writes(gh.calls).map(call => call.argv.join(' '))).toEqual([
     'issue edit 43 --add-label bug',

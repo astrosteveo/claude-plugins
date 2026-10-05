@@ -98,6 +98,8 @@ const world = (on: On) => {
     if (argv[1] === 'api' && argv[2] === 'graphql') {
       // A mutation: its `-f name=value` arguments, and the change it makes to the project.
       const args = Object.fromEntries(argv.flatMap((arg, index) => (argv[index - 1] === '-f' ? [arg.split(/=(.*)/s).slice(0, 2) as [string, string]] : [])))
+      // The pull requests' review threads: a read, not a change.
+      if (args.query?.includes('reviewThreads')) return answer(JSON.stringify({ data: { repository: { pullRequests: { nodes: [] } } } }))
       state.fields.push(args)
       if (args.query?.includes('addProjectV2ItemById')) return answer(JSON.stringify({ data: { addProjectV2ItemById: { item: { id: `PVTI_${args.content?.slice(2)}` } } } }))
       const number = Number(args.item?.slice('PVTI_'.length))

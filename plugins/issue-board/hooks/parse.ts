@@ -1,4 +1,4 @@
-import type { Alert, Board, Check, Ci, Draft, Field, Filter, GroupBy, Issue, Label, Project, PullRequest, Working } from '../types'
+import type { Alert, Board, Check, Ci, Comment, Draft, Field, Filter, GroupBy, Issue, Label, Project, PullRequest, Working } from '../types'
 import { isLater, isNow, priorityRank } from './project'
 
 type RawLabel = { name: string; color?: string }
@@ -28,6 +28,8 @@ type RawPr = {
   updatedAt?: string
   body?: string | null
   closingIssuesReferences?: { number: number }[] | null
+  mergeStateStatus?: string | null
+  reviewRequests?: ({ login?: string; name?: string; slug?: string } | null)[] | null
 }
 
 const BOX = /^\s*[-*]\s+\[([ xX])\]\s+(.*)$/
@@ -109,7 +111,44 @@ export const parsePrs = (json: string): PullRequest[] =>
     sha: raw.headRefOid ?? '',
     ...failingOf(raw.statusCheckRollup),
     issues: issuesOf(raw.closingIssuesReferences ?? [], raw.body ?? ''),
+    mergeState: raw.mergeStateStatus ?? '',
+    reviewers: (raw.reviewRequests ?? []).flatMap(one => (one ? [one.login ? `@${one.login}` : (one.name ?? one.slug ?? '')] : [])).filter(Boolean),
+    openThreads: 0,
   }))
+
+// The open pull requests' review threads, to count the ones still open; gh pr list can't give them.
+export const THREADS_QUERY =
+  'query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { pullRequests(states: OPEN, first: 50) { nodes { number reviewThreads(first: 100) { nodes { isResolved } } } } } }'
+
+// How many review threads are open on each pull request, by number; none known from an answer that isn't the query's.
+export const threadsOf = (json: string): Map<number, number> => {
+  type Raw = { data?: { repository?: { pullRequests?: { nodes?: ({ number: number; reviewThreads?: { nodes?: ({ isResolved: boolean } | null)[] } } | null)[] } } } }
+  try {
+    const nodes = (JSON.parse(json) as Raw | null)?.data?.repository?.pullRequests?.nodes ?? []
+    return new Map(nodes.flatMap(pr => (pr ? [[pr.number, (pr.reviewThreads?.nodes ?? []).filter(thread => thread && !thread.isResolved).length] as const] : [])))
+  } catch {
+    return new Map()
+  }
+}
+
+// Why a pull request can't merge as it stands, from GitHub's merge state: conflicts with its base, or behind it.
+export const mergeNoteOf = (pr: PullRequest): { text: string; color: string } | null =>
+  pr.mergeState === 'DIRTY' ? { text: '⚠ conflicts', color: 'error' } : pr.mergeState === 'BEHIND' ? { text: '↓ behind', color: 'warning' } : null
+
+type RawComment = { author?: { login?: string } | null; body?: string | null; createdAt?: string }
+
+// An issue's comments from `gh issue view --json comments`, oldest first.
+export const commentsOf = (json: string): Comment[] =>
+  ((JSON.parse(json) as { comments?: RawComment[] | null }).comments ?? []).map(one => ({ author: one.author?.login ?? 'ghost', body: (one.body ?? '').trim(), at: one.createdAt ?? '' }))
+
+// What Ask Claude to answer hands Claude: the issue, the comment to answer, and how to reply.
+export const answerPrompt = (issue: Issue, comment: Comment): string => {
+  const quoted = comment.body.length > 400 ? `${comment.body.slice(0, 399)}…` : comment.body
+  return (
+    `Answer the latest comment on #${issue.number}: ${issue.title}. @${comment.author} wrote:\n\n${quoted.replace(/^/gm, '> ')}\n\n` +
+    `Read the whole thread with \`gh issue view ${issue.number} --comments\` first. Then reply on the issue with the mcp__issue-board__issue_update tool's comment.`
+  )
+}
 
 // `Closes #N` and its kin, and `Refs #N`: a pull request saying which issue it is for, closing it or not.
 const REFERENCE = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs?)\b:?\s+#(\d+)/gi

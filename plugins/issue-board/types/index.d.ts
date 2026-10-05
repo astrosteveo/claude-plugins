@@ -55,7 +55,15 @@ export type PullRequest = {
   runs: number[]
   // The issues it says it closes or refers to (`Closes #N`, `Refs #N`), in order.
   issues: number[]
+  // GitHub's mergeStateStatus, such as DIRTY (conflicts) or BEHIND its base; absent on an older board.
+  mergeState?: string
+  // Who is asked to review it, by login or team name, and how many of its review threads are still open.
+  reviewers?: string[]
+  openThreads?: number
 }
+
+// A comment on an issue, as a card shows it.
+export type Comment = { author: string; body: string; at: string }
 
 // Issues closed and pull requests merged each week, oldest week first.
 export type Velocity = { closed: number[]; merged: number[] }
@@ -178,6 +186,8 @@ declare module 'claude-code' {
       closing: number | null
       // What the editor's fields hold: the comment being written, and the epic number typed.
       typing: { comment: string; parent: string }
+      // The open card's comments, read when it opens; `comments` null while they're being read.
+      talk: { number: number; comments: Comment[] | null; total: number } | null
       // The last permission check; null until one has run.
       access: Access | null
       // The pull request whose details are open in the pane.

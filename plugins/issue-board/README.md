@@ -23,10 +23,11 @@ CLI, signed in, in the folder the session started in.
     line names it with its CI.
   - Open pull requests, one row each: a CI badge (`✓ PASS`, `✗ FAIL`,
     `◷ CI`), the title, the issue it is for (`→ #38`), a dot for the review
-    state, and `◆` on the one for the branch you have checked out. Press the
-    title for its details: the branch,
-    author, age, review, failing checks, the issues it is for, and
-    **↗ GitHub**.
+    state, and `◆` on the one for the branch you have checked out. The row
+    also says why it can't merge yet: `⚠ conflicts` with its base or
+    `↓ behind` it, how many review threads are still open, and who is asked
+    to review. Press the title for its details: the branch, author, age,
+    review, failing checks, the issues it is for, and **↗ GitHub**.
   - **Finish & merge** on a pull request sends Claude a message to see it
     through: fix failing CI, answer review, and merge it, without bypassing
     branch protection or force-pushing. **Merge all…** (`m`), in the pull
@@ -61,7 +62,9 @@ CLI, signed in, in the folder the session started in.
   card is open at a time, and opening one scrolls it into view. An open card
   stays in the list until you collapse it, even when a new Priority or Status
   takes it out of the filter; it says so. Press a box to tick or untick it on
-  GitHub. Then:
+  GitHub. Opening a card reads its latest three comments. Under them, a
+  reply field posts a comment when you press Enter, and **Ask Claude to
+  answer** hands Claude the last comment to reply to. Then:
   - **Start** (`s`) sends Claude a message to start on the issue, with its
     unticked boxes. It also moves the issue to In progress in the project,
     adding it to the project if it isn't there, and assigns it to you.
@@ -74,7 +77,6 @@ CLI, signed in, in the folder the session started in.
       out of its epic.
     - **Milestone**: the repo's open milestones; press one to put the issue
       on it, or the highlighted one to take it off.
-    - **Comment**: write one and press Enter to post it.
     - **Close**: as completed or as not planned. Closing an epic with open
       sub-issues takes a second press, and says how many are open.
   - **Edit first** (`e`) puts the same message in the prompt box to edit
