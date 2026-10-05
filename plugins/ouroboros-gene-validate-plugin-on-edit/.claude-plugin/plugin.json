@@ -1,0 +1,11 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "ouroboros-gene-validate-plugin-on-edit",
+  "displayName": "Ouroboros gene: validate a plugin after editing it",
+  "version": "0.1.0",
+  "description": "Validate a plugin right after editing its files",
+  "author": {
+    "name": "astrosteveo"
+  },
+  "keywords": ["mod", "ouroboros", "gene"]
+}
