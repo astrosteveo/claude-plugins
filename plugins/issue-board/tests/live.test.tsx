@@ -215,7 +215,7 @@ test("while the branch's CI runs, the band and the pane show its progress from g
   await pane.unmount()
 })
 
-test('Start in background runs the registered agent on the issue, and the row shows how it goes', async ($, on) => {
+test('Start in background runs the registered agent on the issue, the row shows how it goes, and its end comes back to the conversation and Claude', async ($, on) => {
   mock.store(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   world(on)
@@ -245,6 +245,13 @@ test('Start in background runs the registered agent on the issue, and the row sh
   on('ui.toast', async (_$, e) => {
     toasts.push(String((e as { text?: unknown }).text))
     return { value: undefined }
+  })
+  // What the board hands Claude, and as whose words.
+  const handed: { text: string; origin: unknown }[] = []
+  on('prompt.submit', async (_$, e) => {
+    handed.push({ text: e.text, origin: e.origin })
+    order.push('prompt')
+    return { text: e.text }
   })
   // The lines the board adds to the conversation, and when, beside the spawn and the agent's answer.
   const order: string[] = []
@@ -280,12 +287,28 @@ test('Start in background runs the registered agent on the issue, and the row sh
   expect(await ui.find({ text: /^⚙ waiting$/ })).toBeDefined()
 
   // Its answer ends it: done, with what it said on the card.
-  await $.turn.complete({ answer: 'Opened PR #400. Box 1 is ticked.', durationMs: 1, isAborted: false, turnId: 't', agentId: 'agent-1', reason: 'answer' })
+  await $.turn.complete({ answer: 'Opened PR #335.\n\nBox 1 is ticked.', durationMs: 1, isAborted: false, turnId: 't', agentId: 'agent-1', reason: 'answer' })
   await clock.settle()
   expect(await ui.find({ text: /^⚙ done$/ })).toBeDefined()
-  expect(await ui.find({ text: /^Opened PR #400\. Box 1 is ticked\.$/ })).toBeDefined()
+  expect(await ui.find({ text: /^Opened PR #335\.\n\nBox 1 is ticked\.$/ })).toBeDefined()
   expect(await ui.find({ key: 'background-315' })).toBeDefined()
-  expect(order).toEqual(['spawn', 'line', 'answer'])
+  // The conversation says it is done, naming the issue, with what it said and its pull request, after the board read
+  // GitHub again; then Claude gets the same, in the board's name, to follow up on.
+  expect(lines.at(-1)).toBe(
+    'The background agent on #315 "Lay Kessik out for play" is done. Opened PR #335. Box 1 is ticked. Pull request #335: https://github.com/astrosteveo/void-sector/pull/335',
+  )
+  expect(handed).toEqual([{ text: expect.stringMatching(/^The background agent that Start in background set on #315 "Lay Kessik out for play" is done\./), origin: { kind: 'plugin', name: 'issue-board' } }])
+  expect(handed[0]?.text).toContain('Its pull request: #335 https://github.com/astrosteveo/void-sector/pull/335')
+  expect(handed[0]?.text).toContain('Its last answer:\nOpened PR #335.\n\nBox 1 is ticked.')
+  expect(handed[0]?.text).toMatch(/Tell the person in a few sentences what it did and what is left/)
+  expect(toasts).toContain('The background agent on #315 finished')
+  expect(order).toEqual(['spawn', 'line', 'answer', 'line', 'prompt'])
+
+  // The list then says it ended too: nothing is told twice.
+  status = 'completed'
+  await clock.advance(20_000)
+  expect(lines.length).toBe(2)
+  expect(handed.length).toBe(1)
   await ui.unmount()
 })
 
@@ -351,5 +374,133 @@ test('Start in background says in the conversation when no agent starts; Start i
   await ui.press({ key: 'background-315' })
   expect(lines.filter(line => line.startsWith('Started'))).toEqual(['Started a background agent on #315 "Lay Kessik out for play". It is working on the issue in the background now.'])
   expect(await ui.find({ text: /^⚙ working$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a background agent that fails or is stopped says so in the conversation and to Claude, once, with or without an answer', async ($, on) => {
+  mock.store(on)
+  const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
+  const gh = world(on)
+  gh.prs = []
+  on('session.start', async (_$, e) => ({ cwd: e.cwd }))
+  on('command.register', async (_$, e) => ({ value: { command: e.name } }))
+  on('tool.register', async (_$, e) => ({ value: { tool: `mcp__issue-board__${e.name}` } }))
+  on('agent.register', async (_$, e) => ({ value: { agent: `issue-board:${e.name}` } }))
+  let spawns = 0
+  on('agent.spawn', async () => ({ model: 'claude-sonnet-5-5', agentId: `agent-${++spawns}` }))
+  let status = 'running'
+  on('agent.list', async () => ({ value: [{ id: `agent-${spawns}`, name: 'issue-315', description: '#315', type: 'issue-board:worker', status: status as 'running' }] }))
+  on('turn.complete', async (_$, e) => ({ text: e.answer }))
+  const handed: string[] = []
+  on('prompt.submit', async (_$, e) => {
+    handed.push(e.text)
+    return { text: e.text }
+  })
+  const lines: string[] = []
+  on('ui.log', async (_$, e) => {
+    if (e.to !== 'debug') lines.push(e.text)
+    return { value: undefined }
+  })
+
+  await $.session.start({ cwd: REPO.root, surface: 'terminal', isInteractive: true })
+  await $.command.run(REFRESH)
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'filter-all' })
+  await ui.press({ key: 'issue-315' })
+
+  // An API error ends the first: the line says it failed, with its last words, and no pull request.
+  await ui.press({ key: 'background-315' })
+  await $.turn.complete({ answer: 'The tests would not build.', durationMs: 1, isAborted: false, turnId: 't', agentId: 'agent-1', reason: 'error' })
+  await clock.settle()
+  expect(await ui.find({ text: /^⚙ failed$/ })).toBeDefined()
+  expect(lines.at(-1)).toBe('The background agent on #315 "Lay Kessik out for play" failed. The tests would not build.')
+  expect(lines.some(line => line.includes('is done'))).toBe(false)
+  expect(handed.at(-1)).toMatch(/^The background agent that Start in background set on #315 "Lay Kessik out for play" failed\./)
+  expect(handed.at(-1)).toContain('The board sees no pull request for the issue.')
+  expect(handed.at(-1)).toMatch(/say what they could do next/)
+
+  // The second is stopped and never answers: the list says so, and 10 seconds on the line does.
+  await ui.press({ key: 'background-315' })
+  expect(await ui.find({ text: /^⚙ working$/ })).toBeDefined()
+  const told = lines.length
+  status = 'killed'
+  await clock.advance(10_000)
+  expect(await ui.find({ text: /^⚙ stopped$/ })).toBeDefined()
+  expect(lines.length).toBe(told)
+  await clock.advance(10_000)
+  await clock.settle()
+  expect(lines.at(-1)).toBe('The background agent on #315 "Lay Kessik out for play" was stopped.')
+  expect(handed.at(-1)).toMatch(/^The background agent that Start in background set on #315 "Lay Kessik out for play" was stopped\./)
+  expect(handed.at(-1)).toContain('It gave no answer.')
+
+  // An answer that comes after that tells nothing again.
+  const count = handed.length
+  await $.turn.complete({ answer: 'Stopped.', durationMs: 1, isAborted: true, turnId: 't', agentId: 'agent-2', reason: 'aborted' })
+  await clock.settle()
+  expect(lines.length).toBe(told + 1)
+  expect(handed.length).toBe(count)
+  await ui.unmount()
+})
+
+test('Start and Start in background change once pressed, and a second press starts nothing', async ($, on) => {
+  mock.store(on)
+  const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
+  world(on)
+  on('session.start', async (_$, e) => ({ cwd: e.cwd }))
+  on('command.register', async (_$, e) => ({ value: { command: e.name } }))
+  on('tool.register', async (_$, e) => ({ value: { tool: `mcp__issue-board__${e.name}` } }))
+  on('agent.register', async (_$, e) => ({ value: { agent: `issue-board:${e.name}` } }))
+  on('tool.call', { tool: 'TaskCreate' }, async (_$, e) => ({ result: { task: { id: '1', subject: e.subject } } }))
+  on('ui.log', async () => ({ value: undefined }))
+  // The spawn and the prompt each wait until the test lets them go.
+  let spawns = 0
+  let spawned = (): void => {}
+  on('agent.spawn', async () => {
+    spawns += 1
+    await new Promise<void>(go => (spawned = go))
+    return { model: 'claude-sonnet-5-5', agentId: 'agent-1' }
+  })
+  on('agent.list', async () => ({ value: [{ id: 'agent-1', name: 'issue-315', description: '#315', type: 'issue-board:worker', status: 'running' as const }] }))
+  const sent: string[] = []
+  let entered = (): void => {}
+  on('prompt.submit', async (_$, e) => {
+    sent.push(e.text)
+    await new Promise<void>(go => (entered = go))
+    return { text: e.text }
+  })
+
+  await $.session.start({ cwd: REPO.root, surface: 'terminal', isInteractive: true })
+  await $.command.run(REFRESH)
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'filter-all' })
+  await ui.press({ key: 'issue-315' })
+
+  // Start in background: while the agent starts, its button says so, and there's none to press again. Two presses that
+  // land before it is drawn again start one agent.
+  await Promise.all([ui.press({ key: 'background-315' }), ui.press({ key: 'background-315' })])
+  expect(spawns).toBe(1)
+  expect(await ui.find({ text: /^⚙ Starting in background…$/ })).toBeDefined()
+  expect(await ui.find({ key: 'background-315' })).toBeUndefined()
+  await expect(ui.press({ key: 'background-315' })).rejects.toThrow(/no Button of issue-board keyed "background-315"/)
+  spawned()
+  await clock.settle()
+  expect(await ui.find({ text: /^⚙ working$/ })).toBeDefined()
+  expect(await ui.find({ text: /^⚙ Starting in background…$/ })).toBeUndefined()
+  expect(await ui.find({ key: 'background-315' })).toBeUndefined()
+  expect(spawns).toBe(1)
+
+  // Start: while Claude is being sent the issue, its button says so; once sent, it says it started, and stays that way.
+  await Promise.all([ui.press({ key: 'start-315' }), ui.press({ key: 'start-315' })])
+  expect(sent).toHaveLength(1)
+  expect(await ui.find({ text: /^▶ Starting…$/ })).toBeDefined()
+  expect(await ui.find({ key: 'start-315' })).toBeUndefined()
+  await expect(ui.press({ key: 'start-315' })).rejects.toThrow(/no Button of issue-board keyed "start-315"/)
+  entered()
+  await clock.settle()
+  expect(await ui.find({ text: /^▶ Started$/ })).toBeDefined()
+  expect(await ui.find({ key: 'start-315' })).toBeUndefined()
+  expect(sent.filter(text => text.startsWith("Let's start on #315"))).toHaveLength(1)
   await ui.unmount()
 })

@@ -1033,3 +1033,47 @@ export const workerBadge = (status: Worker['status']): { text: string; color: st
         : status === 'waiting' || status === 'idle'
           ? { text: '⚙ waiting', color: 'warning' }
           : { text: '⚙ working', color: 'claude' }
+
+// How a background agent's loop may end.
+export type Ended = 'completed' | 'failed' | 'killed'
+
+const ENDED: Record<Ended, string> = { completed: 'is done', failed: 'failed', killed: 'was stopped' }
+
+// An issue as a line in the conversation names it: its number, and its title when it has one.
+export const named = (issue: { number: number; title?: string }): string => {
+  const title = issue.title?.trim()
+  return title ? `#${issue.number} "${title}"` : `#${issue.number}`
+}
+
+const PULL_LINK = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/(\d+)/g
+
+// The pull request a background agent left on its issue: of the open ones for the issue, the one its answer names, or
+// else the newest; failing those, the first one its answer links to. Null when nothing says.
+export const workerPrOf = (number: number, prs: PullRequest[], answer: string): { number: number; url: string } | null => {
+  const mentioned = new Set([...answer.matchAll(PULL_LINK)].map(match => Number(match[1])))
+  for (const match of answer.matchAll(/#(\d+)\b/g)) mentioned.add(Number(match[1]))
+  const linked = prs.filter(pr => (pr.issues ?? []).includes(number)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+  const pr = linked.find(one => mentioned.has(one.number)) ?? linked[0]
+  if (pr) return { number: pr.number, url: pr.url }
+  const link = [...answer.matchAll(PULL_LINK)][0]
+  return link ? { number: Number(link[1]), url: link[0] } : null
+}
+
+// The line in the conversation when a background agent ends: how, on which issue, what it said and its pull request.
+// One line, its pull request's address last, so a long answer is cut and the link isn't.
+export const endedLine = (issue: { number: number; title?: string }, status: Ended, answer: string | null, pr: { number: number; url: string } | null): string => {
+  const said = answer?.replace(/\s+/g, ' ').trim()
+  const link = pr ? ` Pull request #${pr.number}${pr.url ? `: ${pr.url}` : ''}` : ''
+  return `The background agent on ${named(issue)} ${ENDED[status]}.${said ? ` ${fit(said, 600)}` : ''}${link}`
+}
+
+// What Claude reads when a background agent ends, so it can follow up without the person passing anything on.
+export const handoffPrompt = (issue: { number: number; title?: string }, status: Ended, answer: string | null, pr: { number: number; url: string } | null): string =>
+  [
+    `The background agent that Start in background set on ${named(issue)} ${ENDED[status]}.`,
+    pr ? `Its pull request: #${pr.number}${pr.url ? ` ${pr.url}` : ''}` : 'The board sees no pull request for the issue.',
+    answer?.trim() ? `Its last answer:\n${fit(answer.trim(), 4000)}` : 'It gave no answer.',
+    status === 'completed'
+      ? 'Tell the person in a few sentences what it did and what is left, such as a review of the pull request.'
+      : 'Tell the person in a sentence or two, and say what they could do next.',
+  ].join('\n\n')
