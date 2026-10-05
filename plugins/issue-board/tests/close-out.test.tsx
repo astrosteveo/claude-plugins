@@ -31,9 +31,9 @@ test('the close-out prompts name each pull request and ask for a guarded merge',
   expect(closeOutPrompt(draft)).toMatch(/It is a draft: finish it and mark it ready first\./)
 
   const all = closeOutAllPrompt(parsed)
-  expect(all).toMatch(/^Close out all 2 open pull requests and merge them:\n- #335: .*\n- #337: .*, draft\)\n/)
+  expect(all).toMatch(/^Merge all 2 open pull requests:\n- #335: .*\n- #337: .*, draft\)\n/)
   expect(all).toMatch(/oldest first/)
-  expect(closeOutAllPrompt([ready])).toMatch(/^Close out all 1 open pull request and/)
+  expect(closeOutAllPrompt([ready])).toMatch(/^Merge all 1 open pull request:/)
 })
 
 test('Close out sends one pull request, and Close out all asks before sending them all', async ($, on) => {
@@ -71,7 +71,7 @@ test('Close out sends one pull request, and Close out all asks before sending th
     await ui.press({ key: 'close-out-all' })
     await ui.press({ key: 'close-out-all-yes' })
     expect(sent).toHaveLength(2)
-    expect(sent[1]).toMatch(/^Close out all 2 open pull requests and merge them:\n- #335: Glide in to a planet/)
+    expect(sent[1]).toMatch(/^Merge all 2 open pull requests:\n- #335: Glide in to a planet/)
     expect(await ui.find({ key: 'close-out-all' })).toBeDefined()
     await ui.unmount()
   }

@@ -50,8 +50,11 @@ CLI, signed in, in the folder the session started in.
 - Press Enter on an issue, or click it, to open its card: every label and
   assignee, its epic, milestone and open blockers, a row of buttons each for
   **Status** and **Priority** (press one to set it in the project; the one
-  set is highlighted), the issue's text, a progress bar and its boxes. One card is open at a time, and opening one
-  scrolls it into view. Press a box to tick or untick it on GitHub. Then:
+  set is highlighted), the issue's text, a progress bar and its boxes. One
+  card is open at a time, and opening one scrolls it into view. An open card
+  stays in the list until you collapse it, even when a new Priority or Status
+  takes it out of the filter; it says so. Press a box to tick or untick it on
+  GitHub. Then:
   - **Start** (`s`) sends Claude a message to start on the issue, with its
     unticked boxes. It also moves the issue to In progress in the project,
     adding it to the project if it isn't there, and assigns it to you.

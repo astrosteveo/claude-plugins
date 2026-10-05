@@ -471,3 +471,46 @@ test('Backlog is folded until opened, and Epic groups the issues under the epic 
   expect(await ui.find({ text: /^No epic$/ })).toBeDefined()
   await ui.unmount()
 })
+
+test('a card stays open when a new Priority takes it out of the filter, and leaves when collapsed', async ($, on) => {
+  mock.store(on)
+  const gh = world(on)
+  gh.project = true
+  gh.planned[315] = { status: 'Ready', priority: 'P1' }
+  await $.command.run(REFRESH)
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  expect(await ui.find({ key: 'filter-active' })).toMatchObject({ text: 'Now 1' })
+
+  await ui.press({ key: 'issue-315' })
+  await ui.press({ key: 'priority-315-P2' })
+  // P2 is Later, but the card being changed stays, saying so.
+  expect(await ui.find({ key: 'start-315' })).toBeDefined()
+  expect(await ui.find({ text: /^Not under Now any more\. It leaves the list when you collapse it\.$/ })).toBeDefined()
+  expect(await ui.find({ key: 'filter-active' })).toMatchObject({ text: 'Now 0' })
+
+  await ui.press({ key: 'close-315' })
+  expect(await ui.find({ key: 'issue-315' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test("Merge all's confirm goes when the pull requests it waited on have merged, and sends nothing", async ($, on) => {
+  mock.store(on)
+  const gh = world(on)
+  const sent: string[] = []
+  on('prompt.submit', async (_$, e) => {
+    sent.push(e.text)
+    return { text: e.text }
+  })
+  await $.command.run(REFRESH)
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'close-out-all' })
+  expect(await ui.find({ key: 'close-out-all-yes' })).toBeDefined()
+
+  // The pull request merges elsewhere while the confirm waits.
+  gh.prs = []
+  await $.command.run(REFRESH)
+  expect(await ui.find({ key: 'close-out-all-yes' })).toBeUndefined()
+  expect(await ui.find({ text: /^y merge every open PR/ })).toBeUndefined()
+  expect(sent).toEqual([])
+  await ui.unmount()
+})

@@ -470,7 +470,7 @@ export const closeOutAllPrompt = (prs: PullRequest[]): string => {
     .map(pr => `- #${pr.number}: ${pr.title} (\`${pr.branch}\`, CI ${pr.ci}${pr.isDraft ? ', draft' : ''})`)
     .join('\n')
   return (
-    `Close out all ${prs.length} open pull ${prs.length === 1 ? 'request' : 'requests'} and merge them:\n${list}\n\n` +
+    `Merge all ${prs.length} open pull ${prs.length === 1 ? 'request' : 'requests'}:\n${list}\n\n` +
     'Take them one at a time, oldest first. For each, read it with `gh pr view` and `gh pr checks`, fix any failing CI and answer any review, ' +
     'bring its branch up to date with what merged before it, and merge it once its checks pass. Finish a draft and mark it ready first. ' +
     `${CLOSE_OUT_RULES} Then move on to the next, and end with which merged and which didn't.`
