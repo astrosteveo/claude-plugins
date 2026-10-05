@@ -176,6 +176,14 @@ test('the pane lists the issues by filter and opens one to its boxes', async ($,
     expect(await ui.find({ key: 'draft-315' })).toMatchObject({ text: '✎ Edit first', props: { hotkey: 'e' } })
     expect(await ui.find({ key: 'close-315' })).toMatchObject({ text: 'Collapse', props: { hotkey: 'x' } })
     expect((await ui.findAll({ type: 'Link' })).map(link => link.props.href)).toContain('https://github.com/astrosteveo/void-sector/issues/315')
+    // A narrow pane moves the card's buttons and link down a line rather than squeezing the link down the pane a letter
+    // a line; with too little room even then, the link ends in an ellipsis.
+    type Child = { type?: string; props?: { key?: string; flexShrink?: number } }
+    const holding = (match: (child: Child) => boolean) => (element: { children: unknown[] }) => element.children.some(child => match(child as Child))
+    expect((await ui.findAll({ type: 'Box' })).find(holding(child => child.props?.key === 'start-315'))?.props.flexWrap).toBe('wrap')
+    expect((await ui.findAll({ type: 'Text' })).filter(holding(child => child.type === 'Link')).map(text => text.props.wrap)).toEqual(['truncate-end'])
+    // A box's mark keeps its two cells beside a long box, whose text wraps in the room the mark leaves.
+    expect((await ui.find({ key: 'box-row-315-1' }))?.children.map(child => (child as Child).props?.flexShrink)).toEqual([0, 1])
     // The card shows the issue's text, without the boxes it lists as buttons or the heading they leave empty.
     expect((await ui.find({ type: 'Markdown' }))?.props.text).toBe('Kessik needs a layout for play.')
     // Opening it also scrolls it into view: the engine resolves that against a real window, which a test hasn't.
