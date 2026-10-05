@@ -279,6 +279,8 @@ const refresh = async ($: EngineInterface, seen = false): Promise<void> => {
     await update($, board, () => next)
     if (login !== known) await update($, viewer, () => login)
     await update($, branch, () => current)
+    // Merge all's confirm waits on pull requests that are all gone now.
+    if (next.prs.length === 0) await update($, confirming, () => false)
     const green = wentGreen(before, next)
     if (green.length > 0) await update($, greened, list => [...list.slice(-50), ...green.map(greenKey)])
     if (seen) {
@@ -674,6 +676,11 @@ export const register: Register = on => {
     // Merge all merges every open pull request, so it asks once more before it goes.
     const closeOutAll = async (prs: PullRequest[]) => {
       await update($, confirming, () => false)
+      // The pull requests it was asked for may have merged while it waited on its confirm.
+      if (prs.length === 0) {
+        $.ui.toast('No pull requests are open now, so there is nothing to merge.')
+        return
+      }
       await $.prompt.submit({ text: closeOutAllPrompt(prs), asUser: true })
       $.ui.toast(`Sent ${prs.length} ${prs.length === 1 ? 'PR' : 'PRs'} to Claude to finish and merge`)
     }
@@ -794,7 +801,12 @@ export const register: Register = on => {
     // Without a project the board works from labels: Active and Future, grouped by area.
     const project = now.project ?? null
     const grouping: GroupBy = picked && (picked !== 'status' || project) ? picked : project ? 'status' : 'area'
-    const shown = now.issues.filter(issue => matches(chosen, issue, who, project) && searched(typed, issue))
+    // Whether an issue is under the filter and the search. The open card stays in the list whether or not, until it is
+    // collapsed, so setting its Priority or Status doesn't take it away while it's being changed.
+    const kept = (issue: Issue) => matches(chosen, issue, who, project) && searched(typed, issue)
+    const shown = now.issues.filter(issue => open.includes(issue.number) || kept(issue))
+    const named = FILTERS.find(one => one.id === chosen)
+    const filterName = (project ? named?.planned : named?.label) ?? ''
     const bugs = now.issues.filter(isBug).length
     const failing = now.prs.filter(pr => pr.ci === 'fail').length
     const overall = sumProgress(shown)
@@ -1128,6 +1140,9 @@ export const register: Register = on => {
           <Text bold wrap="wrap">
             {issue.title}
           </Text>
+          {!kept(issue) && (
+            <Text color="warning" wrap="wrap">{`Not under ${filterName}${typed.trim() ? ` or the search` : ''} any more. It leaves the list when you collapse it.`}</Text>
+          )}
           <Box flexDirection="row" gap={2} flexWrap="wrap">
             {issue.labels.map(label => (
               <Text>
@@ -1200,8 +1215,8 @@ export const register: Register = on => {
     }
 
     const single = open.filter(number => shown.some(issue => issue.number === number)).length === 1
-    const named = FILTERS.find(one => one.id === chosen)
-    const filterName = (project ? named?.planned : named?.label) ?? ''
+    // Merge all's confirm, while there is still something to merge.
+    const confirm = arming && now.prs.length > 0
 
     return (
       <Box flexDirection="column">
@@ -1229,7 +1244,7 @@ export const register: Register = on => {
             </Button>
           )}
         </Box>
-        {arming && (
+        {confirm && (
           <Box flexDirection="row" gap={1} flexWrap="wrap">
             <Text color="warning">{`Finish and merge all ${now.prs.length} open ${now.prs.length === 1 ? 'PR' : 'PRs'}?`}</Text>
             <Button key="close-out-all-yes" variant="primary" hotkey="y" onPress={() => void closeOutAll(now.prs)}>
@@ -1282,7 +1297,7 @@ export const register: Register = on => {
 
         <Box marginTop={1}>
           <Text dimColor>
-            {arming
+            {confirm
               ? 'y merge every open PR · n cancel'
               : single
                 ? 's start · e edit first · x or esc collapse · press a box to tick it · r refresh'
