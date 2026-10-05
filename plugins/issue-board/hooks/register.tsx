@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, ModelForkResult, Register, Timer, UiCopyArgs } from 'claude-code'
 
-import type { Alert, Board, BoxTask, Check, Comment, Draft, Filter, GroupBy, Issue, Known, Problem, Project, PullRequest, SavedSetup, Setup, SetupProject, SetupStep, Working } from '../types'
+import type { Alert, Board, BoxTask, Check, Comment, Draft, Filter, GroupBy, Issue, Known, Problem, Project, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
 import type { IssueChanges } from './parse'
 import { authOf, problemsOf, problemsText, repoOf } from './access'
 import { ADD_ITEM, SET_FIELD, issuesQuery, optionOf, startedOf } from './project'
@@ -27,6 +27,7 @@ import {
 } from './setup'
 import {
   THREADS_QUERY,
+  WORKER_PROMPT,
   WEEKS,
   absorbed,
   ago,
@@ -46,6 +47,7 @@ import {
   commentsOf,
   commandsOf,
   draftPrompt,
+  eventRepoOf,
   fit,
   fixPrompt,
   greenKey,
@@ -62,6 +64,7 @@ import {
   nextStepOf,
   issueText,
   labelsOf,
+  liveRunsOf,
   nextPageOf,
   pad,
   pageOf,
@@ -77,6 +80,7 @@ import {
   prsFor,
   progress,
   reviewBadge,
+  runProgressOf,
   searched,
   since,
   spark,
@@ -92,6 +96,7 @@ import {
   triagePrompt,
   weekly,
   wentGreen,
+  workerBadge,
   workingSection,
   writesGitHub,
 } from './parse'
@@ -108,6 +113,8 @@ const ISSUE_FIELDS = 'number,title,url,labels,assignees,body,updatedAt'
 const ISSUES_TOOL = 'mcp__issue-board__issues'
 const TICK_TOOL = 'mcp__issue-board__tick'
 const UPDATE_TOOL = 'mcp__issue-board__issue_update'
+// The agent type Start in background runs, as `$.agent.register` names it.
+const WORKER = 'issue-board:worker'
 
 const strings = (value: unknown): string[] | undefined =>
   Array.isArray(value) ? value.filter((one): one is string => typeof one === 'string' && one.trim() !== '').map(one => one.trim()) : undefined
@@ -163,6 +170,8 @@ const unfolded = atom({ plugin: 'issue-board', key: 'unfolded' } as const, [])
 const setup = atom({ plugin: 'issue-board', key: 'setup' } as const, null)
 const tasks = atom({ plugin: 'issue-board', key: 'tasks' } as const, [])
 const triage = atom({ plugin: 'issue-board', key: 'triage' } as const, { suggestions: [], picks: [], areas: [], asking: false, failed: null })
+const runs = atom({ plugin: 'issue-board', key: 'runs' } as const, [])
+const workers = atom({ plugin: 'issue-board', key: 'workers' } as const, [])
 
 // The filters; with a project, the first two read Priority and say so.
 const FILTERS: { id: Filter; label: string; planned: string; hotkey: string }[] = [
@@ -410,6 +419,8 @@ const refresh = async ($: EngineInterface, seen = false): Promise<void> => {
     await update($, board, () => next)
     if (login !== known) await update($, viewer, () => login)
     await followBranch($, current)
+    // The branch's pull request has CI running: the board watches the run for its progress.
+    if (current && next.prs.some(pr => pr.branch === current && pr.ci === 'pending')) void watchRuns($)
     // Merge all's confirm waits on pull requests that are all gone now.
     if (next.prs.length === 0) await update($, confirming, () => false)
     const green = wentGreen(before, next)
@@ -877,6 +888,125 @@ const afterTurn = async ($: EngineInterface): Promise<void> => {
   }
 }
 
+// A GitHub event for a subscribed pull request (CI finished, merged, reviewed, commented): the board reads GitHub at
+// once, when the event is about this repo, rather than at its next poll.
+const eventArrived = async ($: EngineInterface, data: Record<string, unknown>): Promise<void> => {
+  const repo = (await read($, board))?.repo
+  const named = eventRepoOf(data)
+  if (!repo || (named && named.toLowerCase() !== repo.toLowerCase())) return
+  await settle($)
+  await refresh($)
+}
+
+// The CI runs being watched, by id: one `gh run watch` each, for as long as the run goes. Unloading the module ends
+// them, and a new load starts with none.
+const watching = new Set<number>()
+
+// Looks for CI runs under way on the branch checked out, and watches each it isn't watching yet. Answers whether any is
+// under way.
+const watchRuns = async ($: EngineInterface): Promise<boolean> => {
+  const here = await read($, branch)
+  if (!here) return false
+  try {
+    const live = liveRunsOf(await gh($, ['run', 'list', '--branch', here, '--limit', '10', '--json', 'databaseId,status,workflowName']))
+    for (const run of live.slice(0, 3)) if (!watching.has(run.id)) void watchRun($, run, here)
+    return live.length > 0
+  } catch (cause) {
+    $.ui.log(`issue-board: couldn't list the CI runs on ${here}: ${messageOf(cause)}`, { to: 'debug' })
+    return false
+  }
+}
+
+// A push starts CI a few seconds later: the board looks a few times, until a run turns up.
+const lookForRuns = async ($: EngineInterface): Promise<void> => {
+  try {
+    for (let tries = 0; tries < 4; tries += 1) {
+      await $.clock.sleep(15_000)
+      if (await watchRuns($)) return
+    }
+  } catch {
+    // The module unloaded while it waited: the next load looks again when CI shows as running.
+  }
+}
+
+// Watches one run with `gh run watch`, which draws it again every few seconds until it ends: each drawing updates the
+// run's progress on the board. Its end reads GitHub again, so the pull request shows how it went.
+const watchRun = async ($: EngineInterface, run: { id: number; workflow: string }, runBranch: string): Promise<void> => {
+  watching.add(run.id)
+  const fresh: RunWatch = { id: run.id, workflow: run.workflow, branch: runBranch, done: 0, total: 0, failed: 0, running: null, step: null }
+  await update($, runs, list => [...list.filter(one => one.id !== run.id), fresh])
+  try {
+    let seen = ''
+    for await (const { text } of $.process.spawn({ argv: ['gh', 'run', 'watch', String(run.id), '--interval', '5'] })) {
+      seen = (seen + text).slice(-20_000)
+      const progress = runProgressOf(seen)
+      if (progress) await update($, runs, list => list.map(one => (one.id === run.id ? { ...one, ...progress } : one)))
+    }
+  } catch (cause) {
+    $.ui.log(`issue-board: couldn't watch CI run ${run.id}: ${messageOf(cause)}`, { to: 'debug' })
+  } finally {
+    watching.delete(run.id)
+    await update($, runs, list => list.filter(one => one.id !== run.id))
+    await settle($)
+    await refresh($)
+  }
+}
+
+// Where a background agent's loop may still move on from.
+const ACTIVE: readonly Worker['status'][] = ['pending', 'running', 'waiting', 'idle']
+
+// While a background agent works, the board asks where each stands every 10 seconds, and stops once none works.
+let workerTimer: Timer | undefined
+const checkWorkers = async ($: EngineInterface): Promise<void> => {
+  const listed = await $.agent.list().catch(() => [])
+  await update($, workers, list =>
+    list.map(one => {
+      const info = listed.find(agent => agent.id === one.agentId)
+      return info && one.status !== info.status && ACTIVE.includes(one.status) ? { ...one, status: info.status } : one
+    }),
+  )
+  if (!(await read($, workers)).some(one => ACTIVE.includes(one.status))) {
+    workerTimer?.cancel()
+    workerTimer = undefined
+  }
+}
+const pollWorkers = ($: EngineInterface): void => {
+  if (!workerTimer) workerTimer = $.clock.every(10_000, () => void checkWorkers($))
+}
+
+// Start in background: an agent of the board's own type works on the issue in a git worktree of its own, in the
+// background, and leaves a pull request. The issue moves to In progress and is assigned, as Start does.
+const startInBackground = async ($: EngineInterface, issue: Issue): Promise<void> => {
+  try {
+    const name = `issue-${issue.number}`
+    const started = await $.agent.spawn({ subagentType: WORKER, prompt: startPrompt(issue), description: fit(`#${issue.number} ${issue.title}`, 60), name })
+    if (started.deny !== undefined) throw new Error(started.deny)
+    // Core names the agent it started; failing that, the session's list does, by the name it was given.
+    const agentId = started.agentId ?? (await $.agent.list()).find(agent => agent.name === name && agent.type === WORKER)?.id
+    if (!agentId) throw new Error('no agent started')
+    const worker: Worker = { number: issue.number, agentId, status: 'running', startedAt: Date.now(), answer: null }
+    await update($, workers, list => [...list.filter(one => one.number !== issue.number), worker])
+    $.ui.toast(`Started a background agent on #${issue.number}`)
+    pollWorkers($)
+    await claim($, issue)
+  } catch (cause) {
+    $.ui.toast(`Couldn't start a background agent on #${issue.number}: ${messageOf(cause)}`)
+  }
+}
+
+// A background agent's answer is its loop's last turn: it is done, stopped or failed, and the board reads GitHub, where
+// it may have opened a pull request.
+const workerEnded = async ($: EngineInterface, agentId: string, answer: string, reason: string): Promise<void> => {
+  const worker = (await read($, workers)).find(one => one.agentId === agentId)
+  if (!worker) return
+  const status: Worker['status'] = reason === 'answer' ? 'completed' : reason === 'aborted' ? 'killed' : 'failed'
+  const said = answer.trim()
+  await update($, workers, list => list.map(one => (one.agentId === agentId ? { ...one, status, answer: said ? fit(said, 600) : null } : one)))
+  $.ui.toast(`The background agent on #${worker.number} ${status === 'completed' ? 'finished' : status === 'killed' ? 'was stopped' : 'failed'}`)
+  await settle($)
+  await refresh($)
+}
+
 // The task Claude completed, its box ticked from the band.
 const tickTask = async ($: EngineInterface, task: BoxTask): Promise<void> => {
   const issue = (await read($, board))?.issues.find(one => one.number === task.number)
@@ -1095,6 +1225,19 @@ export const register: Register = on => {
         required: ['number'],
       },
     })
+    // The agent Start in background runs: in its own worktree, in the background.
+    await $.agent
+      .register({
+        name: 'worker',
+        description: "Works one GitHub issue of this repository end to end in its own git worktree, for the issue board's Start in background.",
+        prompt: WORKER_PROMPT,
+        isolation: 'worktree',
+        background: true,
+      })
+      .catch((cause: unknown) => $.ui.log(`issue-board: couldn't register the background agent: ${messageOf(cause)}`, { to: 'debug' }))
+    // A reload ended the CI watches; agents still working are looked at again.
+    await update($, runs, () => [])
+    if ((await read($, workers)).some(one => ACTIVE.includes(one.status))) pollWorkers($)
     // Earlier versions pinned the summary to the status line; a reload would leave it there.
     $.ui.status(undefined)
     await restore($)
@@ -1185,6 +1328,8 @@ export const register: Register = on => {
       // What Claude's gh changed can't be told apart from others' changes since the board last read GitHub.
       const copy = /\bgh\b/.test(command) ? await copyOf($) : null
       void refreshAfter($).then(() => absorb($, copy))
+      // A push starts CI on the branch: the board watches it once it turns up.
+      if (/\bgit\s+push\b/.test(command)) void lookForRuns($)
     } else if (GIT_MOVE.test(command)) void currentBranch($).then(now => followBranch($, now))
 
     return ran
@@ -1232,7 +1377,18 @@ export const register: Register = on => {
   on('turn.complete', async ($, e, next) => {
     const ended = await next(e)
     if (e.agentId === undefined) void afterTurn($)
+    else void workerEnded($, e.agentId, e.answer, e.reason)
     return ended
+  })
+
+  // The background agent is the board's to start, from an issue's card: the model isn't offered it.
+  on('agent.offer', { agent: WORKER }, async () => ({ isOffered: false }))
+
+  // A GitHub event for a subscribed pull request reaches Claude as it would, and the board reads GitHub at once.
+  on('session.receive', async ($, e, next) => {
+    const received = await next(e)
+    if (e.event?.source === 'github' && e.agentId === undefined) void eventArrived($, e.event.data)
+    return received
   })
 
   // The engine's guess at the next prompt gives way to the board's next step for the issue Claude is on.
@@ -1380,6 +1536,8 @@ export const register: Register = on => {
     const picked = await read($, groupBy)
     const opened = await read($, unfolded)
     const triaged = await read($, triage)
+    const watched = await read($, runs)
+    const working$ = await read($, workers)
     const clock = Date.now()
     const elements = $.ui.resolve(e)
     const Input = 'Input' in elements ? elements.Input : undefined
@@ -1938,8 +2096,15 @@ export const register: Register = on => {
       // The open issue it waits on, if any: the first, and how many more.
       const blockers = issue.blockedBy ?? []
       const blocked = blockers.length > 0 ? `⛔ #${blockers[0]}${blockers.length > 1 ? ` +${blockers.length - 1}` : ''}` : ''
+      // The background agent on it, if Start in background set one going.
+      const worker = working$.find(one => one.number === issue.number)
+      const badge = worker && workerBadge(worker.status)
       const right =
-        chips.reduce((sum, chip) => sum + cells(chip.name) + 3, 0) + age.padStart(3).length + (pr ? cells(pr) + 1 : 0) + (blocked ? cells(blocked) + 1 : 0)
+        chips.reduce((sum, chip) => sum + cells(chip.name) + 3, 0) +
+        age.padStart(3).length +
+        (pr ? cells(pr) + 1 : 0) +
+        (blocked ? cells(blocked) + 1 : 0) +
+        (badge ? cells(badge.text) + 1 : 0)
       const left = 6 + 1 + 5 + 1 + (bug ? 2 : 0) + tag.length + String(issue.number).length + 2
       const [filled, empty] = bar(step, 6)
       return (
@@ -1961,6 +2126,7 @@ export const register: Register = on => {
             </Button>
           </Box>
           <Box flexDirection="row" gap={1}>
+            {badge && <Text color={badge.color}>{badge.text}</Text>}
             {blocked && <Text color="warning">{blocked}</Text>}
             {linked && <Text color={ciBadge[linked.ci].color}>{pr}</Text>}
             {chips.map(chip => (
@@ -2251,6 +2417,9 @@ export const register: Register = on => {
     const issueCard = (issue: Issue, hotkeys: boolean) => {
       const step = progress(issue.checks)
       const prose = proseOf(issue.body ?? '')
+      // The background agent Start in background set on it, with what it last said.
+      const worker = working$.find(one => one.number === issue.number)
+      const workerAge = worker ? ago(new Date(worker.startedAt).toISOString(), clock) : ''
       // An epic's card: Next starts its first ready sub-issue.
       const epicNext = (issue.subIssues?.total ?? 0) > 0 ? nextOf(now.issues, issue.number, project) : undefined
       return (
@@ -2318,10 +2487,28 @@ export const register: Register = on => {
             </Box>
           )}
           {conversation(issue)}
+          {worker && (
+            <Box flexDirection="column" marginTop={1}>
+              <Text>
+                <Text color={workerBadge(worker.status).color}>{`${workerBadge(worker.status).text} `}</Text>
+                <Text dimColor>{`a background agent, started ${workerAge === 'now' || workerAge === '' ? 'just now' : `${workerAge} ago`}`}</Text>
+              </Text>
+              {worker.answer && (
+                <Text dimColor wrap="wrap">
+                  {worker.answer}
+                </Text>
+              )}
+            </Box>
+          )}
           <Box flexDirection="row" gap={1} marginTop={1}>
             <Button key={`start-${issue.number}`} variant="primary" hotkey={hotkeys ? 's' : undefined} onPress={() => void start(issue)}>
               ▶ Start
             </Button>
+            {!(worker && ACTIVE.includes(worker.status)) && (
+              <Button key={`background-${issue.number}`} hotkey={hotkeys ? 'b' : undefined} onPress={() => void startInBackground($, issue)}>
+                ⚙ Start in background
+              </Button>
+            )}
             {epicNext && (
               <Button key={`next-${issue.number}`} onPress={() => void start(epicNext)}>
                 {`▶ Next: #${epicNext.number}`}
@@ -2386,6 +2573,22 @@ export const register: Register = on => {
           </Box>
         )}
         {now.prs.map(prRow)}
+        {watched.map(run => (
+          <Box key={`run-${run.id}`} flexDirection="row" gap={1}>
+            <Text color={run.failed > 0 ? 'error' : 'warning'}>◷</Text>
+            <Text>
+              <Text bold>{fit(run.workflow, 28)}</Text>
+              <Text dimColor>{` on ${fit(run.branch, 28)}`}</Text>
+            </Text>
+            {run.total > 0 && (
+              <Text>
+                {meter(run.done, run.total, 8)}
+                <Text dimColor>{` ${run.done}/${run.total} jobs${run.failed > 0 ? `, ${run.failed} failed` : ''}`}</Text>
+              </Text>
+            )}
+            {run.running && <Text dimColor>{fit(`${run.running}${run.step ? ` › ${run.step}` : ''}`, Math.max(12, width - 76))}</Text>}
+          </Box>
+        ))}
 
         {issuesHeading}
 
@@ -2513,7 +2716,9 @@ export const register: Register = on => {
       const at = issue && boxOf(issue, task)
       return at && !at.done ? [{ task, box: at.box }] : []
     })
-    if (problems.length === 0 && alerts.length === 0 && offers.length === 0 && !workingIssue) return next(e)
+    // CI running on the branch checked out, as `gh run watch` draws it.
+    const watched = await read($, runs)
+    if (problems.length === 0 && alerts.length === 0 && offers.length === 0 && watched.length === 0 && !workingIssue) return next(e)
 
     const { Box, Text, Button, Link } = $.ui.resolve(e)
     const width = e.props.bodyColumns
@@ -2695,6 +2900,30 @@ export const register: Register = on => {
         {problems.slice(0, 2).map(problemLine)}
         {alerts.slice(0, 3).map(line)}
         {offers.slice(0, 3).map(offerLine)}
+        {watched.slice(0, 2).map(run => {
+          const [filled, empty] = bar({ done: run.done, total: run.total }, 8)
+          return (
+            <Box key={`run-row-${run.id}`} flexDirection="row" gap={1}>
+              <Text color={run.failed > 0 ? 'error' : 'warning'} inverse bold>
+                {' ◷ CI '}
+              </Text>
+              <Text>
+                <Text bold>{fit(run.workflow, 24)}</Text>
+                <Text dimColor>{` on ${fit(run.branch, 24)}`}</Text>
+              </Text>
+              {run.total > 0 && (
+                <Text>
+                  <Text color={run.failed > 0 ? 'error' : 'warning'}>{filled}</Text>
+                  <Text color="inactive" dimColor>
+                    {empty}
+                  </Text>
+                  <Text dimColor>{` ${run.done}/${run.total} jobs`}</Text>
+                </Text>
+              )}
+              {run.running && <Text dimColor>{fit(`${run.running}${run.step ? ` › ${run.step}` : ''}`, Math.max(12, width - 72))}</Text>}
+            </Box>
+          )
+        })}
         {workingRow}
       </Box>
     )

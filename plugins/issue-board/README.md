@@ -81,6 +81,17 @@ CLI, signed in, in the folder the session started in.
     unticked boxes. It makes a task in Claude's task list for each of those
     boxes. It also moves the issue to In progress in the project, adding it
     to the project if it isn't there, and assigns it to you.
+  - **⚙ Start in background** (`b`) hands the issue to a background agent
+    instead, in a git worktree of its own, so you and Claude can go on with
+    something else. The agent reads the issue, makes a branch for it, does
+    the work, ticks boxes as it finishes them, and opens a pull request,
+    with `Closes` or `Refs` as Start's note says. It doesn't merge or
+    force-push. The issue moves to In progress and is assigned to you, as
+    with Start. The issue's row then shows the agent: `⚙ working`,
+    `⚙ waiting`, `⚙ done`, `⚙ failed` or `⚙ stopped`, and its card shows
+    the agent's last answer. One agent works on an issue at a time. The
+    agent asks for permission as any background agent does, so allow what
+    it needs, or it stops to wait.
   - **⚙ Change** opens the card's editor. Each change is made on GitHub as
     soon as you press it, and the board reads GitHub again straight after:
     - **Labels**: the repo's labels, the ones the issue has highlighted;
@@ -160,12 +171,24 @@ CLI, signed in, in the folder the session started in.
   the band also shows a `▶` row with its progress. `✕` on that row stops
   tracking the issue.
 
+  While CI runs on the branch you have checked out, the band shows a
+  `◷ CI` row with its progress: the workflow, a bar of its jobs done, and
+  the job and step running, such as `validate › Install Claude Code`. The
+  pane shows the same under the pull requests. The board follows the run
+  with `gh run watch`, from when it sees the branch's pull request's CI
+  running, or a few seconds after a `git push`, and reads GitHub again when
+  the run ends.
+
 The board refreshes every 5 minutes, and every 30 seconds while a pull
 request's CI is running. It also refreshes straight after Claude changes
 GitHub: a `gh issue` or `gh pr` command that changes something,
 `gh project item-edit`, a `gh api` call that writes, or `git push`. When a
 turn ends and Claude ran `git` or `gh` since the last refresh, the board
-refreshes again.
+refreshes again. And when the session gets a GitHub event for a pull
+request it is subscribed to, such as CI finished, a merge or a review, the
+board refreshes at once. The event still reaches Claude as before. Events
+come only for pull requests the session subscribes to, so the board keeps
+polling as well.
 
 The board is saved for each repository. A new session shows the last board
 straight away, and still knows the issue you were working on. The issues'
