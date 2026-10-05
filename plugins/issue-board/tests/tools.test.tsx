@@ -142,7 +142,13 @@ test('a draft reads back from JSON, keeping only labels the repository has', () 
   expect(parseDraft(reply, ['bug', 'area:saves'])).toEqual({ title: 'Saves drop the hangar', body: 'Loading loses it.\n\n## Acceptance\n- [ ] Hangar loads', labels: ['bug'] })
   expect(parseDraft('no json here', ['bug'])).toBeNull()
   expect(parseDraft('{"body": "no title"}', ['bug'])).toBeNull()
-  expect(workingSection({ number: 315, title: 'Lay Kessik out', updatedAt: '' })).toMatch(/^The person is working on GitHub issue #315: Lay Kessik out\..*`Closes #315`/)
+})
+
+test('the working note says Closes only when every box is ticked, and Refs otherwise', () => {
+  const note = workingSection({ number: 315, title: 'Lay Kessik out', updatedAt: '' })
+  expect(note).toMatch(/^The person is working on GitHub issue #315: Lay Kessik out\./)
+  expect(note).toMatch(/write `Closes #315` in its body only if every acceptance box of #315 is ticked by then\. Otherwise write `Refs #315`, so the issue stays open for what is left\./)
+  expect(note).toMatch(/If the repository's contributing guidelines say otherwise, follow them\.$/)
 })
 
 test('the issues tool lists the board, and the tick tool ticks a box on GitHub', async ($, on) => {
@@ -212,6 +218,11 @@ test('Start names the issue in the system prompt; the pane searches, filters Min
   expect(sections.map(section => section.id)).toEqual(['intro', 'issue-board:working'])
   expect(sections.at(-1)?.text).toMatch(/^The person is working on GitHub issue #315: Lay Kessik out for play\./)
   expect(await ui.find({ text: /▶ Working on/ })).toBeDefined()
+
+  // Ticking the last box changes the issue, not the note, so the prompt cache holds.
+  await ui.press({ key: 'box-315-2' })
+  expect(await ui.find({ text: / 3\/3/ })).toBeDefined()
+  expect((await $.prompt.compose(COMPOSE)).sections.at(-1)?.text).toBe(sections.at(-1)?.text)
   await ui.unmount()
 })
 
