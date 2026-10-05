@@ -1,4 +1,4 @@
-import type { On } from 'claude-code'
+import type { AgentSpawnInput, On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { eventRepoOf, liveRunsOf, runProgressOf, workerBadge } from '../hooks/parse'
@@ -215,12 +215,22 @@ test("while the branch's CI runs, the band and the pane show its progress from g
   await pane.unmount()
 })
 
-test('Start in background runs the registered agent on the issue, and the row shows how it goes', async ($, on) => {
+// The Agent tool's spawn of an agent, as Claude's call makes it.
+const agentCall = (args: { subagentType: string; name?: string; description: string; prompt: string }): AgentSpawnInput => ({
+  tool_use_id: 'toolu_1',
+  provider: { plugin: 'engine', tier: 'core' },
+  parentModel: 'claude-opus-5-5',
+  background: true,
+  fork: false,
+  ...args,
+})
+
+test('Start in background asks Claude to dispatch the board\'s agent, and the row follows the agent Claude starts', async ($, on) => {
   mock.store(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   world(on)
   const registered: { name: string; isolation?: string; background?: boolean }[] = []
-  const spawned: { type?: unknown; background?: unknown; prompt: string; name?: string }[] = []
+  const spawned: { type?: unknown; prompt: string; name?: string }[] = []
   let status = 'running'
   on('session.start', async (_$, e) => ({ cwd: e.cwd }))
   on('command.register', async (_$, e) => ({ value: { command: e.name } }))
@@ -229,30 +239,21 @@ test('Start in background runs the registered agent on the issue, and the row sh
     registered.push({ name: e.name, ...(e.isolation ? { isolation: e.isolation } : {}), ...(e.background ? { background: e.background } : {}) })
     return { value: { agent: `issue-board:${e.name}` } }
   })
-  // Beneath the plugins, the spawn arrives as the Agent tool's call spells it.
+  // Beneath the plugins: the spawns that reach core.
   on('agent.spawn', async (_$, e) => {
-    const call = e as unknown as { subagent_type?: unknown; run_in_background?: unknown }
-    spawned.push({ type: call.subagent_type, background: call.run_in_background, prompt: e.prompt, ...(e.name ? { name: e.name } : {}) })
-    order.push('spawn')
+    spawned.push({ type: e.subagentType, prompt: e.prompt, ...(e.name ? { name: e.name } : {}) })
     return { model: 'claude-sonnet-5-5', agentId: 'agent-1' }
   })
   on('agent.list', async () => ({ value: [{ id: 'agent-1', name: 'issue-315', description: '#315', type: 'issue-board:worker', status: status as 'running' }] }))
-  on('turn.complete', async (_$, e) => {
-    if (e.agentId) order.push('answer')
-    return { text: e.answer }
+  on('turn.complete', async (_$, e) => ({ text: e.answer }))
+  const sent: string[] = []
+  on('prompt.submit', async (_$, e) => {
+    sent.push(e.text)
+    return { text: e.text }
   })
   const toasts: string[] = []
   on('ui.toast', async (_$, e) => {
     toasts.push(String((e as { text?: unknown }).text))
-    return { value: undefined }
-  })
-  // The lines the board adds to the conversation, and when, beside the spawn and the agent's answer.
-  const order: string[] = []
-  const lines: string[] = []
-  on('ui.log', async (_$, e) => {
-    if (e.to === 'debug') return { value: undefined }
-    lines.push(e.text)
-    order.push('line')
     return { value: undefined }
   })
 
@@ -265,12 +266,21 @@ test('Start in background runs the registered agent on the issue, and the row sh
   await ui.press({ key: 'filter-all' })
   await ui.press({ key: 'issue-315' })
   await ui.press({ key: 'background-315' })
-  expect(spawned).toEqual([{ type: 'issue-board:worker', background: true, prompt: expect.stringMatching(/^Let's start on #315: Lay Kessik out for play\./), name: 'issue-315' }])
+  // The board starts no agent itself: it asks Claude to, naming the agent, and hands it Start's message.
+  expect(spawned).toEqual([])
+  expect(sent).toHaveLength(1)
+  expect(sent[0]).toMatch(/^Dispatch a background agent to work on #315: Lay Kessik out for play\. Don't work on the issue yourself\./)
+  expect(sent[0]).toContain('subagent_type `issue-board:worker`, name `issue-315`')
+  expect(sent[0]).toMatch(/\nLet's start on #315: Lay Kessik out for play\./)
+  expect(toasts).toContain('Asked Claude to start a background agent on #315')
+  expect(await ui.find({ text: /^⚙ working$/ })).toBeUndefined()
+
+  // Claude calls the Agent tool as asked: the row shows the agent.
+  await $.agent.spawn(agentCall({ subagentType: 'issue-board:worker', name: 'issue-315', description: '#315 Lay Kessik out for play', prompt: "Let's start on #315: Lay Kessik out for play." }))
+  await clock.settle()
+  expect(spawned).toEqual([{ type: 'issue-board:worker', prompt: expect.stringMatching(/^Let's start on #315/), name: 'issue-315' }])
   expect(await ui.find({ text: /^⚙ working$/ })).toBeDefined()
   expect(toasts).toContain('Started a background agent on #315')
-  // The conversation says so at once, naming the issue, in a line the model doesn't read.
-  expect(lines).toEqual(['Started a background agent on #315 "Lay Kessik out for play". It is working on the issue in the background now.'])
-  expect(order).toEqual(['spawn', 'line'])
   // One agent an issue at a time.
   expect(await ui.find({ key: 'background-315' })).toBeUndefined()
 
@@ -285,11 +295,10 @@ test('Start in background runs the registered agent on the issue, and the row sh
   expect(await ui.find({ text: /^⚙ done$/ })).toBeDefined()
   expect(await ui.find({ text: /^Opened PR #400\. Box 1 is ticked\.$/ })).toBeDefined()
   expect(await ui.find({ key: 'background-315' })).toBeDefined()
-  expect(order).toEqual(['spawn', 'line', 'answer'])
   await ui.unmount()
 })
 
-test('Start in background says in the conversation when no agent starts; Start itself adds nothing there', async ($, on) => {
+test('A spawn of the board\'s agent that is refused or names no agent shows none on the row; other agents are left alone', async ($, on) => {
   mock.store(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   world(on)
@@ -297,18 +306,12 @@ test('Start in background says in the conversation when no agent starts; Start i
   on('command.register', async (_$, e) => ({ value: { command: e.name } }))
   on('tool.register', async (_$, e) => ({ value: { tool: `mcp__issue-board__${e.name}` } }))
   on('agent.register', async (_$, e) => ({ value: { agent: `issue-board:${e.name}` } }))
-  // Core refuses the spawn, then starts none the session lists, then one it lists by the name the board gave.
+  // Core refuses the spawn, then starts none the session lists, then one it lists by the name it was given.
   let spawn: 'deny' | 'nameless' | 'start' = 'deny'
   on('agent.spawn', async () => (spawn === 'deny' ? { deny: 'Background tasks are turned off' } : { model: 'claude-sonnet-5-5' }))
   on('agent.list', async () => ({
     value: spawn === 'start' ? [{ id: 'agent-1', name: 'issue-315', description: '#315', type: 'issue-board:worker', status: 'running' as const }] : [],
   }))
-  const sent: string[] = []
-  on('prompt.submit', async (_$, e) => {
-    sent.push(e.text)
-    return { text: e.text }
-  })
-  on('tool.call', { tool: 'TaskCreate' }, async (_$, e) => ({ result: { task: { id: '1', subject: e.subject } } }))
   const toasts: string[] = []
   on('ui.toast', async (_$, e) => {
     toasts.push(e.text)
@@ -326,30 +329,29 @@ test('Start in background says in the conversation when no agent starts; Start i
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   await ui.press({ key: 'filter-all' })
   await ui.press({ key: 'issue-315' })
+  const worker = agentCall({ subagentType: 'issue-board:worker', name: 'issue-315', description: '#315 Lay Kessik out for play', prompt: "Let's start on #315." })
 
-  // Start sends Claude the issue as it did, and adds no line to the conversation itself.
-  await ui.press({ key: 'start-315' })
-  expect(sent.at(-1)).toMatch(/^Let's start on #315: Lay Kessik out for play\./)
-  expect(lines).toEqual([])
-
-  // A refused spawn: the conversation says why, and that nothing started.
-  await ui.press({ key: 'background-315' })
-  expect(lines).toEqual(['Couldn\'t start a background agent on #315 "Lay Kessik out for play": Background tasks are turned off'])
+  // A refused spawn: Claude sees the error; the board says so in a toast and shows no agent.
+  expect(await $.agent.spawn(worker)).toEqual({ deny: 'Background tasks are turned off' })
   expect(toasts).toContain("Couldn't start a background agent on #315: Background tasks are turned off")
   expect(await ui.find({ text: /^⚙ working$/ })).toBeUndefined()
-  expect(await ui.find({ key: 'background-315' })).toBeDefined()
 
-  // A spawn that names no agent the session lists is no start either.
+  // A spawn that names no agent the session lists has nothing to follow.
   spawn = 'nameless'
-  await ui.press({ key: 'background-315' })
-  expect(lines.at(-1)).toBe('Couldn\'t start a background agent on #315 "Lay Kessik out for play": no agent started')
-  expect(lines.some(line => line.startsWith('Started'))).toBe(false)
+  await $.agent.spawn(worker)
+  expect(toasts.at(-1)).toBe("Started a background agent on #315, but the board couldn't follow it: no agent id")
   expect(await ui.find({ text: /^⚙ working$/ })).toBeUndefined()
 
-  // Then it starts: the line says so, once.
+  // Another type of agent is none of the board's.
   spawn = 'start'
-  await ui.press({ key: 'background-315' })
-  expect(lines.filter(line => line.startsWith('Started'))).toEqual(['Started a background agent on #315 "Lay Kessik out for play". It is working on the issue in the background now.'])
+  await $.agent.spawn({ ...worker, subagentType: 'general-purpose' })
+  expect(await ui.find({ text: /^⚙ working$/ })).toBeUndefined()
+
+  // Then it starts, found by its name in the session's list.
+  await $.agent.spawn(worker)
+  await clock.settle()
   expect(await ui.find({ text: /^⚙ working$/ })).toBeDefined()
+  // The board adds no line to the conversation: Claude's own Agent call shows there.
+  expect(lines).toEqual([])
   await ui.unmount()
 })

@@ -753,6 +753,23 @@ export const parseDraft = (text: string, labels: string[]): Draft | null => {
 // Every label the board's issues carry, sorted: the ones a draft may use.
 export const labelsOf = (issues: Issue[]): string[] => [...new Set(issues.flatMap(issue => issue.labels.map(label => label.name)))].sort()
 
+// A draft's body as the editor shows it: one field a line, and null for each blank line between them.
+export const draftLines = (body: string): (string | null)[] => (body === '' ? [''] : body.split(/\r?\n/).map(line => (line.trim() === '' ? null : line)))
+
+// The body the editor's lines make. A line left empty is dropped, and the blank lines that leaves side by side, or at
+// the start or end, become one or none. A body nobody changed comes back as it was, save for spaces at line ends and
+// runs of blank lines.
+export const draftBody = (lines: (string | null)[]): string => {
+  const kept: string[] = []
+  for (const line of lines) {
+    if (line === null) {
+      if (kept.length > 0 && kept.at(-1) !== '') kept.push('')
+    } else if (line.trim() !== '') kept.push(line.trimEnd())
+  }
+  while (kept.at(-1) === '') kept.pop()
+  return kept.join('\n')
+}
+
 // A change to an issue, from its card or from Claude's issue_update tool. `parent` and `milestone` set as null remove
 // them; `assign` and `unassign` take logins, or `@me` for the signed-in user.
 export type IssueChanges = {
@@ -1021,6 +1038,25 @@ export const WORKER_PROMPT = [
   "Don't merge, don't force-push, and don't push to the default branch.",
   'End with a short report in plain sentences: the pull request, what you did, and what is left.',
 ].join('\n')
+
+// The agent type Start in background runs, as `$.agent.register` names it.
+export const WORKER = 'issue-board:worker'
+
+// What Start in background sends Claude: dispatch the board's agent on the issue, and leave the work to it.
+export const backgroundPrompt = (issue: Issue): string =>
+  [
+    `Dispatch a background agent to work on #${issue.number}: ${issue.title}. Don't work on the issue yourself.`,
+    `Use the Agent tool with subagent_type \`${WORKER}\`, name \`issue-${issue.number}\`, description \`#${issue.number} ${issue.title}\`, and this prompt:`,
+    '',
+    startPrompt(issue),
+  ].join('\n')
+
+// The issue a spawn of the board's agent works on: by its name `issue-<n>`, else by the `#<n>` its description or
+// prompt starts with.
+export const workerIssueOf = (spawn: { name?: string; description: string; prompt: string }): number | undefined => {
+  const found = /^issue-(\d+)$/.exec(spawn.name ?? '') ?? /^#(\d+)\b/.exec(spawn.description.trim()) ?? /#(\d+)\b/.exec(spawn.prompt)
+  return found ? Number(found[1]) : undefined
+}
 
 // A background agent's status on an issue's row.
 export const workerBadge = (status: Worker['status']): { text: string; color: string } =>
