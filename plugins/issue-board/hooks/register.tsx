@@ -1477,7 +1477,8 @@ export const register: Register = on => {
 
   // Claude changing GitHub through gh or a push: show the change straight away, and a change Claude made through gh to
   // the issue it is on isn't news to it. A checkout moves the branch marker, and to a branch named for an issue, the
-  // issue Claude is on. Any git or gh has the board read GitHub again when the turn ends.
+  // issue Claude is on, when the main session moves: a subagent's checkout is its own. Any git or gh has the board read
+  // GitHub again when the turn ends.
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const ran = await next(e)
     const command = (e as { command?: unknown }).command
@@ -1489,15 +1490,17 @@ export const register: Register = on => {
       void refreshAfter($).then(() => absorb($, copy))
       // A push starts CI on the branch: the board watches it once it turns up.
       if (/\bgit\s+push\b/.test(command)) void lookForRuns($)
-    } else if (GIT_MOVE.test(command)) void currentBranch($).then(now => followBranch($, now))
+    } else if (GIT_MOVE.test(command) && e.agentId === undefined) void currentBranch($).then(now => followBranch($, now))
 
     return ran
   })
 
   // A worktree is a checkout too: Claude Code names its branch after the worktree, such as `worktree-fix+315-glide`.
+  // Only the main session's checkouts count: a subagent's, such as a background agent's in its own worktree, make its
+  // issue the agent's, not the one Claude is on.
   on('tool.call', { tool: ['EnterWorktree', 'ExitWorktree'] }, async ($, e, next) => {
     const ran = await next(e)
-    void currentBranch($).then(now => followBranch($, now))
+    if (e.agentId === undefined) void currentBranch($).then(now => followBranch($, now))
     return ran
   })
 
@@ -2121,8 +2124,10 @@ export const register: Register = on => {
       </Box>
     )
 
-    // The issue Claude is on, with how far along it is, and the pull request for it with that pull request's CI.
-    const workingIssue = doing ? now.issues.find(issue => issue.number === doing.number) : undefined
+    // The issue Claude is on, with how far along it is, and the pull request for it with that pull request's CI. Only
+    // the main session's: an issue a background agent works on is the agent's, and its row and the band say so.
+    const delegated = doing ? working$.some(one => one.number === doing.number && ACTIVE.includes(one.status)) : false
+    const workingIssue = doing && !delegated ? now.issues.find(issue => issue.number === doing.number) : undefined
     const workingStep = workingIssue && progress(workingIssue.checks)
     const workingPr = workingIssue && now.prs.find(pr => (pr.issues ?? []).includes(workingIssue.number))
     const workingLine = workingIssue && workingStep && (
@@ -3043,8 +3048,9 @@ export const register: Register = on => {
     return next({ ...e, props: { ...e.props, tail: e.props.tail ? `${e.props.tail} · ${text}` : text } })
   })
 
-  // The band above the prompt is for what needs the person now: something to fix, merge, tick or look at. It shows
-  // nothing otherwise. Progress (the issue Claude is on, CI running) is the pane's: the band doesn't repeat it.
+  // The band above the prompt is for what needs the person now (something to fix, merge, tick or look at) and the work
+  // going on out of sight, in background agents. It shows nothing otherwise. The main session's progress (the issue
+  // Claude is on, CI running) is the pane's: the band doesn't repeat it. Every line is one row at any width.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
     const now = await read($, board)
@@ -3058,7 +3064,9 @@ export const register: Register = on => {
       const at = issue && boxOf(issue, task)
       return at && !at.done ? [{ task, box: at.box }] : []
     })
-    if (problems.length === 0 && alerts.length === 0 && offers.length === 0) return next(e)
+    // Background agents still at work. One that ended drops out: the conversation line and Claude's handoff say so.
+    const agents = (await read($, workers)).filter(one => ACTIVE.includes(one.status))
+    if (problems.length === 0 && alerts.length === 0 && offers.length === 0 && agents.length === 0) return next(e)
 
     const { Box, Text, Button, Link } = $.ui.resolve(e)
     const width = e.props.bodyColumns
@@ -3211,11 +3219,48 @@ export const register: Register = on => {
       )
     }
 
+    // A background agent at work: `⚙ #90 <title> · working · ━━━━━━ 0/4`, the bar only when the issue has boxes.
+    const agentLine = (worker: Worker) => {
+      const issue = now?.issues.find(one => one.number === worker.number)
+      const step = issue ? progress(issue.checks) : { done: 0, total: 0 }
+      const badge = workerBadge(worker.status)
+      const word = badge.text.replace(/^⚙ /, '')
+      const [filled, empty] = step.total > 0 ? bar(step, 6) : ['', '']
+      const count = step.total > 0 ? ` ${step.done}/${step.total}` : ''
+      const tail = ` · ${word}${step.total > 0 ? ` · ${filled}${empty}${count}` : ''}`
+      const head = `⚙ #${worker.number} `
+      const title = fit(issue?.title ?? worker.title ?? '', Math.max(0, width - cells(head) - cells(tail) - 1))
+      return (
+        <Box key={`agent-row-${worker.agentId}`} flexDirection="row">
+          <Text wrap="truncate-end">
+            <Text color={badge.color} bold>
+              ⚙
+            </Text>
+            <Text color="claude" bold>{` #${worker.number} `}</Text>
+            <Text>{title}</Text>
+            <Text dimColor>{' · '}</Text>
+            <Text color={badge.color}>{word}</Text>
+            {step.total > 0 && (
+              <Text>
+                <Text dimColor>{' · '}</Text>
+                <Text color={tone(step)}>{filled}</Text>
+                <Text color="inactive" dimColor>
+                  {empty}
+                </Text>
+                <Text dimColor>{count}</Text>
+              </Text>
+            )}
+          </Text>
+        </Box>
+      )
+    }
+
     return (
       <Box flexDirection="column">
         {problems.slice(0, 2).map(problemLine)}
         {alerts.slice(0, 3).map(line)}
         {offers.slice(0, 3).map(offerLine)}
+        {agents.slice(0, 3).map(agentLine)}
       </Box>
     )
   })

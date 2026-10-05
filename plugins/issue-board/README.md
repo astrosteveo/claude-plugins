@@ -18,7 +18,9 @@ CLI, signed in, in the folder the session started in.
     many task-list boxes are ticked, and sparklines of the issues closed and
     pull requests merged each week over the last 12 weeks, such as
     `closed ▁▂▅▃▇█▁▂▅▃▇█ 41`.
-  - **▶ Working on**: the issue you pressed Start on, with its progress. When
+  - **▶ Working on**: the issue you pressed Start on, with its progress. It
+    is only the main session's issue: while a background agent works on it,
+    the issue's row shows the agent instead. When
     a pull request says it is for that issue (`Closes #N` or `Refs #N`), the
     line names it with its CI. `✕` on the line stops tracking the issue.
   - Open pull requests, one row each: a CI badge (`✓ PASS`, `✗ FAIL`,
@@ -184,10 +186,11 @@ CLI, signed in, in the folder the session started in.
 - Claude closing an epic with `gh issue close` while some of its sub-issues
   are open asks you first, whatever your permission rules allow, and says
   how many are open.
-- A band above the prompt is for what needs you now: something to fix,
-  merge, tick or look at. It shows nothing otherwise, and it doesn't show
-  progress, which is the pane's job. It speaks up, without the pane open,
-  when:
+- A band above the prompt is for what needs you now, something to fix,
+  merge, tick or look at, and for the background agents working out of
+  sight. It shows nothing otherwise. The main session's progress is the
+  pane's job, so the band doesn't repeat it. Each line is one row at any
+  width. It speaks up, without the pane open, when:
   - a pull request's CI fails. It names the failing checks. **Fix** hands
     Claude the failure to fix (into the prompt box while Claude is busy),
     with the command that prints the failing log, and **↗ GitHub** opens it;
@@ -198,7 +201,12 @@ CLI, signed in, in the folder the session started in.
     own changes or yours from the board. **↗ GitHub** opens it;
   - that issue is closed;
   - Claude completes a task that Start made for a box, and the box is still
-    open. **Tick box N** ticks it on GitHub.
+    open. **Tick box N** ticks it on GitHub;
+  - a background agent works on an issue. Its line names the issue, says
+    `working` or `waiting`, and, when the issue has boxes, shows a bar of
+    those ticked, such as `⚙ #90 Tell the agent its issue · working · ━━━━━━ 1/4`.
+    The line goes when the agent ends, since the conversation and Claude
+    are told then.
 
   `✕` waves an alert off until it happens again. The issue you are working
   on and its progress are in the pane's **▶ Working on** line.
@@ -290,7 +298,9 @@ stays quiet there.
 - Checking out a branch named for an issue makes it the issue Claude is on,
   as Start does, but without a message or tasks. A part of the branch name
   starts with the number, such as `fix/315-glide`, `315-glide` or
-  `issue-315`. A worktree's branch counts too. The issue must be open on the
+  `issue-315`. A worktree's branch counts too. Only the main session's
+  checkouts count: a subagent's, such as a background agent's in its own
+  worktree, don't. The issue must be open on the
   board.
 - A prompt that names an issue or pull request as `#123` carries the board's
   copy of it for Claude to read: its labels, Status, boxes, pull requests
