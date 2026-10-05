@@ -204,8 +204,8 @@ CLI, signed in, in the folder the session started in.
     open. **Tick box N** ticks it on GitHub;
   - a background agent works on an issue. Its line names the issue, says
     `working` or `waiting`, and, when the issue has boxes, shows a bar of
-    those ticked, such as `⚙ #90 Tell the agent its issue · working · ━━━━━━ 1/4`.
-    The line goes when the agent ends, since the conversation and Claude
+    those ticked, such as
+    `⚙ #90 Tell the agent its issue · working · ━━━━━━ 1/4`. The line goes when the agent ends, since the conversation and Claude
     are told then.
 
   `✕` waves an alert off until it happens again. The issue you are working
