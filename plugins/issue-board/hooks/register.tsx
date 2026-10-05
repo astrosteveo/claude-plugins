@@ -52,6 +52,7 @@ import {
   groupsOf,
   hex,
   isBug,
+  isInbox,
   issueOfBranch,
   knownOf,
   mentionText,
@@ -71,6 +72,7 @@ import {
   parseGraph,
   parseIssues,
   parsePrs,
+  parseTriage,
   prText,
   prsFor,
   progress,
@@ -79,6 +81,7 @@ import {
   since,
   spark,
   startPrompt,
+  statusFor,
   statusOnly,
   sumProgress,
   summary,
@@ -86,6 +89,7 @@ import {
   tickBody,
   timesOf,
   tone,
+  triagePrompt,
   weekly,
   wentGreen,
   workingSection,
@@ -158,6 +162,7 @@ const groupBy = atom({ plugin: 'issue-board', key: 'groupBy' } as const, null)
 const unfolded = atom({ plugin: 'issue-board', key: 'unfolded' } as const, [])
 const setup = atom({ plugin: 'issue-board', key: 'setup' } as const, null)
 const tasks = atom({ plugin: 'issue-board', key: 'tasks' } as const, [])
+const triage = atom({ plugin: 'issue-board', key: 'triage' } as const, { suggestions: [], picks: [], areas: [], asking: false, failed: null })
 
 // The filters; with a project, the first two read Priority and say so.
 const FILTERS: { id: Filter; label: string; planned: string; hotkey: string }[] = [
@@ -166,6 +171,7 @@ const FILTERS: { id: Filter; label: string; planned: string; hotkey: string }[] 
   { id: 'bugs', label: 'Bugs', planned: 'Bugs', hotkey: '3' },
   { id: 'mine', label: 'Mine', planned: 'Mine', hotkey: '4' },
   { id: 'all', label: 'All', planned: 'All', hotkey: '5' },
+  { id: 'inbox', label: 'Inbox', planned: 'Inbox', hotkey: '6' },
 ]
 
 const GROUPINGS: { id: GroupBy; label: string }[] = [
@@ -416,6 +422,9 @@ const refresh = async ($: EngineInterface, seen = false): Promise<void> => {
     }
     await update($, error, () => null)
     await save($)
+    // New issues in the Inbox while it shows: Claude suggests for them too, unless its last answer failed, which waits
+    // for Suggest again.
+    if ((await read($, filter)) === 'inbox' && !(await read($, triage)).failed) void suggestInbox($)
     // GitHub answers again: look again too, so a problem fixed since the last check goes.
     if (((await read($, access))?.problems.length ?? 0) > 0) void checkAccess($)
   } catch (cause) {
@@ -910,6 +919,81 @@ const change = async ($: EngineInterface, number: number, changes: IssueChanges)
   }
 }
 
+// How many Inbox issues one ask covers; more are asked about in turn.
+const TRIAGE_BATCH = 15
+
+// The repo's areas, the `area:` labels without the prefix; the ones on the board's issues when gh can't list labels.
+const repoAreas = async ($: EngineInterface, now: Board): Promise<string[]> => {
+  const names = await gh($, ['label', 'list', '-R', now.repo, '--limit', '200', '--json', 'name'])
+    .then(out => (JSON.parse(out) as { name: string }[]).map(one => one.name))
+    .catch(() => labelsOf(now.issues))
+  return names.filter(name => name.startsWith('area:')).map(name => name.slice('area:'.length)).sort()
+}
+
+// Asks Claude for a Priority, an area and a Status for each issue in the Inbox it has no suggestion for since the issue
+// last changed, a batch at a time. One ask at a time; the pane shows the suggestions as they come.
+let suggesting = false
+const suggestInbox = async ($: EngineInterface): Promise<void> => {
+  if (suggesting) return
+  suggesting = true
+  try {
+    for (;;) {
+      const now = await read($, board)
+      const project = now?.project
+      if (!now || !project) return
+      const known = (await read($, triage)).suggestions
+      const due = now.issues.filter(issue => isInbox(issue) && !known.some(one => one.number === issue.number && one.updatedAt === issue.updatedAt)).slice(0, TRIAGE_BATCH)
+      if (due.length === 0) return
+      await update($, triage, was => ({ ...was, asking: true, failed: null }))
+      // Kept first, so the person can pick any of them should Claude not answer.
+      const areas = await repoAreas($, now)
+      await update($, triage, was => ({ ...was, areas }))
+      const priorities = (project.priority?.options ?? []).map(option => ({ name: option.name, description: PRIORITIES.find(one => one.name === option.name)?.description ?? '' }))
+      const reply = await $.model.complete({ model: 'sonnet', prompt: triagePrompt(now.repo, due, priorities, areas), maxTokens: 4096, effort: 'low' })
+      if (!reply.isAnswered) throw new Error(`Claude didn't answer (${reply.reason})`)
+      const made = parseTriage(reply.text, due, priorities.map(one => one.name), areas, project)
+      if (made.length === 0) throw new Error("Claude's answer didn't come back as suggestions")
+      await update($, triage, was => ({ ...was, suggestions: [...was.suggestions.filter(one => !made.some(fresh => fresh.number === one.number)), ...made] }))
+      // Claude left some out: they wait for Suggest again rather than be asked about over and over.
+      if (made.length < due.length) return
+    }
+  } catch (cause) {
+    const message = messageOf(cause)
+    await update($, triage, was => ({ ...was, failed: message }))
+  } finally {
+    suggesting = false
+    await update($, triage, was => ({ ...was, asking: false }))
+  }
+}
+
+// Suggest again: Claude's suggestions for the Inbox are dropped and asked for afresh; the person's picks stay.
+const suggestAgain = async ($: EngineInterface): Promise<void> => {
+  const inbox = ((await read($, board))?.issues ?? []).filter(isInbox).map(issue => issue.number)
+  await update($, triage, was => ({ ...was, suggestions: was.suggestions.filter(one => !inbox.includes(one.number)) }))
+  await suggestInbox($)
+}
+
+// Accept on an Inbox issue: its Priority and area as picked, Claude's suggestion unless changed, and its Status moved
+// on to Ready or Backlog, so it leaves the Inbox. Another area label it had comes off.
+const acceptTriage = async ($: EngineInterface, issue: Issue, choice: { priority: string | null; area: string | null }, status: 'Ready' | 'Backlog'): Promise<void> => {
+  const label = choice.area ? `area:${choice.area}` : null
+  const others = label ? issue.labels.map(one => one.name).filter(name => name.startsWith('area:') && name !== label) : []
+  const changes: IssueChanges = {
+    status,
+    ...(choice.priority && choice.priority !== issue.priority ? { priority: choice.priority } : {}),
+    ...(label && !issue.labels.some(one => one.name === label) ? { addLabels: [label] } : {}),
+    ...(others.length > 0 ? { removeLabels: others } : {}),
+  }
+  try {
+    $.ui.toast(await applyChanges($, issue.number, changes))
+    await update($, triage, was => ({ ...was, picks: was.picks.filter(one => one.number !== issue.number) }))
+  } catch (cause) {
+    const message = messageOf(cause)
+    $.ui.toast(`Couldn't triage #${issue.number}: ${message}`)
+    if (ACCESS_ERROR.test(message)) void checkAccess($, message)
+  }
+}
+
 // How many of an issue's comments a card shows: the latest.
 const SHOWN_COMMENTS = 3
 
@@ -961,9 +1045,9 @@ export const register: Register = on => {
           number: { type: 'integer', description: 'One issue or pull request to show in full.' },
           filter: {
             type: 'string',
-            enum: ['active', 'future', 'bugs', 'mine', 'all'],
+            enum: ['active', 'future', 'bugs', 'mine', 'all', 'inbox'],
             description:
-              "Which issues to list: active, future, bugs, mine (assigned to the signed-in user) or all, the default. With the repo's GitHub Project, active is Now (Priority P0 and P1) and future is Later (P2); without one, future means labelled future.",
+              "Which issues to list: active, future, bugs, mine (assigned to the signed-in user), inbox, or all, the default. With the repo's GitHub Project, active is Now (Priority P0 and P1), future is Later (P2), and inbox is the issues with Status Inbox or none, waiting to be triaged; without one, future means labelled future and inbox lists nothing.",
           },
           area: { type: 'string', description: 'Only issues with this area: label, such as "simulation".' },
           query: { type: 'string', description: 'Only issues whose title, number or labels hold every word of this.' },
@@ -1180,7 +1264,8 @@ export const register: Register = on => {
       project ? 'status' : 'area',
       project,
     ).flatMap(group => group.issues)
-    const label = project && (chosen === 'active' || chosen === 'future') ? (chosen === 'active' ? 'now: P0 and P1' : 'later: P2') : chosen
+    const label =
+      project && (chosen === 'active' || chosen === 'future') ? (chosen === 'active' ? 'now: P0 and P1' : 'later: P2') : chosen === 'inbox' ? 'inbox: Status Inbox or none' : chosen
     return { result: boardText(now, kept, label, Date.now()) }
   })
 
@@ -1294,6 +1379,7 @@ export const register: Register = on => {
     const planned = await read($, setup)
     const picked = await read($, groupBy)
     const opened = await read($, unfolded)
+    const triaged = await read($, triage)
     const clock = Date.now()
     const elements = $.ui.resolve(e)
     const Input = 'Input' in elements ? elements.Input : undefined
@@ -1643,13 +1729,13 @@ export const register: Register = on => {
         <Text bold color="claude">
           Issues
         </Text>
-        {FILTERS.map(one => (
+        {FILTERS.filter(one => one.id !== 'inbox' || project).map(one => (
           <Button
             key={`filter-${one.id}`}
             hotkey={one.hotkey}
             variant={one.id === chosen ? 'primary' : undefined}
             dimColor={one.id !== chosen}
-            onPress={() => void update($, filter, () => one.id)}
+            onPress={() => void update($, filter, () => one.id).then(() => (one.id === 'inbox' ? suggestInbox($) : undefined))}
           >
             {`${project ? one.planned : one.label} ${now.issues.filter(issue => matches(one.id, issue, who, project)).length}`}
           </Button>
@@ -1884,6 +1970,59 @@ export const register: Register = on => {
               </Text>
             ))}
             <Text dimColor>{age.padStart(3)}</Text>
+          </Box>
+        </Box>
+      )
+    }
+
+    // The Inbox shows each issue with what Claude suggests for it: a row of Priority buttons and one of areas, the picked
+    // one highlighted, Claude's reason, and Accept, which moves it on to the Status Claude suggests, or the other.
+    const triaging = chosen === 'inbox' && project !== null
+    const areaNames = [...new Set([...triaged.areas, ...labelsOf(now.issues).filter(name => name.startsWith('area:')).map(name => name.slice('area:'.length))])].sort()
+    const triageRow = (issue: Issue) => {
+      const said = triaged.suggestions.find(one => one.number === issue.number)
+      const mine = triaged.picks.find(one => one.number === issue.number)
+      const had = areaOf(issue)
+      const priority = mine?.priority ?? said?.priority ?? issue.priority ?? null
+      const area = mine && 'area' in mine ? (mine.area ?? null) : said ? said.area : had === 'other' ? null : had
+      const status = said?.status ?? statusFor(project, priority)
+      const other = status === 'Ready' ? 'Backlog' : 'Ready'
+      const choosing = (edit: { priority?: string; area?: string | null }) => () =>
+        void update($, triage, was => ({ ...was, picks: [...was.picks.filter(one => one.number !== issue.number), { ...was.picks.find(one => one.number === issue.number), number: issue.number, ...edit }] }))
+      const option = (key: string, label: string, chosen: boolean, onPress: () => void) => (
+        <Button key={key} variant={chosen ? 'primary' : undefined} dimColor={!chosen} onPress={onPress}>
+          {label}
+        </Button>
+      )
+      const age = ago(issue.updatedAt, clock)
+      return (
+        <Box key={`triage-${issue.number}`} flexDirection="column" marginTop={1}>
+          <Box flexDirection="row" justifyContent="space-between">
+            <Box flexDirection="row" gap={1}>
+              <Text color="claude">{`#${issue.number}`}</Text>
+              <Button key={`issue-${issue.number}`} plain hover={{ bold: true }} onPress={toggle(issue.number)}>
+                {fit(issue.title, Math.max(12, width - String(issue.number).length - age.length - 4))}
+              </Button>
+            </Box>
+            <Text dimColor>{age}</Text>
+          </Box>
+          <Box flexDirection="row" gap={1} flexWrap="wrap" paddingLeft={2}>
+            {(project?.priority?.options ?? []).map(one => option(`triage-${issue.number}-priority-${one.name}`, one.name, one.name === priority, choosing({ priority: one.name })))}
+            <Text dimColor>·</Text>
+            {areaNames.map(name => option(`triage-${issue.number}-area-${name}`, name, name === area, choosing({ area: name })))}
+            {option(`triage-${issue.number}-area-none`, 'no area', area === null, choosing({ area: null }))}
+            <Text dimColor>·</Text>
+            <Button key={`triage-${issue.number}-accept`} variant="primary" onPress={() => void acceptTriage($, issue, { priority, area }, status)}>
+              {`✓ Accept → ${status}`}
+            </Button>
+            <Button key={`triage-${issue.number}-${other.toLowerCase()}`} dimColor onPress={() => void acceptTriage($, issue, { priority, area }, other)}>
+              {`→ ${other}`}
+            </Button>
+          </Box>
+          <Box paddingLeft={2}>
+            <Text dimColor wrap="wrap">
+              {said ? `✦ ${said.reason || 'No reason given.'}` : triaged.asking ? '◌ waiting on Claude' : '✦ No suggestion yet: pick, then accept.'}
+            </Text>
           </Box>
         </Box>
       )
@@ -2256,7 +2395,27 @@ export const register: Register = on => {
             <Text dimColor>{typed.trim() ? `Nothing under ${filterName} matches “${typed.trim()}”.` : `Nothing open under ${filterName}.`}</Text>
           </Box>
         )}
-        {groupsOf(shown, grouping, project).map(group => {
+        {triaging && (
+          <Box flexDirection="row" gap={1} marginTop={1} flexWrap="wrap">
+            <Text color={triaged.asking ? 'warning' : undefined} dimColor={!triaged.asking}>
+              {triaged.asking ? '◌ Claude is suggesting a Priority, area and Status for each…' : '✦ Claude suggests a Priority, area and Status for each. Change any, then accept.'}
+            </Text>
+            {!triaged.asking && shown.length > 0 && (
+              <Button key="triage-again" dimColor onPress={() => void suggestAgain($)}>
+                Suggest again
+              </Button>
+            )}
+          </Box>
+        )}
+        {triaging && triaged.failed && <Text color="error" wrap="wrap">{`Couldn't get suggestions: ${triaged.failed}`}</Text>}
+        {triaging &&
+          shown.map(issue => (
+            <Box key={`triage-entry-${issue.number}`} flexDirection="column">
+              {isInbox(issue) ? triageRow(issue) : issueRow(issue)}
+              {open.includes(issue.number) && issueCard(issue, single)}
+            </Box>
+          ))}
+        {!triaging && groupsOf(shown, grouping, project).map(group => {
           const sum = sumProgress(group.issues)
           const done = sum.total > 0 ? `${Math.round((sum.done / sum.total) * 100)}%` : '—'
           const right = group.epic ? `${group.issues.length} open · ${group.epic.completed}/${group.epic.total} closed` : `${group.issues.length} · ${done}`
@@ -2315,7 +2474,7 @@ export const register: Register = on => {
               ? 'y merge every open PR · n cancel'
               : single
                 ? 's start · e edit first · x or esc collapse · press a box to tick it · r refresh'
-                : `${project ? '1 now · 2 later' : '1 active · 2 future'} · 3 bugs · 4 mine · 5 all · r refresh · ⏎ open an issue${now.prs.length > 0 ? ' · m merge all PRs' : ''}${made ? ' · c create the issue' : ''}`}
+                : `${project ? '1 now · 2 later' : '1 active · 2 future'} · 3 bugs · 4 mine · 5 all${project ? ' · 6 inbox' : ''} · r refresh · ⏎ open an issue${now.prs.length > 0 ? ' · m merge all PRs' : ''}${made ? ' · c create the issue' : ''}`}
           </Text>
         </Box>
       </Box>

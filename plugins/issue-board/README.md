@@ -34,10 +34,22 @@ CLI, signed in, in the folder the session started in.
     requests' heading, does the same for every open pull request, one at a
     time, oldest first. It asks first: `y` to send and `n` to cancel.
   - The Issues heading, with its filters: `1` Now (Priority P0 and P1), `2`
-    Later (P2), `3` Bugs, `4` Mine (assigned to you) and `5` All. A search
+    Later (P2), `3` Bugs, `4` Mine (assigned to you), `5` All and, with a
+    project, `6` Inbox. A search
     field after them keeps the issues whose title, number or labels hold every
     word you type. Tab to it or click it. The mobile app has no text field, so
     it has no search. `r` refreshes.
+  - **Inbox** lists the issues to triage: Status Inbox, or no Status, such as
+    an issue not in the project yet. Opening it asks Claude, for each, for a
+    Priority, an `area:` label from the repo's own, Ready or Backlog, and a
+    short reason. Each issue shows a row of Priority buttons and one of areas,
+    with Claude's picks highlighted, and the reason under them. Press another
+    to change a pick. **✓ Accept → Ready** (or Backlog, as Claude suggests)
+    sets the Priority and area on GitHub and moves the issue on, out of the
+    Inbox. The button beside it moves it to the other Status instead. A new
+    area label replaces the one the issue had. **Suggest again** asks Claude
+    afresh. New issues that come in while the Inbox is open are asked about
+    too.
   - **by Status**, **Epic** or **Area** groups the issues by the project's
     Status (the default, in the project's order), by the epic they are
     sub-issues of, or by `area:` label. Backlog is folded: press it to open

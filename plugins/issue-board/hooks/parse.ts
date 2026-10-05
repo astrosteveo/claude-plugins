@@ -1,4 +1,4 @@
-import type { Alert, Board, BoxTask, Check, Ci, Comment, Draft, Field, Filter, GroupBy, Issue, Known, Label, Project, PullRequest, Working } from '../types'
+import type { Alert, Board, BoxTask, Check, Ci, Comment, Draft, Field, Filter, GroupBy, Issue, Known, Label, Project, PullRequest, Suggestion, Working } from '../types'
 import { isLater, isNow, priorityRank } from './project'
 
 type RawLabel = { name: string; color?: string }
@@ -188,7 +188,65 @@ export const matches = (filter: Filter, issue: Issue, viewer: string | null = nu
       return viewer !== null && issue.assignees.includes(viewer)
     case 'all':
       return true
+    case 'inbox':
+      return project !== null && isInbox(issue)
   }
+}
+
+// Whether an issue waits in the project's Inbox: its Status is Inbox, or it has none, as an issue not in the project.
+export const isInbox = (issue: Issue): boolean => !issue.status || issue.status.toLowerCase() === 'inbox'
+
+// The Status an issue moves to out of the Inbox when Claude didn't say: Ready for Now's priorities, Backlog otherwise.
+export const statusFor = (project: Project | null, priority: string | null): 'Ready' | 'Backlog' => (priorityRank(project, priority) < 2 ? 'Ready' : 'Backlog')
+
+// How much of an issue's text Claude reads to triage it.
+const TRIAGE_TEXT = 1500
+
+// What the Inbox asks Claude: a Priority, an area and a Status for each issue, as JSON.
+export const triagePrompt = (repo: string, issues: Issue[], priorities: { name: string; description: string }[], areas: string[]): string =>
+  [
+    `Triage these new GitHub issues of ${repo}. For each, suggest:`,
+    priorities.length > 0
+      ? `- priority: one of ${priorities.map(one => (one.description ? `${one.name} (${one.description})` : one.name)).join(', ')};`
+      : '- priority: null, as the project has no Priority field;',
+    areas.length > 0 ? `- area: the part of the repository it is about, one of ${areas.join(', ')}, or null when none fits;` : '- area: null, as the repository has no area labels;',
+    '- status: "Ready" when it is clear enough to start on now, "Backlog" when it should wait;',
+    '- reason: one short, plain sentence saying why.',
+    'Keep a Priority or area the issue already has unless it is clearly wrong.',
+    'Answer with one JSON array and nothing else: [{"number": 1, "priority": "P1", "area": "...", "status": "Ready", "reason": "..."}].',
+    ...issues.flatMap(issue => {
+      const text = issue.body.trim()
+      return [
+        '',
+        `#${issue.number} ${issue.title}`,
+        `Labels: ${issue.labels.map(label => label.name).join(', ') || 'none'}. Priority: ${issue.priority ?? 'none'}.`,
+        ...(text ? [text.length > TRIAGE_TEXT ? `${text.slice(0, TRIAGE_TEXT - 1)}…` : text] : []),
+      ]
+    }),
+  ].join('\n')
+
+// Claude's suggestions read back from its answer, one per issue asked about, keeping only the priorities and areas
+// offered; a Status it didn't give follows the priority.
+export const parseTriage = (text: string, issues: Issue[], priorities: string[], areas: string[], project: Project | null = null): Suggestion[] => {
+  const json = /\[[\s\S]*\]/.exec(text)?.[0]
+  let raw: unknown
+  try {
+    raw = json ? JSON.parse(json) : null
+  } catch {
+    return []
+  }
+  if (!Array.isArray(raw)) return []
+  const named = (list: string[], value: unknown) => (typeof value === 'string' ? (list.find(one => one.toLowerCase() === value.replace(/^area:/i, '').trim().toLowerCase()) ?? null) : null)
+  const made: Suggestion[] = []
+  for (const one of raw as Record<string, unknown>[]) {
+    const issue = issues.find(each => each.number === one?.number)
+    if (!issue || made.some(each => each.number === issue.number)) continue
+    const priority = named(priorities, one.priority)
+    const status = typeof one.status === 'string' && /^backlog$/i.test(one.status.trim()) ? 'Backlog' : typeof one.status === 'string' && /^ready$/i.test(one.status.trim()) ? 'Ready' : statusFor(project, priority)
+    const reason = typeof one.reason === 'string' ? fit(one.reason.replace(/\s+/g, ' ').trim(), 200) : ''
+    made.push({ number: issue.number, priority, area: named(areas, one.area), status, reason, updatedAt: issue.updatedAt })
+  }
+  return made
 }
 
 // Whether the issue matches what was typed in the search field: words of its title, `#42` or `42`, or a label.
