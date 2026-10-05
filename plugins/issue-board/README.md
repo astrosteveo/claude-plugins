@@ -84,27 +84,28 @@ CLI, signed in, in the folder the session started in.
     the button says `▶ Starting…` and then `▶ Started`, so it can't send
     the issue twice. It comes back in a new session, or when you start
     another issue.
-  - **⚙ Start in background** (`b`) hands the issue to a background agent
-    instead, in a git worktree of its own, so you and Claude can go on with
-    something else. The agent reads the issue, makes a branch for it, does
-    the work, ticks boxes as it finishes them, and opens a pull request,
-    with `Closes` or `Refs` as Start's note says. It doesn't merge or
-    force-push. As soon as the agent starts, a line in the conversation
-    says so and names the issue, such as `Started a background agent on
-    #80 "Show a message when Start in Background dispatches an agent"`.
-    If it can't start, the line says why instead. The line is for you:
-    Claude doesn't read it. The issue moves to In progress and is assigned
-    to you, as with Start. The issue's row then shows the agent: `⚙ working`,
-    `⚙ waiting`, `⚙ done`, `⚙ failed` or `⚙ stopped`, and its card shows
-    the agent's last answer. While the agent starts, the button says
-    `⚙ Starting in background…`. While the agent works there is no button,
-    so one agent works on an issue at a time. When the agent ends, another
-    line says it is done, failed or was stopped. The line names the issue,
-    gives the agent's last answer, and links its pull request when there is
-    one. Claude gets the same news as a message from the board, so it can
-    tell you what the agent did and what's left. The agent asks for
-    permission as any background agent does, so allow what it needs, or it
-    stops to wait.
+  - **⚙ Start in background** (`b`) asks Claude to hand the issue to a
+    background agent, so you and Claude can go on with something else.
+    Claude dispatches the board's own agent, `issue-board:worker`, with
+    Start's message, and doesn't work on the issue itself. The agent works
+    in a git worktree of its own. It reads the issue, makes a branch for
+    it, does the work, ticks boxes as it finishes them, and opens a pull
+    request, with `Closes` or `Refs` as Start's note says. It doesn't merge
+    or force-push. The issue moves to In progress and is assigned to you,
+    as with Start. Until the agent starts, the button says
+    `⚙ Starting in background…`. It comes back if the start is refused, or
+    after five minutes with no agent. Once the agent starts, the issue's
+    row shows it: `⚙ working`, `⚙ waiting`, `⚙ done`, `⚙ failed` or
+    `⚙ stopped`, and its card shows the agent's last answer. While the
+    agent works there is no button, so one agent works on an issue at a
+    time. The board follows any agent of this type that names its issue,
+    so Claude can also dispatch one when you ask. When the agent ends, a
+    line in the conversation says it is done, failed or was stopped. The
+    line names the issue, gives the agent's last answer, and links its
+    pull request when there is one. Claude gets the same news as a message
+    from the board, so it can tell you what the agent did and what's left.
+    The agent asks for permission as any background agent does, so allow
+    what it needs, or it stops to wait.
   - **⚙ Change** opens the card's editor. Each change is made on GitHub as
     soon as you press it, and the board reads GitHub again straight after:
     - **Labels**: the repo's labels, the ones the issue has highlighted;
@@ -159,6 +160,22 @@ CLI, signed in, in the folder the session started in.
   makes the parent, then each sub-issue under it with `--parent`, and adds
   them all to the repo's project.
 
+  **✎ Edit** (`e`) on the draft opens its editor, on the card itself. For an
+  epic, it edits the parent issue.
+  - **Title**: a text field. Enter in it saves.
+  - **Labels**: the repo's labels, with the draft's highlighted. Press one
+    to add it or take it off.
+  - **Body**: a text field for each line. Enter in a line adds a new line
+    under it. A line you empty is left out. A field shows one line of text,
+    so the field you are in shows its whole line under it when the line is
+    too long to fit.
+
+  **✓ Save** puts your changes on the card. **Cancel** or Esc drops them.
+  You can't save a draft with an empty title. Create and Discard come back
+  once the editor is closed, so what gets created is what the card shows.
+  The mobile app has no text field, so there the editor changes only the
+  labels.
+
   A created issue joins the repo's project at Inbox. While it's being
   created the draft says so, and pressing Create again does nothing. A
   project's own "Item added to project" automation may set its Status
@@ -206,7 +223,9 @@ polling as well.
 The board is saved for each repository. A new session shows the last board
 straight away, and still knows the issue you were working on. The issues'
 text isn't saved, to keep the save small, so cards show it once the first
-refresh is done.
+refresh is done. `/clear`, `/new` and `/resume` start a new session too: the
+board shows its saved copy again and refreshes at once, so you don't need to
+press Refresh.
 
 ## Permissions
 

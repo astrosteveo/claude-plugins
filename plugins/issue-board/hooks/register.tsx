@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, ModelForkResult, Register, Timer, UiCopyArgs } from 'claude-code'
 
-import type { Alert, Board, BoxTask, Check, Comment, Draft, Filter, GroupBy, Issue, Known, Launch, Problem, Project, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
+import type { Alert, Board, BoxTask, Check, Comment, Draft, DraftEdit, Filter, GroupBy, Issue, Known, Launch, Problem, Project, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
 import type { Ended, IssueChanges } from './parse'
 import { authOf, problemsOf, problemsText, repoOf } from './access'
 import { ADD_ITEM, SET_FIELD, issuesQuery, optionOf, startedOf } from './project'
@@ -27,13 +27,15 @@ import {
 } from './setup'
 import {
   THREADS_QUERY,
-  WORKER_PROMPT,
   WEEKS,
+  WORKER,
+  WORKER_PROMPT,
   absorbed,
   ago,
   alertsOf,
   answerPrompt,
   areaOf,
+  backgroundPrompt,
   bar,
   boardText,
   boxOf,
@@ -46,6 +48,8 @@ import {
   closeOutPrompt,
   commentsOf,
   commandsOf,
+  draftBody,
+  draftLines,
   draftPrompt,
   endedLine,
   eventRepoOf,
@@ -100,6 +104,7 @@ import {
   weekly,
   wentGreen,
   workerBadge,
+  workerIssueOf,
   workerPrOf,
   workingSection,
   writesGitHub,
@@ -117,8 +122,6 @@ const ISSUE_FIELDS = 'number,title,url,labels,assignees,body,updatedAt'
 const ISSUES_TOOL = 'mcp__issue-board__issues'
 const TICK_TOOL = 'mcp__issue-board__tick'
 const UPDATE_TOOL = 'mcp__issue-board__issue_update'
-// The agent type Start in background runs, as `$.agent.register` names it.
-const WORKER = 'issue-board:worker'
 
 const strings = (value: unknown): string[] | undefined =>
   Array.isArray(value) ? value.filter((one): one is string => typeof one === 'string' && one.trim() !== '').map(one => one.trim()) : undefined
@@ -161,6 +164,8 @@ const branch = atom({ plugin: 'issue-board', key: 'branch' } as const, null)
 const greened = atom({ plugin: 'issue-board', key: 'greened' } as const, [])
 const draft = atom({ plugin: 'issue-board', key: 'draft' } as const, null)
 const drafting = atom({ plugin: 'issue-board', key: 'drafting' } as const, false)
+const revising = atom({ plugin: 'issue-board', key: 'revising' } as const, null)
+const ring = atom({ plugin: 'issue-board', key: 'ring' } as const, null)
 const creating = atom({ plugin: 'issue-board', key: 'creating' } as const, false)
 const editing = atom({ plugin: 'issue-board', key: 'editing' } as const, null)
 const palette = atom({ plugin: 'issue-board', key: 'palette' } as const, null)
@@ -325,16 +330,17 @@ const save = async ($: EngineInterface): Promise<void> => {
   }
 }
 
-// A new session paints the last board at once and still knows the issue Claude was on; a reload keeps its own.
+// A new session paints the last board at once and still knows the issue Claude was on; a reload keeps its own. What a
+// refresh wrote meanwhile stays: it is newer than the saved copy.
 const restore = async ($: EngineInterface): Promise<void> => {
   if ((await read($, board)) !== null) return
   try {
     const saved = (await $.store.get(await keyOf($))) as Partial<Saved> | undefined
     if (!saved) return
-    if (saved.board) await update($, board, () => saved.board ?? null)
-    if (saved.working) await update($, working, () => saved.working ?? null)
-    if (saved.dismissed) await update($, dismissed, () => saved.dismissed ?? [])
-    if (saved.viewer) await update($, viewer, () => saved.viewer ?? null)
+    if (saved.board) await update($, board, now => now ?? saved.board ?? null)
+    if (saved.working) await update($, working, now => now ?? saved.working ?? null)
+    if (saved.dismissed) await update($, dismissed, now => (now.length > 0 ? now : (saved.dismissed ?? [])))
+    if (saved.viewer) await update($, viewer, now => now ?? saved.viewer ?? null)
   } catch (cause) {
     $.ui.log(`issue-board: couldn't read the saved board: ${messageOf(cause)}`, { to: 'debug' })
   }
@@ -377,9 +383,39 @@ const fetchIssues = async ($: EngineInterface, nameWithOwner: string): Promise<{
   return pull(false)
 }
 
-// `seen`: the refresh follows Claude's own gh write, so the issue it is on changed by its hand, not news.
-const refresh = async ($: EngineInterface, seen = false): Promise<void> => {
-  if (await read($, loading)) return
+// The refresh under way, if any. A module variable, not state: /clear empties the state while a refresh may still run,
+// and a reload starts the module over while the state stays. Neither must leave the board waiting on a refresh that
+// nobody runs.
+let refreshing: Promise<void> | undefined
+
+// How many times the session started over in this process, and whether it did since the board last read its saved copy
+// and GitHub. A /clear (or /new, its alias) or a /resume starts a new session in the same process: the host empties
+// every plugin's state, and no `session.start` follows.
+let restarts = 0
+let restarted = false
+
+// Reads GitHub into the board. A refresh asked for while one runs waits for that one. `seen`: the refresh follows
+// Claude's own gh write, so the issue it is on changed by its hand, not news.
+const refresh = ($: EngineInterface, seen = false): Promise<void> => {
+  if (refreshing) return refreshing
+  const began = restarts
+  const run = readGitHub($, seen).finally(() => {
+    refreshing = undefined
+  })
+  refreshing = run
+  // The session started over while it ran, so some of what it wrote went with the old state: read GitHub again.
+  return run.then(() => (restarts === began ? undefined : refresh($, seen)))
+}
+
+// A new session in the same process: the board shows its saved copy at once, checks access again, and reads GitHub.
+const begin = async ($: EngineInterface): Promise<void> => {
+  restarted = false
+  await restore($)
+  void checkAccess($)
+  await refresh($)
+}
+
+const readGitHub = async ($: EngineInterface, seen: boolean): Promise<void> => {
   await update($, loading, () => true)
   readTouches = touches
   const before = await read($, board)
@@ -490,6 +526,7 @@ const draftIssue = async ($: EngineInterface, what: string, epic = false): Promi
   if (await read($, drafting)) return
   await update($, drafting, () => true)
   await update($, draft, () => null)
+  await update($, revising, () => null)
   try {
     const labels = labelsOf((await read($, board))?.issues ?? [])
     const prompt = draftPrompt(what, labels, epic)
@@ -521,15 +558,52 @@ const createIssue = async ($: EngineInterface, one: { title: string; body: strin
   return number
 }
 
-// Creates the draft: the issue, or an epic's parent then each sub-issue under it. Each joins the repo's project at
-// Inbox, so it shows under its Status at once. One creation at a time: a second press while one runs, or a Create
-// that comes in after it's done, would make the issues again.
+// The labels the draft's editor offers: the repo's, once they're read, and until then the ones the board's issues
+// carry. The draft's own come from those too.
+const draftLabelsOf = (offered: { labels: string[] } | null, issues: Issue[], made: Draft): string[] =>
+  [...new Set([...(offered?.labels ?? labelsOf(issues)), ...made.labels])].sort()
+
+// Edit opens the draft's editor on a copy of the draft, and reads the repo's labels the first time.
+const editDraft = async ($: EngineInterface): Promise<void> => {
+  const made = await read($, draft)
+  if (!made) return
+  await update($, revising, () => ({ title: made.title, lines: draftLines(made.body).map((text, id) => ({ id, text })), labels: made.labels }))
+  // The ring from an earlier edit names a field of that one.
+  await update($, ring, () => null)
+  if (!(await read($, palette))) await loadPalette($)
+}
+
+// Save puts the editor's copy on the card, with only labels the repo has. A title left empty can't be saved.
+const saveDraft = async ($: EngineInterface): Promise<void> => {
+  const edit = await read($, revising)
+  const made = await read($, draft)
+  if (!edit || !made) return
+  if (edit.title.trim() === '') {
+    $.ui.toast("The title can't be empty. Write one, then save.")
+    return
+  }
+  const allowed = draftLabelsOf(await read($, palette), (await read($, board))?.issues ?? [], made)
+  const labels = [...new Set(edit.labels)].filter(label => allowed.includes(label))
+  await update($, draft, was => was && { ...was, title: edit.title.trim(), body: draftBody(edit.lines.map(line => line.text)), labels })
+  await update($, revising, () => null)
+}
+
+// Creates the draft as the card shows it: the issue, or an epic's parent then each sub-issue under it. Each joins the
+// repo's project at Inbox, so it shows under its Status at once. It waits while the editor is open, so an edit not
+// saved isn't filed. One creation at a time: a second press while one runs, or a Create that comes in after it's
+// done, would make the issues again.
 // Checked and set with nothing awaited between, so two presses in a row can't both get through, as two reads of the
 // `creating` state can; that state only tells the pane to say so.
 let filing = false
-const fileDraft = async ($: EngineInterface, made: Draft): Promise<void> => {
+const fileDraft = async ($: EngineInterface): Promise<void> => {
   if (filing) return
   filing = true
+  const made = await read($, draft)
+  if (!made || (await read($, revising))) {
+    filing = false
+    if (made) $.ui.toast('Save or cancel the edit first.')
+    return
+  }
   await update($, creating, () => true)
   try {
     const number = await createIssue($, made)
@@ -799,7 +873,7 @@ const refreshAfter = async ($: EngineInterface): Promise<void> => {
 
 // Waits out a refresh under way, up to ten seconds.
 const settle = async ($: EngineInterface): Promise<void> => {
-  for (let tries = 0; tries < 50 && (await read($, loading)); tries += 1) await $.clock.sleep(200)
+  for (let tries = 0; tries < 50 && refreshing; tries += 1) await $.clock.sleep(200)
 }
 
 // The issue Claude is on, when this session started it: the one the notes and the next step are about.
@@ -986,51 +1060,50 @@ const pollWorkers = ($: EngineInterface): void => {
 // The Starts pressed and not yet under way, read at once so a second press finds the first; `launching` draws them.
 const pressed = new Set<string>()
 
+// A Start on an issue is under way, or failed to get there: its button comes back.
+const landed = async ($: EngineInterface, number: number, how: Launch['how']): Promise<void> => {
+  pressed.delete(`${how}-${number}`)
+  await update($, launching, list => list.filter(one => one.number !== number || one.how !== how))
+}
+
 // A Start on an issue, from the press until the work is under way: its button says so meanwhile, and another press of
-// it does nothing.
-const launch = async ($: EngineInterface, issue: Issue, how: Launch['how'], work: () => Promise<void>): Promise<void> => {
+// it does nothing. `work` resolves true once the work is under way, or false when it waits on something else to land it.
+const launch = async ($: EngineInterface, issue: Issue, how: Launch['how'], work: () => Promise<boolean>): Promise<void> => {
   const key = `${how}-${issue.number}`
   if (pressed.has(key)) return
   pressed.add(key)
   await update($, launching, list => [...list, { number: issue.number, how }])
+  let done = true
   try {
-    await work()
+    done = await work()
   } finally {
-    pressed.delete(key)
-    await update($, launching, list => list.filter(one => one.number !== issue.number || one.how !== how))
+    if (done) await landed($, issue.number, how)
   }
 }
 
-// Start in background: an agent of the board's own type works on the issue in a git worktree of its own, in the
-// background, and leaves a pull request. As soon as the agent starts, or fails to, a line in the conversation says so,
-// for the person and not the model; a toast says it too. The issue moves to In progress and is assigned, as Start does.
+// How long Start in background waits for Claude to start the agent before its button comes back.
+const DISPATCH_MS = 5 * 60 * 1000
+
+// Start in background: Claude dispatches an agent of the board's own type on the issue, to work it in a git worktree
+// of its own, in the background, and leave a pull request. The button says it is starting until the agent starts, the
+// spawn is refused, or five minutes pass. The issue moves to In progress and is assigned, as Start does.
 const startInBackground = ($: EngineInterface, issue: Issue): Promise<void> =>
   launch($, issue, 'background', async () => {
-    const name = `issue-${issue.number}`
-    let agentId: string | undefined
-    try {
-      const started = await $.agent.spawn({ subagentType: WORKER, prompt: startPrompt(issue), description: fit(`#${issue.number} ${issue.title}`, 60), name })
-      if (started.deny !== undefined) throw new Error(started.deny)
-      // Core names the agent it started; failing that, the session's list does, by the name it was given.
-      agentId = started.agentId ?? (await $.agent.list()).find(agent => agent.name === name && agent.type === WORKER)?.id
-      if (!agentId) throw new Error('no agent started')
-    } catch (cause) {
-      $.ui.log(`Couldn't start a background agent on ${named(issue)}: ${messageOf(cause)}`)
-      $.ui.toast(`Couldn't start a background agent on #${issue.number}: ${messageOf(cause)}`)
-      return
-    }
-    $.ui.log(`Started a background agent on ${named(issue)}. It is working on the issue in the background now.`)
-    $.ui.toast(`Started a background agent on #${issue.number}`)
-    try {
-      const worker: Worker = { number: issue.number, title: issue.title, agentId, status: 'running', startedAt: Date.now(), answer: null }
-      await update($, workers, list => [...list.filter(one => one.number !== issue.number), worker])
-      pollWorkers($)
-    } catch (cause) {
-      $.ui.toast(`Started a background agent on #${issue.number}, but the board couldn't follow it: ${messageOf(cause)}`)
-      return
-    }
+    await $.prompt.submit({ text: backgroundPrompt(issue), asUser: true })
+    $.ui.toast(`Asked Claude to start a background agent on #${issue.number}`)
+    $.clock.after(DISPATCH_MS, () => void landed($, issue.number, 'background'))
     await claim($, issue)
+    return false
   })
+
+// A spawn of the board's agent, by Claude or anyone: once it starts, the issue's row follows it.
+const workerStarted = async ($: EngineInterface, number: number, agentId: string): Promise<void> => {
+  const title = (await read($, board))?.issues.find(one => one.number === number)?.title
+  const worker: Worker = { number, ...(title ? { title } : {}), agentId, status: 'running', startedAt: Date.now(), answer: null }
+  await update($, workers, list => [...list.filter(one => one.number !== number), worker])
+  pollWorkers($)
+  $.ui.toast(`Started a background agent on #${number}`)
+}
 
 // A background agent's answer is its loop's last turn: it is done, stopped or failed.
 const workerEnded = ($: EngineInterface, agentId: string, answer: string, reason: string): Promise<void> =>
@@ -1304,6 +1377,20 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // A /clear (or /new, its alias) or a /resume ends this session and starts another in the same process. As the old
+  // one ends, the host empties the board's state, and no session.start follows.
+  on('session.end', { reason: ['clear', 'resume'] }, async ($, e, next) => {
+    restarts += 1
+    restarted = true
+    return next(e)
+  })
+
+  // The new session's SessionStart hooks run once its state is empty: the board fills it again.
+  on('classic.SessionStart', async ($, e, next) => {
+    if (restarted) void begin($)
+    return next(e)
+  })
+
   on('command.run', { command: 'issues' }, async ($, e) => {
     const asked = /^new\b\s*(epic\b)?\s*([\s\S]*)$/.exec(e.args.trim())
     if (asked) {
@@ -1355,6 +1442,16 @@ export const register: Register = on => {
     }
   })
 
+  // Where the pane's focus ring is while the draft's editor is open, so it can show the whole of a long line while it's
+  // typed in. With the editor closed it stays null, so moving the ring doesn't draw the pane again.
+  on('ui.focus', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
+    const moved = await next(e)
+    if (moved.deny) return moved
+    const key = (await read($, revising)) ? (e.element ?? null) : null
+    if ((await read($, ring)) !== key) await update($, ring, () => key)
+    return moved
+  })
+
   // Esc, or the pane's close mark: with an issue's card or a pull request's details open it folds them and keeps the
   // pane; with nothing open the pane closes. The engine stamps both as the person's close, so they step back alike.
   on('ui.close', { id: PANE }, async ($, e, next) => {
@@ -1363,6 +1460,11 @@ export const register: Register = on => {
     const shown = await read($, setup)
     if (shown) {
       if (shown.phase !== 'applying') await update($, setup, () => null)
+      return { value: undefined }
+    }
+    // The draft's editor open: Esc cancels the edit, and the draft stays as it was.
+    if (await read($, revising)) {
+      await update($, revising, () => null)
       return { value: undefined }
     }
     const folding = (await read($, expanded)).length > 0 || (await read($, openPr)) !== null
@@ -1413,6 +1515,8 @@ export const register: Register = on => {
   // note of what changed on GitHub to the issue Claude is on since the last prompt. The system prompt stays as it is.
   on('prompt.submit', async ($, e, next) => {
     nextStep = null
+    // The session started over and no SessionStart hook has run since: the first prompt fills the board again.
+    if (restarted) void begin($)
     const added: string[] = []
     try {
       const now = await read($, board)
@@ -1438,8 +1542,27 @@ export const register: Register = on => {
     return ended
   })
 
-  // The background agent is the board's to start, from an issue's card: the model isn't offered it.
-  on('agent.offer', { agent: WORKER }, async () => ({ isOffered: false }))
+  // Claude dispatches the board's agent, from Start in background: the issue's row follows the agent it started.
+  on('agent.spawn', async ($, e, next) => {
+    const started = await next(e)
+    if (e.subagentType !== WORKER) return started
+    const number = workerIssueOf(e)
+    if (number !== undefined) await landed($, number, 'background')
+    if (started.deny !== undefined) {
+      $.ui.toast(`Couldn't start a background agent${number ? ` on #${number}` : ''}: ${started.deny}`)
+      return started
+    }
+    if (number === undefined) return started
+    try {
+      // Core names the agent it started; failing that, the session's list does, by the name it was given.
+      const agentId = started.agentId ?? (e.name ? (await $.agent.list()).find(agent => agent.name === e.name && agent.type === WORKER)?.id : undefined)
+      if (!agentId) throw new Error('no agent id')
+      await workerStarted($, number, agentId)
+    } catch (cause) {
+      $.ui.toast(`Started a background agent on #${number}, but the board couldn't follow it: ${messageOf(cause)}`)
+    }
+    return started
+  })
 
   // A GitHub event for a subscribed pull request reaches Claude as it would, and the board reads GitHub at once.
   on('session.receive', async ($, e, next) => {
@@ -1582,6 +1705,8 @@ export const register: Register = on => {
     const doing = await read($, working)
     const made = await read($, draft)
     const thinking = await read($, drafting)
+    const revised = await read($, revising)
+    const focusKey = await read($, ring)
     const making = await read($, creating)
     const changing = await read($, editing)
     const offered = await read($, palette)
@@ -1600,7 +1725,8 @@ export const register: Register = on => {
     const startedHere = doing?.started && doing.sessionId !== undefined && doing.sessionId === (await $.session.id().catch(() => undefined)) ? doing.number : null
     const clock = Date.now()
     const elements = $.ui.resolve(e)
-    const Input = 'Input' in elements ? elements.Input : undefined
+    // The mobile app draws no text field: its table hands out one that draws nothing.
+    const Input = 'Input' in elements && e.surface !== 'mobile' ? elements.Input : undefined
     const Markdown = elements.Markdown
     // A link in a row stays on one line: squeezed, it ends in an ellipsis rather than breaking down the pane a letter a
     // line. A click still opens the whole address.
@@ -1618,6 +1744,7 @@ export const register: Register = on => {
         await $.prompt.submit({ text: startPrompt(issue, listed > 0), asUser: true })
         $.ui.toast(`Sent #${issue.number} to Claude`)
         await claim($, issue)
+        return true
       })
 
     const flip = async (issue: Issue, box: number, done: boolean) => {
@@ -1897,6 +2024,8 @@ export const register: Register = on => {
     // collapsed, so setting its Priority or Status doesn't take it away while it's being changed.
     const kept = (issue: Issue) => matches(chosen, issue, who, project) && searched(typed, issue)
     const shown = now.issues.filter(issue => open.includes(issue.number) || kept(issue))
+    // One card open: its letter keys work.
+    const single = open.filter(number => shown.some(issue => issue.number === number)).length === 1
     const named = FILTERS.find(one => one.id === chosen)
     const filterName = (project ? named?.planned : named?.label) ?? ''
     const bugs = now.issues.filter(isBug).length
@@ -2019,7 +2148,111 @@ export const register: Register = on => {
       </Box>
     )
 
-    // The issue /issues new drafted, to check and file.
+    // The draft card's editor, on a copy of the draft: the title, the body a line a field, and the repo's labels to
+    // pick from. Save puts the copy on the card; Cancel or Esc drops it. A surface with no text field can change only
+    // the labels.
+    // Enter in a line of the body adds a line below it, and the focus moves to the new line. A field can empty itself on
+    // Enter, so the line's text gets a fresh field, drawn with the text.
+    // A field shows one line, cut off where it runs out of room, so the field with the focus shows its whole text
+    // beneath it when it's longer than that.
+    const draftEditor = (one: Draft, edit: DraftEdit) => {
+      const labels = draftLabelsOf(offered, now.issues, one)
+      const untitled = edit.title.trim() === ''
+      const revise = (step: (was: DraftEdit) => DraftEdit) => update($, revising, was => was && step(was))
+      const setLine = (id: number, text: string) => revise(was => ({ ...was, lines: was.lines.map(line => (line.id === id ? { id, text } : line)) }))
+      const breakLine = async (id: number, text: string) => {
+        let fresh = 0
+        await revise(was => {
+          fresh = Math.max(...was.lines.map(line => line.id)) + 1
+          return { ...was, lines: was.lines.flatMap(line => (line.id === id ? [{ id: fresh, text }, { id: fresh + 1, text: '' }] : [line])) }
+        })
+        if (fresh > 0) void $.ui.focus({ requestId: PANE, key: `draft-line-${fresh + 1}` }).catch(() => undefined)
+      }
+      const whole = (key: string, text: string, room: number) =>
+        focusKey === key && [...text].length > room ? (
+          <Text key={`${key}-whole`} dimColor wrap="wrap">
+            {text}
+          </Text>
+        ) : undefined
+      return (
+        <Box key="draft-editor" flexDirection="column" marginTop={1}>
+          {Input ? (
+            <Input
+              key="draft-title"
+              label="Title  "
+              placeholder="a short, plain sentence"
+              value={edit.title}
+              submitLabel="save"
+              onInput={text => void revise(was => ({ ...was, title: text }))}
+              onSubmit={text => void revise(was => ({ ...was, title: text })).then(() => saveDraft($))}
+            />
+          ) : (
+            <Text bold wrap="wrap">
+              {edit.title}
+            </Text>
+          )}
+          {Input && whole('draft-title', edit.title, width - 18)}
+          {untitled && <Text color="warning">The title can't be empty. Write one to save.</Text>}
+          <Box flexDirection="row" gap={1} flexWrap="wrap" marginTop={1}>
+            <Text dimColor>Labels </Text>
+            {labels.length === 0 && <Text dimColor>{offered ? 'none in this repo' : 'reading…'}</Text>}
+            {labels.map(name => {
+              const has = edit.labels.includes(name)
+              return (
+                <Button
+                  key={`draft-label-${name}`}
+                  variant={has ? 'primary' : undefined}
+                  dimColor={!has}
+                  onPress={() => void revise(was => ({ ...was, labels: has ? was.labels.filter(label => label !== name) : [...was.labels, name] }))}
+                >
+                  {name}
+                </Button>
+              )
+            })}
+          </Box>
+          {Input ? (
+            <Box flexDirection="column" marginTop={1}>
+              <Text dimColor wrap="wrap">
+                Body · Enter adds a line below. A line you empty is left out when you save.
+              </Text>
+              {edit.lines.flatMap(({ id, text: line }) =>
+                line === null
+                  ? [<Text key={`draft-gap-${id}`}> </Text>]
+                  : [
+                      <Input
+                        key={`draft-line-${id}`}
+                        placeholder="empty: left out when you save"
+                        value={line}
+                        submitLabel="new line"
+                        onInput={text => void setLine(id, text)}
+                        onSubmit={text => void breakLine(id, text)}
+                      />,
+                      whole(`draft-line-${id}`, line, width - 16),
+                    ],
+              )}
+            </Box>
+          ) : (
+            <Box flexDirection="column" marginTop={1}>
+              <Markdown text={one.body} />
+              <Text dimColor wrap="wrap">
+                This app has no text field, so only the labels can change here.
+              </Text>
+            </Box>
+          )}
+          <Box flexDirection="row" gap={1} marginTop={1}>
+            <Button key="draft-save" variant="primary" dimColor={untitled} onPress={() => void saveDraft($)}>
+              ✓ Save
+            </Button>
+            <Button key="draft-cancel" dimColor onPress={() => void update($, revising, () => null)}>
+              Cancel
+            </Button>
+          </Box>
+        </Box>
+      )
+    }
+
+    // The issue /issues new drafted, to check, edit and file. While its editor is open, Create and Discard wait, so
+    // what's created is what the card shows.
     const draftCard = thinking ? (
       <Box marginTop={1}>
         <Text color="warning">◌ Drafting an issue from the conversation…</Text>
@@ -2028,15 +2261,21 @@ export const register: Register = on => {
       made && (
         <Box flexDirection="column" borderStyle="round" borderColor="suggestion" paddingX={1} marginTop={1}>
           <Text color="suggestion" bold>
-            {made.children ? `New epic · draft · ${made.children.length} sub-issues` : 'New issue · draft'}
+            {`${made.children ? `New epic · draft · ${made.children.length} sub-issues` : 'New issue · draft'}${revised ? ' · editing' : ''}`}
           </Text>
-          <Text bold wrap="wrap">
-            {made.title}
-          </Text>
-          {made.labels.length > 0 && <Text dimColor>{made.labels.join(' · ')}</Text>}
-          <Box marginTop={1}>
-            <Markdown text={made.body} />
-          </Box>
+          {revised ? (
+            draftEditor(made, revised)
+          ) : (
+            <Box flexDirection="column">
+              <Text bold wrap="wrap">
+                {made.title}
+              </Text>
+              {made.labels.length > 0 && <Text dimColor>{made.labels.join(' · ')}</Text>}
+              <Box marginTop={1}>
+                <Markdown text={made.body} />
+              </Box>
+            </Box>
+          )}
           {made.children && (
             <Box flexDirection="column" marginTop={1}>
               <Text bold>Sub-issues</Text>
@@ -2057,14 +2296,19 @@ export const register: Register = on => {
               <Text color="warning">{made.children ? '◌ Creating the epic and its sub-issues…' : '◌ Creating the issue…'}</Text>
             </Box>
           ) : (
-            <Box flexDirection="row" gap={1} marginTop={1}>
-              <Button key="draft-file" variant="primary" hotkey="c" onPress={() => void fileDraft($, made)}>
-                {made.children ? `✚ Create the epic and ${made.children.length} sub-issues` : '✚ Create issue'}
-              </Button>
-              <Button key="draft-discard" dimColor onPress={() => void update($, draft, () => null)}>
-                Discard
-              </Button>
-            </Box>
+            !revised && (
+              <Box flexDirection="row" gap={1} marginTop={1} flexWrap="wrap">
+                <Button key="draft-file" variant="primary" hotkey="c" onPress={() => void fileDraft($)}>
+                  {made.children ? `✚ Create the epic and ${made.children.length} sub-issues` : '✚ Create issue'}
+                </Button>
+                <Button key="draft-edit" hotkey={single ? undefined : 'e'} onPress={() => void editDraft($)}>
+                  ✎ Edit
+                </Button>
+                <Button key="draft-discard" dimColor onPress={() => void update($, draft, () => null)}>
+                  Discard
+                </Button>
+              </Box>
+            )
           )}
         </Box>
       )
@@ -2617,7 +2861,6 @@ export const register: Register = on => {
       )
     }
 
-    const single = open.filter(number => shown.some(issue => issue.number === number)).length === 1
     // Merge all's confirm, while there is still something to merge.
     const confirm = arming && now.prs.length > 0
 
@@ -2762,9 +3005,11 @@ export const register: Register = on => {
           <Text dimColor>
             {confirm
               ? 'y merge every open PR · n cancel'
-              : single
-                ? 's start · e edit first · x or esc collapse · press a box to tick it · r refresh'
-                : `${project ? '1 now · 2 later' : '1 active · 2 future'} · 3 bugs · 4 mine · 5 all${project ? ' · 6 inbox' : ''} · r refresh · ⏎ open an issue${now.prs.length > 0 ? ' · m merge all PRs' : ''}${made ? ' · c create the issue' : ''}`}
+              : revised
+                ? 'tab next field · ⏎ in the body adds a line · esc cancel the edit'
+                : single
+                  ? 's start · e edit first · x or esc collapse · press a box to tick it · r refresh'
+                  : `${project ? '1 now · 2 later' : '1 active · 2 future'} · 3 bugs · 4 mine · 5 all${project ? ' · 6 inbox' : ''} · r refresh · ⏎ open an issue${now.prs.length > 0 ? ' · m merge all PRs' : ''}${made ? ' · c create the issue · e edit it' : ''}`}
           </Text>
         </Box>
       </Box>
