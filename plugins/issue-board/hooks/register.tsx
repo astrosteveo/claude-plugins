@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, ModelForkResult, Register, Timer, UiCopyArgs } from 'claude-code'
 
-import type { Alert, Board, BoxTask, Check, Comment, Draft, Filter, GroupBy, Issue, Known, Problem, Project, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
+import type { Alert, Board, BoxTask, Check, Comment, Draft, DraftEdit, Filter, GroupBy, Issue, Known, Problem, Project, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
 import type { IssueChanges } from './parse'
 import { authOf, problemsOf, problemsText, repoOf } from './access'
 import { ADD_ITEM, SET_FIELD, issuesQuery, optionOf, startedOf } from './project'
@@ -46,6 +46,8 @@ import {
   closeOutPrompt,
   commentsOf,
   commandsOf,
+  draftBody,
+  draftLines,
   draftPrompt,
   eventRepoOf,
   fit,
@@ -157,6 +159,8 @@ const branch = atom({ plugin: 'issue-board', key: 'branch' } as const, null)
 const greened = atom({ plugin: 'issue-board', key: 'greened' } as const, [])
 const draft = atom({ plugin: 'issue-board', key: 'draft' } as const, null)
 const drafting = atom({ plugin: 'issue-board', key: 'drafting' } as const, false)
+const revising = atom({ plugin: 'issue-board', key: 'revising' } as const, null)
+const ring = atom({ plugin: 'issue-board', key: 'ring' } as const, null)
 const creating = atom({ plugin: 'issue-board', key: 'creating' } as const, false)
 const editing = atom({ plugin: 'issue-board', key: 'editing' } as const, null)
 const palette = atom({ plugin: 'issue-board', key: 'palette' } as const, null)
@@ -485,6 +489,7 @@ const draftIssue = async ($: EngineInterface, what: string, epic = false): Promi
   if (await read($, drafting)) return
   await update($, drafting, () => true)
   await update($, draft, () => null)
+  await update($, revising, () => null)
   try {
     const labels = labelsOf((await read($, board))?.issues ?? [])
     const prompt = draftPrompt(what, labels, epic)
@@ -516,15 +521,52 @@ const createIssue = async ($: EngineInterface, one: { title: string; body: strin
   return number
 }
 
-// Creates the draft: the issue, or an epic's parent then each sub-issue under it. Each joins the repo's project at
-// Inbox, so it shows under its Status at once. One creation at a time: a second press while one runs, or a Create
-// that comes in after it's done, would make the issues again.
+// The labels the draft's editor offers: the repo's, once they're read, and until then the ones the board's issues
+// carry. The draft's own come from those too.
+const draftLabelsOf = (offered: { labels: string[] } | null, issues: Issue[], made: Draft): string[] =>
+  [...new Set([...(offered?.labels ?? labelsOf(issues)), ...made.labels])].sort()
+
+// Edit opens the draft's editor on a copy of the draft, and reads the repo's labels the first time.
+const editDraft = async ($: EngineInterface): Promise<void> => {
+  const made = await read($, draft)
+  if (!made) return
+  await update($, revising, () => ({ title: made.title, lines: draftLines(made.body).map((text, id) => ({ id, text })), labels: made.labels }))
+  // The ring from an earlier edit names a field of that one.
+  await update($, ring, () => null)
+  if (!(await read($, palette))) await loadPalette($)
+}
+
+// Save puts the editor's copy on the card, with only labels the repo has. A title left empty can't be saved.
+const saveDraft = async ($: EngineInterface): Promise<void> => {
+  const edit = await read($, revising)
+  const made = await read($, draft)
+  if (!edit || !made) return
+  if (edit.title.trim() === '') {
+    $.ui.toast("The title can't be empty. Write one, then save.")
+    return
+  }
+  const allowed = draftLabelsOf(await read($, palette), (await read($, board))?.issues ?? [], made)
+  const labels = [...new Set(edit.labels)].filter(label => allowed.includes(label))
+  await update($, draft, was => was && { ...was, title: edit.title.trim(), body: draftBody(edit.lines.map(line => line.text)), labels })
+  await update($, revising, () => null)
+}
+
+// Creates the draft as the card shows it: the issue, or an epic's parent then each sub-issue under it. Each joins the
+// repo's project at Inbox, so it shows under its Status at once. It waits while the editor is open, so an edit not
+// saved isn't filed. One creation at a time: a second press while one runs, or a Create that comes in after it's
+// done, would make the issues again.
 // Checked and set with nothing awaited between, so two presses in a row can't both get through, as two reads of the
 // `creating` state can; that state only tells the pane to say so.
 let filing = false
-const fileDraft = async ($: EngineInterface, made: Draft): Promise<void> => {
+const fileDraft = async ($: EngineInterface): Promise<void> => {
   if (filing) return
   filing = true
+  const made = await read($, draft)
+  if (!made || (await read($, revising))) {
+    filing = false
+    if (made) $.ui.toast('Save or cancel the edit first.')
+    return
+  }
   await update($, creating, () => true)
   try {
     const number = await createIssue($, made)
@@ -1298,6 +1340,16 @@ export const register: Register = on => {
     }
   })
 
+  // Where the pane's focus ring is while the draft's editor is open, so it can show the whole of a long line while it's
+  // typed in. With the editor closed it stays null, so moving the ring doesn't draw the pane again.
+  on('ui.focus', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
+    const moved = await next(e)
+    if (moved.deny) return moved
+    const key = (await read($, revising)) ? (e.element ?? null) : null
+    if ((await read($, ring)) !== key) await update($, ring, () => key)
+    return moved
+  })
+
   // Esc, or the pane's close mark: with an issue's card or a pull request's details open it folds them and keeps the
   // pane; with nothing open the pane closes. The engine stamps both as the person's close, so they step back alike.
   on('ui.close', { id: PANE }, async ($, e, next) => {
@@ -1306,6 +1358,11 @@ export const register: Register = on => {
     const shown = await read($, setup)
     if (shown) {
       if (shown.phase !== 'applying') await update($, setup, () => null)
+      return { value: undefined }
+    }
+    // The draft's editor open: Esc cancels the edit, and the draft stays as it was.
+    if (await read($, revising)) {
+      await update($, revising, () => null)
       return { value: undefined }
     }
     const folding = (await read($, expanded)).length > 0 || (await read($, openPr)) !== null
@@ -1525,6 +1582,8 @@ export const register: Register = on => {
     const doing = await read($, working)
     const made = await read($, draft)
     const thinking = await read($, drafting)
+    const revised = await read($, revising)
+    const focusKey = await read($, ring)
     const making = await read($, creating)
     const changing = await read($, editing)
     const offered = await read($, palette)
@@ -1540,7 +1599,8 @@ export const register: Register = on => {
     const working$ = await read($, workers)
     const clock = Date.now()
     const elements = $.ui.resolve(e)
-    const Input = 'Input' in elements ? elements.Input : undefined
+    // The mobile app draws no text field: its table hands out one that draws nothing.
+    const Input = 'Input' in elements && e.surface !== 'mobile' ? elements.Input : undefined
     const Markdown = elements.Markdown
     // A link in a row stays on one line: squeezed, it ends in an ellipsis rather than breaking down the pane a letter a
     // line. A click still opens the whole address.
@@ -1835,6 +1895,8 @@ export const register: Register = on => {
     // collapsed, so setting its Priority or Status doesn't take it away while it's being changed.
     const kept = (issue: Issue) => matches(chosen, issue, who, project) && searched(typed, issue)
     const shown = now.issues.filter(issue => open.includes(issue.number) || kept(issue))
+    // One card open: its letter keys work.
+    const single = open.filter(number => shown.some(issue => issue.number === number)).length === 1
     const named = FILTERS.find(one => one.id === chosen)
     const filterName = (project ? named?.planned : named?.label) ?? ''
     const bugs = now.issues.filter(isBug).length
@@ -1957,7 +2019,111 @@ export const register: Register = on => {
       </Box>
     )
 
-    // The issue /issues new drafted, to check and file.
+    // The draft card's editor, on a copy of the draft: the title, the body a line a field, and the repo's labels to
+    // pick from. Save puts the copy on the card; Cancel or Esc drops it. A surface with no text field can change only
+    // the labels.
+    // Enter in a line of the body adds a line below it, and the focus moves to the new line. A field can empty itself on
+    // Enter, so the line's text gets a fresh field, drawn with the text.
+    // A field shows one line, cut off where it runs out of room, so the field with the focus shows its whole text
+    // beneath it when it's longer than that.
+    const draftEditor = (one: Draft, edit: DraftEdit) => {
+      const labels = draftLabelsOf(offered, now.issues, one)
+      const untitled = edit.title.trim() === ''
+      const revise = (step: (was: DraftEdit) => DraftEdit) => update($, revising, was => was && step(was))
+      const setLine = (id: number, text: string) => revise(was => ({ ...was, lines: was.lines.map(line => (line.id === id ? { id, text } : line)) }))
+      const breakLine = async (id: number, text: string) => {
+        let fresh = 0
+        await revise(was => {
+          fresh = Math.max(...was.lines.map(line => line.id)) + 1
+          return { ...was, lines: was.lines.flatMap(line => (line.id === id ? [{ id: fresh, text }, { id: fresh + 1, text: '' }] : [line])) }
+        })
+        if (fresh > 0) void $.ui.focus({ requestId: PANE, key: `draft-line-${fresh + 1}` }).catch(() => undefined)
+      }
+      const whole = (key: string, text: string, room: number) =>
+        focusKey === key && [...text].length > room ? (
+          <Text key={`${key}-whole`} dimColor wrap="wrap">
+            {text}
+          </Text>
+        ) : undefined
+      return (
+        <Box key="draft-editor" flexDirection="column" marginTop={1}>
+          {Input ? (
+            <Input
+              key="draft-title"
+              label="Title  "
+              placeholder="a short, plain sentence"
+              value={edit.title}
+              submitLabel="save"
+              onInput={text => void revise(was => ({ ...was, title: text }))}
+              onSubmit={text => void revise(was => ({ ...was, title: text })).then(() => saveDraft($))}
+            />
+          ) : (
+            <Text bold wrap="wrap">
+              {edit.title}
+            </Text>
+          )}
+          {Input && whole('draft-title', edit.title, width - 18)}
+          {untitled && <Text color="warning">The title can't be empty. Write one to save.</Text>}
+          <Box flexDirection="row" gap={1} flexWrap="wrap" marginTop={1}>
+            <Text dimColor>Labels </Text>
+            {labels.length === 0 && <Text dimColor>{offered ? 'none in this repo' : 'reading…'}</Text>}
+            {labels.map(name => {
+              const has = edit.labels.includes(name)
+              return (
+                <Button
+                  key={`draft-label-${name}`}
+                  variant={has ? 'primary' : undefined}
+                  dimColor={!has}
+                  onPress={() => void revise(was => ({ ...was, labels: has ? was.labels.filter(label => label !== name) : [...was.labels, name] }))}
+                >
+                  {name}
+                </Button>
+              )
+            })}
+          </Box>
+          {Input ? (
+            <Box flexDirection="column" marginTop={1}>
+              <Text dimColor wrap="wrap">
+                Body · Enter adds a line below. A line you empty is left out when you save.
+              </Text>
+              {edit.lines.flatMap(({ id, text: line }) =>
+                line === null
+                  ? [<Text key={`draft-gap-${id}`}> </Text>]
+                  : [
+                      <Input
+                        key={`draft-line-${id}`}
+                        placeholder="empty: left out when you save"
+                        value={line}
+                        submitLabel="new line"
+                        onInput={text => void setLine(id, text)}
+                        onSubmit={text => void breakLine(id, text)}
+                      />,
+                      whole(`draft-line-${id}`, line, width - 16),
+                    ],
+              )}
+            </Box>
+          ) : (
+            <Box flexDirection="column" marginTop={1}>
+              <Markdown text={one.body} />
+              <Text dimColor wrap="wrap">
+                This app has no text field, so only the labels can change here.
+              </Text>
+            </Box>
+          )}
+          <Box flexDirection="row" gap={1} marginTop={1}>
+            <Button key="draft-save" variant="primary" dimColor={untitled} onPress={() => void saveDraft($)}>
+              ✓ Save
+            </Button>
+            <Button key="draft-cancel" dimColor onPress={() => void update($, revising, () => null)}>
+              Cancel
+            </Button>
+          </Box>
+        </Box>
+      )
+    }
+
+    // The issue /issues new drafted, to check, edit and file. While its editor is open, Create and Discard wait, so
+    // what's created is what the card shows.
     const draftCard = thinking ? (
       <Box marginTop={1}>
         <Text color="warning">◌ Drafting an issue from the conversation…</Text>
@@ -1966,15 +2132,21 @@ export const register: Register = on => {
       made && (
         <Box flexDirection="column" borderStyle="round" borderColor="suggestion" paddingX={1} marginTop={1}>
           <Text color="suggestion" bold>
-            {made.children ? `New epic · draft · ${made.children.length} sub-issues` : 'New issue · draft'}
+            {`${made.children ? `New epic · draft · ${made.children.length} sub-issues` : 'New issue · draft'}${revised ? ' · editing' : ''}`}
           </Text>
-          <Text bold wrap="wrap">
-            {made.title}
-          </Text>
-          {made.labels.length > 0 && <Text dimColor>{made.labels.join(' · ')}</Text>}
-          <Box marginTop={1}>
-            <Markdown text={made.body} />
-          </Box>
+          {revised ? (
+            draftEditor(made, revised)
+          ) : (
+            <Box flexDirection="column">
+              <Text bold wrap="wrap">
+                {made.title}
+              </Text>
+              {made.labels.length > 0 && <Text dimColor>{made.labels.join(' · ')}</Text>}
+              <Box marginTop={1}>
+                <Markdown text={made.body} />
+              </Box>
+            </Box>
+          )}
           {made.children && (
             <Box flexDirection="column" marginTop={1}>
               <Text bold>Sub-issues</Text>
@@ -1995,14 +2167,19 @@ export const register: Register = on => {
               <Text color="warning">{made.children ? '◌ Creating the epic and its sub-issues…' : '◌ Creating the issue…'}</Text>
             </Box>
           ) : (
-            <Box flexDirection="row" gap={1} marginTop={1}>
-              <Button key="draft-file" variant="primary" hotkey="c" onPress={() => void fileDraft($, made)}>
-                {made.children ? `✚ Create the epic and ${made.children.length} sub-issues` : '✚ Create issue'}
-              </Button>
-              <Button key="draft-discard" dimColor onPress={() => void update($, draft, () => null)}>
-                Discard
-              </Button>
-            </Box>
+            !revised && (
+              <Box flexDirection="row" gap={1} marginTop={1} flexWrap="wrap">
+                <Button key="draft-file" variant="primary" hotkey="c" onPress={() => void fileDraft($)}>
+                  {made.children ? `✚ Create the epic and ${made.children.length} sub-issues` : '✚ Create issue'}
+                </Button>
+                <Button key="draft-edit" hotkey={single ? undefined : 'e'} onPress={() => void editDraft($)}>
+                  ✎ Edit
+                </Button>
+                <Button key="draft-discard" dimColor onPress={() => void update($, draft, () => null)}>
+                  Discard
+                </Button>
+              </Box>
+            )
           )}
         </Box>
       )
@@ -2541,7 +2718,6 @@ export const register: Register = on => {
       )
     }
 
-    const single = open.filter(number => shown.some(issue => issue.number === number)).length === 1
     // Merge all's confirm, while there is still something to merge.
     const confirm = arming && now.prs.length > 0
 
@@ -2686,9 +2862,11 @@ export const register: Register = on => {
           <Text dimColor>
             {confirm
               ? 'y merge every open PR · n cancel'
-              : single
-                ? 's start · e edit first · x or esc collapse · press a box to tick it · r refresh'
-                : `${project ? '1 now · 2 later' : '1 active · 2 future'} · 3 bugs · 4 mine · 5 all${project ? ' · 6 inbox' : ''} · r refresh · ⏎ open an issue${now.prs.length > 0 ? ' · m merge all PRs' : ''}${made ? ' · c create the issue' : ''}`}
+              : revised
+                ? 'tab next field · ⏎ in the body adds a line · esc cancel the edit'
+                : single
+                  ? 's start · e edit first · x or esc collapse · press a box to tick it · r refresh'
+                  : `${project ? '1 now · 2 later' : '1 active · 2 future'} · 3 bugs · 4 mine · 5 all${project ? ' · 6 inbox' : ''} · r refresh · ⏎ open an issue${now.prs.length > 0 ? ' · m merge all PRs' : ''}${made ? ' · c create the issue · e edit it' : ''}`}
           </Text>
         </Box>
       </Box>

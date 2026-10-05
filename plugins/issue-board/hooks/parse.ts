@@ -753,6 +753,23 @@ export const parseDraft = (text: string, labels: string[]): Draft | null => {
 // Every label the board's issues carry, sorted: the ones a draft may use.
 export const labelsOf = (issues: Issue[]): string[] => [...new Set(issues.flatMap(issue => issue.labels.map(label => label.name)))].sort()
 
+// A draft's body as the editor shows it: one field a line, and null for each blank line between them.
+export const draftLines = (body: string): (string | null)[] => (body === '' ? [''] : body.split(/\r?\n/).map(line => (line.trim() === '' ? null : line)))
+
+// The body the editor's lines make. A line left empty is dropped, and the blank lines that leaves side by side, or at
+// the start or end, become one or none. A body nobody changed comes back as it was, save for spaces at line ends and
+// runs of blank lines.
+export const draftBody = (lines: (string | null)[]): string => {
+  const kept: string[] = []
+  for (const line of lines) {
+    if (line === null) {
+      if (kept.length > 0 && kept.at(-1) !== '') kept.push('')
+    } else if (line.trim() !== '') kept.push(line.trimEnd())
+  }
+  while (kept.at(-1) === '') kept.pop()
+  return kept.join('\n')
+}
+
 // A change to an issue, from its card or from Claude's issue_update tool. `parent` and `milestone` set as null remove
 // them; `assign` and `unassign` take logins, or `@me` for the signed-in user.
 export type IssueChanges = {
