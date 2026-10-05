@@ -13,7 +13,26 @@ export type Issue = {
   updatedAt: string
   // The issue's text as written; empty on a board saved between sessions, until it refreshes.
   body: string
+  // What GraphQL adds, which `gh issue view` doesn't give: absent on an issue read that way, or on an older board.
+  // `id` is the issue's node, `item` its item in the board's project, and `status` and `priority` that item's values.
+  id?: string
+  item?: string | null
+  status?: string | null
+  priority?: string | null
+  milestone?: string | null
+  // The issue this one is a sub-issue of, with how many of that issue's sub-issues are closed.
+  parent?: { number: number; title: string; total: number; completed: number } | null
+  subIssues?: { total: number; completed: number }
+  // The open issues this one is blocked by, and the open pull requests GitHub says will close it.
+  blockedBy?: number[]
+  prs?: number[]
 }
+
+// A single-select field of a project, such as Status, with its options in the project's order.
+export type Field = { id: string; options: { id: string; name: string }[] }
+
+// The GitHub Project linked to the repository, as far as the board uses it.
+export type Project = { id: string; number: number; title: string; url: string; status: Field | null; priority: Field | null }
 
 export type Ci = 'pass' | 'fail' | 'pending' | 'none'
 
@@ -47,6 +66,8 @@ export type Board = {
   prs: PullRequest[]
   velocity: Velocity
   fetchedAt: number
+  // The repo's project; null without one, or when gh may not read projects. The board then works from labels.
+  project?: Project | null
 }
 
 // The issue Start handed Claude, and when it last changed as of then; `sessionId` is the session that started it.
@@ -62,7 +83,11 @@ export type Alert =
   | { kind: 'activity'; key: string; issue: Issue }
   | { kind: 'closed'; key: string; working: Working }
 
+// `active` and `future` read Priority when there is a project (Now and Later), and the `future` label when not.
 export type Filter = 'active' | 'future' | 'bugs' | 'mine' | 'all'
+
+// How the pane groups the issues: by the project's Status, by the epic they are sub-issues of, or by `area:` label.
+export type GroupBy = 'status' | 'epic' | 'area'
 
 // Something the board needs that is missing, and how to fix it. `blocks`: the board can't read GitHub until it's fixed.
 // `command` is what Copy fix copies, and `url` the page the fix happens on.
@@ -97,6 +122,10 @@ declare module 'claude-code' {
       access: Access | null
       // The pull request whose details are open in the pane.
       openPr: number | null
+      // The grouping picked; null until one is, which means Status with a project and Area without.
+      groupBy: GroupBy | null
+      // The folded groups the person unfolded, such as Backlog.
+      unfolded: string[]
     }
   }
 }

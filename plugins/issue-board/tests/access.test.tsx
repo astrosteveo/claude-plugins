@@ -2,6 +2,7 @@ import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { authOf, deniedOf, problemsOf, repoOf } from '../hooks/access'
+import { asksProject, graphPage, isIssuesQuery } from './graph'
 
 const STORED = '/home/someone/.config/gh/hosts.yml'
 const account = (fields: Record<string, unknown>) => JSON.stringify({ hosts: { 'github.com': [{ state: 'success', active: true, host: 'github.com', login: 'astrosteveo', gitProtocol: 'https', ...fields }] } })
@@ -37,32 +38,55 @@ test('problems say what is missing, and the fix fits where the token comes from'
   expect(problemsOf({ installed: false, auth: null, repo: null }).map(one => one.id)).toEqual(['gh-missing'])
   expect(problemsOf({ installed: true, auth: { state: 'signed-out' }, repo: null })[0]).toMatchObject({ id: 'signed-out', command: 'gh auth login', blocks: true })
   expect(problemsOf({ installed: true, auth: { state: 'refused', source: 'GH_TOKEN' }, repo: null })[0]).toMatchObject({ title: "The token in GH_TOKEN doesn't work", url: 'https://github.com/settings/tokens' })
-  expect(problemsOf({ installed: true, auth: signedIn(STORED, ['repo']), repo })).toEqual([])
+  expect(problemsOf({ installed: true, auth: signedIn(STORED, ['repo', 'project']), repo })).toEqual([])
 
-  // A saved login can be refreshed; a token in a variable can't, so the fix is its settings page.
+  // Without a project permission the board still works, from labels, so the problem only limits it. Its fix asks for
+  // `project`, which reads and changes; a saved login can be refreshed, a token in a variable can't.
+  expect(problemsOf({ installed: true, auth: signedIn(STORED, ['repo']), repo })).toEqual([
+    expect.objectContaining({ id: 'scope-project', command: 'gh auth refresh -s project', blocks: false }),
+  ])
   const missing = 'error: your authentication token is missing required scopes [read:project]'
-  expect(problemsOf({ installed: true, auth: signedIn(STORED, ['repo']), repo, message: missing })[0]).toMatchObject({ id: 'scope-read:project', command: 'gh auth refresh -s read:project', blocks: true })
+  expect(problemsOf({ installed: true, auth: signedIn(STORED, null), repo, message: missing })).toEqual([
+    expect.objectContaining({ id: 'scope-project', command: 'gh auth refresh -s project', blocks: false }),
+  ])
   const variable = problemsOf({ installed: true, auth: signedIn('GH_TOKEN', ['repo']), repo, message: missing })[0]
   expect(variable?.command).toBeUndefined()
-  expect(variable?.fix).toMatch(/^Add read:project to the token in GH_TOKEN at https:\/\/github\.com\/settings\/tokens\. gh can't change/)
+  expect(variable?.fix).toMatch(/^Add project to the token in GH_TOKEN at https:\/\/github\.com\/settings\/tokens\. gh can't change/)
+  // Reading, but not changing, is refused when the board sets a Status.
+  const unchanged = "GraphQL: Your token has not been granted the required scopes to execute this query. The 'updateProjectV2ItemFieldValue' field requires one of the following scopes: ['project']"
+  expect(problemsOf({ installed: true, auth: signedIn(STORED, ['repo', 'read:project']), repo, message: unchanged }).map(one => one.id)).toEqual(['scope-project'])
+  // Other permissions still stop the board.
+  expect(problemsOf({ installed: true, auth: signedIn(STORED, ['project']), repo, message: 'missing required scopes [read:org]' }).map(one => [one.id, one.blocks])).toEqual([
+    ['scope-repo', true],
+    ['scope-read:org', true],
+  ])
 
   // public_repo is enough for a public repository, not a private one.
-  expect(problemsOf({ installed: true, auth: signedIn(STORED, ['public_repo']), repo })).toEqual([])
+  expect(problemsOf({ installed: true, auth: signedIn(STORED, ['public_repo', 'project']), repo })).toEqual([])
   const secret = repoOf(JSON.stringify({ ...REPO, visibility: 'PRIVATE' }))
-  expect(problemsOf({ installed: true, auth: signedIn(STORED, ['public_repo']), repo: secret })[0]).toMatchObject({ id: 'scope-repo', command: 'gh auth refresh -s repo' })
+  expect(problemsOf({ installed: true, auth: signedIn(STORED, ['public_repo', 'project']), repo: secret })[0]).toMatchObject({ id: 'scope-repo', command: 'gh auth refresh -s repo' })
 
   const reader = repoOf(JSON.stringify({ ...REPO, viewerPermission: 'READ', hasIssuesEnabled: false }))
-  expect(problemsOf({ installed: true, auth: signedIn(STORED, ['repo']), repo: reader }).map(one => [one.id, one.blocks, one.command])).toEqual([
+  expect(problemsOf({ installed: true, auth: signedIn(STORED, ['repo', 'project']), repo: reader }).map(one => [one.id, one.blocks, one.command])).toEqual([
     ['read-only', false, undefined],
     ['issues-off', false, undefined],
   ])
   const off = repoOf(JSON.stringify({ ...REPO, hasIssuesEnabled: false }))
-  expect(problemsOf({ installed: true, auth: signedIn(STORED, ['repo']), repo: off })[0]).toMatchObject({ id: 'issues-off', command: 'gh repo edit astrosteveo/void-sector --enable-issues' })
+  expect(problemsOf({ installed: true, auth: signedIn(STORED, ['repo', 'project']), repo: off })[0]).toMatchObject({ id: 'issues-off', command: 'gh repo edit astrosteveo/void-sector --enable-issues' })
 })
 
 // gh as the check sees it: what `gh auth status` and `gh repo view` say, and an error every other call fails with.
+// `refuseProject`: what GitHub says to a query that asks for projects; `queries` counts the ones that did.
 const gh = (on: On, remote = 'git@github.com:astrosteveo/void-sector.git') => {
-  const state = { auth: account({ tokenSource: STORED, scopes: 'gist, read:org, repo, workflow' }), repo: JSON.stringify(REPO), failure: '', missing: false, copied: [] as string[] }
+  const state = {
+    auth: account({ tokenSource: STORED, scopes: 'gist, project, read:org, repo, workflow' }),
+    repo: JSON.stringify(REPO),
+    failure: '',
+    refuseProject: '',
+    projectQueries: 0,
+    missing: false,
+    copied: [] as string[],
+  }
   on('process.run', async (_$, e) => {
     const answer = (stdout: string, exitCode = 0, stderr = '') => ({ value: { exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false } })
     if (e.argv[0] === 'git') return answer('main\n')
@@ -70,6 +94,11 @@ const gh = (on: On, remote = 'git@github.com:astrosteveo/void-sector.git') => {
     if (e.argv[1] === 'auth') return answer(state.auth)
     if (e.argv[1] === 'repo') return answer(state.repo)
     if (state.failure) return answer('', 1, state.failure)
+    if (isIssuesQuery(e.argv)) {
+      if (asksProject(e.argv)) state.projectQueries += 1
+      if (state.refuseProject && asksProject(e.argv)) return answer('', 1, state.refuseProject)
+      return answer(graphPage([{ number: 315, title: 'Lay Kessik out for play', labels: [], body: null, updatedAt: '2026-10-03T20:00:00Z', status: 'Ready', priority: 'P1' }], e.argv, true))
+    }
     return answer(e.argv[1] === 'api' ? 'astrosteveo\n' : '[]')
   })
   on('session.repo', async () => ({ value: { root: '/work/void-sector', remote, internal: false, name: null } }))
@@ -81,7 +110,7 @@ const gh = (on: On, remote = 'git@github.com:astrosteveo/void-sector.git') => {
   return state
 }
 
-test('a missing permission shows in the band, the hint and the pane, with the command that fixes it', async ($, on) => {
+test('a refused project read falls back to labels, and the band, the pane and Check again see it through', async ($, on) => {
   mock.store(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   on('ui.render', { component: 'AbovePrompt' }, async ($$, e) => {
@@ -89,27 +118,38 @@ test('a missing permission shows in the band, the hint and the pane, with the co
     return <Box key="engine" />
   })
   const world = gh(on)
-  world.failure = 'error: your authentication token is missing required scopes [read:project]\nTo request it, run:  gh auth refresh -s read:project'
+  // A fine-grained token lists no scopes; GitHub says what it lacks when the board asks for the project.
+  world.auth = account({ tokenSource: STORED, scopes: '' })
+  world.refuseProject =
+    "GraphQL: Your token has not been granted the required scopes to execute this query. The 'projectsV2' field requires one of the following scopes: ['read:project'], but your token has only been granted the: ['repo'] scopes."
 
   await $.command.run({ ...RUN, args: 'refresh' })
   await clock.settle()
 
-  const band = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...BAND })
-  expect(await band.find({ text: / ⚠ SETUP / })).toBeDefined()
-  expect(await band.find({ text: /^gh's token is missing the read:project permission$/ })).toBeDefined()
-  await band.press({ key: 'copy-fix-scope-read:project' })
-  expect(world.copied).toEqual(['gh auth refresh -s read:project'])
-
+  // The board reads its issues without the project, as the labels have them.
   const pane = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
-  expect(await pane.find({ text: /✗ Setup needed/ })).toBeDefined()
-  expect(await pane.find({ text: /^Run `gh auth refresh -s read:project` in a terminal/ })).toBeDefined()
+  expect(await pane.find({ key: 'filter-active' })).toMatchObject({ text: 'Active 1' })
+  expect(await pane.find({ text: /⚠ The board is limited/ })).toBeDefined()
+  expect(await pane.find({ text: /^Run `gh auth refresh -s project` in a terminal/ })).toBeDefined()
 
-  // Fixed: Check again finds nothing missing and reads GitHub.
-  world.failure = ''
-  await band.press({ key: 'recheck-scope-read:project' })
+  const band = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...BAND })
+  expect(await band.find({ text: /^gh's token is missing the project permission$/ })).toBeDefined()
+  await band.press({ key: 'copy-fix-scope-project' })
+  expect(world.copied).toEqual(['gh auth refresh -s project'])
+
+  // Until Check again, the board doesn't ask for the project again only to be refused.
+  const asked = world.projectQueries
+  await $.command.run({ ...RUN, args: 'refresh' })
+  expect(world.projectQueries).toBe(asked)
+
+  // Fixed: Check again finds nothing missing, and the board reads the project.
+  world.refuseProject = ''
+  await band.press({ key: 'recheck-scope-project' })
   await clock.settle()
   expect(await band.find({ text: / ⚠ SETUP / })).toBeUndefined()
-  expect(await pane.find({ text: /Setup needed/ })).toBeUndefined()
+  expect(await pane.find({ text: /The board is limited/ })).toBeUndefined()
+  expect(world.projectQueries).toBe(asked + 1)
+  expect(await pane.find({ key: 'filter-active' })).toMatchObject({ text: 'Now 1' })
   await pane.unmount()
   await band.unmount()
 })

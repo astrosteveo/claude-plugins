@@ -22,8 +22,9 @@ CLI, signed in, in the folder the session started in.
     a pull request says it is for that issue (`Closes #N` or `Refs #N`), the
     line names it with its CI.
   - Open pull requests, one row each: a CI badge (`✓ PASS`, `✗ FAIL`,
-    `◷ CI`), the title, a dot for the review state, and `◆` on the one for the
-    branch you have checked out. Press the title for its details: the branch,
+    `◷ CI`), the title, the issue it is for (`→ #38`), a dot for the review
+    state, and `◆` on the one for the branch you have checked out. Press the
+    title for its details: the branch,
     author, age, review, failing checks, the issues it is for, and
     **↗ GitHub**.
   - **Finish & merge** on a pull request sends Claude a message to see it
@@ -31,22 +32,28 @@ CLI, signed in, in the folder the session started in.
     branch protection or force-pushing. **Merge all…** (`m`), in the pull
     requests' heading, does the same for every open pull request, one at a
     time, oldest first. It asks first: `y` to send and `n` to cancel.
-  - The Issues heading, with its filters: `1` Active (not labelled `future`),
-    `2` Future, `3` Bugs, `4` Mine (assigned to you) and `5` All. A search
+  - The Issues heading, with its filters: `1` Now (Priority P0 and P1), `2`
+    Later (P2), `3` Bugs, `4` Mine (assigned to you) and `5` All. A search
     field after them keeps the issues whose title, number or labels hold every
     word you type. Tab to it or click it. The mobile app has no text field, so
     it has no search. `r` refreshes.
-  - Open issues by `area:` label, each area with its count and how far along
-    it is. Each issue has a progress bar of its task-list boxes, such as
-    `━━━━━━ 2/4`, its labels in their GitHub colors, and how long since it
-    changed. Bugs come first, marked `▲`, then issues under way. Hover over
-    an issue to preview its open boxes without opening it.
+  - A **by** picker groups the issues by the project's Status (the default, in
+    the project's order), by the epic they are sub-issues of, or by `area:`
+    label. Backlog is folded: press it to open it.
+  - Each issue has a progress bar of its task-list boxes, such as
+    `━━━━━━ 2/4`, its priority, its labels in their GitHub colors, how long
+    since it changed, and the pull request for it with its CI, such as
+    `⇄ #51 ✓`. Within a group the most pressing priority comes first, then
+    bugs, marked `▲`, then issues under way. Hover over an issue to preview
+    its open boxes without opening it.
 - Press Enter on an issue, or click it, to open its card: every label and
-  assignee, the issue's text, a progress bar and its boxes. One card is open
-  at a time, and opening one scrolls it into view. Press a box to tick or
-  untick it on GitHub. Then:
+  assignee, its epic, milestone and open blockers, **Status** and
+  **Priority** pickers that change them in the project, the issue's text, a
+  progress bar and its boxes. One card is open at a time, and opening one
+  scrolls it into view. Press a box to tick or untick it on GitHub. Then:
   - **Start** (`s`) sends Claude a message to start on the issue, with its
-    unticked boxes.
+    unticked boxes. It also moves the issue to In progress in the project,
+    adding it to the project if it isn't there, and assigns it to you.
   - **Edit first** (`e`) puts the same message in the prompt box to edit
     first.
   - **↗ GitHub** opens the issue in the browser.
@@ -93,9 +100,15 @@ The board checks what it needs when a session starts, and again when GitHub
 turns a request down:
 
 - `gh` is installed and signed in, and its token still works.
-- The token has the permissions the board uses, such as `repo`.
+- The token has the permissions the board uses: `repo`, and `project` for
+  the repo's GitHub Project.
 - You have write access to the repo, for ticking boxes and merging.
 - The repo isn't archived, and its issues are turned on.
+
+Without the `project` permission the board still works, from labels: Active
+and Future instead of Now and Later, grouped by area, and no Status or
+Priority. The `⚠ SETUP` row for it only limits the board, so you can wave it
+off.
 
 When something is missing, a `⚠ SETUP` row in the band above the prompt says
 what, with the fix:
@@ -140,6 +153,10 @@ stays quiet there.
 
 - It shows up to 300 open issues and 50 open pull requests.
 - In a repo with issues turned off, it shows only pull requests.
+- It reads the first open GitHub Project linked to the repo, and its fields
+  named Status and Priority. A project that isn't linked to the repo isn't
+  read. With no project, the board works from labels: Active is every issue
+  not labelled `future`, and Future is the ones that are.
 - The summary under the prompt shows in the terminal only.
 - The pane opens only when you run `/issues`.
 - The `tick` tool counts boxes from 1 in the order the issue lists them,

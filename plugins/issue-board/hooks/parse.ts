@@ -1,4 +1,5 @@
-import type { Alert, Board, Check, Ci, Draft, Filter, Issue, Label, PullRequest, Working } from '../types'
+import type { Alert, Board, Check, Ci, Draft, Field, Filter, GroupBy, Issue, Label, Project, PullRequest, Working } from '../types'
+import { isLater, isNow, priorityRank } from './project'
 
 type RawLabel = { name: string; color?: string }
 type RawUser = { login: string }
@@ -134,13 +135,14 @@ export const chipsOf = (issue: Issue): Label[] => issue.labels.filter(one => !on
 // A label's color as a surface draws it: GitHub's hex, or nothing for a label without one.
 export const hex = (label: Label): string | undefined => (/^[0-9a-f]{6}$/i.test(label.color) ? `#${label.color}` : undefined)
 
-// Whether the issue belongs under the filter; `viewer` is the login Mine means.
-export const matches = (filter: Filter, issue: Issue, viewer: string | null = null): boolean => {
+// Whether the issue belongs under the filter; `viewer` is the login Mine means. With a project, Active is Now (P0 and
+// P1) and Future is Later (P2); without one they read the `future` label.
+export const matches = (filter: Filter, issue: Issue, viewer: string | null = null, project: Project | null = null): boolean => {
   switch (filter) {
     case 'active':
-      return !isFuture(issue)
+      return project ? isNow(project, issue) : !isFuture(issue)
     case 'future':
-      return isFuture(issue)
+      return project ? isLater(project, issue) : isFuture(issue)
     case 'bugs':
       return isBug(issue)
     case 'mine':
@@ -174,6 +176,123 @@ export const byArea = (issues: Issue[]): [string, Issue[]][] => {
     .sort(([a], [b]) => (a === 'other' ? 1 : b === 'other' ? -1 : a.localeCompare(b)))
     .map(([area, list]) => [area, [...list].sort((a, b) => rank(a) - rank(b) || b.number - a.number)])
 }
+
+// The most pressing first: by priority when there is a project, then bugs, issues under way and the newest.
+export const sortIssues = (issues: Issue[], project: Project | null = null): Issue[] =>
+  [...issues].sort((a, b) => priorityRank(project, a.priority) - priorityRank(project, b.priority) || rank(a) - rank(b) || b.number - a.number)
+
+// A heading of the issue list and the issues under it. `folded`: drawn shut until the person opens it, as Backlog is.
+// `epic`: the parent the group is for, so its row isn't drawn again beneath it.
+export type Group = { key: string; title: string; issues: Issue[]; folded: boolean; epic?: { total: number; completed: number } }
+
+// The issues in groups: by the project's Status in the project's order, by the epic they are sub-issues of, or by
+// `area:` label. Issues that don't fit a group come last, under No status, No epic or other.
+export const groupsOf = (issues: Issue[], by: GroupBy, project: Project | null = null): Group[] => {
+  if (by === 'status' && project) {
+    const named = (project.status?.options ?? []).map(option => ({
+      key: `status:${option.name}`,
+      title: option.name,
+      issues: sortIssues(issues.filter(issue => issue.status === option.name), project),
+      folded: /^backlog$/i.test(option.name),
+    }))
+    const known = new Set(named.map(group => group.title))
+    const rest = sortIssues(issues.filter(issue => !issue.status || !known.has(issue.status)), project)
+    return [...named, { key: 'status:none', title: 'No status', issues: rest, folded: false }].filter(group => group.issues.length > 0)
+  }
+  if (by === 'epic') {
+    const parents = new Map<number, NonNullable<Issue['parent']>>()
+    for (const issue of issues) if (issue.parent) parents.set(issue.parent.number, issue.parent)
+    const epics = [...parents.values()]
+      .sort((a, b) => a.number - b.number)
+      .map(parent => ({
+        key: `epic:${parent.number}`,
+        title: `#${parent.number} ${parent.title}`,
+        issues: sortIssues(issues.filter(issue => issue.parent?.number === parent.number), project),
+        folded: false,
+        epic: { total: parent.total, completed: parent.completed },
+      }))
+    // An open epic is its group's heading, so it isn't listed again under No epic.
+    const rest = sortIssues(issues.filter(issue => !issue.parent && !parents.has(issue.number)), project)
+    return [...epics, { key: 'epic:none', title: 'No epic', issues: rest, folded: false }].filter(group => group.issues.length > 0)
+  }
+  return byArea(issues).map(([area, list]) => ({ key: `area:${area}`, title: area, issues: project ? sortIssues(list, project) : list, folded: false }))
+}
+
+type RawNodes<T> = { nodes?: (T | null)[] | null } | null | undefined
+type RawField = { id?: string; name?: string; options?: { id: string; name: string }[] }
+type RawProject = { id: string; number: number; title: string; url: string; closed?: boolean; fields?: RawNodes<RawField> }
+type RawValue = { name?: string } | null | undefined
+type RawItem = { id: string; project?: { id: string } | null; status?: RawValue; priority?: RawValue }
+type RawGraphIssue = {
+  id: string
+  number: number
+  title: string
+  url?: string
+  body?: string | null
+  updatedAt: string
+  labels?: RawNodes<RawLabel>
+  assignees?: RawNodes<RawUser>
+  milestone?: { title: string } | null
+  parent?: { number: number; title: string; subIssuesSummary?: { total: number; completed: number } | null } | null
+  subIssuesSummary?: { total: number; completed: number } | null
+  blockedBy?: RawNodes<{ number: number; state: string }>
+  closedByPullRequestsReferences?: RawNodes<{ number: number }>
+  projectItems?: RawNodes<RawItem>
+}
+type RawPage = { data?: { repository?: { projectsV2?: RawNodes<RawProject>; issues?: { pageInfo?: { hasNextPage: boolean; endCursor: string | null }; nodes?: (RawGraphIssue | null)[] } } } }
+
+const nodesOf = <T>(list: RawNodes<T>): T[] => (list?.nodes ?? []).filter((one): one is T => one !== null && one !== undefined)
+
+const fieldOf = (project: RawProject, name: string): Field | null => {
+  const field = nodesOf(project.fields).find(one => one.id && one.name?.toLowerCase() === name.toLowerCase() && one.options)
+  return field?.id && field.options ? { id: field.id, options: field.options } : null
+}
+
+// Where the next page of issues starts, or null after the last.
+export const nextPageOf = (json: string): string | null => {
+  const info = (JSON.parse(json) as RawPage).data?.repository?.issues?.pageInfo
+  return info?.hasNextPage && info.endCursor ? info.endCursor : null
+}
+
+// The issues of every page, and the repo's project: the first open one linked to it, read from the first page.
+export const parseGraph = (pages: string[]): { issues: Issue[]; project: Project | null } => {
+  const parsed = pages.map(page => JSON.parse(page) as RawPage)
+  const linked = nodesOf(parsed[0]?.data?.repository?.projectsV2).find(one => !one.closed)
+  const project: Project | null = linked
+    ? { id: linked.id, number: linked.number, title: linked.title, url: linked.url, status: fieldOf(linked, 'Status'), priority: fieldOf(linked, 'Priority') }
+    : null
+  const issues = parsed.flatMap(page => (page.data?.repository?.issues?.nodes ?? []).filter((one): one is RawGraphIssue => one !== null))
+  return {
+    project,
+    issues: issues.map(raw => {
+      const item = project ? nodesOf(raw.projectItems).find(one => one.project?.id === project.id) : undefined
+      const parent = raw.parent
+      return {
+        number: raw.number,
+        title: raw.title,
+        url: raw.url ?? '',
+        labels: nodesOf(raw.labels).map(label => ({ name: label.name, color: label.color ?? '' })),
+        assignees: nodesOf(raw.assignees).map(user => user.login),
+        checks: checksOf(raw.body ?? null),
+        updatedAt: raw.updatedAt,
+        body: raw.body ?? '',
+        id: raw.id,
+        item: item?.id ?? null,
+        status: item?.status?.name ?? null,
+        priority: item?.priority?.name ?? null,
+        milestone: raw.milestone?.title ?? null,
+        parent: parent ? { number: parent.number, title: parent.title, total: parent.subIssuesSummary?.total ?? 0, completed: parent.subIssuesSummary?.completed ?? 0 } : null,
+        subIssues: { total: raw.subIssuesSummary?.total ?? 0, completed: raw.subIssuesSummary?.completed ?? 0 },
+        blockedBy: nodesOf(raw.blockedBy).filter(one => one.state === 'OPEN').map(one => one.number),
+        prs: nodesOf(raw.closedByPullRequestsReferences).map(one => one.number),
+      }
+    }),
+  }
+}
+
+// The open pull requests for an issue: the ones GitHub says close it, and the ones that say they are for it.
+export const prsFor = (issue: Issue, prs: PullRequest[]): PullRequest[] =>
+  prs.filter(pr => (issue.prs ?? []).includes(pr.number) || (pr.issues ?? []).includes(issue.number))
 
 export type Progress = { done: number; total: number }
 
@@ -383,6 +502,11 @@ export const issueText = (issue: Issue): string => {
     issue.url,
     `Labels: ${issue.labels.map(label => label.name).join(', ') || 'none'}`,
     `Assignees: ${issue.assignees.join(', ') || 'none'}`,
+    issue.status || issue.priority ? `Status: ${issue.status ?? 'none'}. Priority: ${issue.priority ?? 'none'}.` : '',
+    issue.milestone ? `Milestone: ${issue.milestone}` : '',
+    issue.parent ? `Sub-issue of #${issue.parent.number}: ${issue.parent.title}` : '',
+    (issue.subIssues?.total ?? 0) > 0 ? `Sub-issues: ${issue.subIssues?.completed}/${issue.subIssues?.total} closed` : '',
+    (issue.blockedBy ?? []).length > 0 ? `Blocked by: ${issue.blockedBy?.map(number => `#${number}`).join(', ')}` : '',
     `Updated: ${issue.updatedAt}`,
     step.total > 0 ? `Boxes (${step.done}/${step.total} ticked):` : 'Boxes: none',
     ...issue.checks.map((check, index) => `${index + 1}. [${check.done ? 'x' : ' '}] ${check.text}`),
@@ -406,7 +530,8 @@ export const boardText = (board: Board, issues: Issue[], label: string, clock: n
   const line = (issue: Issue) => {
     const step = progress(issue.checks)
     const labels = issue.labels.map(one => one.name).join(', ')
-    const parts = [labels, step.total > 0 ? `${step.done}/${step.total} boxes` : ''].filter(Boolean)
+    const planned = [issue.status, issue.priority].filter(Boolean).join(' ')
+    const parts = [planned, labels, step.total > 0 ? `${step.done}/${step.total} boxes` : ''].filter(Boolean)
     return `#${issue.number} ${issue.title}${parts.length > 0 ? ` [${parts.join('; ')}]` : ''}`
   }
   const listed = issues.slice(0, LISTED)

@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import { ago, bar, checksOf, ciOf, fit, issuesOf, proseOf, spark, summary, weekly } from '../hooks/parse'
+import { graphPage, isIssuesQuery } from './graph'
 
 test("a card's text leaves out its boxes, and a pull request names the issues it is for", () => {
   expect(proseOf('Why it matters.\n\n## Acceptance\n\n- [ ] One\n- [x] Two\n\n## Notes\n\nKeep this.')).toBe('Why it matters.\n\n## Notes\n\nKeep this.')
@@ -81,7 +82,9 @@ test('the pane lists the issues by filter and opens one to its boxes', async ($,
     const kind = e.argv[1]
     const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
     const stdout =
-      kind === 'repo'
+      isIssuesQuery(e.argv)
+        ? graphPage(ISSUES)
+        : kind === 'repo'
         ? JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true })
         : e.argv.includes('closed')
           ? JSON.stringify([{ closedAt: yesterday }, { closedAt: yesterday }])
@@ -182,7 +185,7 @@ test('the hint under the prompt carries the summary, and nothing with nothing op
   on('process.run', async (_$, e) => {
     const kind = e.argv[1]
     if (kind === 'issue') issueCalls.push([...e.argv])
-    const stdout = kind === 'repo' ? JSON.stringify(repo) : e.argv.includes('closed') || e.argv.includes('merged') ? '[]' : JSON.stringify(kind === 'issue' ? issues : prs)
+    const stdout = isIssuesQuery(e.argv) ? graphPage(issues as never) : kind === 'repo' ? JSON.stringify(repo) : e.argv.includes('closed') || e.argv.includes('merged') ? '[]' : JSON.stringify(kind === 'issue' ? issues : prs)
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   // What the engine draws: its hint, then ` · ` and the tail the plugins added.
@@ -218,7 +221,7 @@ test('the hint under the prompt carries the summary, and nothing with nothing op
 test('the pane opens to close on Esc, and Collapse folds the card', async ($, on) => {
   on('process.run', async (_$, e) => {
     const kind = e.argv[1]
-    const stdout = kind === 'repo' ? JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true }) : e.argv.includes('closed') || e.argv.includes('merged') ? '[]' : JSON.stringify(kind === 'issue' ? ISSUES : PRS)
+    const stdout = isIssuesQuery(e.argv) ? graphPage(ISSUES) : kind === 'repo' ? JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true }) : e.argv.includes('closed') || e.argv.includes('merged') ? '[]' : JSON.stringify(kind === 'issue' ? ISSUES : PRS)
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   const opened: unknown[] = []

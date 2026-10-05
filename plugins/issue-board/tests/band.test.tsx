@@ -1,5 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
+import { graphPage, isIssuesQuery } from './graph'
+
 const issue = (updatedAt: string) => ({
   number: 315,
   title: 'Lay Kessik out for play',
@@ -33,7 +35,7 @@ test('the band raises failing CI, news on the issue Claude is on, and its closin
   let prs: unknown[] = [failing]
   on('process.run', async (_$, e) => {
     const kind = e.argv[1]
-    const stdout = kind === 'repo' ? JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true }) : e.argv.includes('closed') || e.argv.includes('merged') ? '[]' : JSON.stringify(kind === 'issue' ? issues : prs)
+    const stdout = isIssuesQuery(e.argv) ? graphPage(issues as never) : kind === 'repo' ? JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true }) : e.argv.includes('closed') || e.argv.includes('merged') ? '[]' : JSON.stringify(kind === 'issue' ? issues : prs)
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   // What the engine draws in the band when no plugin has anything to say.
