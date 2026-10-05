@@ -21,6 +21,7 @@ export const issuesQuery = (withProject: boolean): string =>
     'parent { number title subIssuesSummary { total completed } } subIssuesSummary { total completed }',
     'blockedBy(first: 10) { nodes { number state } }',
     'closedByPullRequestsReferences(first: 5, includeClosedPrs: false) { nodes { number } }',
+    'comments { totalCount }',
     withProject ? ITEMS : '',
     '} } } }',
   ]

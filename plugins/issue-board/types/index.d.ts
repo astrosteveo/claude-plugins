@@ -26,6 +26,8 @@ export type Issue = {
   // The open issues this one is blocked by, and the open pull requests GitHub says will close it.
   blockedBy?: number[]
   prs?: number[]
+  // How many comments it has; absent on an issue read with `gh issue view`, or on an older board.
+  comments?: number
 }
 
 // A single-select field of a project, such as Status, with its options in the project's order.
@@ -78,8 +80,19 @@ export type Board = {
   project?: Project | null
 }
 
+// What Claude knows of the issue it is on, as of its last prompt: the boxes, how many comments there are (null when the
+// board can't say), each open pull request for it with the CI of its head commit, and whether the issue is closed. The
+// next prompt carries a note of what changed since.
+export type Known = { checks: Check[]; comments: number | null; prs: { number: number; ci: Ci; sha: string }[]; closed: boolean }
+
 // The issue Start handed Claude, and when it last changed as of then; `sessionId` is the session that started it.
-export type Working = { number: number; title: string; updatedAt: string; sessionId?: string }
+// `known` is absent until the first prompt in a session that started it.
+export type Working = { number: number; title: string; updatedAt: string; sessionId?: string; known?: Known }
+
+// A task Start made in Claude's task list for an open box of an issue, by the task's id. `box` counts from 1, as the
+// tick tool does, and `text` finds the box again should the body change. `done`: Claude completed the task, so the
+// band asks whether to tick the box.
+export type BoxTask = { id: string; number: number; box: number; text: string; done: boolean }
 
 // An issue Claude drafted from the conversation, waiting for the person to file it.
 // With `children`, an epic: the parent issue, and the sub-issues created under it.
@@ -198,6 +211,8 @@ declare module 'claude-code' {
       unfolded: string[]
       // `/issues setup` while it shows in the pane; null otherwise.
       setup: Setup | null
+      // The tasks Start made for open boxes in this session.
+      tasks: BoxTask[]
     }
   }
 }

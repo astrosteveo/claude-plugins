@@ -1,4 +1,4 @@
-import type { Alert, Board, Check, Ci, Comment, Draft, Field, Filter, GroupBy, Issue, Label, Project, PullRequest, Working } from '../types'
+import type { Alert, Board, BoxTask, Check, Ci, Comment, Draft, Field, Filter, GroupBy, Issue, Known, Label, Project, PullRequest, Working } from '../types'
 import { isLater, isNow, priorityRank } from './project'
 
 type RawLabel = { name: string; color?: string }
@@ -300,6 +300,7 @@ type RawGraphIssue = {
   blockedBy?: RawNodes<{ number: number; state: string }>
   closedByPullRequestsReferences?: RawNodes<{ number: number }>
   projectItems?: RawNodes<RawItem>
+  comments?: { totalCount?: number } | null
 }
 type RawPage = { data?: { repository?: { projectsV2?: RawNodes<RawProject>; issues?: { pageInfo?: { hasNextPage: boolean; endCursor: string | null }; nodes?: (RawGraphIssue | null)[] } } } }
 
@@ -349,6 +350,7 @@ export const parseGraph = (pages: string[], preferred?: string): { issues: Issue
         subIssues: { total: raw.subIssuesSummary?.total ?? 0, completed: raw.subIssuesSummary?.completed ?? 0 },
         blockedBy: nodesOf(raw.blockedBy).filter(one => one.state === 'OPEN').map(one => one.number),
         prs: nodesOf(raw.closedByPullRequestsReferences).map(one => one.number),
+        ...(typeof raw.comments?.totalCount === 'number' ? { comments: raw.comments.totalCount } : {}),
       }
     }),
   }
@@ -466,10 +468,11 @@ export const summary = (issues: Issue[], prs: PullRequest[]): string | undefined
   return parts.length > 0 ? parts.join(' · ') : undefined
 }
 
-// The message the Start and Draft buttons hand Claude for an issue.
-export const startPrompt = (issue: Issue): string => {
+// The message the Start and Draft buttons hand Claude for an issue. `tasks`: Start made a task for each open box.
+export const startPrompt = (issue: Issue, tasks = false): string => {
   const open = issue.checks.filter(check => !check.done)
-  const boxes = open.length > 0 ? `\n\nIts open acceptance boxes:\n${open.map(check => `- ${check.text}`).join('\n')}` : ''
+  const listed = tasks ? '\n\nEach is a task in your task list too: mark it completed when it is done.' : ''
+  const boxes = open.length > 0 ? `\n\nIts open acceptance boxes:\n${open.map(check => `- ${check.text}`).join('\n')}${listed}` : ''
   return `Let's start on #${issue.number}: ${issue.title}. Read it with \`gh issue view ${issue.number}\` first.${boxes}`
 }
 
@@ -580,10 +583,10 @@ export const tickBody = (body: string, boxes: number[], done: boolean): { body: 
   return { body: lines.join('\n'), changed, missing: boxes.filter(box => box < 1 || box > seen) }
 }
 
-// One issue as the issues tool answers it: what the board knows, its boxes numbered as the tick tool counts them.
-export const issueText = (issue: Issue): string => {
+// What the board knows of one issue, a fact a line, its boxes numbered as the tick tool counts them.
+const issueLines = (issue: Issue): string[] => {
   const step = progress(issue.checks)
-  const lines = [
+  return [
     `#${issue.number} ${issue.title}`,
     issue.url,
     `Labels: ${issue.labels.map(label => label.name).join(', ') || 'none'}`,
@@ -596,10 +599,12 @@ export const issueText = (issue: Issue): string => {
     `Updated: ${issue.updatedAt}`,
     step.total > 0 ? `Boxes (${step.done}/${step.total} ticked):` : 'Boxes: none',
     ...issue.checks.map((check, index) => `${index + 1}. [${check.done ? 'x' : ' '}] ${check.text}`),
-    `This is the board's copy, without the body's other text. Read the whole issue with \`gh issue view ${issue.number}\`.`,
-  ]
-  return lines.filter(line => line !== '').join('\n')
+  ].filter(line => line !== '')
 }
+
+// One issue as the issues tool answers it.
+export const issueText = (issue: Issue): string =>
+  [...issueLines(issue), `This is the board's copy, without the body's other text. Read the whole issue with \`gh issue view ${issue.number}\`.`].join('\n')
 
 // One pull request as the issues tool answers it.
 export const prText = (pr: PullRequest): string => {
@@ -753,3 +758,145 @@ export const statusOnly = (changes: IssueChanges): boolean =>
 // An issue's or pull request's page on GitHub: the URL gh gave, or one made from the repo for a board saved without it.
 export const pageOf = (repo: string, kind: 'issues' | 'pull', item: { number: number; url: string }): string =>
   item.url || `https://github.com/${repo}/${kind}/${item.number}`
+
+// The issues and pull requests a prompt names as `#123`, each once, in order, up to `limit`. Not `&#123;`, a URL's
+// `/#123` or a word run into it.
+export const mentionsOf = (text: string, limit = 3): number[] =>
+  [...new Set([...text.matchAll(/(?<![\w&/#])#(\d{1,7})\b/g)].map(match => Number(match[1])))].slice(0, limit)
+
+// How much of an issue's text a prompt that names it carries.
+const MENTION_TEXT = 2000
+
+// What a prompt that names `#number` carries for Claude, unseen by the person: the board's copy of that issue, with the
+// pull requests for it and its text, or of that pull request. Null when the board has neither open.
+export const mentionText = (board: Board, number: number, clock: number): string | null => {
+  const age = ago(new Date(board.fetchedAt).toISOString(), clock)
+  const as = `the issue board's copy, synced ${age === 'now' || age === '' ? 'just now' : `${age} ago`}`
+  const issue = board.issues.find(one => one.number === number)
+  if (issue) {
+    const prs = prsFor(issue, board.prs)
+    const prose = proseOf(issue.body)
+    const text = prose.length > MENTION_TEXT ? `${prose.slice(0, MENTION_TEXT - 1)}…` : prose
+    return [
+      `The prompt names #${number}. This is ${as}:`,
+      ...issueLines(issue),
+      ...(prs.length > 0 ? ['Pull requests for it:', ...prs.map(prText)] : []),
+      ...(text ? ['Text, without the boxes:', text] : []),
+      prose.length > MENTION_TEXT || !issue.body
+        ? `Read the whole issue with \`gh issue view ${number}\`.`
+        : `Its comments aren't here: read them with \`gh issue view ${number} --comments\`.`,
+    ].join('\n')
+  }
+  const pr = board.prs.find(one => one.number === number)
+  return pr ? `The prompt names pull request #${number}. This is ${as}:\n${prText(pr)}\nRead it in full with \`gh pr view ${number}\`.` : null
+}
+
+// What Claude knows of an issue as the board has it now; `issue` undefined once it's closed, as it leaves the board.
+export const knownOf = (issue: Issue | undefined, prs: PullRequest[]): Known => ({
+  checks: issue?.checks ?? [],
+  comments: issue?.comments ?? null,
+  prs: issue ? prsFor(issue, prs).map(pr => ({ number: pr.number, ci: pr.ci, sha: pr.sha })) : [],
+  closed: issue === undefined,
+})
+
+// What Claude knows once its own action changed the issue: what changed from `before` to `after` while the action ran
+// goes into `known`, so it isn't noted, and what changed earlier stays to be noted. CI runs on its own, so a pull
+// request keeps the CI Claude knew; one opened or closed during the action is taken as it is now.
+export const absorbed = (known: Known, before: Known, after: Known): Known => {
+  const has = (list: Check[], check: Check) => list.some(one => one.text === check.text)
+  let checks = known.checks.filter(check => !has(before.checks, check) || has(after.checks, check))
+  for (const check of after.checks) {
+    const old = before.checks.find(one => one.text === check.text)
+    if (old && old.done === check.done) continue
+    checks = has(checks, check) ? checks.map(one => (one.text === check.text ? check : one)) : [...checks, check]
+  }
+  const opened = (pr: { number: number }, list: Known['prs']) => list.some(one => one.number === pr.number)
+  const added = after.comments !== null && before.comments !== null ? after.comments - before.comments : 0
+  return {
+    checks,
+    comments: known.comments === null ? after.comments : known.comments + added,
+    prs: [
+      ...known.prs.filter(pr => !opened(pr, before.prs) || opened(pr, after.prs)),
+      ...after.prs.filter(pr => !opened(pr, before.prs) && !opened(pr, known.prs)),
+    ],
+    closed: before.closed === after.closed ? known.closed : after.closed,
+  }
+}
+
+const COMMENT_TEXT = 300
+
+// The note a prompt carries when the issue Claude is on changed on GitHub since its last prompt: boxes ticked, added or
+// gone, new comments (with `comments`, the newest, when gh could read them), CI that failed or passed, the issue closed.
+// Null when nothing it tracks changed.
+export const newsOf = (number: number, was: Known, now: Known, comments: Comment[] = []): string | null => {
+  const lines: string[] = []
+  if (now.closed && !was.closed) lines.push(`#${number} is closed.`)
+  if (!now.closed) {
+    now.checks.forEach((check, index) => {
+      const old = was.checks.find(one => one.text === check.text)
+      if (!old) lines.push(`Box ${index + 1} is new: ${check.text}`)
+      else if (old.done !== check.done) lines.push(`Box ${index + 1} was ${check.done ? 'ticked' : 'unticked'}: ${check.text}`)
+    })
+    for (const old of was.checks) if (!now.checks.some(check => check.text === old.text)) lines.push(`A box was taken out: ${old.text}`)
+    const added = now.comments !== null && was.comments !== null ? now.comments - was.comments : 0
+    if (added > 0) {
+      const shown = comments.slice(-Math.min(added, 3))
+      lines.push(`${added === 1 ? 'A new comment' : `${added} new comments`}${shown.length > 0 ? ':' : `. Read ${added === 1 ? 'it' : 'them'} with \`gh issue view ${number} --comments\`.`}`)
+      for (const comment of shown) lines.push(`  @${comment.author}: ${fit(comment.body.replace(/\s+/g, ' ').trim(), COMMENT_TEXT)}`)
+    }
+    // A closed issue leaves the board, and the board then knows none of its pull requests.
+    for (const pr of now.prs) {
+      const old = was.prs.find(one => one.number === pr.number)
+      if (old && old.ci === pr.ci && old.sha === pr.sha) continue
+      if (pr.ci === 'fail') lines.push(`CI fails on PR #${pr.number}. \`gh pr checks ${pr.number}\` says where.`)
+      else if (pr.ci === 'pass') lines.push(`CI passes on PR #${pr.number}.`)
+    }
+    for (const old of was.prs) if (!now.prs.some(pr => pr.number === old.number)) lines.push(`PR #${old.number} isn't open any more: it merged or closed.`)
+  }
+  if (lines.length === 0) return null
+  return [`#${number}, the issue you're working on, changed on GitHub since the last prompt:`, ...lines.map(line => (line.startsWith('  ') ? line : `- ${line}`))].join('\n')
+}
+
+// What the prompt box suggests after a turn, for the issue Claude is on: fix CI that fails on its pull request; once
+// every box is ticked, open a pull request for it, or merge the one whose CI passes. Null when nothing is due.
+export const nextStepOf = (board: Board, working: Working | null): string | null => {
+  const issue = working && board.issues.find(one => one.number === working.number)
+  if (!issue) return null
+  const prs = prsFor(issue, board.prs)
+  const failing = prs.find(pr => pr.ci === 'fail')
+  if (failing) return `Fix the failing CI on PR #${failing.number}`
+  const { done, total } = progress(issue.checks)
+  if (total === 0 || done < total) return null
+  if (prs.length === 0) return `Open a PR for #${issue.number}`
+  const ready = prs.find(pr => pr.ci === 'pass' && !pr.isDraft)
+  return ready ? `Finish and merge PR #${ready.number}` : null
+}
+
+// The issue a branch is for, by the number a part of its name starts with, such as `fix/315-glide`, `315-glide`,
+// `issue-315` or the worktree branch `worktree-fix+315-glide`. Null when it names none.
+export const issueOfBranch = (name: string | null): number | null => {
+  const match = /(?:^|[/+])(?:issue[-_]?|gh[-_]?)?(\d{1,7})(?=[-_/+]|$)/i.exec(name ?? '')
+  return match ? Number(match[1]) : null
+}
+
+// Commands that change something on GitHub, so the board reads it again: gh issue and pr writes, project item edits,
+// a push, and gh api calls that write. gh sends a POST when fields are given with no method.
+const GH_WRITE = /\bgh\s+(issue|pr)\s+(create|edit|close|reopen|merge|comment|ready|review|develop)\b|\bgh\s+project\s+item-(add|create|edit|archive|delete)\b|\bgit\s+push\b/
+const API_CALL = /\bgh\s+api\b[^;&|]*/g
+export const writesGitHub = (command: string): boolean =>
+  GH_WRITE.test(command) ||
+  [...command.matchAll(API_CALL)].some(([call]) => {
+    if (/\bgraphql\b/.test(call)) return /\bmutation\b/.test(call)
+    const method = /(?:^|\s)(?:-X|--method)[\s=]*['"]?([A-Za-z]+)/.exec(call)?.[1]
+    if (method) return method.toUpperCase() !== 'GET'
+    return /(?:^|\s)(?:-f|-F|--field|--raw-field|--input)(?=[\s=])/.test(call)
+  })
+
+// Where a task Start made for a box stands now: the box by its text, or by its place should the text have changed.
+// Null when the issue has no such box any more.
+export const boxOf = (issue: Issue, task: BoxTask): { box: number; done: boolean } | null => {
+  const index = issue.checks.findIndex(check => check.text === task.text)
+  const at = index >= 0 ? index : task.box - 1
+  const check = issue.checks[at]
+  return check ? { box: at + 1, done: check.done } : null
+}

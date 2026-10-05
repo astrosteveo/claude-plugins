@@ -66,8 +66,9 @@ CLI, signed in, in the folder the session started in.
   reply field posts a comment when you press Enter, and **Ask Claude to
   answer** hands Claude the last comment to reply to. Then:
   - **Start** (`s`) sends Claude a message to start on the issue, with its
-    unticked boxes. It also moves the issue to In progress in the project,
-    adding it to the project if it isn't there, and assigns it to you.
+    unticked boxes. It makes a task in Claude's task list for each of those
+    boxes. It also moves the issue to In progress in the project, adding it
+    to the project if it isn't there, and assigns it to you.
   - **⚙ Change** opens the card's editor. Each change is made on GitHub as
     soon as you press it, and the board reads GitHub again straight after:
     - **Labels**: the repo's labels, the ones the issue has highlighted;
@@ -139,15 +140,20 @@ CLI, signed in, in the folder the session started in.
     opens it;
   - the issue you pressed Start on changes on GitHub, other than by Claude's
     own changes or yours from the board. **↗ GitHub** opens it;
-  - that issue is closed.
+  - that issue is closed;
+  - Claude completes a task that Start made for a box, and the box is still
+    open. **Tick box N** ticks it on GitHub.
 
   `✕` waves an alert off until it happens again. While you work on an issue,
   the band also shows a `▶` row with its progress. `✕` on that row stops
   tracking the issue.
 
-The board refreshes every 5 minutes, every 30 seconds while a pull request's
-CI is running, and straight after Claude runs a `gh issue` or `gh pr` command
-that changes something.
+The board refreshes every 5 minutes, and every 30 seconds while a pull
+request's CI is running. It also refreshes straight after Claude changes
+GitHub: a `gh issue` or `gh pr` command that changes something,
+`gh project item-edit`, a `gh api` call that writes, or `git push`. When a
+turn ends and Claude ran `git` or `gh` since the last refresh, the board
+refreshes again.
 
 The board is saved for each repository. A new session shows the last board
 straight away, and still knows the issue you were working on. The issues'
@@ -193,7 +199,7 @@ stays quiet there.
 
 ## What Claude gets
 
-- Two tools:
+- Three tools:
   - `issues` lists the board's issues and pull requests, one line each, or
     one issue in full with its boxes numbered. It reads the board's copy, so
     it doesn't run `gh`, and it needs no permission prompt.
@@ -212,6 +218,23 @@ stays quiet there.
   repository's contributing guidelines come first. The note survives compaction. It
   covers only the session where you pressed Start, and changes only when you
   start another issue, so Claude Code's prompt cache keeps working.
+- Checking out a branch named for an issue makes it the issue Claude is on,
+  as Start does, but without a message or tasks. A part of the branch name
+  starts with the number, such as `fix/315-glide`, `315-glide` or
+  `issue-315`. A worktree's branch counts too. The issue must be open on the
+  board.
+- A prompt that names an issue or pull request as `#123` carries the board's
+  copy of it for Claude to read: its labels, Status, boxes, pull requests
+  and text. You don't see it. A prompt carries up to three.
+- While Claude is on an issue, the next prompt carries a short note when
+  the issue changed on GitHub: a box ticked, added or taken out, new
+  comments with what they say, CI that fails or passes on its pull request,
+  or the issue closed. Changes Claude made itself aren't in it, and the
+  system prompt stays the same.
+- After each turn, the prompt box suggests a next step for that issue:
+  `Fix the failing CI on PR #N`, or, once every box is ticked,
+  `Open a PR for #N`, or `Finish and merge PR #N` when its CI passes. Tab
+  takes it. It replaces Claude Code's own suggestion.
 
 ## Limits
 
