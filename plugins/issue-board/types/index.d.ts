@@ -105,8 +105,23 @@ export type Alert =
   | { kind: 'activity'; key: string; issue: Issue }
   | { kind: 'closed'; key: string; working: Working }
 
-// `active` and `future` read Priority when there is a project (Now and Later), and the `future` label when not.
-export type Filter = 'active' | 'future' | 'bugs' | 'mine' | 'all'
+// `active` and `future` read Priority when there is a project (Now and Later), and the `future` label when not. `inbox`
+// is the project's issues with Status Inbox or none, to triage; without a project it holds nothing.
+export type Filter = 'active' | 'future' | 'bugs' | 'mine' | 'all' | 'inbox'
+
+// Claude's suggestion for an issue in the Inbox: its Priority, its area (the label without `area:`; null for none), the
+// Status accepting moves it to, and why. `updatedAt` is the issue's as of then, so a changed issue is asked about again.
+export type Suggestion = { number: number; priority: string | null; area: string | null; status: 'Ready' | 'Backlog'; reason: string; updatedAt: string }
+
+// The Inbox's triage: Claude's suggestions, what the person changed of them, the repo's areas to pick from, and whether
+// Claude is being asked; `failed` says why the last ask came to nothing.
+export type Triage = {
+  suggestions: Suggestion[]
+  picks: { number: number; priority?: string; area?: string | null }[]
+  areas: string[]
+  asking: boolean
+  failed: string | null
+}
 
 // How the pane groups the issues: by the project's Status, by the epic they are sub-issues of, or by `area:` label.
 export type GroupBy = 'status' | 'epic' | 'area'
@@ -213,6 +228,8 @@ declare module 'claude-code' {
       setup: Setup | null
       // The tasks Start made for open boxes in this session.
       tasks: BoxTask[]
+      // The Inbox's suggestions and picks.
+      triage: Triage
     }
   }
 }
