@@ -26,9 +26,11 @@ import {
   templatePrompt,
 } from './setup'
 import {
+  THREADS_QUERY,
   WEEKS,
   ago,
   alertsOf,
+  answerPrompt,
   areaOf,
   bar,
   boardText,
@@ -39,6 +41,7 @@ import {
   ciBadge,
   closeOutAllPrompt,
   closeOutPrompt,
+  commentsOf,
   commandsOf,
   draftPrompt,
   fit,
@@ -55,6 +58,7 @@ import {
   pageOf,
   proseOf,
   matches,
+  mergeNoteOf,
   parseDraft,
   parseGraph,
   parseIssues,
@@ -70,6 +74,7 @@ import {
   statusOnly,
   sumProgress,
   summary,
+  threadsOf,
   tickBody,
   timesOf,
   tone,
@@ -138,6 +143,7 @@ const editing = atom({ plugin: 'issue-board', key: 'editing' } as const, null)
 const palette = atom({ plugin: 'issue-board', key: 'palette' } as const, null)
 const closing = atom({ plugin: 'issue-board', key: 'closing' } as const, null)
 const typing = atom({ plugin: 'issue-board', key: 'typing' } as const, { comment: '', parent: '' })
+const talk = atom({ plugin: 'issue-board', key: 'talk' } as const, null)
 const openPr = atom({ plugin: 'issue-board', key: 'openPr' } as const, null)
 const access = atom({ plugin: 'issue-board', key: 'access' } as const, null)
 const groupBy = atom({ plugin: 'issue-board', key: 'groupBy' } as const, null)
@@ -323,7 +329,8 @@ const refresh = async ($: EngineInterface, seen = false): Promise<void> => {
     // First, so a folder that isn't a GitHub repo stops at one call, and a repo with issues turned off skips them.
     const repo = JSON.parse(await gh($, ['repo', 'view', '--json', 'nameWithOwner,hasIssuesEnabled'])) as { nameWithOwner: string; hasIssuesEnabled: boolean }
     const listIssues = (args: string[]) => (repo.hasIssuesEnabled ? gh($, ['issue', 'list', ...args]) : Promise.resolve('[]'))
-    const [graph, prs, closed, merged, login, current] = await Promise.all([
+    const [owner = '', name = ''] = repo.nameWithOwner.split('/')
+    const [graph, prs, threads, closed, merged, login, current] = await Promise.all([
       repo.hasIssuesEnabled ? fetchIssues($, repo.nameWithOwner) : Promise.resolve({ issues: [], project: null }),
       gh($, [
         'pr',
@@ -333,8 +340,10 @@ const refresh = async ($: EngineInterface, seen = false): Promise<void> => {
         '--limit',
         '50',
         '--json',
-        'number,title,url,author,headRefName,headRefOid,isDraft,statusCheckRollup,reviewDecision,additions,deletions,updatedAt,body,closingIssuesReferences',
+        'number,title,url,author,headRefName,headRefOid,isDraft,statusCheckRollup,reviewDecision,additions,deletions,updatedAt,body,closingIssuesReferences,mergeStateStatus,reviewRequests',
       ]),
+      // Review threads still open on each pull request; without them, the rows just don't count threads.
+      gh($, ['api', 'graphql', '-f', `owner=${owner}`, '-f', `name=${name}`, '-f', `query=${THREADS_QUERY}`]).then(threadsOf, () => new Map<number, number>()),
       listIssues(['--state', 'closed', '--search', `closed:>=${from}`, '--limit', '500', '--json', 'closedAt']),
       gh($, ['pr', 'list', '--state', 'merged', '--search', `merged:>=${from}`, '--limit', '500', '--json', 'mergedAt']),
       // Who Mine means: asked once, then kept.
@@ -345,7 +354,7 @@ const refresh = async ($: EngineInterface, seen = false): Promise<void> => {
     const next: Board = {
       repo: repo.nameWithOwner,
       issues: graph.issues,
-      prs: parsePrs(prs),
+      prs: parsePrs(prs).map(pr => ({ ...pr, openThreads: threads.get(pr.number) ?? 0 })),
       velocity: { closed: weekly(timesOf(closed, 'closedAt'), fetchedAt), merged: weekly(timesOf(merged, 'mergedAt'), fetchedAt) },
       fetchedAt,
       project: graph.project,
@@ -747,6 +756,22 @@ const change = async ($: EngineInterface, number: number, changes: IssueChanges)
   }
 }
 
+// How many of an issue's comments a card shows: the latest.
+const SHOWN_COMMENTS = 3
+
+// Reads an issue's comments for its card. One card is open at a time, so this holds only its comments; a card opened
+// meanwhile keeps the comments it asked for.
+const loadComments = async ($: EngineInterface, number: number): Promise<void> => {
+  await update($, talk, was => (was?.number === number ? was : { number, comments: null, total: 0 }))
+  try {
+    const all = commentsOf(await gh($, ['issue', 'view', String(number), '--json', 'comments']))
+    await update($, talk, was => (was?.number === number ? { number, comments: all.slice(-SHOWN_COMMENTS), total: all.length } : was))
+  } catch (cause) {
+    await update($, talk, was => (was?.number === number ? { number, comments: [], total: 0 } : was))
+    $.ui.log(`issue-board: couldn't read the comments on #${number}: ${messageOf(cause)}`, { to: 'debug' })
+  }
+}
+
 // What the card's editor offers: the repo's labels and open milestones, read when it opens.
 const loadPalette = async ($: EngineInterface): Promise<void> => {
   try {
@@ -1044,6 +1069,7 @@ export const register: Register = on => {
     const offered = await read($, palette)
     const armedClose = await read($, closing)
     const fields = await read($, typing)
+    const said = await read($, talk)
     const shownPr = await read($, openPr)
     const planned = await read($, setup)
     const picked = await read($, groupBy)
@@ -1097,6 +1123,7 @@ export const register: Register = on => {
       await update($, expanded, () => (opening ? [number] : []))
       await update($, editing, () => null)
       if (opening) await $.ui.scroll({ to: { key: `card-${number}` }, in: PANE }).catch(() => undefined)
+      if (opening) await loadComments($, number)
     }
     const togglePr = (number: number) => () => void update($, openPr, was => (was === number ? null : number))
 
@@ -1523,7 +1550,14 @@ export const register: Register = on => {
       // The issue it closes or refers to, on the row: the first it names.
       const forIssue = (pr.issues ?? [])[0]
       const forText = forIssue ? `→ #${forIssue}` : ''
-      const titleRoom = width - [...badge.text].length - String(pr.number).length - 3 - (review ? 2 : 0) - (mine ? 2 : 0) - (forText ? forText.length + 1 : 0) - right
+      // Why it can't merge yet: conflicts or behind its base, review threads still open, and who is asked to review.
+      const merge = mergeNoteOf(pr)
+      const threads = pr.openThreads ?? 0
+      const threadText = threads > 0 ? `${threads} open ${threads === 1 ? 'thread' : 'threads'}` : ''
+      const askedText = (pr.reviewers ?? []).length > 0 ? `asks ${(pr.reviewers ?? []).slice(0, 2).join(', ')}${(pr.reviewers ?? []).length > 2 ? ` +${(pr.reviewers ?? []).length - 2}` : ''}` : ''
+      const notes = [merge?.text ?? '', threadText, askedText].filter(Boolean)
+      const titleRoom =
+        width - [...badge.text].length - String(pr.number).length - 3 - (review ? 2 : 0) - (mine ? 2 : 0) - (forText ? forText.length + 1 : 0) - notes.reduce((sum, note) => sum + cells(note) + 1, 0) - right
       return (
         <Box key={`pr-row-${pr.number}`} flexDirection="column">
           <Box flexDirection="row" justifyContent="space-between">
@@ -1537,6 +1571,9 @@ export const register: Register = on => {
               </Button>
               {forText && <Text color="claude">{forText}</Text>}
               {review && <Text color={review.color}>{pr.isDraft ? '◌' : review.text.slice(0, 1)}</Text>}
+              {merge && <Text color={merge.color}>{merge.text}</Text>}
+              {threadText && <Text color="warning">{threadText}</Text>}
+              {askedText && <Text dimColor>{askedText}</Text>}
               {mine && (
                 <Text color="claude" bold>
                   ◆
@@ -1781,23 +1818,6 @@ export const register: Register = on => {
               )
             })}
           </Box>
-          {Input && (
-            <Box flexDirection="row" gap={1}>
-              {row('Comment')}
-              <Input
-                key={`comment-${n}`}
-                label=""
-                placeholder="write a comment, Enter posts it"
-                value={fields.comment}
-                submitLabel="post"
-                onInput={text => void update($, typing, was => ({ ...was, comment: text }))}
-                onSubmit={text => {
-                  if (!text.trim()) return
-                  void update($, typing, was => ({ ...was, comment: '' })).then(() => change($, n, { comment: text }))
-                }}
-              />
-            </Box>
-          )}
           <Box flexDirection="row" gap={1} flexWrap="wrap">
             {row('Close')}
             <Button key={`close-completed-${n}`} dimColor onPress={() => void closeAs('completed')()}>
@@ -1810,6 +1830,61 @@ export const register: Register = on => {
           {armedClose === n && (
             <Text color="warning" wrap="wrap">{`#${n} is an epic with ${open} open ${open === 1 ? 'sub-issue' : 'sub-issues'}. Closing it leaves them open under a closed epic. Press again to close it anyway.`}</Text>
           )}
+        </Box>
+      )
+    }
+
+    // The card's comments: the latest few, a field to reply in, and Ask Claude to answer, which hands Claude the last
+    // comment with how to reply. A reply posted here reads the comments again.
+    const conversation = (issue: Issue) => {
+      const n = issue.number
+      const mine = said?.number === n ? said : null
+      const comments = mine?.comments
+      const last = comments?.at(-1)
+      const reply = (text: string) => {
+        if (!text.trim()) return
+        void update($, typing, was => ({ ...was, comment: '' }))
+          .then(() => change($, n, { comment: text }))
+          .then(() => loadComments($, n))
+      }
+      return (
+        <Box key={`talk-${n}`} flexDirection="column" marginTop={1}>
+          <Text bold>
+            {comments === undefined || comments === null
+              ? 'Comments'
+              : mine && mine.total > comments.length
+                ? `Comments · latest ${comments.length} of ${mine.total}`
+                : `Comments · ${comments.length}`}
+          </Text>
+          {(comments === undefined || comments === null) && <Text dimColor>◌ reading…</Text>}
+          {comments?.length === 0 && <Text dimColor>None yet.</Text>}
+          {comments?.map((comment, index) => (
+            <Box key={`comment-${n}-${index}`} flexDirection="column" marginTop={index > 0 ? 1 : 0}>
+              <Text>
+                <Text color="suggestion">{`@${comment.author}`}</Text>
+                <Text dimColor>{` · ${ago(comment.at, clock)} ago`}</Text>
+              </Text>
+              <Markdown text={comment.body.length > 800 ? `${comment.body.slice(0, 799)}…` : comment.body || '(empty)'} />
+            </Box>
+          ))}
+          <Box flexDirection="row" gap={1} marginTop={1} flexWrap="wrap">
+            {Input && (
+              <Input
+                key={`reply-${n}`}
+                label="reply "
+                placeholder="write a comment, Enter posts it"
+                value={fields.comment}
+                submitLabel="post"
+                onInput={text => void update($, typing, was => ({ ...was, comment: text }))}
+                onSubmit={reply}
+              />
+            )}
+            {last && (
+              <Button key={`ask-${n}`} dimColor onPress={() => void $.prompt.submit({ text: answerPrompt(issue, last), asUser: true }).then(() => $.ui.toast(`Asked Claude to answer @${last.author} on #${n}`))}>
+                Ask Claude to answer
+              </Button>
+            )}
+          </Box>
         </Box>
       )
     }
@@ -1884,6 +1959,7 @@ export const register: Register = on => {
               </Text>
             </Box>
           )}
+          {conversation(issue)}
           <Box flexDirection="row" gap={1} marginTop={1}>
             <Button key={`start-${issue.number}`} variant="primary" hotkey={hotkeys ? 's' : undefined} onPress={() => void start(issue)}>
               ▶ Start
