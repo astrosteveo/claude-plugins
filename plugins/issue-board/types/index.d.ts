@@ -60,6 +60,13 @@ export type Alert =
 
 export type Filter = 'active' | 'future' | 'bugs' | 'mine' | 'all'
 
+// Something the board needs that is missing, and how to fix it. `blocks`: the board can't read GitHub until it's fixed.
+// `command` is what Copy fix copies, and `url` the page the fix happens on.
+export type Problem = { id: string; title: string; detail: string; fix: string; command?: string; url?: string; blocks: boolean }
+
+// What the last permission check found. `repo` and `permission` are null when gh couldn't say.
+export type Access = { login: string | null; repo: string | null; permission: string | null; problems: Problem[]; checkedAt: number }
+
 declare module 'claude-code' {
   interface PluginState {
     'issue-board': {
@@ -82,6 +89,8 @@ declare module 'claude-code' {
       greened: string[]
       draft: Draft | null
       drafting: boolean
+      // The last permission check; null until one has run.
+      access: Access | null
     }
   }
 }

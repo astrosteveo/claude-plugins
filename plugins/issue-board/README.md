@@ -49,6 +49,8 @@ CLI, signed in, in the folder the session started in.
 
   The letter keys work while one card is open.
 - `/issues refresh` refreshes and replies with the summary.
+- `/issues check` checks that `gh` has what the board needs, and says how to
+  fix anything missing. See [Permissions](#permissions).
 - `/issues new` asks Claude to draft an issue from the conversation so far:
   a title, a body with an `## Acceptance` list of boxes, and labels the repo
   already uses. Add what it is about, as in `/issues new saves lose the
@@ -76,6 +78,37 @@ that changes something.
 
 The board is saved for each repository. A new session shows the last board
 straight away, and still knows the issue you were working on.
+
+## Permissions
+
+The board checks what it needs when a session starts, and again when GitHub
+turns a request down:
+
+- `gh` is installed and signed in, and its token still works.
+- The token has the permissions the board uses, such as `repo`.
+- You have write access to the repo, for ticking boxes and merging.
+- The repo isn't archived, and its issues are turned on.
+
+When something is missing, a `⚠ SETUP` row in the band above the prompt says
+what, with the fix:
+
+- **Copy command** copies the command that fixes it, such as
+  `gh auth refresh -s repo`. Run it in a terminal, or type it after `!` in
+  the prompt.
+- **Open page** opens the page the fix happens on, such as GitHub's token
+  settings. A token in `GH_TOKEN` can't be changed by `gh`, so its fix is
+  that page.
+- **Check again** looks again once you've fixed it.
+- `✕` waves the row off.
+
+The line under the prompt says `issue board needs setup` while the board
+can't read GitHub, and `issue board is limited` while something else is
+missing and you haven't waved it off. The pane lists each problem with its
+fix, and `/issues check` replies with them. When the `issues` or `tick` tool
+fails for want of a permission, Claude gets the same fix.
+
+A folder whose repository isn't on GitHub has nothing to check, so the board
+stays quiet there.
 
 ## What Claude gets
 

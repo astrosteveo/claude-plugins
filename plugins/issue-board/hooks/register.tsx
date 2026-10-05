@@ -1,7 +1,8 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, ModelForkResult, Register, Timer } from 'claude-code'
+import type { EngineInterface, ModelForkResult, Register, Timer, UiCopyArgs } from 'claude-code'
 
-import type { Alert, Board, Draft, Filter, Issue, PullRequest, Working } from '../types'
+import type { Alert, Board, Draft, Filter, Issue, Problem, PullRequest, Working } from '../types'
+import { authOf, problemsOf, problemsText, repoOf } from './access'
 import {
   WEEKS,
   ago,
@@ -69,6 +70,7 @@ const branch = atom({ plugin: 'issue-board', key: 'branch' } as const, null)
 const greened = atom({ plugin: 'issue-board', key: 'greened' } as const, [])
 const draft = atom({ plugin: 'issue-board', key: 'draft' } as const, null)
 const drafting = atom({ plugin: 'issue-board', key: 'drafting' } as const, false)
+const access = atom({ plugin: 'issue-board', key: 'access' } as const, null)
 
 const FILTERS: { id: Filter; label: string; hotkey: string }[] = [
   { id: 'active', label: 'Active', hotkey: 'a' },
@@ -85,6 +87,44 @@ const gh = async ($: EngineInterface, args: string[], stdin?: string): Promise<s
 }
 
 const messageOf = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause))
+
+// How a command that couldn't start says so, as against one that ran too long.
+const MISSING = /ENOENT|not found|no such file/i
+// A gh error that may come from a missing permission rather than from the request itself.
+const ACCESS_ERROR = /scope|credentials|not accessible|gh auth login|HTTP 40[13]|permission/i
+
+// Asks gh who it is signed in as and what it may do in this repository, and keeps what is missing. `message` is an
+// error gh just gave, which may name a permission the token lacks. One at a time, so a check asked for during another
+// runs after it with its own message.
+let checking: Promise<unknown> = Promise.resolve()
+const checkAccess = ($: EngineInterface, message?: string): Promise<Problem[]> => {
+  const run = checking.then(async () => {
+    let installed = true
+    const ask = (args: string[]) =>
+      $.process.run(['gh', ...args], { timeoutMs: 30_000 }).catch((cause: unknown) => {
+        if (MISSING.test(messageOf(cause))) installed = false
+        return null
+      })
+    const [status, view] = await Promise.all([
+      ask(['auth', 'status', '--active', '--json', 'hosts']),
+      ask(['repo', 'view', '--json', 'nameWithOwner,hasIssuesEnabled,viewerPermission,isArchived,visibility']),
+    ])
+    const auth = status?.exitCode === 0 ? authOf(status.stdout) : null
+    const repo = view?.exitCode === 0 ? repoOf(view.stdout) : null
+    // A folder whose repository isn't on GitHub has nothing for the board to show, so nothing is missing there.
+    const onGitHub = repo !== null || /github/i.test((await $.session.repo().catch(() => null))?.remote ?? '')
+    const problems = onGitHub ? problemsOf({ installed, auth, repo, ...(message ? { message } : {}) }) : []
+    const login = auth?.state === 'signed-in' && auth.login ? auth.login : null
+    await update($, access, () => ({ login, repo: repo?.name ?? null, permission: repo?.permission ?? null, problems, checkedAt: Date.now() }))
+    if (login && (await read($, viewer)) === null) await update($, viewer, () => login)
+    return problems
+  })
+  checking = run.catch(() => undefined)
+  return run
+}
+
+// How the dismissed list names a problem waved off from the band.
+const accessKey = (problem: Problem): string => `access-${problem.id}`
 
 // The branch the session's folder has checked out; null on a detached head or outside git.
 const currentBranch = async ($: EngineInterface): Promise<string | null> => {
@@ -192,8 +232,12 @@ const refresh = async ($: EngineInterface, seen = false): Promise<void> => {
     }
     await update($, error, () => null)
     await save($)
+    // GitHub answers again: look again too, so a problem fixed since the last check goes.
+    if (((await read($, access))?.problems.length ?? 0) > 0) void checkAccess($)
   } catch (cause) {
-    await update($, error, () => messageOf(cause))
+    const message = messageOf(cause)
+    await update($, error, () => message)
+    void checkAccess($, message)
   } finally {
     await update($, loading, () => false)
     schedule($, after)
@@ -263,6 +307,26 @@ const fileDraft = async ($: EngineInterface, made: Draft): Promise<void> => {
   }
 }
 
+// Check again: look, say what is left, and read GitHub once nothing is.
+const recheck = async ($: EngineInterface): Promise<void> => {
+  const left = await checkAccess($)
+  $.ui.toast(left.length === 0 ? 'The issue board has what it needs.' : `Still missing: ${left.map(problem => problem.title).join(' · ')}`)
+  if (left.length === 0) void refresh($)
+}
+
+// Copies a problem's command, or the page its fix happens on, for the person to run or open.
+const copyFix = async ($: EngineInterface, problem: Problem, surface?: UiCopyArgs['surface']): Promise<void> => {
+  const text = problem.command ?? problem.url ?? problem.fix
+  const copied = await $.ui.copy({ text, ...(surface ? { surface } : {}) })
+  if (!copied.isCopied) $.ui.toast(`Couldn't copy it. ${problem.fix}`)
+  else $.ui.toast(problem.command ? `Copied \`${text}\`. Run it in a terminal, then press Check again.` : `Copied ${text}. Open it in the browser, then press Check again.`)
+}
+
+const dismissProblem = async ($: EngineInterface, problem: Problem): Promise<void> => {
+  await update($, dismissed, list => [...list.slice(-50), accessKey(problem)])
+  await save($)
+}
+
 const browse = async ($: EngineInterface, kind: 'issue' | 'pr', number: number): Promise<void> => {
   try {
     await gh($, [kind, 'view', String(number), '--web'])
@@ -277,7 +341,7 @@ export const register: Register = on => {
     await $.command.register({
       name: 'issues',
       description: 'Show open issues and pull requests in a pane',
-      argumentHint: '[refresh | new <what it is about>]',
+      argumentHint: '[refresh | check | new <what it is about>]',
     })
     await $.tool.register({
       name: 'issues',
@@ -319,6 +383,7 @@ export const register: Register = on => {
     // Earlier versions pinned the summary to the status line; a reload would leave it there.
     $.ui.status(undefined)
     await restore($)
+    void checkAccess($)
     void refresh($)
 
     return next(e)
@@ -330,6 +395,25 @@ export const register: Register = on => {
       await $.ui.open({ id: PANE, title: 'Issues', focus: true })
       void draftIssue($, (asked[1] ?? '').trim())
       return { text: 'Drafting an issue from the conversation. It shows at the top of the issues pane to check before you file it.' }
+    }
+    if (e.args.trim() === 'check') {
+      const problems = await checkAccess($)
+      const found = await read($, access)
+      if (problems.length > 0) {
+        const count = problems.length === 1 ? 'one problem' : `${problems.length} problems`
+        return { text: `The issue board found ${count}:\n${problems.map(problem => `- ${problem.title}. ${problem.detail} ${problem.fix}`).join('\n')}` }
+      }
+      if (!found?.repo) {
+        const remote = (await $.session.repo().catch(() => null))?.remote ?? ''
+        return {
+          text: /github/i.test(remote)
+            ? "gh couldn't read this folder's GitHub repository. Check your connection, then run /issues check again."
+            : "The issue board couldn't find a GitHub repository for this folder, so it has nothing to show.",
+        }
+      }
+      void refresh($)
+      const who = found.login ? `gh is signed in as ${found.login}` : 'gh is signed in'
+      return { text: `The issue board has what it needs. ${who}${found.permission ? `, with ${found.permission.toLowerCase()} access to ${found.repo}` : ''}.` }
     }
     if (e.args.trim() === 'refresh') {
       await refresh($)
@@ -358,7 +442,11 @@ export const register: Register = on => {
     const input = e as unknown as { number?: number; filter?: Filter; area?: string; query?: string }
     if ((await read($, board)) === null) await refresh($)
     const now = await read($, board)
-    if (!now) return { deny: `The issue board couldn't read GitHub: ${(await read($, error)) ?? 'unknown error'}` }
+    if (!now) {
+      const failure = (await read($, error)) ?? 'unknown error'
+      const problems = await checkAccess($, failure)
+      return { deny: `The issue board couldn't read GitHub: ${failure}${problems.length > 0 ? `\n${problemsText(problems)}` : ''}` }
+    }
 
     if (typeof input.number === 'number') {
       const issue = now.issues.find(one => one.number === input.number)
@@ -385,7 +473,9 @@ export const register: Register = on => {
     try {
       return { result: await tick($, number, boxes as number[], input.done !== false) }
     } catch (cause) {
-      return { deny: `Couldn't tick boxes on #${number}: ${messageOf(cause)}` }
+      const message = messageOf(cause)
+      const problems = ACCESS_ERROR.test(message) ? await checkAccess($, message) : []
+      return { deny: `Couldn't tick boxes on #${number}: ${message}${problems.length > 0 ? `\n${problemsText(problems)}` : ''}` }
     }
   })
 
@@ -406,7 +496,8 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const { Box, Text, Button, Link } = $.ui.resolve(e)
+    const problems = (await read($, access))?.problems ?? []
     const width = Math.max(40, e.props.bodyColumns)
     const roomy = width >= 72
     const now = await read($, board)
@@ -439,7 +530,9 @@ export const register: Register = on => {
         await tick($, issue.number, [box], done)
         $.ui.toast(`${done ? 'Ticked' : 'Unticked'} box ${box} on #${issue.number}`)
       } catch (cause) {
-        $.ui.toast(`Couldn't change box ${box} on #${issue.number}: ${messageOf(cause)}`)
+        const message = messageOf(cause)
+        $.ui.toast(`Couldn't change box ${box} on #${issue.number}: ${message}`)
+        if (ACCESS_ERROR.test(message)) void checkAccess($, message)
       }
     }
 
@@ -500,23 +593,58 @@ export const register: Register = on => {
       </Box>
     )
 
+    // What the last permission check found missing, each with its fix.
+    const blocked = problems.some(problem => problem.blocks)
+    const setupCard = problems.length > 0 && (
+      <Box flexDirection="column" borderStyle="round" borderColor={blocked ? 'error' : 'warning'} paddingX={1} marginTop={1}>
+        <Text color={blocked ? 'error' : 'warning'} bold>
+          {blocked ? '✗ Setup needed' : '⚠ The board is limited'}
+        </Text>
+        {problems.map(problem => (
+          <Box key={`problem-${problem.id}`} flexDirection="column" marginTop={1}>
+            <Text bold wrap="wrap">
+              {problem.title}
+            </Text>
+            <Text dimColor wrap="wrap">
+              {problem.detail}
+            </Text>
+            <Text wrap="wrap">{problem.fix}</Text>
+            {problem.command && (
+              <Box flexDirection="row">
+                <Button key={`copy-fix-${problem.id}`} onPress={press => void copyFix($, problem, press.surface)}>
+                  Copy command
+                </Button>
+              </Box>
+            )}
+            {problem.url && !problem.command && <Link href={problem.url} label={`↗ ${problem.url.replace(/^https:\/\//, '')}`} />}
+          </Box>
+        ))}
+        <Box flexDirection="row" marginTop={1}>
+          <Button key="recheck" variant="primary" onPress={() => void recheck($)}>
+            Check again
+          </Button>
+        </Box>
+      </Box>
+    )
+
     if (!now) {
       return (
         <Box flexDirection="column">
           {header}
-          {failure ? (
+          {setupCard ||
+            (failure ? (
             <Box flexDirection="column" borderStyle="round" borderColor="error" paddingX={1} marginTop={1}>
               <Text color="error" bold>
                 ✗ Couldn't reach GitHub
               </Text>
               <Text>{failure}</Text>
-              <Text dimColor>Check `gh auth status`, then press r.</Text>
+              <Text dimColor>Press r to try again, or run /issues check.</Text>
             </Box>
           ) : (
             <Box marginTop={1}>
               <Text dimColor>◌ Fetching issues and pull requests…</Text>
             </Box>
-          )}
+          ))}
         </Box>
       )
     }
@@ -840,6 +968,7 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
         {header}
+        {setupCard}
         {stats}
         {trends}
         {workingLine}
@@ -908,28 +1037,35 @@ export const register: Register = on => {
     )
   })
 
-  // The board in a line, dim at the end of the hint under the prompt; nothing when nothing is open.
+  // The board in a line, dim at the end of the hint under the prompt; nothing when nothing is open. While the check
+  // finds something missing, it says so: always when the board can't read GitHub, otherwise until waved off in the band.
   // The engine puts its own ` · ` between the hint and the tail, so the tail doesn't start with one.
   // Not `$.ui.status`: the status line draws as a warning, and an open issue isn't one.
   on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
     const now = await read($, board)
-    const text = now && summary(now.issues, now.prs)
+    const gone = await read($, dismissed)
+    const loud = ((await read($, access))?.problems ?? []).filter(problem => problem.blocks || !gone.includes(accessKey(problem)))
+    const note = loud.length > 0 ? `issue board ${loud.some(problem => problem.blocks) ? 'needs setup' : 'is limited'} (/issues check)` : undefined
+    const text = [now && summary(now.issues, now.prs), note].filter(Boolean).join(' · ')
     if (!text) return next(e)
 
     return next({ ...e, props: { ...e.props, tail: e.props.tail ? `${e.props.tail} · ${text}` : text } })
   })
 
-  // The band above the prompt: a pull request whose CI failed, or news on the issue Claude is on.
+  // The band above the prompt: something the board needs that is missing, a pull request whose CI failed, or news on
+  // the issue Claude is on.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (e.props.hasSurvey) return next(e)
     const now = await read($, board)
-    if (e.props.hasSurvey || !now) return next(e)
+    const gone = await read($, dismissed)
+    const problems = ((await read($, access))?.problems ?? []).filter(problem => !gone.includes(accessKey(problem)))
     const doing = await read($, working)
-    const alerts = alertsOf(now, doing, await read($, dismissed), await read($, greened))
+    const alerts = now ? alertsOf(now, doing, gone, await read($, greened)) : []
     // The issue Claude is on, while it is open and nothing else about it is being said.
-    const workingIssue = doing && !alerts.some(alert => alert.kind === 'activity') ? now.issues.find(issue => issue.number === doing.number) : undefined
-    if (alerts.length === 0 && !workingIssue) return next(e)
+    const workingIssue = now && doing && !alerts.some(alert => alert.kind === 'activity') ? now.issues.find(issue => issue.number === doing.number) : undefined
+    if (problems.length === 0 && alerts.length === 0 && !workingIssue) return next(e)
 
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const { Box, Text, Button, Link } = $.ui.resolve(e)
     const width = e.props.bodyColumns
     const clock = Date.now()
     const dismiss = (alert: Alert) => async () => {
@@ -1061,8 +1197,37 @@ export const register: Register = on => {
       </Box>
     )
 
+    // Something missing: what it is, the command or page that fixes it, and a look again once it's done.
+    const problemLine = (problem: Problem) => {
+      const how = problem.command ? `run ${problem.command}` : problem.fix
+      return (
+        <Box key={`problem-row-${problem.id}`} flexDirection="row" gap={1}>
+          <Text color={problem.blocks ? 'error' : 'warning'} inverse bold>
+            {' ⚠ SETUP '}
+          </Text>
+          <Text>
+            <Text>{fit(problem.title, Math.max(16, width - 64))}</Text>
+            <Text dimColor>{` · ${fit(how, 32)}`}</Text>
+          </Text>
+          {problem.command && (
+            <Button key={`copy-fix-${problem.id}`} variant="primary" onPress={press => void copyFix($, problem, press.surface)}>
+              Copy command
+            </Button>
+          )}
+          {problem.url && !problem.command && <Link href={problem.url} label="↗ Open page" />}
+          <Button key={`recheck-${problem.id}`} dimColor onPress={() => void recheck($)}>
+            Check again
+          </Button>
+          <Button key={`dismiss-${accessKey(problem)}`} dimColor onPress={() => void dismissProblem($, problem)}>
+            ✕
+          </Button>
+        </Box>
+      )
+    }
+
     return (
       <Box flexDirection="column">
+        {problems.slice(0, 2).map(problemLine)}
         {alerts.slice(0, 3).map(line)}
         {workingRow}
       </Box>
