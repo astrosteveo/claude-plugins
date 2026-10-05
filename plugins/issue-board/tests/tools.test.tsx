@@ -14,6 +14,7 @@ import {
   wentGreen,
   workingSection,
 } from '../hooks/parse'
+import { PRIORITIES, STATUSES, asksProject, graphPage, isIssuesQuery, optionId } from './graph'
 
 const BODY = '## Acceptance\r\n\r\n- [x] Layout in place\r\n- [ ] Old saves load\r\n- [ ] Goldens regenerated\r\n'
 
@@ -69,14 +70,46 @@ const REPO = { root: '/work/void-sector', remote: null, internal: false, name: n
 const COMPOSE = { model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: ['terminal'], tools: [], outputStyle: null, traits: [] } as const
 
 // GitHub and git as the board reads them, with what the tests change and what gh was asked to write.
+// `project`: the repo has the Void Sector project, and `planned` is each issue's Status and Priority in it.
+// `refuseProject`: what GitHub says to a query that asks for projects, as to a token without read:project.
 const world = (on: On) => {
-  const state = { body: BODY, prs: [pr('pass')] as unknown[], branch: 'fix/planet-glide', edits: [] as string[], created: [] as { argv: string[]; stdin?: string }[], prLists: 0 }
+  const state = {
+    body: BODY,
+    prs: [pr('pass')] as unknown[],
+    branch: 'fix/planet-glide',
+    edits: [] as string[],
+    created: [] as { argv: string[]; stdin?: string }[],
+    prLists: 0,
+    project: false,
+    planned: {} as Record<number, { status?: string; priority?: string }>,
+    refuseProject: '',
+    fields: [] as Record<string, string>[],
+    assigned: [] as number[],
+  }
   on('process.run', async (_$, e) => {
     const argv = e.argv
     const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
     if (argv[0] === 'git') return answer(`${state.branch}\n`)
     if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true }))
+    if (isIssuesQuery(argv)) {
+      if (state.refuseProject && asksProject(argv)) return { value: { exitCode: 1, stdout: '', stderr: state.refuseProject, isStdoutTruncated: false, isStderrTruncated: false } }
+      return answer(graphPage([{ ...issue(state.body), ...state.planned[315] }, { ...other, ...state.planned[289] }], argv, state.project))
+    }
+    if (argv[1] === 'api' && argv[2] === 'graphql') {
+      // A mutation: its `-f name=value` arguments, and the change it makes to the project.
+      const args = Object.fromEntries(argv.flatMap((arg, index) => (argv[index - 1] === '-f' ? [arg.split(/=(.*)/s).slice(0, 2) as [string, string]] : [])))
+      state.fields.push(args)
+      if (args.query?.includes('addProjectV2ItemById')) return answer(JSON.stringify({ data: { addProjectV2ItemById: { item: { id: `PVTI_${args.content?.slice(2)}` } } } }))
+      const number = Number(args.item?.slice('PVTI_'.length))
+      const name = [...STATUSES, ...PRIORITIES].find(one => optionId(one) === args.option) ?? ''
+      state.planned[number] = { ...state.planned[number], ...(args.field === 'F_status' ? { status: name } : { priority: name }) }
+      return answer(JSON.stringify({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: args.item } } } }))
+    }
     if (argv[1] === 'api') return answer('astrosteveo\n')
+    if (argv[1] === 'issue' && argv[2] === 'edit' && argv.includes('--add-assignee')) {
+      state.assigned.push(Number(argv[3]))
+      return answer('')
+    }
     if (argv[1] === 'issue' && argv[2] === 'edit') {
       state.body = e.init?.stdin ?? ''
       state.edits.push(state.body)
@@ -366,4 +399,75 @@ test('the pane draws on every surface, with search where the surface has a text 
     expect((await ui.find({ key: 'search' })) !== undefined).toBe(surface !== 'mobile')
     await ui.unmount()
   }
+})
+
+test("the project's Status groups the issues, Priority filters them, and the card and Start change both on GitHub", async ($, on) => {
+  mock.store(on)
+  const gh = world(on)
+  gh.project = true
+  // #315 is planned; #289 isn't in the project yet.
+  gh.planned[315] = { status: 'Ready', priority: 'P1' }
+  const sent: string[] = []
+  on('prompt.submit', async (_$, e) => {
+    sent.push(e.text)
+    return { text: e.text }
+  })
+  await $.command.run(REFRESH)
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+
+  // Priority filters: Now is P0 and P1, Later is P2; an issue with none is in neither.
+  expect(await ui.find({ key: 'filter-active' })).toMatchObject({ text: 'Now 1' })
+  expect(await ui.find({ key: 'filter-future' })).toMatchObject({ text: 'Later 0' })
+  await ui.press({ key: 'filter-all' })
+
+  // Grouped by Status by default, in the project's order, then No status.
+  expect(await ui.find({ key: 'group-by' })).toMatchObject({ props: { value: 'status' } })
+  const headings = async () => (await ui.findAll({ type: 'Text' })).map(text => text.text).filter(text => ['Ready', 'No status', 'simulation', 'other'].includes(text))
+  expect(await headings()).toEqual(['Ready', 'No status'])
+  // The row: its priority, and the pull request that refers to it with that pull request's CI. The pull request's row
+  // names the issue.
+  expect(await ui.find({ text: /^P1 $/ })).toBeDefined()
+  expect(await ui.find({ text: /^⇄ #335 ✓$/ })).toBeDefined()
+  expect(await ui.find({ text: /^→ #315$/ })).toBeDefined()
+
+  await ui.select({ key: 'group-by', value: 'area' })
+  expect(await headings()).toEqual(['simulation', 'other'])
+  await ui.select({ key: 'group-by', value: 'status' })
+
+  // The card's pickers set Priority on GitHub.
+  await ui.press({ key: 'issue-315' })
+  expect(await ui.find({ key: 'status-315' })).toMatchObject({ props: { value: 'Ready' } })
+  await ui.select({ key: 'priority-315', value: 'P0' })
+  expect(gh.fields.at(-1)).toMatchObject({ project: 'PVT_8', item: 'PVTI_315', field: 'F_priority', option: optionId('P0') })
+  expect(await ui.find({ text: /^P0 $/ })).toBeDefined()
+
+  // Start on #289: it joins the project, moves to In progress, and is assigned to the person.
+  await ui.press({ key: 'issue-289' })
+  await ui.press({ key: 'start-289' })
+  expect(sent.at(-1)).toMatch(/^Let's start on #289/)
+  expect(gh.fields.at(-2)).toMatchObject({ project: 'PVT_8', content: 'I_289' })
+  expect(gh.fields.at(-1)).toMatchObject({ item: 'PVTI_289', field: 'F_status', option: optionId('In progress') })
+  expect(gh.assigned).toEqual([289])
+  await ui.unmount()
+})
+
+test('Backlog is folded until opened, and Epic groups the issues under the epic they belong to', async ($, on) => {
+  mock.store(on)
+  const gh = world(on)
+  gh.project = true
+  gh.planned[315] = { status: 'Backlog', priority: 'P2' }
+  gh.planned[289] = { status: 'Ready', priority: 'P1' }
+  await $.command.run(REFRESH)
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'filter-all' })
+
+  expect(await ui.find({ key: 'fold-status:Backlog' })).toMatchObject({ text: '▸ Backlog' })
+  expect(await ui.find({ key: 'issue-315' })).toBeUndefined()
+  expect(await ui.find({ key: 'issue-289' })).toBeDefined()
+  await ui.press({ key: 'fold-status:Backlog' })
+  expect(await ui.find({ key: 'issue-315' })).toBeDefined()
+
+  await ui.select({ key: 'group-by', value: 'epic' })
+  expect(await ui.find({ text: /^No epic$/ })).toBeDefined()
+  await ui.unmount()
 })

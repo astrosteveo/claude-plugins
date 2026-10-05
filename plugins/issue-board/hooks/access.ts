@@ -79,6 +79,9 @@ const scopeProblem = (scopes: string[], source: string, detail: string, blocks: 
   return { id, title, detail, fix: `Run \`${command}\` in a terminal, or type it after \`!\` in the prompt, and approve it in the browser.`, command, blocks }
 }
 
+const PROJECT_SCOPES = ['project', 'read:project']
+const PROJECT_DETAIL = "The board reads and changes Status and Priority in the repo's GitHub Project with it. Until then it groups and filters by labels."
+
 export type Found = {
   // Whether gh could be started at all.
   installed: boolean
@@ -111,7 +114,14 @@ export const problemsOf = ({ installed, auth, repo, message = '' }: Found): Prob
   if (scopes && !scopes.includes('repo') && (repo?.isPrivate !== false || !scopes.includes('public_repo'))) {
     problems.push(scopeProblem(['repo'], source, 'The board needs it to read and change issues and pull requests.', true))
   }
-  const denied = deniedOf(message).filter(scope => !problems.some(problem => problem.id === `scope-${scope}`))
+  // Projects: without them the board still works, from labels, so the problem only limits it. `project` both reads
+  // and changes them, so its fix asks for that even when only reading was refused.
+  const deniedAll = deniedOf(message)
+  const projectDenied = deniedAll.some(scope => PROJECT_SCOPES.includes(scope))
+  if ((scopes && !scopes.some(scope => PROJECT_SCOPES.includes(scope))) || projectDenied || (scopes?.includes('read:project') && /project/i.test(message) && /scope|permission|not accessible/i.test(message))) {
+    problems.push(scopeProblem(['project'], source, PROJECT_DETAIL, false))
+  }
+  const denied = deniedAll.filter(scope => !PROJECT_SCOPES.includes(scope) && !problems.some(problem => problem.id === `scope-${scope}`))
   if (denied.length > 0) problems.push(scopeProblem(denied, source, 'GitHub refused a request the board makes without it.', true))
   if (/Resource not accessible by (personal access token|integration)/i.test(message)) {
     problems.push({

@@ -1,8 +1,9 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, ModelForkResult, Register, Timer, UiCopyArgs } from 'claude-code'
 
-import type { Alert, Board, Draft, Filter, Issue, Problem, PullRequest, Working } from '../types'
+import type { Alert, Board, Draft, Filter, GroupBy, Issue, Problem, Project, PullRequest, Working } from '../types'
 import { authOf, problemsOf, problemsText, repoOf } from './access'
+import { ADD_ITEM, SET_FIELD, issuesQuery, optionOf, startedOf } from './project'
 import {
   WEEKS,
   ago,
@@ -10,7 +11,6 @@ import {
   areaOf,
   bar,
   boardText,
-  byArea,
   checksOf,
   chipsOf,
   ciBadge,
@@ -20,17 +20,21 @@ import {
   fit,
   fixPrompt,
   greenKey,
+  groupsOf,
   hex,
   isBug,
   issueText,
   labelsOf,
+  nextPageOf,
   pageOf,
   proseOf,
   matches,
   parseDraft,
+  parseGraph,
   parseIssues,
   parsePrs,
   prText,
+  prsFor,
   progress,
   reviewBadge,
   searched,
@@ -74,13 +78,22 @@ const draft = atom({ plugin: 'issue-board', key: 'draft' } as const, null)
 const drafting = atom({ plugin: 'issue-board', key: 'drafting' } as const, false)
 const openPr = atom({ plugin: 'issue-board', key: 'openPr' } as const, null)
 const access = atom({ plugin: 'issue-board', key: 'access' } as const, null)
+const groupBy = atom({ plugin: 'issue-board', key: 'groupBy' } as const, null)
+const unfolded = atom({ plugin: 'issue-board', key: 'unfolded' } as const, [])
 
-const FILTERS: { id: Filter; label: string; hotkey: string }[] = [
-  { id: 'active', label: 'Active', hotkey: '1' },
-  { id: 'future', label: 'Future', hotkey: '2' },
-  { id: 'bugs', label: 'Bugs', hotkey: '3' },
-  { id: 'mine', label: 'Mine', hotkey: '4' },
-  { id: 'all', label: 'All', hotkey: '5' },
+// The filters; with a project, the first two read Priority and say so.
+const FILTERS: { id: Filter; label: string; planned: string; hotkey: string }[] = [
+  { id: 'active', label: 'Active', planned: 'Now', hotkey: '1' },
+  { id: 'future', label: 'Future', planned: 'Later', hotkey: '2' },
+  { id: 'bugs', label: 'Bugs', planned: 'Bugs', hotkey: '3' },
+  { id: 'mine', label: 'Mine', planned: 'Mine', hotkey: '4' },
+  { id: 'all', label: 'All', planned: 'All', hotkey: '5' },
+]
+
+const GROUPINGS: { id: GroupBy; label: string }[] = [
+  { id: 'status', label: 'Status' },
+  { id: 'epic', label: 'Epic' },
+  { id: 'area', label: 'Area' },
 ]
 
 const gh = async ($: EngineInterface, args: string[], stdin?: string): Promise<string> => {
@@ -116,7 +129,9 @@ const checkAccess = ($: EngineInterface, message?: string): Promise<Problem[]> =
     const repo = view?.exitCode === 0 ? repoOf(view.stdout) : null
     // A folder whose repository isn't on GitHub has nothing for the board to show, so nothing is missing there.
     const onGitHub = repo !== null || /github/i.test((await $.session.repo().catch(() => null))?.remote ?? '')
-    const problems = onGitHub ? problemsOf({ installed, auth, repo, ...(message ? { message } : {}) }) : []
+    // The last project refusal counts until Check again clears it, so its fix stays shown while the board reads labels.
+    const said = [message, projectRefusal].filter(Boolean).join('\n')
+    const problems = onGitHub ? problemsOf({ installed, auth, repo, ...(said ? { message: said } : {}) }) : []
     const login = auth?.state === 'signed-in' && auth.login ? auth.login : null
     await update($, access, () => ({ login, repo: repo?.name ?? null, permission: repo?.permission ?? null, problems, checkedAt: Date.now() }))
     if (login && (await read($, viewer)) === null) await update($, viewer, () => login)
@@ -186,6 +201,41 @@ const restore = async ($: EngineInterface): Promise<void> => {
   }
 }
 
+// GitHub refusing to show projects for want of a permission, which reading issues without them answers.
+const PROJECT_REFUSED = /read:project|\bproject\b.*\bscope|projectsV2|projectItems/i
+const PAGES = 3
+
+// The error GitHub last gave for projects. Until Check again clears it, the board reads issues without projects rather
+// than be refused each time, and the permission check keeps saying how to fix it.
+let projectRefusal: string | undefined
+
+// The open issues over GraphQL, up to 300, with the repo's project when gh may read it.
+const fetchIssues = async ($: EngineInterface, nameWithOwner: string): Promise<{ issues: Issue[]; project: Project | null }> => {
+  const [owner = '', name = ''] = nameWithOwner.split('/')
+  const pull = async (withProject: boolean) => {
+    const pages: string[] = []
+    let after: string | null = null
+    do {
+      const page: string = await gh($, ['api', 'graphql', '-f', `owner=${owner}`, '-f', `name=${name}`, ...(after ? ['-f', `after=${after}`] : []), '-f', `query=${issuesQuery(withProject)}`])
+      pages.push(page)
+      after = nextPageOf(page)
+    } while (after && pages.length < PAGES)
+    return parseGraph(pages)
+  }
+  const unread = projectRefusal !== undefined || ((await read($, access))?.problems.some(problem => problem.id === 'scope-project') ?? false)
+  if (!unread) {
+    try {
+      return await pull(true)
+    } catch (cause) {
+      const message = messageOf(cause)
+      if (!PROJECT_REFUSED.test(message)) throw cause
+      projectRefusal = message
+      void checkAccess($, message)
+    }
+  }
+  return pull(false)
+}
+
 // `seen`: the refresh follows Claude's own gh write, so the issue it is on changed by its hand, not news.
 const refresh = async ($: EngineInterface, seen = false): Promise<void> => {
   if (await read($, loading)) return
@@ -198,8 +248,8 @@ const refresh = async ($: EngineInterface, seen = false): Promise<void> => {
     // First, so a folder that isn't a GitHub repo stops at one call, and a repo with issues turned off skips them.
     const repo = JSON.parse(await gh($, ['repo', 'view', '--json', 'nameWithOwner,hasIssuesEnabled'])) as { nameWithOwner: string; hasIssuesEnabled: boolean }
     const listIssues = (args: string[]) => (repo.hasIssuesEnabled ? gh($, ['issue', 'list', ...args]) : Promise.resolve('[]'))
-    const [issues, prs, closed, merged, login, current] = await Promise.all([
-      listIssues(['--state', 'open', '--limit', '300', '--json', ISSUE_FIELDS]),
+    const [graph, prs, closed, merged, login, current] = await Promise.all([
+      repo.hasIssuesEnabled ? fetchIssues($, repo.nameWithOwner) : Promise.resolve({ issues: [], project: null }),
       gh($, [
         'pr',
         'list',
@@ -219,10 +269,11 @@ const refresh = async ($: EngineInterface, seen = false): Promise<void> => {
     const fetchedAt = Date.now()
     const next: Board = {
       repo: repo.nameWithOwner,
-      issues: parseIssues(issues),
+      issues: graph.issues,
       prs: parsePrs(prs),
       velocity: { closed: weekly(timesOf(closed, 'closedAt'), fetchedAt), merged: weekly(timesOf(merged, 'mergedAt'), fetchedAt) },
       fetchedAt,
+      project: graph.project,
     }
     after = next
     await update($, board, () => next)
@@ -253,7 +304,8 @@ const refresh = async ($: EngineInterface, seen = false): Promise<void> => {
 // Puts an issue read straight from GitHub on the board. The change is the person's or Claude's own, so the issue
 // Claude is on takes its new time and the band doesn't call it news.
 const take = async ($: EngineInterface, fresh: Issue): Promise<void> => {
-  await update($, board, now => now && { ...now, issues: now.issues.map(one => (one.number === fresh.number ? fresh : one)) })
+  // `gh issue view` gives no project or sub-issue fields, so the board's own stay.
+  await update($, board, now => now && { ...now, issues: now.issues.map(one => (one.number === fresh.number ? { ...one, ...fresh } : one)) })
   await update($, working, was => (was && was.number === fresh.number ? { ...was, updatedAt: fresh.updatedAt } : was))
   await save($)
 }
@@ -315,6 +367,7 @@ const fileDraft = async ($: EngineInterface, made: Draft): Promise<void> => {
 
 // Check again: look, say what is left, and read GitHub once nothing is.
 const recheck = async ($: EngineInterface): Promise<void> => {
+  projectRefusal = undefined
   const left = await checkAccess($)
   $.ui.toast(left.length === 0 ? 'The issue board has what it needs.' : `Still missing: ${left.map(problem => problem.title).join(' · ')}`)
   if (left.length === 0) void refresh($)
@@ -335,6 +388,60 @@ const dismissProblem = async ($: EngineInterface, problem: Problem): Promise<voi
 
 // How the pane opens: Esc steps back through it, a card first, then the pane (the ui.close hook).
 const OPEN = { id: PANE, title: 'Issues', focus: true, closeOnEscape: true } as const
+
+// Sets Status or Priority on an issue in the repo's project, adding the issue to the project first when it isn't in it.
+const setField = async ($: EngineInterface, issue: Issue, field: 'status' | 'priority', name: string): Promise<void> => {
+  const project = (await read($, board))?.project
+  const target = field === 'status' ? project?.status : project?.priority
+  const option = optionOf(target, name)
+  if (!project || !target || !option) throw new Error(`the project has no ${field === 'status' ? 'Status' : 'Priority'} called ${name}`)
+  let item = issue.item ?? null
+  if (!item) {
+    if (!issue.id) throw new Error(`#${issue.number} hasn't been read with its project yet; refresh and try again`)
+    const added = JSON.parse(await gh($, ['api', 'graphql', '-f', `query=${ADD_ITEM}`, '-f', `project=${project.id}`, '-f', `content=${issue.id}`])) as {
+      data?: { addProjectV2ItemById?: { item?: { id?: string } | null } | null }
+    }
+    item = added.data?.addProjectV2ItemById?.item?.id ?? null
+    if (!item) throw new Error(`couldn't add #${issue.number} to ${project.title}`)
+  }
+  await gh($, ['api', 'graphql', '-f', `query=${SET_FIELD}`, '-f', `project=${project.id}`, '-f', `item=${item}`, '-f', `field=${target.id}`, '-f', `option=${option.id}`])
+  const placed = item
+  await update($, board, now => now && { ...now, issues: now.issues.map(one => (one.number === issue.number ? { ...one, item: placed, [field]: option.name } : one)) })
+  await save($)
+}
+
+// Start, on GitHub too: the issue moves to In progress in the project and is assigned to the person, so the project
+// says who is on what. Then the issue is read again, so the band doesn't call these changes news.
+const claim = async ($: EngineInterface, issue: Issue): Promise<void> => {
+  const failures: string[] = []
+  const started = startedOf((await read($, board))?.project)
+  if (started && issue.status !== started.name) await setField($, issue, 'status', started.name).catch((cause: unknown) => void failures.push(messageOf(cause)))
+  const me = await read($, viewer)
+  if (!me || !issue.assignees.includes(me)) {
+    await gh($, ['issue', 'edit', String(issue.number), '--add-assignee', '@me']).catch((cause: unknown) => void failures.push(messageOf(cause)))
+  }
+  try {
+    const [fresh] = parseIssues(`[${await gh($, ['issue', 'view', String(issue.number), '--json', ISSUE_FIELDS])}]`)
+    if (fresh) await take($, fresh)
+  } catch (cause) {
+    failures.push(messageOf(cause))
+  }
+  if (failures.length === 0) return
+  $.ui.toast(`Started #${issue.number}, but couldn't update GitHub: ${failures[0]}`)
+  if (failures.some(failure => ACCESS_ERROR.test(failure))) void checkAccess($, failures.join('\n'))
+}
+
+// A Status or Priority picked on a card.
+const pick = async ($: EngineInterface, issue: Issue, field: 'status' | 'priority', name: string): Promise<void> => {
+  try {
+    await setField($, issue, field, name)
+    $.ui.toast(`#${issue.number} is ${name} now`)
+  } catch (cause) {
+    const message = messageOf(cause)
+    $.ui.toast(`Couldn't change #${issue.number}: ${message}`)
+    if (ACCESS_ERROR.test(message)) void checkAccess($, message)
+  }
+}
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
@@ -357,7 +464,8 @@ export const register: Register = on => {
           filter: {
             type: 'string',
             enum: ['active', 'future', 'bugs', 'mine', 'all'],
-            description: 'Which issues to list: active (not labelled future), future, bugs, mine (assigned to the signed-in user) or all, the default.',
+            description:
+              "Which issues to list: active, future, bugs, mine (assigned to the signed-in user) or all, the default. With the repo's GitHub Project, active is Now (Priority P0 and P1) and future is Later (P2); without one, future means labelled future.",
           },
           area: { type: 'string', description: 'Only issues with this area: label, such as "simulation".' },
           query: { type: 'string', description: 'Only issues whose title, number or labels hold every word of this.' },
@@ -470,10 +578,14 @@ export const register: Register = on => {
     const chosen = input.filter ?? 'all'
     const who = await read($, viewer)
     const area = input.area?.replace(/^area:/, '')
-    const kept = byArea(
-      now.issues.filter(issue => matches(chosen, issue, who) && (!area || areaOf(issue) === area) && (!input.query || searched(input.query, issue))),
-    ).flatMap(([, issues]) => issues)
-    return { result: boardText(now, kept, chosen, Date.now()) }
+    const project = now.project ?? null
+    const kept = groupsOf(
+      now.issues.filter(issue => matches(chosen, issue, who, project) && (!area || areaOf(issue) === area) && (!input.query || searched(input.query, issue))),
+      project ? 'status' : 'area',
+      project,
+    ).flatMap(group => group.issues)
+    const label = project && (chosen === 'active' || chosen === 'future') ? (chosen === 'active' ? 'now: P0 and P1' : 'later: P2') : chosen
+    return { result: boardText(now, kept, label, Date.now()) }
   })
 
   on('tool.call', { tool: TICK_TOOL }, async ($, e) => {
@@ -527,9 +639,12 @@ export const register: Register = on => {
     const made = await read($, draft)
     const thinking = await read($, drafting)
     const shownPr = await read($, openPr)
+    const picked = await read($, groupBy)
+    const opened = await read($, unfolded)
     const clock = Date.now()
     const elements = $.ui.resolve(e)
     const Input = 'Input' in elements ? elements.Input : undefined
+    const Select = 'Select' in elements ? elements.Select : undefined
     const Markdown = elements.Markdown
 
     const start = async (issue: Issue) => {
@@ -538,6 +653,7 @@ export const register: Register = on => {
       await save($)
       await $.prompt.submit({ text: startPrompt(issue), asUser: true })
       $.ui.toast(`Sent #${issue.number} to Claude`)
+      await claim($, issue)
     }
 
     const flip = async (issue: Issue, box: number, done: boolean) => {
@@ -676,7 +792,10 @@ export const register: Register = on => {
       )
     }
 
-    const shown = now.issues.filter(issue => matches(chosen, issue, who) && searched(typed, issue))
+    // Without a project the board works from labels: Active and Future, grouped by area.
+    const project = now.project ?? null
+    const grouping: GroupBy = picked && (picked !== 'status' || project) ? picked : project ? 'status' : 'area'
+    const shown = now.issues.filter(issue => matches(chosen, issue, who, project) && searched(typed, issue))
     const bugs = now.issues.filter(isBug).length
     const failing = now.prs.filter(pr => pr.ci === 'fail').length
     const overall = sumProgress(shown)
@@ -726,7 +845,9 @@ export const register: Register = on => {
       </Box>
     )
 
-    // The Issues heading: its filters and the search, which act on the issues below it alone.
+    // The Issues heading: its filters, the search and the grouping, which act on the issues below it alone. With a
+    // project the first two filters read Priority, and the grouping can be Status.
+    const groupings = GROUPINGS.filter(one => one.id !== 'status' || project)
     const issuesHeading = (
       <Box flexDirection="row" gap={1} marginTop={1} flexWrap="wrap">
         <Text bold color="claude">
@@ -740,7 +861,7 @@ export const register: Register = on => {
             dimColor={one.id !== chosen}
             onPress={() => void update($, filter, () => one.id)}
           >
-            {`${one.label} ${now.issues.filter(issue => matches(one.id, issue, who)).length}`}
+            {`${project ? one.planned : one.label} ${now.issues.filter(issue => matches(one.id, issue, who, project)).length}`}
           </Button>
         ))}
         {Input && (
@@ -752,6 +873,15 @@ export const register: Register = on => {
             submitLabel="search"
             onInput={text => void update($, query, () => text)}
             onSubmit={text => void update($, query, () => text)}
+          />
+        )}
+        {Select && (
+          <Select
+            key="group-by"
+            label="by "
+            options={groupings.map(one => ({ value: one.id, label: one.label }))}
+            value={grouping}
+            onSelect={value => void update($, groupBy, () => GROUPINGS.find(one => one.id === value)?.id ?? null)}
           />
         )}
       </Box>
@@ -823,7 +953,10 @@ export const register: Register = on => {
       const mine = here !== null && pr.branch === here
       const size = `+${pr.additions} −${pr.deletions}`
       const right = 18 + (roomy ? size.length + 1 : 0)
-      const titleRoom = width - [...badge.text].length - String(pr.number).length - 3 - (review ? 2 : 0) - (mine ? 2 : 0) - right
+      // The issue it closes or refers to, on the row: the first it names.
+      const forIssue = (pr.issues ?? [])[0]
+      const forText = forIssue ? `→ #${forIssue}` : ''
+      const titleRoom = width - [...badge.text].length - String(pr.number).length - 3 - (review ? 2 : 0) - (mine ? 2 : 0) - (forText ? forText.length + 1 : 0) - right
       return (
         <Box key={`pr-row-${pr.number}`} flexDirection="column">
           <Box flexDirection="row" justifyContent="space-between">
@@ -835,6 +968,7 @@ export const register: Register = on => {
               <Button key={`pr-${pr.number}`} plain hover={{ bold: true }} onPress={togglePr(pr.number)}>
                 {fit(pr.title, Math.max(12, titleRoom))}
               </Button>
+              {forText && <Text color="claude">{forText}</Text>}
               {review && <Text color={review.color}>{pr.isDraft ? '◌' : review.text.slice(0, 1)}</Text>}
               {mine && (
                 <Text color="claude" bold>
@@ -874,7 +1008,14 @@ export const register: Register = on => {
       )
     }
 
-    // One issue on one line: its progress, number, title, chips and age; the title opens it.
+    // A priority as a short tag, the most pressing in the loudest color.
+    const priorityColor = (priority: string) => {
+      const rank = project?.priority?.options.findIndex(option => option.name === priority) ?? -1
+      return rank === 0 ? 'error' : rank === 1 ? 'warning' : 'inactive'
+    }
+
+    // One issue on one line: its progress, priority, number, title, its pull request with CI, chips and age; the title
+    // opens it.
     const issueRow = (issue: Issue) => {
       const isOpen = open.includes(issue.number)
       const step = progress(issue.checks)
@@ -882,8 +1023,11 @@ export const register: Register = on => {
       const chips = roomy ? chipsOf(issue).slice(0, 2) : []
       const age = ago(issue.updatedAt, clock)
       const count = step.total > 0 ? `${step.done}/${step.total}`.padEnd(5) : '     '
-      const right = chips.reduce((sum, chip) => sum + chip.name.length + 3, 0) + age.padStart(3).length
-      const left = 6 + 1 + 5 + 1 + (bug ? 2 : 0) + String(issue.number).length + 2
+      const linked = prsFor(issue, now.prs)[0]
+      const pr = linked ? `⇄ #${linked.number} ${ciBadge[linked.ci].text.trim().split(' ')[0]}` : ''
+      const tag = project && issue.priority ? `${fit(issue.priority, 3)} ` : ''
+      const right = chips.reduce((sum, chip) => sum + chip.name.length + 3, 0) + age.padStart(3).length + (pr ? pr.length + 1 : 0)
+      const left = 6 + 1 + 5 + 1 + (bug ? 2 : 0) + tag.length + String(issue.number).length + 2
       const [filled, empty] = bar(step, 6)
       return (
         <Box key={`row-${issue.number}`} flexDirection="row" justifyContent="space-between">
@@ -895,6 +1039,7 @@ export const register: Register = on => {
             </Text>
             <Text color={tone(step)} dimColor={step.total === 0}>{` ${count} `}</Text>
             {bug && <Text color="error">▲ </Text>}
+            {tag && <Text color={priorityColor(issue.priority ?? '')}>{tag}</Text>}
             <Text color={isOpen ? 'claude' : undefined} dimColor={!isOpen} hover={{ dimColor: false, color: 'claude' }}>
               {`#${issue.number} `}
             </Text>
@@ -903,6 +1048,7 @@ export const register: Register = on => {
             </Button>
           </Box>
           <Box flexDirection="row" gap={1}>
+            {linked && <Text color={ciBadge[linked.ci].color}>{pr}</Text>}
             {chips.map(chip => (
               <Text>
                 <Text color={hex(chip)}>●</Text>
@@ -974,7 +1120,32 @@ export const register: Register = on => {
               <Text color="suggestion">{`@${login}`}</Text>
             ))}
             <Text dimColor>{`updated ${ago(issue.updatedAt, clock)} ago`}</Text>
+            {issue.parent && <Text dimColor>{`in #${issue.parent.number}`}</Text>}
+            {issue.milestone && <Text dimColor>{`⚑ ${issue.milestone}`}</Text>}
+            {(issue.blockedBy ?? []).length > 0 && <Text color="warning">{`blocked by ${issue.blockedBy?.map(number => `#${number}`).join(', ')}`}</Text>}
           </Box>
+          {project && Select && (project.status || project.priority) && (
+            <Box flexDirection="row" gap={2} marginTop={1} flexWrap="wrap">
+              {project.status && (
+                <Select
+                  key={`status-${issue.number}`}
+                  label="Status "
+                  options={project.status.options.map(option => ({ value: option.name }))}
+                  {...(issue.status ? { value: issue.status } : {})}
+                  onSelect={value => void pick($, issue, 'status', value)}
+                />
+              )}
+              {project.priority && (
+                <Select
+                  key={`priority-${issue.number}`}
+                  label="Priority "
+                  options={project.priority.options.map(option => ({ value: option.name }))}
+                  {...(issue.priority ? { value: issue.priority } : {})}
+                  onSelect={value => void pick($, issue, 'priority', value)}
+                />
+              )}
+            </Box>
+          )}
           {prose && (
             <Box marginTop={1}>
               <Markdown key={`body-${issue.number}`} text={prose} />
@@ -1026,7 +1197,8 @@ export const register: Register = on => {
     }
 
     const single = open.filter(number => shown.some(issue => issue.number === number)).length === 1
-    const filterName = FILTERS.find(one => one.id === chosen)?.label ?? ''
+    const named = FILTERS.find(one => one.id === chosen)
+    const filterName = (project ? named?.planned : named?.label) ?? ''
 
     return (
       <Box flexDirection="column">
@@ -1075,18 +1247,32 @@ export const register: Register = on => {
             <Text dimColor>{typed.trim() ? `Nothing under ${filterName} matches “${typed.trim()}”.` : `Nothing open under ${filterName}.`}</Text>
           </Box>
         )}
-        {byArea(shown).map(([area, issues]) => {
-          const sum = sumProgress(issues)
-          const right = `${issues.length} · ${sum.total > 0 ? `${Math.round((sum.done / sum.total) * 100)}%` : '—'}`
+        {groupsOf(shown, grouping, project).map(group => {
+          const sum = sumProgress(group.issues)
+          const done = sum.total > 0 ? `${Math.round((sum.done / sum.total) * 100)}%` : '—'
+          const right = group.epic ? `${group.issues.length} open · ${group.epic.completed}/${group.epic.total} closed` : `${group.issues.length} · ${done}`
+          const shut = group.folded && !opened.includes(group.key)
+          // A folded group, such as Backlog, is a heading the person opens; open, its heading folds it again.
+          const fold = () => void update($, unfolded, list => (list.includes(group.key) ? list.filter(one => one !== group.key) : [...list, group.key]))
           return (
-            <Box flexDirection="column">
-              {rule(area, right)}
-              {issues.map(issue => (
-                <Box flexDirection="column">
-                  {issueRow(issue)}
-                  {open.includes(issue.number) && issueCard(issue, single)}
+            <Box key={`group-${group.key}`} flexDirection="column">
+              {group.folded ? (
+                <Box flexDirection="row" marginTop={1} gap={1}>
+                  <Button key={`fold-${group.key}`} plain hover={{ bold: true }} onPress={fold}>
+                    {`${shut ? '▸' : '▾'} ${group.title}`}
+                  </Button>
+                  <Text dimColor>{shut ? `${group.issues.length} folded` : right}</Text>
                 </Box>
-              ))}
+              ) : (
+                rule(fit(group.title, Math.max(12, width - right.length - 6)), right)
+              )}
+              {!shut &&
+                group.issues.map(issue => (
+                  <Box flexDirection="column">
+                    {issueRow(issue)}
+                    {open.includes(issue.number) && issueCard(issue, single)}
+                  </Box>
+                ))}
             </Box>
           )
         })}
@@ -1097,7 +1283,7 @@ export const register: Register = on => {
               ? 'y merge every open PR · n cancel'
               : single
                 ? 's start · e edit first · x or esc collapse · press a box to tick it · r refresh'
-                : `1 active · 2 future · 3 bugs · 4 mine · 5 all · r refresh · ⏎ open an issue${now.prs.length > 0 ? ' · m merge all PRs' : ''}${made ? ' · c create the issue' : ''}`}
+                : `${project ? '1 now · 2 later' : '1 active · 2 future'} · 3 bugs · 4 mine · 5 all · r refresh · ⏎ open an issue${now.prs.length > 0 ? ' · m merge all PRs' : ''}${made ? ' · c create the issue' : ''}`}
           </Text>
         </Box>
       </Box>
