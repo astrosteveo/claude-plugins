@@ -2145,6 +2145,18 @@ export const register: Register = on => {
             <Text color={ciBadge[workingPr.ci].color}>{ciBadge[workingPr.ci].text.trim()}</Text>
           </Text>
         )}
+        <Button
+          key={`stop-${workingIssue.number}`}
+          dimColor
+          onPress={() =>
+            void (async () => {
+              await update($, working, () => null)
+              await save($)
+            })()
+          }
+        >
+          ✕
+        </Button>
       </Box>
     )
 
@@ -3031,8 +3043,8 @@ export const register: Register = on => {
     return next({ ...e, props: { ...e.props, tail: e.props.tail ? `${e.props.tail} · ${text}` : text } })
   })
 
-  // The band above the prompt: something the board needs that is missing, a pull request whose CI failed, or news on
-  // the issue Claude is on.
+  // The band above the prompt is for what needs the person now: something to fix, merge, tick or look at. It shows
+  // nothing otherwise. Progress (the issue Claude is on, CI running) is the pane's: the band doesn't repeat it.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
     const now = await read($, board)
@@ -3040,17 +3052,13 @@ export const register: Register = on => {
     const problems = ((await read($, access))?.problems ?? []).filter(problem => !gone.includes(accessKey(problem)))
     const doing = await read($, working)
     const alerts = now ? alertsOf(now, doing, gone, await read($, greened)) : []
-    // The issue Claude is on, while it is open and nothing else about it is being said.
-    const workingIssue = now && doing && !alerts.some(alert => alert.kind === 'activity') ? now.issues.find(issue => issue.number === doing.number) : undefined
     // Tasks Claude completed whose boxes are still open: the band asks whether to tick them.
     const offers = (now ? await read($, tasks) : []).flatMap(task => {
       const issue = task.done ? now?.issues.find(one => one.number === task.number) : undefined
       const at = issue && boxOf(issue, task)
       return at && !at.done ? [{ task, box: at.box }] : []
     })
-    // CI running on the branch checked out, as `gh run watch` draws it.
-    const watched = await read($, runs)
-    if (problems.length === 0 && alerts.length === 0 && offers.length === 0 && watched.length === 0 && !workingIssue) return next(e)
+    if (problems.length === 0 && alerts.length === 0 && offers.length === 0) return next(e)
 
     const { Box, Text, Button, Link } = $.ui.resolve(e)
     const width = e.props.bodyColumns
@@ -3065,10 +3073,6 @@ export const register: Register = on => {
     const dismiss = (alert: Alert) => async () => {
       await update($, dismissed, list => [...list.slice(-50), alert.key])
       if (alert.kind === 'closed') await update($, working, () => null)
-      await save($)
-    }
-    const stop = async () => {
-      await update($, working, () => null)
       await save($)
     }
     // A button that hands Claude a pull request: into the prompt box while Claude is busy, sent otherwise.
@@ -3179,32 +3183,6 @@ export const register: Register = on => {
       </Box>
     )
 
-    const workingStep = workingIssue && progress(workingIssue.checks)
-    const [filled, empty] = workingStep ? bar(workingStep, 8) : ['', '']
-    const workingRow = workingIssue && workingStep && (
-      <Box flexDirection="row" gap={1}>
-        <Text color="claude" bold>
-          {' ▶ '}
-        </Text>
-        <Text>
-          <Text color="claude" bold>{`#${workingIssue.number} `}</Text>
-          <Text>{fit(workingIssue.title, Math.max(12, width - 40))}</Text>
-        </Text>
-        {workingStep.total > 0 && (
-          <Text>
-            <Text color={tone(workingStep)}>{filled}</Text>
-            <Text color="inactive" dimColor>
-              {empty}
-            </Text>
-            <Text dimColor>{` ${workingStep.done}/${workingStep.total}`}</Text>
-          </Text>
-        )}
-        <Button key={`stop-${workingIssue.number}`} dimColor onPress={() => void stop()}>
-          ✕
-        </Button>
-      </Box>
-    )
-
     // Something missing: what it is, the command or page that fixes it, and a look again once it's done.
     const problemLine = (problem: Problem) => {
       const how = problem.command ? `run ${problem.command}` : problem.fix
@@ -3238,31 +3216,6 @@ export const register: Register = on => {
         {problems.slice(0, 2).map(problemLine)}
         {alerts.slice(0, 3).map(line)}
         {offers.slice(0, 3).map(offerLine)}
-        {watched.slice(0, 2).map(run => {
-          const [filled, empty] = bar({ done: run.done, total: run.total }, 8)
-          return (
-            <Box key={`run-row-${run.id}`} flexDirection="row" gap={1}>
-              <Text color={run.failed > 0 ? 'error' : 'warning'} inverse bold>
-                {' ◷ CI '}
-              </Text>
-              <Text>
-                <Text bold>{fit(run.workflow, 24)}</Text>
-                <Text dimColor>{` on ${fit(run.branch, 24)}`}</Text>
-              </Text>
-              {run.total > 0 && (
-                <Text>
-                  <Text color={run.failed > 0 ? 'error' : 'warning'}>{filled}</Text>
-                  <Text color="inactive" dimColor>
-                    {empty}
-                  </Text>
-                  <Text dimColor>{` ${run.done}/${run.total} jobs`}</Text>
-                </Text>
-              )}
-              {run.running && <Text dimColor>{fit(`${run.running}${run.step ? ` › ${run.step}` : ''}`, Math.max(12, width - 72))}</Text>}
-            </Box>
-          )
-        })}
-        {workingRow}
       </Box>
     )
   })

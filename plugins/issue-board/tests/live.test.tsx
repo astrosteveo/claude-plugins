@@ -172,7 +172,7 @@ test("a GitHub event for this repo's pull request reads GitHub at once; another 
   expect(gh.reads).toBe(reads + 1)
 })
 
-test("while the branch's CI runs, the band and the pane show its progress from gh run watch, and its end reads GitHub", async ($, on) => {
+test("while the branch's CI runs, the pane shows its progress from gh run watch, the band stays quiet, and its end reads GitHub", async ($, on) => {
   mock.store(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   const gh = world(on)
@@ -193,11 +193,11 @@ test("while the branch's CI runs, the band and the pane show its progress from g
   await clock.settle()
   expect(gh.watched).toEqual([['gh', 'run', 'watch', '987', '--interval', '5']])
   const band = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...BAND })
-  expect(await band.find({ text: / ◷ CI / })).toBeDefined()
-  expect(await band.find({ text: / 1\/2 jobs/ })).toBeDefined()
-  expect(await band.find({ text: /^validate › Install Claude Code$/ })).toBeDefined()
+  expect(await band.find({ text: / ◷ CI / })).toBeUndefined()
   const pane = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   expect(await pane.find({ key: 'run-987' })).toBeDefined()
+  expect(await pane.find({ text: / 1\/2 jobs/ })).toBeDefined()
+  expect(await pane.find({ text: /^validate › Install Claude Code$/ })).toBeDefined()
 
   // A refresh while it runs doesn't watch it twice.
   await $.command.run(REFRESH)
