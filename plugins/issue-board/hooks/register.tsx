@@ -27,13 +27,15 @@ import {
 } from './setup'
 import {
   THREADS_QUERY,
-  WORKER_PROMPT,
   WEEKS,
+  WORKER,
+  WORKER_PROMPT,
   absorbed,
   ago,
   alertsOf,
   answerPrompt,
   areaOf,
+  backgroundPrompt,
   bar,
   boardText,
   boxOf,
@@ -97,6 +99,7 @@ import {
   weekly,
   wentGreen,
   workerBadge,
+  workerIssueOf,
   workingSection,
   writesGitHub,
 } from './parse'
@@ -113,8 +116,6 @@ const ISSUE_FIELDS = 'number,title,url,labels,assignees,body,updatedAt'
 const ISSUES_TOOL = 'mcp__issue-board__issues'
 const TICK_TOOL = 'mcp__issue-board__tick'
 const UPDATE_TOOL = 'mcp__issue-board__issue_update'
-// The agent type Start in background runs, as `$.agent.register` names it.
-const WORKER = 'issue-board:worker'
 
 const strings = (value: unknown): string[] | undefined =>
   Array.isArray(value) ? value.filter((one): one is string => typeof one === 'string' && one.trim() !== '').map(one => one.trim()) : undefined
@@ -974,36 +975,21 @@ const pollWorkers = ($: EngineInterface): void => {
   if (!workerTimer) workerTimer = $.clock.every(10_000, () => void checkWorkers($))
 }
 
-// An issue as a line in the conversation names it: its number, and its title when it has one.
-const named = (issue: Issue): string => (issue.title.trim() ? `#${issue.number} "${issue.title.trim()}"` : `#${issue.number}`)
-
-// Start in background: an agent of the board's own type works on the issue in a git worktree of its own, in the
-// background, and leaves a pull request. As soon as the agent starts, or fails to, a line in the conversation says so,
-// for the person and not the model; a toast says it too. The issue moves to In progress and is assigned, as Start does.
+// Start in background: Claude dispatches an agent of the board's own type on the issue, to work it in a git worktree
+// of its own, in the background, and leave a pull request. The issue moves to In progress and is assigned, as Start
+// does.
 const startInBackground = async ($: EngineInterface, issue: Issue): Promise<void> => {
-  const name = `issue-${issue.number}`
-  let agentId: string | undefined
-  try {
-    const started = await $.agent.spawn({ subagentType: WORKER, prompt: startPrompt(issue), description: fit(`#${issue.number} ${issue.title}`, 60), name })
-    if (started.deny !== undefined) throw new Error(started.deny)
-    // Core names the agent it started; failing that, the session's list does, by the name it was given.
-    agentId = started.agentId ?? (await $.agent.list()).find(agent => agent.name === name && agent.type === WORKER)?.id
-    if (!agentId) throw new Error('no agent started')
-  } catch (cause) {
-    $.ui.log(`Couldn't start a background agent on ${named(issue)}: ${messageOf(cause)}`)
-    $.ui.toast(`Couldn't start a background agent on #${issue.number}: ${messageOf(cause)}`)
-    return
-  }
-  $.ui.log(`Started a background agent on ${named(issue)}. It is working on the issue in the background now.`)
-  $.ui.toast(`Started a background agent on #${issue.number}`)
-  try {
-    const worker: Worker = { number: issue.number, agentId, status: 'running', startedAt: Date.now(), answer: null }
-    await update($, workers, list => [...list.filter(one => one.number !== issue.number), worker])
-    pollWorkers($)
-    await claim($, issue)
-  } catch (cause) {
-    $.ui.toast(`Started a background agent on #${issue.number}, but the board couldn't follow it: ${messageOf(cause)}`)
-  }
+  await $.prompt.submit({ text: backgroundPrompt(issue), asUser: true })
+  $.ui.toast(`Asked Claude to start a background agent on #${issue.number}`)
+  await claim($, issue)
+}
+
+// A spawn of the board's agent, by Claude or anyone: once it starts, the issue's row follows it.
+const workerStarted = async ($: EngineInterface, number: number, agentId: string): Promise<void> => {
+  const worker: Worker = { number, agentId, status: 'running', startedAt: Date.now(), answer: null }
+  await update($, workers, list => [...list.filter(one => one.number !== number), worker])
+  pollWorkers($)
+  $.ui.toast(`Started a background agent on #${number}`)
 }
 
 // A background agent's answer is its loop's last turn: it is done, stopped or failed, and the board reads GitHub, where
@@ -1393,8 +1379,26 @@ export const register: Register = on => {
     return ended
   })
 
-  // The background agent is the board's to start, from an issue's card: the model isn't offered it.
-  on('agent.offer', { agent: WORKER }, async () => ({ isOffered: false }))
+  // Claude dispatches the board's agent, from Start in background: the issue's row follows the agent it started.
+  on('agent.spawn', async ($, e, next) => {
+    const started = await next(e)
+    if (e.subagentType !== WORKER) return started
+    const number = workerIssueOf(e)
+    if (started.deny !== undefined) {
+      $.ui.toast(`Couldn't start a background agent${number ? ` on #${number}` : ''}: ${started.deny}`)
+      return started
+    }
+    if (number === undefined) return started
+    try {
+      // Core names the agent it started; failing that, the session's list does, by the name it was given.
+      const agentId = started.agentId ?? (e.name ? (await $.agent.list()).find(agent => agent.name === e.name && agent.type === WORKER)?.id : undefined)
+      if (!agentId) throw new Error('no agent id')
+      await workerStarted($, number, agentId)
+    } catch (cause) {
+      $.ui.toast(`Started a background agent on #${number}, but the board couldn't follow it: ${messageOf(cause)}`)
+    }
+    return started
+  })
 
   // A GitHub event for a subscribed pull request reaches Claude as it would, and the board reads GitHub at once.
   on('session.receive', async ($, e, next) => {
