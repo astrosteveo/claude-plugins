@@ -77,3 +77,23 @@ test('read without the project, the issues have no Status or Priority and the bo
   expect(matches('future', issues[0]!, null, project)).toBe(true)
   expect(groupsOf(issues, 'status', project).map(group => group.title)).toEqual(['other'])
 })
+
+test('with several projects linked, the board reads the one setup saved while it is still open', () => {
+  const page = (closed: boolean) =>
+    JSON.stringify({
+      data: {
+        repository: {
+          projectsV2: {
+            nodes: [
+              { id: 'PVT_8', number: 8, title: 'Void Sector', url: '', closed: false, fields: { nodes: [] } },
+              { id: 'PVT_9', number: 9, title: 'Roadmap', url: '', closed, fields: { nodes: [] } },
+            ],
+          },
+          issues: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
+        },
+      },
+    })
+  expect(parseGraph([page(false)]).project?.number).toBe(8)
+  expect(parseGraph([page(false)], 'PVT_9').project?.number).toBe(9)
+  expect(parseGraph([page(true)], 'PVT_9').project?.number).toBe(8)
+})

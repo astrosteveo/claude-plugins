@@ -1,9 +1,28 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, ModelForkResult, Register, Timer, UiCopyArgs } from 'claude-code'
 
-import type { Alert, Board, Draft, Filter, GroupBy, Issue, Problem, Project, PullRequest, Working } from '../types'
+import type { Alert, Board, Draft, Filter, GroupBy, Issue, Problem, Project, PullRequest, SavedSetup, Setup, SetupProject, SetupStep, Working } from '../types'
 import { authOf, problemsOf, problemsText, repoOf } from './access'
 import { ADD_ITEM, SET_FIELD, issuesQuery, optionOf, startedOf } from './project'
+import {
+  CREATE_FIELD,
+  CREATE_PROJECT,
+  FACTS_QUERY,
+  ITEMS_QUERY,
+  PRIORITIES,
+  PROJECT_QUERY,
+  UPDATE_FIELD,
+  areasOf,
+  automationsOff,
+  factsOf,
+  mergeStatuses,
+  nextItemsOf,
+  projectOf,
+  rolesOf,
+  stepsOf,
+  suggestAreas,
+  templatePrompt,
+} from './setup'
 import {
   WEEKS,
   ago,
@@ -81,6 +100,7 @@ const openPr = atom({ plugin: 'issue-board', key: 'openPr' } as const, null)
 const access = atom({ plugin: 'issue-board', key: 'access' } as const, null)
 const groupBy = atom({ plugin: 'issue-board', key: 'groupBy' } as const, null)
 const unfolded = atom({ plugin: 'issue-board', key: 'unfolded' } as const, [])
+const setup = atom({ plugin: 'issue-board', key: 'setup' } as const, null)
 
 // The filters; with a project, the first two read Priority and say so.
 const FILTERS: { id: Filter; label: string; planned: string; hotkey: string }[] = [
@@ -163,8 +183,8 @@ const schedule = ($: EngineInterface, now: Board | null): void => {
   timer = $.clock.after(watching ? WATCH_MS : REFRESH_MS, () => void refresh($))
 }
 
-// What the board keeps between sessions, one entry per repository.
-type Saved = { board: Board | null; working: Working | null; dismissed: string[]; viewer: string | null }
+// What the board keeps between sessions, one entry per repository; `setup` is what `/issues setup` last saved.
+type Saved = { board: Board | null; working: Working | null; dismissed: string[]; viewer: string | null; setup?: SavedSetup }
 
 let storeKey: string | undefined
 const keyOf = async ($: EngineInterface): Promise<string> => {
@@ -175,12 +195,22 @@ const keyOf = async ($: EngineInterface): Promise<string> => {
   return storeKey
 }
 
+// What `/issues setup` saved for this repo, if it has run here.
+const savedSetup = async ($: EngineInterface): Promise<SavedSetup | undefined> => {
+  try {
+    return ((await $.store.get(await keyOf($))) as Partial<Saved> | undefined)?.setup
+  } catch {
+    return undefined
+  }
+}
+
 const save = async ($: EngineInterface): Promise<void> => {
   try {
     // Without the issues' bodies, which the next refresh brings back, to keep the store small.
     const now = await read($, board)
     const kept = now && { ...now, issues: now.issues.map(issue => ({ ...issue, body: '' })) }
-    const saved: Saved = { board: kept, working: await read($, working), dismissed: await read($, dismissed), viewer: await read($, viewer) }
+    const before = await savedSetup($)
+    const saved: Saved = { board: kept, working: await read($, working), dismissed: await read($, dismissed), viewer: await read($, viewer), ...(before ? { setup: before } : {}) }
     await $.store.set(await keyOf($), saved)
   } catch (cause) {
     $.ui.log(`issue-board: couldn't save the board: ${messageOf(cause)}`, { to: 'debug' })
@@ -213,6 +243,8 @@ let projectRefusal: string | undefined
 // The open issues over GraphQL, up to 300, with the repo's project when gh may read it.
 const fetchIssues = async ($: EngineInterface, nameWithOwner: string): Promise<{ issues: Issue[]; project: Project | null }> => {
   const [owner = '', name = ''] = nameWithOwner.split('/')
+  const saved = await savedSetup($)
+  const preferred = saved?.project.id
   const pull = async (withProject: boolean) => {
     const pages: string[] = []
     let after: string | null = null
@@ -221,7 +253,7 @@ const fetchIssues = async ($: EngineInterface, nameWithOwner: string): Promise<{
       pages.push(page)
       after = nextPageOf(page)
     } while (after && pages.length < PAGES)
-    return parseGraph(pages)
+    return parseGraph(pages, preferred)
   }
   const unread = projectRefusal !== undefined || ((await read($, access))?.problems.some(problem => problem.id === 'scope-project') ?? false)
   if (!unread) {
@@ -434,6 +466,157 @@ const claim = async ($: EngineInterface, issue: Issue): Promise<void> => {
   if (failures.some(failure => ACCESS_ERROR.test(failure))) void checkAccess($, failures.join('\n'))
 }
 
+// A GraphQL call with its variables as JSON, which `-f` can't carry for a list such as a field's options.
+const graphql = async ($: EngineInterface, query: string, variables: Record<string, unknown>): Promise<Record<string, any>> => {
+  const answer = JSON.parse(await gh($, ['api', 'graphql', '--input', '-'], JSON.stringify({ query, variables }))) as { data?: Record<string, any>; errors?: { message: string }[] }
+  if (answer.errors?.length) throw new Error(answer.errors[0]?.message ?? 'GitHub refused the change')
+  return answer.data ?? {}
+}
+
+// The repo's folders, for the area labels setup suggests: its top level, and the parts under plugins/, packages/ and
+// the like.
+const foldersOf = async ($: EngineInterface, root: string): Promise<{ top: string[]; nested: Record<string, string[]> }> => {
+  const dirs = async (path: string) => (await $.fs.list(path).catch(() => [])).filter(entry => entry.kind === 'dir').map(entry => entry.name)
+  const top = await dirs(root)
+  const nested: Record<string, string[]> = {}
+  for (const group of ['plugins', 'packages', 'apps', 'services', 'src']) if (top.includes(group)) nested[group] = await dirs(`${root}/${group}`)
+  return { top, nested }
+}
+
+// Whether the repo has an issue template with an Acceptance list already.
+const hasTemplate = async ($: EngineInterface, root: string): Promise<boolean> => {
+  const folder = `${root}/.github/ISSUE_TEMPLATE`
+  for (const entry of await $.fs.list(folder).catch(() => [])) {
+    if (entry.kind !== 'file') continue
+    const text = await $.fs.read(`${folder}/${entry.name}`).catch(() => '')
+    if (typeof text === 'string' && /acceptance/i.test(text)) return true
+  }
+  return false
+}
+
+// `/issues setup`: reads the repo, its projects, labels and open issues, and puts what it would change in the pane.
+// Nothing changes until Apply.
+const readSetup = async ($: EngineInterface): Promise<void> => {
+  await update($, setup, () => ({ phase: 'reading' as const }))
+  try {
+    const repoName = (JSON.parse(await gh($, ['repo', 'view', '--json', 'nameWithOwner'])) as { nameWithOwner: string }).nameWithOwner
+    const [owner = '', name = ''] = repoName.split('/')
+    const facts = await graphql($, FACTS_QUERY, { owner, name })
+    const pages: string[] = []
+    let after: string | null = null
+    do {
+      const page: string = JSON.stringify({ data: await graphql($, ITEMS_QUERY, { owner, name, after }) })
+      pages.push(page)
+      after = nextItemsOf(page)
+    } while (after && pages.length < PAGES)
+    const root = (await $.session.repo().catch(() => null))?.root ?? (await $.session.root())
+    const labels = ((facts.repository?.labels?.nodes ?? []) as { name: string }[]).map(label => label.name)
+    const found = factsOf(JSON.stringify({ data: facts }), pages, suggestAreas(labels, await foldersOf($, root)), await hasTemplate($, root))
+    // The project the board already reads, when setup saved one and it's still linked; else the first linked.
+    const saved = await savedSetup($)
+    const chosen = found.projects.find(one => one.id === saved?.project.id)?.id ?? found.projects[0]?.id ?? null
+    const areas = found.suggested.join(', ')
+    await update($, setup, () => ({ phase: 'ready' as const, facts: found, chosen, areas, steps: stepsOf(found, chosen, areas) }))
+  } catch (cause) {
+    const message = messageOf(cause)
+    await update($, setup, () => ({ phase: 'failed' as const, message }))
+    if (ACCESS_ERROR.test(message) || PROJECT_REFUSED.test(message)) void checkAccess($, message)
+  }
+}
+
+// Apply: each step in turn, marked running, done, failed or skipped as it goes, so the pane shows how far it got. A step
+// that fails doesn't stop the ones after it, save those that need what it would have made.
+const applySetup = async ($: EngineInterface): Promise<void> => {
+  const now = await read($, setup)
+  if (now?.phase !== 'ready') return
+  const { facts } = now
+  const mark = (id: SetupStep['id'], state: NonNullable<SetupStep['state']>, message?: string) =>
+    update($, setup, was => (was && 'steps' in was ? { ...was, steps: was.steps.map(step => (step.id === id ? { ...step, state, ...(message ? { message } : {}) } : step)) } : was))
+  const run = async (id: SetupStep['id'], work: () => Promise<unknown>): Promise<void> => {
+    if (!now.steps.some(step => step.id === id)) return
+    await mark(id, 'running')
+    try {
+      await work()
+      await mark(id, 'done')
+    } catch (cause) {
+      await mark(id, 'failed', messageOf(cause))
+    }
+  }
+  const reread = async (id: string): Promise<SetupProject> => projectOf((await graphql($, PROJECT_QUERY, { id })).node)
+  await update($, setup, was => (was?.phase === 'ready' ? { ...was, phase: 'applying' as const } : was))
+
+  let project: SetupProject | null = facts.projects.find(one => one.id === now.chosen) ?? null
+  await run('issues', () => gh($, ['repo', 'edit', facts.repo.name, '--enable-issues']))
+  await run('project', async () => {
+    const title = facts.repo.name.split('/')[1] ?? facts.repo.name
+    const made = await graphql($, CREATE_PROJECT, { owner: facts.repo.ownerId, title, repo: facts.repo.id })
+    project = await reread(made.createProjectV2.projectV2.id)
+  })
+  // Without a project, the steps that work in one can't run.
+  const needsProject = ['status', 'priority', 'items', 'inbox'] as const
+  if (!project) {
+    for (const id of needsProject) if (now.steps.some(step => step.id === id)) await mark(id, 'skipped', 'There is no project to change.')
+  } else {
+    let current: SetupProject = project
+    await run('status', async () => {
+      if (!current.status) throw new Error('the project has no Status field')
+      const { options } = mergeStatuses(current.status.options)
+      await graphql($, UPDATE_FIELD, { field: current.status.id, options: options.map(one => ({ ...(one.id ? { id: one.id } : {}), name: one.name, color: one.color, description: one.description })) })
+      current = await reread(current.id)
+    })
+    await run('priority', async () => {
+      await graphql($, CREATE_FIELD, { project: current.id, name: 'Priority', options: PRIORITIES })
+      current = await reread(current.id)
+    })
+    // Each open issue's item in the project, the ones already there and the ones added now.
+    const items = new Map(facts.issues.flatMap(issue => issue.items.filter(item => item.project === current.id).map(item => [issue.number, item] as const)))
+    await run('items', async () => {
+      for (const issue of facts.issues) {
+        if (items.has(issue.number)) continue
+        const added = await graphql($, ADD_ITEM, { project: current.id, content: issue.id })
+        items.set(issue.number, { project: current.id, item: added.addProjectV2ItemById.item.id, status: null })
+      }
+    })
+    await run('inbox', async () => {
+      const inbox = current.status?.options.find(option => option.name.toLowerCase() === 'inbox')
+      if (!current.status || !inbox?.id) throw new Error('the project has no Inbox status')
+      for (const { item, status } of items.values()) {
+        if (status) continue
+        await graphql($, SET_FIELD, { project: current.id, item, field: current.status.id, option: inbox.id })
+      }
+    })
+    project = current
+  }
+  await run('bug', () => gh($, ['label', 'create', 'bug', '-R', facts.repo.name, '--color', 'd73a4a', '--description', "Something isn't working"]))
+  await run('areas', async () => {
+    for (const area of areasOf(now.areas, facts.labels)) {
+      await gh($, ['label', 'create', `area:${area}`, '-R', facts.repo.name, '--color', '1d76db', '--description', `The ${area} part`])
+    }
+  })
+
+  // The board reads the project setup ended with from now on, and knows which Status means what.
+  const ended: SetupProject | null = project
+  if (ended) {
+    const kept: SavedSetup = {
+      project: { id: ended.id, number: ended.number, title: ended.title },
+      status: ended.status ? { id: ended.status.id, roles: rolesOf(ended.status.options) } : null,
+      priority: ended.priority ? { id: ended.priority.id } : null,
+      at: Date.now(),
+    }
+    const key = await keyOf($)
+    const before = ((await $.store.get(key).catch(() => undefined)) as Partial<Saved> | undefined) ?? {}
+    await $.store.set(key, { ...before, setup: kept })
+  }
+  // Done: the pane shows the project as it now is, a new one included, so its automations still off can be linked.
+  await update($, setup, was =>
+    was?.phase === 'applying'
+      ? { ...was, phase: 'done' as const, ...(ended ? { chosen: ended.id, facts: { ...was.facts, projects: [...was.facts.projects.filter(one => one.id !== ended.id), ended] } } : {}) }
+      : was,
+  )
+  projectRefusal = undefined
+  void refresh($)
+}
+
 // A Status or Priority picked on a card.
 const pick = async ($: EngineInterface, issue: Issue, field: 'status' | 'priority', name: string): Promise<void> => {
   try {
@@ -451,7 +634,7 @@ export const register: Register = on => {
     await $.command.register({
       name: 'issues',
       description: 'Show open issues and pull requests in a pane',
-      argumentHint: '[refresh | check | new <what it is about>]',
+      argumentHint: '[refresh | check | setup | new <what it is about>]',
     })
     await $.tool.register({
       name: 'issues',
@@ -507,6 +690,11 @@ export const register: Register = on => {
       void draftIssue($, (asked[1] ?? '').trim())
       return { text: 'Drafting an issue from the conversation. It shows at the top of the issues pane to check before you create it.' }
     }
+    if (e.args.trim() === 'setup') {
+      await $.ui.open(OPEN)
+      void readSetup($)
+      return { text: 'Reading the repo and its project. What setup would change shows at the top of the issues pane, and nothing changes until you press Apply.' }
+    }
     if (e.args.trim() === 'check') {
       const problems = await checkAccess($)
       const found = await read($, access)
@@ -544,8 +732,15 @@ export const register: Register = on => {
   // Esc, or the pane's close mark: with an issue's card or a pull request's details open it folds them and keeps the
   // pane; with nothing open the pane closes. The engine stamps both as the person's close, so they step back alike.
   on('ui.close', { id: PANE }, async ($, e, next) => {
+    if (e.origin.kind !== 'person') return next(e)
+    // Setup showing steps back first, unless Apply is running: that keeps the pane open until it's done.
+    const shown = await read($, setup)
+    if (shown) {
+      if (shown.phase !== 'applying') await update($, setup, () => null)
+      return { value: undefined }
+    }
     const folding = (await read($, expanded)).length > 0 || (await read($, openPr)) !== null
-    if (e.origin.kind !== 'person' || !folding) return next(e)
+    if (!folding) return next(e)
     await update($, expanded, () => [])
     await update($, openPr, () => null)
     return { value: undefined }
@@ -642,6 +837,7 @@ export const register: Register = on => {
     const made = await read($, draft)
     const thinking = await read($, drafting)
     const shownPr = await read($, openPr)
+    const planned = await read($, setup)
     const picked = await read($, groupBy)
     const opened = await read($, unfolded)
     const clock = Date.now()
@@ -777,10 +973,131 @@ export const register: Register = on => {
       </Box>
     )
 
+    // `/issues setup`: the project it would use, what it would change, what only the project's settings can turn on,
+    // and Apply, the one ask before anything changes. While Apply runs, each change is marked as it goes.
+    const MARKS = { running: ['◌', 'warning'], done: ['✓', 'success'], failed: ['✗', 'error'], skipped: ['–', 'inactive'] } as const
+    const facts = planned && 'facts' in planned ? planned.facts : undefined
+    const chosenProject = facts && planned && 'chosen' in planned ? facts.projects.find(one => one.id === planned.chosen) : undefined
+    const choose = (id: string | null) => () =>
+      void update($, setup, was => (was?.phase === 'ready' ? { ...was, chosen: id, steps: stepsOf(was.facts, id, was.areas) } : was))
+    const typeAreas = (text: string) =>
+      void update($, setup, was => (was?.phase === 'ready' ? { ...was, areas: text, steps: stepsOf(was.facts, was.chosen, text) } : was))
+    const manual = facts ? automationsOff(chosenProject) : []
+    const setupPlan = planned && (
+      <Box key="setup-plan" flexDirection="column" borderStyle="round" borderColor="suggestion" paddingX={1} marginTop={1}>
+        <Text color="suggestion" bold>
+          {`⚙ Set up ${facts?.repo.name ?? 'the repo'} for the board`}
+        </Text>
+        {planned.phase === 'reading' && <Text dimColor>◌ Reading the repo, its project and its issues…</Text>}
+        {planned.phase === 'failed' && (
+          <Box flexDirection="column">
+            <Text color="error" wrap="wrap">{`Couldn't read what setup needs: ${planned.message}`}</Text>
+            <Text dimColor>/issues check says what is missing and how to fix it.</Text>
+          </Box>
+        )}
+        {facts && 'steps' in planned && (
+          <Box flexDirection="column">
+            <Box flexDirection="row" gap={1} flexWrap="wrap" marginTop={1}>
+              <Text dimColor>Project</Text>
+              {facts.projects.length === 0 && <Text>{`none is linked to ${facts.repo.name}`}</Text>}
+              {facts.projects.length === 1 && chosenProject && <Text bold>{`${chosenProject.title} (#${chosenProject.number})`}</Text>}
+              {facts.projects.length > 1 &&
+                facts.projects.map(one => (
+                  <Button
+                    key={`setup-project-${one.number}`}
+                    variant={one.id === planned.chosen ? 'primary' : undefined}
+                    dimColor={one.id !== planned.chosen}
+                    onPress={planned.phase === 'ready' ? choose(one.id) : () => undefined}
+                  >
+                    {`${one.title} #${one.number}`}
+                  </Button>
+                ))}
+              {chosenProject && <Link href={chosenProject.url} label="↗ GitHub" />}
+            </Box>
+            {planned.steps.length === 0 ? (
+              <Text color="success">✓ Nothing to change: the repo and its project are set up for the board.</Text>
+            ) : (
+              <Box flexDirection="column" marginTop={1}>
+                <Text bold>{planned.phase === 'ready' ? 'Apply will:' : 'Changes:'}</Text>
+                {planned.steps.map(step => {
+                  const [mark, color] = step.state ? MARKS[step.state] : (['✚', 'suggestion'] as const)
+                  return (
+                    <Box key={`setup-step-${step.id}`} flexDirection="column">
+                      <Text wrap="wrap">
+                        <Text color={color}>{`${mark} `}</Text>
+                        <Text>{step.title}</Text>
+                      </Text>
+                      {step.message && (
+                        <Text dimColor wrap="wrap">
+                          {`  ${step.message}`}
+                        </Text>
+                      )}
+                    </Box>
+                  )
+                })}
+              </Box>
+            )}
+            {planned.phase === 'ready' && Input && !facts.labels.some(label => label.startsWith('area:')) && (
+              <Box flexDirection="row" marginTop={1}>
+                <Input
+                  key="setup-areas"
+                  label="area labels to create: "
+                  placeholder="such as simulation, interface"
+                  value={planned.areas}
+                  submitLabel="update"
+                  onInput={typeAreas}
+                  onSubmit={typeAreas}
+                />
+              </Box>
+            )}
+            {manual.length > 0 && (
+              <Box flexDirection="row" gap={1} flexWrap="wrap" marginTop={1}>
+                <Text color="warning" wrap="wrap">{`Turn on by hand, in the project's Workflows settings: ${manual.join(', ')}.`}</Text>
+                {chosenProject && <Link href={`${chosenProject.url}/workflows`} label="↗ Workflows" />}
+              </Box>
+            )}
+            {!facts.hasTemplate && (
+              <Box flexDirection="row" gap={1} flexWrap="wrap" marginTop={1}>
+                <Text dimColor>No issue template has an Acceptance list.</Text>
+                <Button
+                  key="setup-template"
+                  dimColor
+                  onPress={() => void $.prompt.submit({ text: templatePrompt(facts.repo.name), asUser: true }).then(() => $.ui.toast('Asked Claude for an issue template, as a pull request to review'))}
+                >
+                  Have Claude add one
+                </Button>
+              </Box>
+            )}
+            <Box flexDirection="row" gap={1} marginTop={1}>
+              {planned.phase === 'ready' && planned.steps.length > 0 && (
+                <Button key="setup-apply" variant="primary" onPress={() => void applySetup($)}>
+                  Apply
+                </Button>
+              )}
+              {planned.phase === 'applying' && <Text color="warning">◌ Applying…</Text>}
+              {planned.phase !== 'applying' && (
+                <Button key="setup-close" dimColor onPress={() => void update($, setup, () => null)}>
+                  {planned.phase === 'ready' && planned.steps.length > 0 ? 'Cancel' : 'Close'}
+                </Button>
+              )}
+            </Box>
+          </Box>
+        )}
+        {planned.phase === 'failed' && (
+          <Box flexDirection="row" marginTop={1}>
+            <Button key="setup-close" dimColor onPress={() => void update($, setup, () => null)}>
+              Close
+            </Button>
+          </Box>
+        )}
+      </Box>
+    )
+
     if (!now) {
       return (
         <Box flexDirection="column">
           {header}
+          {setupPlan}
           {setupCard ||
             (failure ? (
             <Box flexDirection="column" borderStyle="round" borderColor="error" paddingX={1} marginTop={1}>
@@ -1228,6 +1545,7 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
         {topLine}
+        {setupPlan}
         {trends}
         {workingLine}
         {setupCard}

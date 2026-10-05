@@ -254,10 +254,12 @@ export const nextPageOf = (json: string): string | null => {
   return info?.hasNextPage && info.endCursor ? info.endCursor : null
 }
 
-// The issues of every page, and the repo's project: the first open one linked to it, read from the first page.
-export const parseGraph = (pages: string[]): { issues: Issue[]; project: Project | null } => {
+// The issues of every page, and the repo's project, read from the first page: the one `/issues setup` saved when it's
+// still linked and open, else the first open one linked to the repo.
+export const parseGraph = (pages: string[], preferred?: string): { issues: Issue[]; project: Project | null } => {
   const parsed = pages.map(page => JSON.parse(page) as RawPage)
-  const linked = nodesOf(parsed[0]?.data?.repository?.projectsV2).find(one => !one.closed)
+  const open = nodesOf(parsed[0]?.data?.repository?.projectsV2).filter(one => !one.closed)
+  const linked = open.find(one => one.id === preferred) ?? open[0]
   const project: Project | null = linked
     ? { id: linked.id, number: linked.number, title: linked.title, url: linked.url, status: fieldOf(linked, 'Status'), priority: fieldOf(linked, 'Priority') }
     : null
