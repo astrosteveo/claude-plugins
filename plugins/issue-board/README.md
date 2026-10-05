@@ -86,8 +86,12 @@ CLI, signed in, in the folder the session started in.
     something else. The agent reads the issue, makes a branch for it, does
     the work, ticks boxes as it finishes them, and opens a pull request,
     with `Closes` or `Refs` as Start's note says. It doesn't merge or
-    force-push. The issue moves to In progress and is assigned to you, as
-    with Start. The issue's row then shows the agent: `⚙ working`,
+    force-push. As soon as the agent starts, a line in the conversation
+    says so and names the issue, such as `Started a background agent on
+    #80 "Show a message when Start in Background dispatches an agent"`.
+    If it can't start, the line says why instead. The line is for you:
+    Claude doesn't read it. The issue moves to In progress and is assigned
+    to you, as with Start. The issue's row then shows the agent: `⚙ working`,
     `⚙ waiting`, `⚙ done`, `⚙ failed` or `⚙ stopped`, and its card shows
     the agent's last answer. One agent works on an issue at a time. The
     agent asks for permission as any background agent does, so allow what

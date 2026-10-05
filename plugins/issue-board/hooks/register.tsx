@@ -1016,23 +1016,35 @@ const pollWorkers = ($: EngineInterface): void => {
   if (!workerTimer) workerTimer = $.clock.every(10_000, () => void checkWorkers($))
 }
 
+// An issue as a line in the conversation names it: its number, and its title when it has one.
+const named = (issue: Issue): string => (issue.title.trim() ? `#${issue.number} "${issue.title.trim()}"` : `#${issue.number}`)
+
 // Start in background: an agent of the board's own type works on the issue in a git worktree of its own, in the
-// background, and leaves a pull request. The issue moves to In progress and is assigned, as Start does.
+// background, and leaves a pull request. As soon as the agent starts, or fails to, a line in the conversation says so,
+// for the person and not the model; a toast says it too. The issue moves to In progress and is assigned, as Start does.
 const startInBackground = async ($: EngineInterface, issue: Issue): Promise<void> => {
+  const name = `issue-${issue.number}`
+  let agentId: string | undefined
   try {
-    const name = `issue-${issue.number}`
     const started = await $.agent.spawn({ subagentType: WORKER, prompt: startPrompt(issue), description: fit(`#${issue.number} ${issue.title}`, 60), name })
     if (started.deny !== undefined) throw new Error(started.deny)
     // Core names the agent it started; failing that, the session's list does, by the name it was given.
-    const agentId = started.agentId ?? (await $.agent.list()).find(agent => agent.name === name && agent.type === WORKER)?.id
+    agentId = started.agentId ?? (await $.agent.list()).find(agent => agent.name === name && agent.type === WORKER)?.id
     if (!agentId) throw new Error('no agent started')
+  } catch (cause) {
+    $.ui.log(`Couldn't start a background agent on ${named(issue)}: ${messageOf(cause)}`)
+    $.ui.toast(`Couldn't start a background agent on #${issue.number}: ${messageOf(cause)}`)
+    return
+  }
+  $.ui.log(`Started a background agent on ${named(issue)}. It is working on the issue in the background now.`)
+  $.ui.toast(`Started a background agent on #${issue.number}`)
+  try {
     const worker: Worker = { number: issue.number, agentId, status: 'running', startedAt: Date.now(), answer: null }
     await update($, workers, list => [...list.filter(one => one.number !== issue.number), worker])
-    $.ui.toast(`Started a background agent on #${issue.number}`)
     pollWorkers($)
     await claim($, issue)
   } catch (cause) {
-    $.ui.toast(`Couldn't start a background agent on #${issue.number}: ${messageOf(cause)}`)
+    $.ui.toast(`Started a background agent on #${issue.number}, but the board couldn't follow it: ${messageOf(cause)}`)
   }
 }
 
