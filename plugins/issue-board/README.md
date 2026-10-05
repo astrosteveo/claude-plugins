@@ -37,9 +37,10 @@ CLI, signed in, in the folder the session started in.
     field after them keeps the issues whose title, number or labels hold every
     word you type. Tab to it or click it. The mobile app has no text field, so
     it has no search. `r` refreshes.
-  - A **by** picker groups the issues by the project's Status (the default, in
-    the project's order), by the epic they are sub-issues of, or by `area:`
-    label. Backlog is folded: press it to open it.
+  - **by Status**, **Epic** or **Area** groups the issues by the project's
+    Status (the default, in the project's order), by the epic they are
+    sub-issues of, or by `area:` label. Backlog is folded: press it to open
+    it.
   - Each issue has a progress bar of its task-list boxes, such as
     `━━━━━━ 2/4`, its priority, its labels in their GitHub colors, how long
     since it changed, and the pull request for it with its CI, such as
@@ -47,9 +48,9 @@ CLI, signed in, in the folder the session started in.
     bugs, marked `▲`, then issues under way. Hover over an issue to preview
     its open boxes without opening it.
 - Press Enter on an issue, or click it, to open its card: every label and
-  assignee, its epic, milestone and open blockers, **Status** and
-  **Priority** pickers that change them in the project, the issue's text, a
-  progress bar and its boxes. One card is open at a time, and opening one
+  assignee, its epic, milestone and open blockers, a row of buttons each for
+  **Status** and **Priority** (press one to set it in the project; the one
+  set is highlighted), the issue's text, a progress bar and its boxes. One card is open at a time, and opening one
   scrolls it into view. Press a box to tick or untick it on GitHub. Then:
   - **Start** (`s`) sends Claude a message to start on the issue, with its
     unticked boxes. It also moves the issue to In progress in the project,

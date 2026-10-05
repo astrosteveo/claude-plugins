@@ -644,7 +644,6 @@ export const register: Register = on => {
     const clock = Date.now()
     const elements = $.ui.resolve(e)
     const Input = 'Input' in elements ? elements.Input : undefined
-    const Select = 'Select' in elements ? elements.Select : undefined
     const Markdown = elements.Markdown
 
     const start = async (issue: Issue) => {
@@ -875,15 +874,17 @@ export const register: Register = on => {
             onSubmit={text => void update($, query, () => text)}
           />
         )}
-        {Select && (
-          <Select
-            key="group-by"
-            label="by "
-            options={groupings.map(one => ({ value: one.id, label: one.label }))}
-            value={grouping}
-            onSelect={value => void update($, groupBy, () => GROUPINGS.find(one => one.id === value)?.id ?? null)}
-          />
-        )}
+        <Text dimColor>by</Text>
+        {groupings.map(one => (
+          <Button
+            key={`group-${one.id}`}
+            variant={one.id === grouping ? 'primary' : undefined}
+            dimColor={one.id !== grouping}
+            onPress={() => void update($, groupBy, () => one.id)}
+          >
+            {one.label}
+          </Button>
+        ))}
       </Box>
     )
 
@@ -1100,6 +1101,24 @@ export const register: Register = on => {
       )
     }
 
+    // A project field on a card: its options as buttons, the one set drawn as the primary. Buttons rather than a
+    // Select, which the terminal opens by keyboard alone: a click on its options does nothing.
+    const picker = (issue: Issue, field: 'status' | 'priority', label: string, options: { id: string; name: string }[], value: string | null | undefined) => (
+      <Box key={`${field}-${issue.number}`} flexDirection="row" gap={1} flexWrap="wrap">
+        <Text dimColor>{label}</Text>
+        {options.map(option => (
+          <Button
+            key={`${field}-${issue.number}-${option.id}`}
+            variant={option.name === value ? 'primary' : undefined}
+            dimColor={option.name !== value}
+            onPress={() => void (option.name === value ? undefined : pick($, issue, field, option.name))}
+          >
+            {option.name}
+          </Button>
+        ))}
+      </Box>
+    )
+
     // An opened issue: a card with its labels, its text, its boxes and what to do with it.
     const issueCard = (issue: Issue, hotkeys: boolean) => {
       const step = progress(issue.checks)
@@ -1124,26 +1143,10 @@ export const register: Register = on => {
             {issue.milestone && <Text dimColor>{`⚑ ${issue.milestone}`}</Text>}
             {(issue.blockedBy ?? []).length > 0 && <Text color="warning">{`blocked by ${issue.blockedBy?.map(number => `#${number}`).join(', ')}`}</Text>}
           </Box>
-          {project && Select && (project.status || project.priority) && (
-            <Box flexDirection="row" gap={2} marginTop={1} flexWrap="wrap">
-              {project.status && (
-                <Select
-                  key={`status-${issue.number}`}
-                  label="Status "
-                  options={project.status.options.map(option => ({ value: option.name }))}
-                  {...(issue.status ? { value: issue.status } : {})}
-                  onSelect={value => void pick($, issue, 'status', value)}
-                />
-              )}
-              {project.priority && (
-                <Select
-                  key={`priority-${issue.number}`}
-                  label="Priority "
-                  options={project.priority.options.map(option => ({ value: option.name }))}
-                  {...(issue.priority ? { value: issue.priority } : {})}
-                  onSelect={value => void pick($, issue, 'priority', value)}
-                />
-              )}
+          {project && (project.status || project.priority) && (
+            <Box flexDirection="column" marginTop={1}>
+              {project.status && picker(issue, 'status', 'Status  ', project.status.options, issue.status)}
+              {project.priority && picker(issue, 'priority', 'Priority', project.priority.options, issue.priority)}
             </Box>
           )}
           {prose && (

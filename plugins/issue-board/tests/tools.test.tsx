@@ -421,7 +421,7 @@ test("the project's Status groups the issues, Priority filters them, and the car
   await ui.press({ key: 'filter-all' })
 
   // Grouped by Status by default, in the project's order, then No status.
-  expect(await ui.find({ key: 'group-by' })).toMatchObject({ props: { value: 'status' } })
+  expect(await ui.find({ key: 'group-status' })).toMatchObject({ props: { variant: 'primary' } })
   const headings = async () => (await ui.findAll({ type: 'Text' })).map(text => text.text).filter(text => ['Ready', 'No status', 'simulation', 'other'].includes(text))
   expect(await headings()).toEqual(['Ready', 'No status'])
   // The row: its priority, and the pull request that refers to it with that pull request's CI. The pull request's row
@@ -430,14 +430,14 @@ test("the project's Status groups the issues, Priority filters them, and the car
   expect(await ui.find({ text: /^⇄ #335 ✓$/ })).toBeDefined()
   expect(await ui.find({ text: /^→ #315$/ })).toBeDefined()
 
-  await ui.select({ key: 'group-by', value: 'area' })
+  await ui.press({ key: 'group-area' })
   expect(await headings()).toEqual(['simulation', 'other'])
-  await ui.select({ key: 'group-by', value: 'status' })
+  await ui.press({ key: 'group-status' })
 
   // The card's pickers set Priority on GitHub.
   await ui.press({ key: 'issue-315' })
-  expect(await ui.find({ key: 'status-315' })).toMatchObject({ props: { value: 'Ready' } })
-  await ui.select({ key: 'priority-315', value: 'P0' })
+  expect(await ui.find({ key: 'status-315-S2' })).toMatchObject({ text: 'Ready', props: { variant: 'primary' } })
+  await ui.press({ key: 'priority-315-P0' })
   expect(gh.fields.at(-1)).toMatchObject({ project: 'PVT_8', item: 'PVTI_315', field: 'F_priority', option: optionId('P0') })
   expect(await ui.find({ text: /^P0 $/ })).toBeDefined()
 
@@ -467,7 +467,7 @@ test('Backlog is folded until opened, and Epic groups the issues under the epic 
   await ui.press({ key: 'fold-status:Backlog' })
   expect(await ui.find({ key: 'issue-315' })).toBeDefined()
 
-  await ui.select({ key: 'group-by', value: 'epic' })
+  await ui.press({ key: 'group-epic' })
   expect(await ui.find({ text: /^No epic$/ })).toBeDefined()
   await ui.unmount()
 })
