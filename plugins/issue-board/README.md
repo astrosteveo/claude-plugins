@@ -87,7 +87,8 @@ CLI, signed in, in the folder the session started in.
   - **⚙ Start in background** (`b`) asks Claude to hand the issue to a
     background agent, so you and Claude can go on with something else.
     Claude dispatches the board's own agent, `issue-board:worker`, with
-    Start's message, and doesn't work on the issue itself. The agent works
+    Start's message and the description `#<number> <title>`, and doesn't
+    work on the issue itself. The agent works
     in a git worktree of its own. It reads the issue, makes a branch for
     it, does the work, ticks boxes as it finishes them, and opens a pull
     request, with `Closes` or `Refs` as Start's note says. It doesn't merge
@@ -98,8 +99,9 @@ CLI, signed in, in the folder the session started in.
     row shows it: `⚙ working`, `⚙ waiting`, `⚙ done`, `⚙ failed` or
     `⚙ stopped`, and its card shows the agent's last answer. While the
     agent works there is no button, so one agent works on an issue at a
-    time. The board follows any agent of this type that names its issue,
-    so Claude can also dispatch one when you ask. When the agent ends, a
+    time. The board follows any agent of this type whose description
+    starts with its issue's `#<number>`, so Claude can also dispatch one
+    when you ask. When the agent ends, a
     line in the conversation says it is done, failed or was stopped. The
     line names the issue, gives the agent's last answer, and links its
     pull request when there is one. Claude gets the same news as a message

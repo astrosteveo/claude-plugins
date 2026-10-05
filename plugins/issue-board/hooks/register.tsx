@@ -1554,8 +1554,13 @@ export const register: Register = on => {
     }
     if (number === undefined) return started
     try {
-      // Core names the agent it started; failing that, the session's list does, by the name it was given.
-      const agentId = started.agentId ?? (e.name ? (await $.agent.list()).find(agent => agent.name === e.name && agent.type === WORKER)?.id : undefined)
+      // Core names the agent it started; failing that, the session's list does, by the name it was given, or by its
+      // description when it has none. An earlier agent on the issue may match too, so one that hasn't ended comes first.
+      const listed = async () => {
+        const matching = (await $.agent.list()).filter(agent => agent.type === WORKER && (e.name ? agent.name === e.name : agent.description === e.description))
+        return (matching.findLast(agent => !['completed', 'failed', 'killed'].includes(agent.status)) ?? matching.at(-1))?.id
+      }
+      const agentId = started.agentId ?? (await listed())
       if (!agentId) throw new Error('no agent id')
       await workerStarted($, number, agentId)
     } catch (cause) {
