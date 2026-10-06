@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { Caught, EngineInterface, HookFailure, ModelForkResult, Register, Timer, UiCopyArgs } from 'claude-code'
+import type { Caught, EngineInterface, HookFailure, ModelForkResult, Register, ThemeKey, Timer, UiCopyArgs } from 'claude-code'
 
 import type { Alert, Board, BoxTask, Check, Comment, Draft, DraftEdit, Filter, GroupBy, Issue, Known, Launch, Problem, Project, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
 import type { Ended, IssueChanges } from './parse'
@@ -2064,7 +2064,7 @@ export const register: Register = on => {
     const failing = now.prs.filter(pr => pr.ci === 'fail').length
     const overall = sumProgress(shown)
 
-    const stat = (glyph: string, color: string, value: number, label: string) => (
+    const stat = (glyph: string, color: ThemeKey, value: number, label: string) => (
       <Text>
         <Text color={color}>{glyph}</Text>
         <Text bold>{` ${value}`}</Text>
@@ -2094,7 +2094,7 @@ export const register: Register = on => {
 
     // A board kept from before velocity was fetched has none until it refreshes.
     const velocity = now.velocity ?? { closed: [], merged: [] }
-    const trend = (label: string, color: string, counts: number[]) => (
+    const trend = (label: string, color: ThemeKey, counts: number[]) => (
       <Text>
         <Text dimColor>{`${label} `}</Text>
         <Text color={color}>{spark(counts)}</Text>
@@ -2394,7 +2394,7 @@ export const register: Register = on => {
     }
 
     // A priority as a short tag, the most pressing in the loudest color.
-    const priorityColor = (priority: string) => {
+    const priorityColor = (priority: string): ThemeKey => {
       const rank = project?.priority?.options.findIndex(option => option.name === priority) ?? -1
       return rank === 0 ? 'error' : rank === 1 ? 'warning' : 'inactive'
     }
@@ -2587,7 +2587,7 @@ export const register: Register = on => {
       const place = peekPlace(room.above, room.below, todo.length)
       if (!place) return null
       const listed = todo.slice(0, place.listed)
-      const lines: { text: string; color?: string; dim?: boolean; bold?: boolean }[] = [
+      const lines: { text: string; color?: ThemeKey; dim?: boolean; bold?: boolean }[] = [
         { text: fit(issue.title, inner), bold: true },
         step.total === 0
           ? { text: 'No acceptance boxes.', dim: true }

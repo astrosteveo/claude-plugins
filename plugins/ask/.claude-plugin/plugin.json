@@ -2,7 +2,7 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "ask",
   "displayName": "Ask",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Ask Claude a side question or for prompt ideas; it answers in a pane, in the background, and nothing lands in the chat.",
   "author": {
     "name": "astrosteveo"

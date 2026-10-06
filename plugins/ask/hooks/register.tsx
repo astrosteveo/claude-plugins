@@ -147,7 +147,7 @@ export const register: Register = on => {
               <Text dimColor>{'─'.repeat(width)}</Text>
               <Text bold>› {one.question}</Text>
               {one.status === 'pending' && <Text dimColor>thinking…</Text>}
-              {one.status === 'failed' && <Text color="red">{one.error ?? 'No answer.'}</Text>}
+              {one.status === 'failed' && <Text color="error">{one.error ?? 'No answer.'}</Text>}
               {one.status === 'answered' && <Markdown key={`answer-${one.id}`} text={one.answer || '(empty)'} />}
               <Box key={`actions-${one.id}`} gap={1} flexWrap="wrap">
                 {one.prompts.map((prompt, i) => (
