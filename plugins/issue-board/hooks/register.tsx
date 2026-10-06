@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Caught, EngineInterface, HookFailure, ModelForkResult, Register, ThemeKey, Timer, UiCopyArgs } from 'claude-code'
 
 import type { Alert, Board, BoxTask, Check, Comment, Draft, DraftEdit, Filter, GroupBy, Issue, Known, Launch, Problem, Project, ProjectField, Role, StatusUpdate, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
-import type { Ended, IssueChanges, NewIssue, PrRule } from './parse'
+import type { Ended, IssueChanges, NewIssue, PrRule, Switches } from './parse'
 import { authOf, problemsOf, problemsText, repoOf } from './access'
 import { ADD_ITEM, ARCHIVE_ITEM, CLEAR_VALUE, ISSUE_ITEMS, ITEM_VALUES, POST_STATUS, SET_FIELD, SET_VALUE, ROLE_NAMES, ROLE_ORDER, issuesQuery, nowNames, optionOf, roleOf, rolesFor, startedOf } from './project'
 import {
@@ -147,7 +147,9 @@ import {
   hintFit,
   openedText,
   SUBCOMMANDS,
+  featuresOff,
   helpText,
+  offText,
   movedText,
   unmovedText,
 } from './parse'
@@ -329,6 +331,21 @@ const FILTERS: { id: Filter; label: string; planned: string; hotkey: string }[] 
   { id: 'closed', label: 'Closed', planned: 'Closed', hotkey: '7' },
 ]
 
+// What the settings turn off, for /issues check and /issues help.
+const switchesOf = (now: Settings): Switches => ({
+  moveToDone: now.moveToDone,
+  moveToVerification: now.moveToVerification,
+  claimOnStart: now.claimOnStart,
+  workingNote: now.workingNote,
+  prRule: now.prRule !== 'none',
+  issueCopies: now.issueCopies,
+  suggestNextStep: now.suggestNextStep,
+  followBranch: now.followBranch,
+  band: now.band,
+  hintSummary: now.hintSummary,
+  refresh: now.refreshMinutes !== null,
+})
+
 // Whether the project has an Inbox: an option with its role.
 const hasInbox = (project: Project | null | undefined): boolean => roleOf(project, 'inbox') !== undefined
 
@@ -377,16 +394,6 @@ const MISSING = /ENOENT|not found|no such file/i
 // A gh error that may come from a missing permission rather than from the request itself.
 const ACCESS_ERROR = /scope|credentials|not accessible|gh auth login|HTTP 40[13]|permission/i
 
-// What the board doesn't do while a Status role has no option.
-const ROLE_OFF: Record<Role, string> = {
-  inbox: "New issues don't land in the Inbox, and the Inbox filter and its triage are gone",
-  ready: "Triage's Accept doesn't move issues to Ready",
-  backlog: "No Status group starts folded, and triage's Accept doesn't move issues to Backlog",
-  started: "Start doesn't move the issue's Status",
-  verification: "An issue a Refs merge touched isn't moved to Verification",
-  done: "Closed issues aren't moved to Done, and project_archive can't archive by doneBefore",
-}
-
 // Asks gh who it is signed in as and what it may do in this repository, and keeps what is missing. `message` is an
 // error gh just gave, which may name a permission the token lacks. One at a time, so a check asked for during another
 // runs after it with its own message.
@@ -422,19 +429,6 @@ const checkAccess = ($: EngineInterface, message?: string): Promise<Problem[]> =
         url: `${project.url}/workflows`,
         blocks: false,
       })
-    }
-    // A Status role with no option: what goes with it is off. A limit too, which setup fixes.
-    if (project?.status) {
-      for (const role of ROLE_ORDER) {
-        if (roleOf(project, role)) continue
-        problems.push({
-          id: `role-${role}`,
-          title: `${project.title} has no ${ROLE_NAMES[role]} Status set`,
-          detail: `${ROLE_OFF[role]}, as no Status option is the board's ${ROLE_NAMES[role]}.`,
-          fix: `Run /issues setup and pick the option for ${ROLE_NAMES[role]} under "Which Status is which", or let setup add it.`,
-          blocks: false,
-        })
-      }
     }
     const login = auth?.state === 'signed-in' && auth.login ? auth.login : null
     await update($, access, () => ({ login, repo: repo?.name ?? null, permission: repo?.permission ?? null, problems, checkedAt: Date.now() }))
@@ -2568,13 +2562,19 @@ export const register: Register = (on, options) => {
       void readSetup($)
       return { text: 'Reading the repo and its project. What setup would change shows at the top of the issues pane, and nothing changes until you press Apply.' }
     }
-    if (e.args.trim() === 'help') return { text: helpText(filtersFor((await read($, board))?.project)) }
+    if (e.args.trim() === 'help') {
+      const project = (await read($, board))?.project
+      return { text: helpText(filtersFor(project), featuresOff(switchesOf(settings), project)) }
+    }
     if (e.args.trim() === 'check') {
       const problems = await checkAccess($)
       const found = await read($, access)
+      // What is off, by a setting or for want of a Status option, is said here and in /issues help, not in the band.
+      const off = offText(featuresOff(switchesOf(settings), (await read($, board))?.project))
+      const withOff = (text: string) => ({ text: [text, ...(off.length > 0 ? ['', ...off] : [])].join('\n') })
       if (problems.length > 0) {
         const count = problems.length === 1 ? 'one problem' : `${problems.length} problems`
-        return { text: `The issue board found ${count}:\n${problems.map(problem => `- ${problem.title}. ${problem.detail} ${problem.fix}`).join('\n')}` }
+        return withOff(`The issue board found ${count}:\n${problems.map(problem => `- ${problem.title}. ${problem.detail} ${problem.fix}`).join('\n')}`)
       }
       if (!found?.repo) {
         const remote = (await $.session.repo().catch(() => null))?.remote ?? ''
@@ -2586,7 +2586,7 @@ export const register: Register = (on, options) => {
       }
       void refresh($)
       const who = found.login ? `gh is signed in as ${found.login}` : 'gh is signed in'
-      return { text: `The issue board has what it needs. ${who}${found.permission ? `, with ${found.permission.toLowerCase()} access to ${found.repo}` : ''}.` }
+      return withOff(`The issue board has what it needs. ${who}${found.permission ? `, with ${found.permission.toLowerCase()} access to ${found.repo}` : ''}.`)
     }
     if (e.args.trim() === 'refresh') {
       await refresh($)
