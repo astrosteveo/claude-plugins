@@ -1,10 +1,32 @@
 import { atom, read, update } from 'claude-code'
 import type { Caught, EngineInterface, HookFailure, ModelForkResult, Register, ThemeKey, Timer, UiCopyArgs } from 'claude-code'
 
-import type { Alert, Board, BoxTask, Check, Comment, Draft, DraftEdit, EpicNote, Filter, GroupBy, Issue, Known, Launch, Problem, Project, ProjectField, Role, StatusUpdate, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
+import type { Adopted, Adoption, Alert, Board, BoxTask, Check, Comment, Draft, DraftEdit, EpicNote, Filter, GroupBy, Issue, Known, Launch, Problem, Project, ProjectField, Role, StatusUpdate, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
 import type { Ended, IssueChanges, NewIssue, PrRule, StartMode, Switches } from './parse'
 import { authOf, problemsOf, problemsText, repoOf } from './access'
-import { ADD_ITEM, ARCHIVE_ITEM, CLEAR_VALUE, ISSUE_ITEMS, ITEM_VALUES, POST_STATUS, SET_FIELD, SET_VALUE, ROLE_NAMES, ROLE_ORDER, issuesQuery, nowNames, optionOf, roleOf, rolesFor, startedOf } from './project'
+import {
+  ADD_ITEM,
+  ARCHIVE_ITEM,
+  CLEAR_VALUE,
+  ISSUE_ITEMS,
+  ITEM_VALUES,
+  POST_STATUS,
+  SET_FIELD,
+  SET_VALUE,
+  ROLE_NAMES,
+  ROLE_ORDER,
+  adoptText,
+  adoptedOf,
+  isMutation,
+  issuesQuery,
+  nowNames,
+  optionOf,
+  ownerOf,
+  roleOf,
+  rolesFor,
+  startedOf,
+  writeRefusal,
+} from './project'
 import {
   CREATE_FIELD,
   CREATE_PROJECT,
@@ -334,6 +356,9 @@ const launching = atom({ plugin: 'issue-board', key: 'launching' } as const, [])
 const epicNotes = atom({ plugin: 'issue-board', key: 'epicNotes' } as const, [])
 // The issue whose start message Edit first put in the prompt box, until the person next sends a prompt.
 const drafted = atom({ plugin: 'issue-board', key: 'drafted' } as const, null)
+// The project the board may write to, as the store last said, and the prompts the person turned down. The prompt and
+// setup read it; every write checks the store itself.
+const adoption = atom({ plugin: 'issue-board', key: 'adoption' } as const, { adopted: null, declined: [] })
 
 // Whether a tool's calls may be allowed without asking: an organization can set a ceiling, the most permissive verdict
 // a call of the tool may reach. None set, they may.
@@ -379,10 +404,17 @@ const GROUPINGS: { id: GroupBy; label: string }[] = [
   { id: 'area', label: 'Area' },
 ]
 
-const gh = async ($: EngineInterface, args: string[], stdin?: string, timeoutMs = 60_000): Promise<string> => {
+const runGh = async ($: EngineInterface, args: string[], stdin?: string, timeoutMs = 60_000): Promise<string> => {
   const { exitCode, stdout, stderr } = await $.process.run(['gh', ...args], { timeoutMs, ...(stdin === undefined ? {} : { stdin }) })
   if (exitCode !== 0) throw new Error(stderr.trim().split('\n')[0] || `gh ${args[0]} exited ${exitCode}`)
   return stdout
+}
+
+// Every gh call but a project write. A GraphQL mutation is refused here, so one written without projectWrite fails
+// loudly instead of reaching a project nobody let the board change.
+const gh = async ($: EngineInterface, args: string[], stdin?: string, timeoutMs = 60_000): Promise<string> => {
+  if (isMutation(args, stdin)) throw new Error('the issue board sends GraphQL mutations only through its project write check')
+  return runGh($, args, stdin, timeoutMs)
 }
 
 const messageOf = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause))
@@ -612,8 +644,19 @@ const costOf = (page: string): { cost: number; remaining: number; resetAt: strin
   }
 }
 
-// What the board keeps between sessions, one entry per repository; `setup` is what `/issues setup` last saved.
-type Saved = { board: Board | null; working: Working | null; dismissed: string[]; viewer: string | null; setup?: SavedSetup; sections?: Record<string, boolean> }
+// What the board keeps between sessions, one entry per repository; `setup` is what `/issues setup` last saved, `adopted`
+// the project the board may write to (null once released; absent before adopting existed), and `declined` the projects
+// whose prompt the person turned down.
+type Saved = {
+  board: Board | null
+  working: Working | null
+  dismissed: string[]
+  viewer: string | null
+  setup?: SavedSetup
+  sections?: Record<string, boolean>
+  adopted?: Adopted | null
+  declined?: string[]
+}
 
 let storeKey: string | undefined
 const keyOf = async ($: EngineInterface): Promise<string> => {
@@ -633,19 +676,137 @@ const savedSetup = async ($: EngineInterface): Promise<SavedSetup | undefined> =
   }
 }
 
+// What the board saved for this repo, as a whole; empty when nothing is, or the store can't be read.
+const savedAll = async ($: EngineInterface): Promise<Partial<Saved>> => {
+  try {
+    return ((await $.store.get(await keyOf($))) as Partial<Saved> | undefined) ?? {}
+  } catch {
+    return {}
+  }
+}
+
+// The project the board may write to, read from the store each time: the store is what adopting and releasing change,
+// in this session or another on the same repo.
+const adoptedNow = async ($: EngineInterface): Promise<Adopted | null> => adoptedOf(await savedAll($))
+
+// The adoption as the store has it, for the prompt and setup to draw.
+const loadAdoption = async ($: EngineInterface): Promise<void> => {
+  const saved = await savedAll($)
+  const next = { adopted: adoptedOf(saved), declined: saved.declined ?? [] }
+  const was = await read($, adoption)
+  if (was.adopted?.id !== next.adopted?.id || was.declined.join() !== next.declined.join()) await update($, adoption, () => next)
+}
+
+// Changes what the store holds for the repo beside the board: adopting, releasing, turning a prompt down.
+const changeSaved = async ($: EngineInterface, change: (was: Partial<Saved>) => Partial<Saved>): Promise<void> => {
+  const key = await keyOf($)
+  await $.store.set(key, change(await savedAll($)))
+  await loadAdoption($)
+}
+
+// The person let the board write to a project, through its prompt or Apply in setup.
+const adoptProject = async ($: EngineInterface, project: { id: string; title: string; url: string }): Promise<void> => {
+  const adopted: Adopted = { id: project.id, title: project.title, owner: ownerOf(project.url) }
+  await changeSaved($, was => ({ ...was, adopted, declined: (was.declined ?? []).filter(id => id !== project.id) }))
+}
+
+// `/issues setup`'s Release: the board only reads the project again. Kept as null, so a saved setup that names the
+// project doesn't count as adopting it.
+const releaseProject = async ($: EngineInterface): Promise<void> => {
+  await changeSaved($, was => ({ ...was, adopted: null }))
+}
+
+// Keep read-only on the prompt: it isn't asked again for that project. Setup can still adopt it.
+const declineProject = async ($: EngineInterface, project: { id: string }): Promise<void> => {
+  await changeSaved($, was => ({ ...was, declined: [...(was.declined ?? []).filter(id => id !== project.id), project.id].slice(-20) }))
+}
+
+// The one way the board writes to a project. Every mutation, from Start, triage, the tools, the moves a read makes and
+// setup, comes here, and is refused unless its project is the one adopted for this repo. `fields` sends the variables
+// as gh's `-f` fields, the way the single-select writes always went; otherwise they go as JSON, which carries lists.
+const projectWrite = async (
+  $: EngineInterface,
+  target: { id: string; title: string } | 'new',
+  query: string,
+  variables: Record<string, string | number | boolean | null | object>,
+  fields = false,
+): Promise<Record<string, any>> => {
+  const refusal = writeRefusal(await adoptedNow($), target)
+  if (refusal) throw new Error(refusal)
+  if (fields) {
+    const out = await runGh($, ['api', 'graphql', '-f', `query=${query}`, ...Object.entries(variables).flatMap(([name, value]) => ['-f', `${name}=${String(value)}`])])
+    try {
+      return (JSON.parse(out) as { data?: Record<string, any> }).data ?? {}
+    } catch {
+      return {}
+    }
+  }
+  const answer = JSON.parse(await runGh($, ['api', 'graphql', '--input', '-'], JSON.stringify({ query, variables }))) as { data?: Record<string, any>; errors?: { message: string }[] }
+  if (answer.errors?.length) throw new Error(answer.errors[0]?.message ?? 'GitHub refused the change')
+  return answer.data ?? {}
+}
+
+// Whether the board may write to a project, for the work it does by itself, which skips a project it may not write
+// to without a word: /issues check and /issues help say so.
+const mayWrite = async ($: EngineInterface, project: { id: string; title: string }): Promise<boolean> => writeRefusal(await adoptedNow($), project) === null
+
+// What the pane and the band ask about the project the board reads, or null: nothing once the board may write to it, or
+// once the person kept it read-only.
+const adoptAsk = (project: Project, now: Adoption): { title: string; lines: string[] } | null =>
+  now.adopted?.id === project.id || now.declined.includes(project.id) ? null : adoptText(project, settings.refreshMinutes)
+
+// Let it write, on the prompt.
+const adoptFromPrompt = async ($: EngineInterface, project: Project): Promise<void> => {
+  try {
+    await adoptProject($, project)
+    $.ui.toast(`The board may write to ${project.title} now. Release it in /issues setup.`)
+  } catch (cause) {
+    $.ui.toast(`Couldn't save that the board may write to ${project.title}: ${messageOf(cause)}`)
+  }
+}
+
+// Keep read-only, on the prompt.
+const declineFromPrompt = async ($: EngineInterface, project: Project): Promise<void> => {
+  try {
+    await declineProject($, project)
+    $.ui.toast(`The board only reads ${project.title}. To let it write later, run /issues setup and press Apply.`)
+  } catch (cause) {
+    $.ui.toast(`Couldn't save that: ${messageOf(cause)}`)
+  }
+}
+
+// Release, in setup: the board only reads the project again, and the plan offers to adopt it once more.
+const releaseFromSetup = async ($: EngineInterface): Promise<void> => {
+  const was = (await adoptedNow($))?.title
+  try {
+    await releaseProject($)
+  } catch (cause) {
+    $.ui.toast(`Couldn't release the project: ${messageOf(cause)}`)
+    return
+  }
+  await update($, setup, now =>
+    now && 'facts' in now && now.phase !== 'applying'
+      ? { ...now, phase: 'ready' as const, facts: { ...now.facts, adopted: null }, steps: stepsOf({ ...now.facts, adopted: null }, now.chosen, now.areas, now.roles) }
+      : now,
+  )
+  $.ui.toast(`Released ${was ?? 'the project'}: the board only reads it now.`)
+}
+
 const save = async ($: EngineInterface): Promise<void> => {
   try {
     // Without the issues' bodies, which the next refresh brings back, to keep the store small.
     const now = await read($, board)
     const kept = now && { ...now, issues: now.issues.map(issue => ({ ...issue, body: '' })) }
-    const before = await savedSetup($)
+    const before = await savedAll($)
     const saved: Saved = {
       board: kept,
       working: await read($, working),
       dismissed: await read($, dismissed),
       viewer: await read($, viewer),
       sections: await read($, sections),
-      ...(before ? { setup: before } : {}),
+      ...(before.setup ? { setup: before.setup } : {}),
+      ...(before.adopted !== undefined ? { adopted: before.adopted } : {}),
+      ...(before.declined ? { declined: before.declined } : {}),
     }
     await $.store.set(await keyOf($), saved)
   } catch (cause) {
@@ -656,6 +817,7 @@ const save = async ($: EngineInterface): Promise<void> => {
 // A new session paints the last board at once and still knows the issue Claude was on; a reload keeps its own. What a
 // refresh wrote meanwhile stays: it is newer than the saved copy.
 const restore = async ($: EngineInterface): Promise<void> => {
+  await loadAdoption($)
   if ((await read($, board)) !== null) return
   try {
     const saved = (await $.store.get(await keyOf($))) as Partial<Saved> | undefined
@@ -683,6 +845,8 @@ const fetchIssues = async ($: EngineInterface, nameWithOwner: string): Promise<{
   const [owner = '', name = ''] = nameWithOwner.split('/')
   const saved = await savedSetup($)
   const preferred = saved?.project.id
+  // Another session may have adopted or released the project meanwhile; the prompt follows.
+  await loadAdoption($)
   const pull = async (withProject: boolean) => {
     const pages: string[] = []
     let after: string | null = null
@@ -883,7 +1047,7 @@ let moved: string[] = []
 const moveToVerification = async ($: EngineInterface, before: Board | null, next: Board): Promise<void> => {
   const project = next.project
   const verify = roleOf(project, 'verification')
-  if (!settings.moveToVerification || !project?.status || !verify) return
+  if (!settings.moveToVerification || !project?.status || !verify || !(await mayWrite($, project))) return
   const merged = new Map<number, boolean>()
   const verified: number[] = []
   const failed: { number: number; message: string }[] = []
@@ -891,7 +1055,7 @@ const moveToVerification = async ($: EngineInterface, before: Board | null, next
     try {
       if (!merged.has(left.pr)) merged.set(left.pr, !/^(null)?$/.test((await gh($, ['api', `repos/${next.repo}/pulls/${left.pr}`, '--jq', '.merged_at'])).trim()))
       if (!merged.get(left.pr)) continue
-      await gh($, ['api', 'graphql', '-f', `query=${SET_FIELD}`, '-f', `project=${project.id}`, '-f', `item=${left.item}`, '-f', `field=${project.status.id}`, '-f', `option=${verify.id}`])
+      await projectWrite($, project, SET_FIELD, { project: project.id, item: left.item, field: project.status.id, option: verify.id }, true)
       await update($, board, was => was && { ...was, issues: was.issues.map(one => (one.number === left.number ? { ...one, status: verify.name } : one)) })
       moved.push(`#${left.number} moved to ${verify.name}: pull request #${left.pr}, which refers to it without closing it, merged.`)
       verified.push(left.number)
@@ -912,14 +1076,14 @@ const moveToDone = async ($: EngineInterface, before: Board | null, next: Board)
   const project = next.project
   const done = roleOf(project, 'done')
   // Turned off, the board neither moves closed issues nor asks GitHub how they closed.
-  if (!settings.moveToDone || !project?.status || !done) return
+  if (!settings.moveToDone || !project?.status || !done || !(await mayWrite($, project))) return
   const done$: number[] = []
   const failed: { number: number; message: string }[] = []
   for (const left of leftForDone(before, next)) {
     try {
       const how = JSON.parse(await gh($, ['api', `repos/${next.repo}/issues/${left.number}`, '--jq', '{state, state_reason}'])) as { state?: string; state_reason?: string | null }
       if (how.state !== 'closed' || how.state_reason !== 'completed') continue
-      await gh($, ['api', 'graphql', '-f', `query=${SET_FIELD}`, '-f', `project=${project.id}`, '-f', `item=${left.item}`, '-f', `field=${project.status.id}`, '-f', `option=${done.id}`])
+      await projectWrite($, project, SET_FIELD, { project: project.id, item: left.item, field: project.status.id, option: done.id }, true)
       done$.push(left.number)
       moved.push(`#${left.number} moved to ${done.name}: it closed as completed.`)
     } catch (cause) {
@@ -945,7 +1109,8 @@ const advanceEpics = async ($: EngineInterface, before: Board | null, next: Boar
     ...reopened.map(one => ({ key: `epic-reopened-${one.epic}-${one.number}`, kind: 'reopened' as const, epic: one.epic, number: one.number, title: titleOf(one.epic), text: `#${one.number} reopened under it`, at })),
     ...orphaned.map(one => ({ key: `epic-orphaned-${one.epic}-${one.number}`, kind: 'orphaned' as const, epic: one.epic, number: one.number, title: titleOf(one.epic), text: `#${one.number} is open under it, and it is closed`, at })),
   ]
-  const project = next.project
+  // Closing and ticking are the issue's own; the Status moves wait until the person lets the board write to the project.
+  const project = next.project && (await mayWrite($, next.project)) ? next.project : null
   for (const number of finished) {
     const epic = next.issues.find(one => one.number === number)
     if (!epic) continue
@@ -957,7 +1122,7 @@ const advanceEpics = async ($: EngineInterface, before: Board | null, next: Boar
       const open = checksOf(raw.body).filter((check, index) => !check.done && index !== box - 1).length
       if (open === 0) {
         await gh($, ['issue', 'close', String(number), '--reason', 'completed'])
-        const done = roleOf(project, 'done')
+        const done = project?.status ? roleOf(project, 'done') : undefined
         if (project?.status && done && epic.status !== done.name) await setField($, epic, 'status', done.name)
         moved.push(`#${number} closed as completed${done ? ` and moved to ${done.name}` : ''}: every sub-issue is closed and every box is ticked.`)
         await update($, board, was => was && { ...was, issues: was.issues.filter(one => one.number !== number) })
@@ -968,8 +1133,9 @@ const advanceEpics = async ($: EngineInterface, before: Board | null, next: Boar
       const verify = roleOf(project, 'verification')
       const left = open === 1 ? '1 box is still open' : `${open} boxes are still open`
       const further = !!epic.status && [verify?.name, roleOf(project, 'done')?.name].includes(epic.status)
-      if (project?.status && verify && !further) await setField($, epic, 'status', verify.name)
-      moved.push(`#${number} ${verify && !further ? `moved to ${verify.name}` : 'stays open'}: every sub-issue is closed, but ${left}.`)
+      const moving = !!project?.status && !!verify && !further
+      if (moving && verify) await setField($, epic, 'status', verify.name)
+      moved.push(`#${number} ${moving && verify ? `moved to ${verify.name}` : 'stays open'}: every sub-issue is closed, but ${left}.`)
       notes.push({ key: `epic-verify-${number}`, kind: 'verify', epic: number, title: epic.title, text: `every sub-issue is closed, but ${left}`, at })
     } catch (cause) {
       $.ui.toast(`Couldn't move epic #${number} on: ${messageOf(cause)}. /issues check may say why.`)
@@ -1103,12 +1269,13 @@ const fileDraft = async ($: EngineInterface): Promise<void> => {
     for (const child of made.children ?? []) children.push(await createIssue($, child, number))
     const project = (await read($, board))?.project
     const inbox = roleOf(project, 'inbox')
-    if (project) {
+    // Into the project only where the person let the board write; the issues are filed either way.
+    if (project && (await mayWrite($, project))) {
       for (const one of [number, ...children]) {
         const { id } = JSON.parse(await gh($, ['issue', 'view', String(one), '--json', 'id'])) as { id: string }
         const item = await addItem($, project, id).catch(() => null)
         if (item && project.status && inbox) {
-          await gh($, ['api', 'graphql', '-f', `query=${SET_FIELD}`, '-f', `project=${project.id}`, '-f', `item=${item}`, '-f', `field=${project.status.id}`, '-f', `option=${inbox.id}`])
+          await projectWrite($, project, SET_FIELD, { project: project.id, item, field: project.status.id, option: inbox.id }, true)
         }
       }
     }
@@ -1164,10 +1331,8 @@ const itemFor = async ($: EngineInterface, issue: Target, project: Project): Pro
 // already, and GitHub then refuses the add: the item the project has is taken instead.
 const addItem = async ($: EngineInterface, project: Project, content: string): Promise<string> => {
   try {
-    const added = JSON.parse(await gh($, ['api', 'graphql', '-f', `query=${ADD_ITEM}`, '-f', `project=${project.id}`, '-f', `content=${content}`])) as {
-      data?: { addProjectV2ItemById?: { item?: { id?: string } | null } | null }
-    }
-    const item = added.data?.addProjectV2ItemById?.item?.id
+    const added = (await projectWrite($, project, ADD_ITEM, { project: project.id, content }, true)) as { addProjectV2ItemById?: { item?: { id?: string } | null } | null }
+    const item = added.addProjectV2ItemById?.item?.id
     if (item) return item
   } catch (cause) {
     if (!/already exists/i.test(messageOf(cause))) throw cause
@@ -1215,8 +1380,8 @@ const setFields = async ($: EngineInterface, issue: Target, given: Record<string
   })
   const item = await itemFor($, issue, fresh)
   for (const one of plan) {
-    if (one.value === null) await graphql($, CLEAR_VALUE, { project: fresh.id, item, field: one.field.id })
-    else await graphql($, SET_VALUE, { project: fresh.id, item, field: one.field.id, value: one.value })
+    if (one.value === null) await projectWrite($, fresh, CLEAR_VALUE, { project: fresh.id, item, field: one.field.id })
+    else await projectWrite($, fresh, SET_VALUE, { project: fresh.id, item, field: one.field.id, value: one.value })
   }
   await readValues($, { ...issue, item })
 }
@@ -1227,7 +1392,7 @@ const setField = async ($: EngineInterface, issue: Target, field: 'status' | 'pr
   const option = optionOf(target, name)
   if (!project || !target || !option) throw new Error(`the project has no ${field === 'status' ? 'Status' : 'Priority'} called ${name}`)
   const item = await itemFor($, issue, project)
-  await gh($, ['api', 'graphql', '-f', `query=${SET_FIELD}`, '-f', `project=${project.id}`, '-f', `item=${item}`, '-f', `field=${target.id}`, '-f', `option=${option.id}`])
+  await projectWrite($, project, SET_FIELD, { project: project.id, item, field: target.id, option: option.id }, true)
   const placed = item
   await update($, board, now => now && { ...now, issues: now.issues.map(one => (one.number === issue.number ? { ...one, item: placed, [field]: option.name } : one)) })
   await save($)
@@ -1249,7 +1414,7 @@ const startEpic = async ($: EngineInterface, issue: Issue): Promise<void> => {
   const now = await read($, board)
   const epic = now ? epicToStart(now.issues, issue, now.project) : undefined
   const started = startedOf(now?.project)
-  if (!epic || !started) return
+  if (!epic || !started || !now?.project || !(await mayWrite($, now.project))) return
   try {
     await setField($, epic, 'status', started.name)
     moved.push(`#${epic.number} moved to ${started.name}: its sub-issue #${issue.number} was started.`)
@@ -1260,7 +1425,9 @@ const startEpic = async ($: EngineInterface, issue: Issue): Promise<void> => {
 
 const claimIssue = async ($: EngineInterface, issue: Issue): Promise<void> => {
   const failures: string[] = []
-  const started = startedOf((await read($, board))?.project)
+  const project = (await read($, board))?.project
+  // The Status moves only in a project the person let the board write to; the issue is assigned either way.
+  const started = project && (await mayWrite($, project)) ? startedOf(project) : undefined
   if (started && issue.status !== started.name) await setField($, issue, 'status', started.name).catch((cause: unknown) => void failures.push(messageOf(cause)))
   const me = await read($, viewer)
   if (!me || !issue.assignees.includes(me)) {
@@ -1545,7 +1712,7 @@ const archiveItems = async ($: EngineInterface, project: Project, ask: { number?
   const count = `${chosen.length} ${chosen.length === 1 ? 'item' : 'items'}`
   const partial = items.length >= 100 ? ' Only the first 100 items of the project were read.' : ''
   if (!ask.confirm) return `Archiving ${what} takes ${count} out of the views of ${project.title}:\n${listed}\nThe issues stay as they are.${partial} Call again with confirm: true to archive.`
-  for (const one of chosen) await graphql($, ARCHIVE_ITEM, { project: project.id, item: one.node })
+  for (const one of chosen) await projectWrite($, project, ARCHIVE_ITEM, { project: project.id, item: one.node })
   return `Archived ${count} from ${project.title}:\n${listed}`
 }
 
@@ -1556,7 +1723,7 @@ const postStatus = async ($: EngineInterface, project: Project, ask: { status: s
   for (const [name, date] of [['start', ask.start], ['target', ask.target]] as const) {
     if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error(`give ${name} as a date, YYYY-MM-DD`)
   }
-  const posted = await graphql($, POST_STATUS, { project: project.id, status, body: ask.note ?? null, start: ask.start ?? null, target: ask.target ?? null })
+  const posted = await projectWrite($, project, POST_STATUS, { project: project.id, status, body: ask.note ?? null, start: ask.start ?? null, target: ask.target ?? null })
   const latest: StatusUpdate = {
     status: updateWords(status),
     body: ask.note?.trim() ?? '',
@@ -1677,7 +1844,12 @@ const fileOne = async ($: EngineInterface, spec: NewIssue): Promise<{ number: nu
   const project = now.project
   let item: string | null = null
   const set: { status?: string; priority?: string } = {}
-  if (project) {
+  // A project the person hasn't let the board write to gets nothing: the issue is filed, and Claude reads why.
+  const refusal = project ? writeRefusal(await adoptedNow($), project) : null
+  if (project && refusal) {
+    if (spec.status || spec.priority) failed.push(`set its Status or Priority: ${refusal}`)
+    else did.push(`not added to ${project.title}, which the board only reads`)
+  } else if (project) {
     try {
       item = await addItem($, project, raw.node_id)
       for (const [field, wanted] of [['status', spec.status ?? roleOf(project, 'inbox')?.name], ['priority', spec.priority]] as const) {
@@ -1690,7 +1862,7 @@ const fileOne = async ($: EngineInterface, spec: NewIssue): Promise<{ number: nu
           continue
         }
         try {
-          await gh($, ['api', 'graphql', '-f', `query=${SET_FIELD}`, '-f', `project=${project.id}`, '-f', `item=${item}`, '-f', `field=${target.id}`, '-f', `option=${option.id}`])
+          await projectWrite($, project, SET_FIELD, { project: project.id, item, field: target.id, option: option.id }, true)
           set[field] = option.name
         } catch (cause) {
           failed.push(`set its ${name} (${messageOf(cause)})`)
@@ -1756,7 +1928,7 @@ const startHere = async ($: EngineInterface, number: number): Promise<string> =>
   await track($, issue, true)
   await claim($, issue)
   $.ui.toast(`Working on #${issue.number} now`)
-  const started = startedOf(now?.project)
+  const started = now?.project && (await mayWrite($, now.project)) ? startedOf(now.project) : undefined
   const claimed = settings.claimOnStart ? (started ? `, ${started.name} and assigned` : ', assigned') : ''
   return `Started #${issue.number}${pr ? `, the issue pull request #${number} is for` : ''}${epic}: it is the issue this session is on${claimed}.`
 }
@@ -1808,7 +1980,8 @@ const readSetup = async ($: EngineInterface): Promise<void> => {
     const labels = ((facts.repository?.labels?.nodes ?? []) as { name: string }[]).map(label => label.name)
     const saved = await savedSetup($)
     const read$ = factsOf(JSON.stringify({ data: facts }), pages, suggestAreas(labels, await foldersOf($, root)), await hasTemplate($, root))
-    const found = saved?.status ? { ...read$, saved: { project: saved.project.id, roles: saved.status.roles } } : read$
+    const known = { ...read$, adopted: (await adoptedNow($))?.id ?? null }
+    const found = saved?.status ? { ...known, saved: { project: saved.project.id, roles: saved.status.roles } } : known
     // The project the board already reads, when setup saved one and it's still linked; else the first linked.
     const chosen = found.projects.find(one => one.id === saved?.project.id)?.id ?? found.projects[0]?.id ?? null
     const areas = found.suggested.join(', ')
@@ -1843,11 +2016,17 @@ const applySetup = async ($: EngineInterface): Promise<void> => {
   await update($, setup, was => (was?.phase === 'ready' ? { ...was, phase: 'applying' as const } : was))
 
   let project: SetupProject | null = facts.projects.find(one => one.id === now.chosen) ?? null
+  // First, since the steps that change the project go through the board's write check. Pressing Apply on the plan that
+  // says so is the person letting the board write to the project.
+  const chosen = project
+  if (chosen) await run('adopt', () => adoptProject($, chosen))
   await run('issues', () => gh($, ['repo', 'edit', facts.repo.name, '--enable-issues']))
   await run('project', async () => {
     const title = facts.repo.name.split('/')[1] ?? facts.repo.name
-    const made = await graphql($, CREATE_PROJECT, { owner: facts.repo.ownerId, title, repo: facts.repo.id })
+    const made = await projectWrite($, 'new', CREATE_PROJECT, { owner: facts.repo.ownerId, title, repo: facts.repo.id })
     project = await reread(made.createProjectV2.projectV2.id)
+    // The person asked setup to make it, so the board may write to it, which the steps after need.
+    await adoptProject($, project)
   })
   // Without a project, the steps that work in one can't run.
   const needsProject = ['status', 'priority', 'items', 'inbox'] as const
@@ -1858,13 +2037,13 @@ const applySetup = async ($: EngineInterface): Promise<void> => {
     await run('status', async () => {
       if (!current.status) throw new Error('the project has no Status field')
       const { options } = mergeStatuses(current.status.options, now.roles)
-      await graphql($, UPDATE_FIELD, { field: current.status.id, options: options.map(one => ({ ...(one.id ? { id: one.id } : {}), name: one.name, color: one.color, description: one.description })) })
+      await projectWrite($, current, UPDATE_FIELD, { field: current.status.id, options: options.map(one => ({ ...(one.id ? { id: one.id } : {}), name: one.name, color: one.color, description: one.description })) })
       current = await reread(current.id)
     })
     // The roles are saved with the rest once Apply ends.
     await run('roles', async () => undefined)
     await run('priority', async () => {
-      await graphql($, CREATE_FIELD, { project: current.id, name: 'Priority', options: PRIORITIES })
+      await projectWrite($, current, CREATE_FIELD, { project: current.id, name: 'Priority', options: PRIORITIES })
       current = await reread(current.id)
     })
     // Each open issue's item in the project, the ones already there and the ones added now.
@@ -1872,7 +2051,7 @@ const applySetup = async ($: EngineInterface): Promise<void> => {
     await run('items', async () => {
       for (const issue of facts.issues) {
         if (items.has(issue.number)) continue
-        const added = await graphql($, ADD_ITEM, { project: current.id, content: issue.id })
+        const added = await projectWrite($, current, ADD_ITEM, { project: current.id, content: issue.id })
         items.set(issue.number, { project: current.id, item: added.addProjectV2ItemById.item.id, status: null })
       }
     })
@@ -1882,7 +2061,7 @@ const applySetup = async ($: EngineInterface): Promise<void> => {
       if (!current.status || !inbox?.id) throw new Error(`the project has no ${picked ?? 'Inbox'} status`)
       for (const { item, status } of items.values()) {
         if (status) continue
-        await graphql($, SET_FIELD, { project: current.id, item, field: current.status.id, option: inbox.id })
+        await projectWrite($, current, SET_FIELD, { project: current.id, item, field: current.status.id, option: inbox.id })
       }
     })
     project = current
@@ -1908,6 +2087,7 @@ const applySetup = async ($: EngineInterface): Promise<void> => {
     await $.store.set(key, { ...before, setup: kept })
   }
   // Done: the pane shows the project as it now is, a new one included, so its automations still off can be linked.
+  const adoptedId = (await adoptedNow($))?.id ?? null
   await update($, setup, was =>
     was?.phase === 'applying'
       ? {
@@ -1919,6 +2099,7 @@ const applySetup = async ($: EngineInterface): Promise<void> => {
                 facts: {
                   ...was.facts,
                   projects: [...was.facts.projects.filter(one => one.id !== ended.id), ended],
+                  adopted: adoptedId,
                   ...(ended.status ? { saved: { project: ended.id, roles: rolesOf(ended.status.options, now.roles) } } : {}),
                 },
               }
@@ -2706,13 +2887,14 @@ export const register: Register = (on, options) => {
     }
     if (e.args.trim() === 'help') {
       const project = (await read($, board))?.project
-      return { text: helpText(filtersFor(project), featuresOff(switchesOf(settings), project)) }
+      return { text: helpText(filtersFor(project), featuresOff(switchesOf(settings), project, !project || (await mayWrite($, project)))) }
     }
     if (e.args.trim() === 'check') {
       const problems = await checkAccess($)
       const found = await read($, access)
       // What is off, by a setting or for want of a Status option, is said here and in /issues help, not in the band.
-      const off = offText(featuresOff(switchesOf(settings), (await read($, board))?.project))
+      const project = (await read($, board))?.project
+      const off = offText(featuresOff(switchesOf(settings), project, !project || (await mayWrite($, project))))
       const withOff = (text: string) => ({ text: [text, ...(off.length > 0 ? ['', ...off] : [])].join('\n') })
       if (problems.length > 0) {
         const count = problems.length === 1 ? 'one problem' : `${problems.length} problems`
@@ -3216,6 +3398,7 @@ export const register: Register = (on, options) => {
     const watched = await read($, runs)
     const working$ = await read($, workers)
     const launches = await read($, launching)
+    const adopting = await read($, adoption)
     // The issue Start sent Claude in this session: its Start says so rather than starting it again.
     const startedHere = doing?.started && doing.sessionId !== undefined && doing.sessionId === (await $.session.id().catch(() => undefined)) ? doing.number : null
     const clock = Date.now()
@@ -3356,6 +3539,32 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
+    // The one-time ask before the board writes to the project it reads: what it would write and what that costs. Setup
+    // showing asks the same through Apply, so this waits.
+    const asked = !planned && now?.project ? now.project : null
+    const asking = asked ? adoptAsk(asked, adopting) : null
+    const adoptCard = asking && asked && (
+      <Box key="adopt-card" flexDirection="column" borderStyle="round" borderColor="warning" paddingX={1} marginTop={1}>
+        <Text color="warning" bold wrap="wrap">
+          {`⚠ ${asking.title}`}
+        </Text>
+        {asking.lines.map((line, index) => (
+          <Text key={`adopt-line-${index}`} dimColor={index > 0} wrap="wrap">
+            {line}
+          </Text>
+        ))}
+        <Box flexDirection="row" gap={1} marginTop={1}>
+          <Button key="adopt-yes" variant="primary" onPress={() => void adoptFromPrompt($, asked)}>
+            Let it write
+          </Button>
+          <Button key="adopt-no" dimColor onPress={() => void declineFromPrompt($, asked)}>
+            Keep read-only
+          </Button>
+          {link(asked.url)}
+        </Box>
+      </Box>
+    )
+
     // `/issues setup`: the project it would use, what it would change, what only the project's settings can turn on,
     // and Apply, the one ask before anything changes. While Apply runs, each change is marked as it goes.
     const MARKS = { running: ['◌', 'warning'], done: ['✓', 'success'], failed: ['✗', 'error'], skipped: ['–', 'inactive'] } as const
@@ -3408,6 +3617,21 @@ export const register: Register = (on, options) => {
                 ))}
               {chosenProject && link(chosenProject.url)}
             </Box>
+            {facts.adopted !== undefined && (
+              <Box key="setup-adopted" flexDirection="row" gap={1} flexWrap="wrap">
+                <Text dimColor>Writes</Text>
+                {facts.adopted ? (
+                  <Text>{`the board may write to ${facts.projects.find(one => one.id === facts.adopted)?.title ?? 'a project of this repo'}`}</Text>
+                ) : (
+                  <Text>{chosenProject ? `none: the board only reads ${chosenProject.title} until Apply` : 'none: the board writes to no project'}</Text>
+                )}
+                {facts.adopted && planned.phase !== 'applying' && (
+                  <Button key="setup-release" dimColor onPress={() => void releaseFromSetup($)}>
+                    Release
+                  </Button>
+                )}
+              </Box>
+            )}
             {planned.steps.length === 0 ? (
               <Text color="success">✓ Nothing to change: the repo and its project are set up for the board.</Text>
             ) : (
@@ -4627,6 +4851,7 @@ export const register: Register = (on, options) => {
         {setupPlan}
         {trends}
         {setupCard}
+        {adoptCard}
         {draftCard}
         {failure && <Text color="error">{`✗ Last refresh failed: ${failure}`}</Text>}
 
@@ -4883,7 +5108,9 @@ export const register: Register = (on, options) => {
     // What the board noticed about epics: why one moved to Verification, or a sub-issue open again under one. A line
     // past its age limit goes here too, since a quiet board may not read again for a while.
     const notes = now ? liveEpicNotes(await read($, epicNotes), now, await nowOf($)) : []
-    if (problems.length === 0 && alerts.length === 0 && offers.length === 0 && agents.length === 0 && notes.length === 0) return next(e)
+    // The project the board reads but may not write to yet: the band points at the pane, which has the whole warning.
+    const unadopted = now?.project && adoptAsk(now.project, await read($, adoption)) ? now.project : null
+    if (problems.length === 0 && alerts.length === 0 && offers.length === 0 && agents.length === 0 && notes.length === 0 && !unadopted) return next(e)
 
     const { Box, Text, Button, Link } = $.ui.resolve(e)
     const width = e.props.bodyColumns
@@ -5057,6 +5284,29 @@ export const register: Register = (on, options) => {
       )
     }
 
+    // `⚠ PROJECT Let the board write to <title>, owned by <owner>? · it only reads it until you say yes`. Review opens the
+    // pane, where the warning says what it would write; ✕ keeps it read-only.
+    const adoptLine = (project: Project) => {
+      const tail = ' · it only reads it until you say yes'
+      return (
+        <Box key="adopt-row" flexDirection="row" gap={1}>
+          <Text color="warning" inverse bold>
+            {' ⚠ PROJECT '}
+          </Text>
+          <Text>
+            <Text>{fit(adoptText(project, settings.refreshMinutes).title, Math.max(16, width - cells(tail) - 26))}</Text>
+            <Text dimColor>{tail}</Text>
+          </Text>
+          <Button key="adopt-review" variant="primary" onPress={() => void $.ui.open(OPEN)}>
+            Review
+          </Button>
+          <Button key="adopt-dismiss" dimColor onPress={() => void declineFromPrompt($, project)}>
+            ✕
+          </Button>
+        </Box>
+      )
+    }
+
     // A background agent at work: `⚙ #90 <title> · working · ━━━━━━ 0/4`, the bar only when the issue has boxes.
     const agentLine = (worker: Worker) => {
       const issue = now?.issues.find(one => one.number === worker.number)
@@ -5096,6 +5346,7 @@ export const register: Register = (on, options) => {
     return (
       <Box flexDirection="column">
         {problems.slice(0, 2).map(problemLine)}
+        {unadopted && adoptLine(unadopted)}
         {alerts.slice(0, 3).map(line)}
         {offers.slice(0, 3).map(offerLine)}
         {agents.slice(0, 3).map(agentLine)}

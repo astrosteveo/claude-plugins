@@ -1,3 +1,5 @@
+import type { On } from 'claude-code'
+
 // The board reads open issues over GraphQL. The tests keep their issues the way `gh issue list --json` gives them; this
 // turns them into the answer the board's query gets, with the repo's project when the test gives one.
 
@@ -100,4 +102,33 @@ export const graphPage = (issues: Raw[], argv: readonly string[] = [], project =
       },
     },
   })
+}
+
+// The board writes only to a project the person let it write to. A test that has it write to the fake project uses
+// this store in place of `mock.store`: every repo's entry holds the adoption, unless the entry makes a choice of its own.
+// A test's fake world and the test itself may both ask for it; the second call adds its entries to the first's store.
+export const ADOPTED = { id: PROJECT.id, title: PROJECT.title, owner: 'astrosteveo' }
+const stores = new WeakMap<On, Map<string, unknown>>()
+export const adoptedStore = (on: On, entries: Readonly<Record<string, unknown>> = {}): Map<string, unknown> => {
+  const had = stores.get(on)
+  if (had) {
+    for (const [key, value] of Object.entries(entries)) had.set(key, value)
+    return had
+  }
+  const kept = new Map<string, unknown>(Object.entries(entries))
+  stores.set(on, kept)
+  on('store.get', async (_$, e) => {
+    const value = kept.get(e.key)
+    return { value: { adopted: ADOPTED, ...(value && typeof value === 'object' ? value : {}) } }
+  })
+  on('store.set', async (_$, e) => {
+    kept.set(e.key, e.value)
+    return { value: undefined }
+  })
+  on('store.delete', async (_$, e) => {
+    kept.delete(e.key)
+    return { value: undefined }
+  })
+  on('store.keys', async () => ({ value: [...kept.keys()] }))
+  return kept
 }

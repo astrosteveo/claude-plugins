@@ -16,7 +16,7 @@ import {
   workingSection,
   projectPathOf,
 } from '../hooks/parse'
-import { PRIORITIES, STATUSES, asksProject, graphPage, isIssuesQuery, optionId } from './graph'
+import { PRIORITIES, STATUSES, asksProject, graphPage, isIssuesQuery, optionId, adoptedStore } from './graph'
 
 const BODY = '## Acceptance\r\n\r\n- [x] Layout in place\r\n- [ ] Old saves load\r\n- [ ] Goldens regenerated\r\n'
 
@@ -87,6 +87,8 @@ const CLOSED = {
 }
 
 const world = (on: On) => {
+  // These tests have the board write to the project, which the person let it do.
+  adoptedStore(on)
   const state = {
     body: BODY,
     prs: [pr('pass')] as unknown[],
@@ -393,7 +395,7 @@ test('the working note says Closes only when every box is ticked, always Closes,
 })
 
 test('the issues tool lists the board, and the tick tool ticks a box on GitHub', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = world(on)
   await $.command.run(REFRESH)
 
@@ -424,7 +426,7 @@ test('the issues tool lists the board, and the tick tool ticks a box on GitHub',
 })
 
 test('Start names the issue in the system prompt; the pane searches, filters Mine, marks the branch and ticks boxes', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = world(on)
   const sent: string[] = []
   on('prompt.submit', async (_$, e) => {
@@ -485,7 +487,7 @@ test('Start names the issue in the system prompt; the pane searches, filters Min
 })
 
 test('the band says when CI passes and offers Merge; the issue Claude is on is in the pane, not the band', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = world(on)
   on('ui.render', { component: 'AbovePrompt' }, async ($$, e) => {
     const { Box } = $$.ui.resolve(e)
@@ -526,7 +528,7 @@ test('the band says when CI passes and offers Merge; the issue Claude is on is i
 })
 
 test('/issues new drafts an issue from the conversation and files it on request, into the project at Inbox', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   const gh = world(on)
   gh.project = true
@@ -575,7 +577,7 @@ test('a new session paints the saved board and keeps the issue Claude was on', a
     dismissed: [],
     viewer: 'astrosteveo',
   }
-  mock.store(on, { [`repo:${REPO.root}`]: saved })
+  adoptedStore(on, { [`repo:${REPO.root}`]: saved })
   on('session.id', async () => ({ value: 'session-2' }))
   on('session.repo', async () => ({ value: REPO }))
   // GitHub can't be reached yet: what shows is what was saved.
@@ -594,7 +596,7 @@ test('a new session paints the saved board and keeps the issue Claude was on', a
 })
 
 test('the board looks every 30 seconds while CI runs, and every 5 minutes otherwise, reading in full when something changed', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   const gh = world(on)
   gh.prs = [pr('pending')]
@@ -618,7 +620,7 @@ test('the board looks every 30 seconds while CI runs, and every 5 minutes otherw
 })
 
 test('the timer reads GitHub in full only when a cheap check sees a change, and at least every 15 minutes', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   const gh = world(on)
   const logged: string[] = []
@@ -650,7 +652,7 @@ test('the timer reads GitHub in full only when a cheap check sees a change, and 
 })
 
 test('the weekly counts are read again only after an hour', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   const gh = world(on)
   await $.command.run(REFRESH)
@@ -663,7 +665,7 @@ test('the weekly counts are read again only after an hour', async ($, on) => {
 })
 
 test("when GitHub's rate limit runs out, the board says when it resets, says so once, and reads nothing until then", async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   const gh = world(on)
   const toasts: string[] = []
@@ -696,12 +698,7 @@ test("when GitHub's rate limit runs out, the board says when it resets, says so 
 
 test("another session's newer read of the same repo is taken rather than reading GitHub again", async ($, on) => {
   // The store every session on the machine shares.
-  const stored = new Map<string, unknown>()
-  on('store.get', async (_$, e) => ({ value: stored.get(e.key) }))
-  on('store.set', async (_$, e) => {
-    stored.set(e.key, e.value)
-    return { value: undefined }
-  })
+  const stored = adoptedStore(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   const gh = world(on)
   await $.command.run(REFRESH)
@@ -725,7 +722,7 @@ test("another session's newer read of the same repo is taken rather than reading
 })
 
 test('issue_create files an issue with every option over REST, puts it in the project, and on the board at once', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = world(on)
   gh.project = true
   on('tool.check', async () => ({ decision: 'ask' as const }))
@@ -763,7 +760,7 @@ test('issue_create files an issue with every option over REST, puts it in the pr
 })
 
 test("issue_create takes the item a project's own auto-add made, and goes on to set its fields", async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = world(on)
   gh.project = true
   gh.autoAdded = true
@@ -775,7 +772,7 @@ test("issue_create takes the item a project's own auto-add made, and goes on to 
 })
 
 test('issue_create with only a title files it to the Inbox, and a step that fails after filing is named with the number', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = world(on)
   gh.project = true
   on('ui.toast', async () => ({ value: undefined }))
@@ -800,7 +797,7 @@ test('issue_create with only a title files it to the Inbox, and a step that fail
 })
 
 test('issue_create files an epic and its sub-issues in order, each under it and in the project, and goes on past one that fails', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = world(on)
   gh.project = true
   on('ui.toast', async () => ({ value: undefined }))
@@ -856,7 +853,7 @@ test('issue_create files an epic and its sub-issues in order, each under it and 
 })
 
 test('the issues tool reads a closed issue from GitHub, searches every issue, and filters the open ones by label', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   const gh = world(on)
   await $.command.run(REFRESH)
@@ -902,7 +899,7 @@ test('the issues tool reads a closed issue from GitHub, searches every issue, an
 })
 
 test("the pane's Closed filter lists the issues closed lately, read from GitHub when chosen", async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   world(on)
   await $.command.run(REFRESH)
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
@@ -913,7 +910,7 @@ test("the pane's Closed filter lists the issues closed lately, read from GitHub 
 })
 
 test('the milestone tool makes and changes milestones over REST, and the pane and the issues tool show their progress', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   const gh = world(on)
   on('tool.check', async () => ({ decision: 'ask' as const }))
@@ -948,7 +945,7 @@ test('the milestone tool makes and changes milestones over REST, and the pane an
 })
 
 test("the issues tool lists the project's issues at a Status, closed ones included, read over REST", async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   const gh = world(on)
   gh.project = true
@@ -969,7 +966,7 @@ test("a project's REST path comes from its page, for a user's project or an orga
 })
 
 test("issue_update sets the project's other fields by name, checked against each field's kind, and the card shows them", async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = world(on)
   gh.project = true
   gh.planned[315] = { status: 'Ready', priority: 'P1' }
@@ -1013,7 +1010,7 @@ test("issue_update sets the project's other fields by name, checked against each
 })
 
 test('issue_update sets the Status, Priority and fields of a closed issue through its item in the project, and leaves one already there', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = world(on)
   gh.project = true
   on('ui.toast', async () => ({ value: undefined }))
@@ -1035,7 +1032,7 @@ test('issue_update sets the Status, Priority and fields of a closed issue throug
 })
 
 test("an issue's type shows on its card and is set by name, where the repo has types, and offered nowhere else", async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = world(on)
   gh.types = ['Bug', 'Task']
   gh.type315 = 'Task'
@@ -1065,7 +1062,7 @@ test("an issue's type shows on its card and is set by name, where the repo has t
 })
 
 test('a repo without issue types offers none, and setting one says why it cannot', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   world(on)
   on('ui.toast', async () => ({ value: undefined }))
   await $.command.run(REFRESH)
@@ -1082,7 +1079,7 @@ test('a repo without issue types offers none, and setting one says why it cannot
 })
 
 test('project_archive says how many items it would take first, without asking, and archives them on confirm', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = world(on)
   gh.project = true
   on('tool.check', async () => ({ decision: 'ask' as const }))
@@ -1110,7 +1107,7 @@ test('project_archive says how many items it would take first, without asking, a
 })
 
 test("project_status reads the project's latest update without asking, posts one when asked, and the pane shows it", async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   const gh = world(on)
   gh.project = true
@@ -1138,7 +1135,7 @@ test("project_status reads the project's latest update without asking, posts one
 })
 
 test('a field the project gained since the last read is read before setting it, rather than refused', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = world(on)
   gh.project = true
   gh.planned[315] = { status: 'Ready', priority: 'P1' }
@@ -1153,7 +1150,7 @@ test('a field the project gained since the last read is read before setting it, 
 })
 
 test('/issues help names every filter, subcommand and tool the board has, and the argument hint every subcommand', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   world(on)
   const tools: string[] = []
@@ -1182,7 +1179,7 @@ test('/issues help names every filter, subcommand and tool the board has, and th
 })
 
 test("/issues check notes the project's Item closed workflow when it's on, as a limit that doesn't block", async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   const gh = world(on)
   gh.project = true
@@ -1199,7 +1196,7 @@ test("/issues check notes the project's Item closed workflow when it's on, as a 
 })
 
 test('on a short pane the sections above the issues start folded to a summary, and stay as the person leaves them', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   world(on)
   on('ui.toast', async () => ({ value: undefined }))
   await $.command.run(REFRESH)
@@ -1227,7 +1224,7 @@ test('on a short pane the sections above the issues start folded to a summary, a
 })
 
 test('the pane draws on every surface, with search where the surface has a text field', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   world(on)
   await $.command.run(REFRESH)
   for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
@@ -1239,7 +1236,7 @@ test('the pane draws on every surface, with search where the surface has a text 
 })
 
 test("the project's Status groups the issues, Priority filters them, and the card and Start change both on GitHub", async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = world(on)
   gh.project = true
   // #315 is planned; #289 isn't in the project yet.
@@ -1289,7 +1286,7 @@ test("the project's Status groups the issues, Priority filters them, and the car
 })
 
 test('Backlog is folded until opened, and Epic groups the issues under the epic they belong to', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = world(on)
   gh.project = true
   gh.planned[315] = { status: 'Backlog', priority: 'P2' }
@@ -1310,7 +1307,7 @@ test('Backlog is folded until opened, and Epic groups the issues under the epic 
 })
 
 test('a card stays open when a new Priority takes it out of the filter, and leaves when collapsed', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = world(on)
   gh.project = true
   gh.planned[315] = { status: 'Ready', priority: 'P1' }
@@ -1331,7 +1328,7 @@ test('a card stays open when a new Priority takes it out of the filter, and leav
 })
 
 test("Merge all's confirm goes when the pull requests it waited on have merged, and sends nothing", async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = world(on)
   const sent: string[] = []
   on('prompt.submit', async (_$, e) => {
@@ -1358,7 +1355,7 @@ const savedRoles = (roles: Record<string, string>) => ({
 })
 
 test('a project with its own Status names goes by the roles setup saved: its Inbox, the one that folds, and where Start moves', async ($, on) => {
-  mock.store(on, savedRoles({ inbox: 'S0', ready: 'S1', backlog: 'S2', started: 'S3', verification: 'S4', done: 'S5' }))
+  adoptedStore(on, savedRoles({ inbox: 'S0', ready: 'S1', backlog: 'S2', started: 'S3', verification: 'S4', done: 'S5' }))
   const gh = world(on)
   gh.project = true
   gh.statusNames = ['Todo', 'Next', 'Someday', 'Doing', 'Review', 'Shipped']
@@ -1388,7 +1385,7 @@ test('a project with its own Status names goes by the roles setup saved: its Inb
 })
 
 test("a role setup left unset turns its part off, even where an option has the board's name, and /issues check and help say how to set it", async ($, on) => {
-  mock.store(on, savedRoles({ ready: 'S2', backlog: 'S1', started: 'S3', done: 'S5' }))
+  adoptedStore(on, savedRoles({ ready: 'S2', backlog: 'S1', started: 'S3', done: 'S5' }))
   const gh = world(on)
   on('ui.render', { component: 'PromptHint' }, async ($$, e) => {
     const { Text } = $$.ui.resolve(e)
@@ -1423,7 +1420,7 @@ test("a role setup left unset turns its part off, even where an option has the b
 })
 
 test('a board with no Done set archives one issue, but not by doneBefore', async ($, on) => {
-  mock.store(on, savedRoles({ inbox: 'S0', started: 'S3' }))
+  adoptedStore(on, savedRoles({ inbox: 'S0', started: 'S3' }))
   const gh = world(on)
   gh.project = true
   await $.command.run(REFRESH)
@@ -1434,7 +1431,7 @@ test('a board with no Done set archives one issue, but not by doneBefore', async
 })
 
 test('how many priorities count as Now is a setting', { options: { nowCount: 1 } }, async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = world(on)
   gh.project = true
   gh.planned[315] = { status: 'Ready', priority: 'P1' }
@@ -1449,7 +1446,7 @@ test('how many priorities count as Now is a setting', { options: { nowCount: 1 }
 })
 
 test('a feature a setting turned off is said in /issues check and /issues help, and nowhere else', { options: { band: false, refresh: 'manual' } }, async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = world(on)
   gh.project = true
   const toasts: string[] = []

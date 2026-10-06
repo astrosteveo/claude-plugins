@@ -1522,15 +1522,20 @@ const FEATURES: { feature: string; setting?: [keyof Switches, string]; role?: Ro
 ]
 
 // The features that are off, each with why: the setting that turned it off, or the Status role the project has no
-// option for. A role counts only with a project that has a Status field.
-export const featuresOff = (switches: Switches, project: Project | null | undefined): { feature: string; why: string }[] =>
-  FEATURES.flatMap(({ feature, setting, role }) => {
+// option for. A role counts only with a project that has a Status field. `writable` is false while the person hasn't
+// let the board write to the project, which leaves every project write off, whatever the settings say.
+export const featuresOff = (switches: Switches, project: Project | null | undefined, writable = true): { feature: string; why: string }[] => [
+  ...(project && !writable
+    ? [{ feature: 'Every change to the project: Status, Priority, adding items, archiving and status updates', why: `the board only reads ${project.title} until you let it write there; press Let it write in /issues, or Apply in /issues setup` }]
+    : []),
+  ...FEATURES.flatMap(({ feature, setting, role }) => {
     if (setting && !switches[setting[0]]) return [{ feature, why: `turned off in /config by ${setting[1]} (${setting[0]})` }]
     if (role && project?.status && !roleOf(project, role)) {
       return [{ feature, why: `${project.title} has no Status option as the ${ROLE_NAMES[role]}; pick one in /issues setup` }]
     }
     return []
-  })
+  }),
+]
 
 // The features that are off, as lines for /issues check and /issues help; none when all are on.
 export const offText = (off: { feature: string; why: string }[]): string[] => (off.length > 0 ? ['Off:', ...off.map(one => `- ${one.feature}: ${one.why}.`)] : [])

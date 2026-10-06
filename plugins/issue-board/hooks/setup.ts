@@ -193,6 +193,9 @@ export const stepsOf = (facts: SetupFacts, chosen: string | null, typed: string,
   const name = facts.repo.name.split('/')[1] ?? facts.repo.name
   const existing = statusOptionsOf(project)
   const roles = picks ?? suggestRoles(existing)
+  // Apply lets the board write to the project it sets up. A project it creates is adopted as it is made. Facts read
+  // without what the board may write to leave this step out.
+  if (project && facts.adopted !== undefined && facts.adopted !== project.id) steps.push({ id: 'adopt', title: `Let the board write to ${project.title}` })
   if (!facts.repo.hasIssues) steps.push({ id: 'issues', title: `Turn on issues for ${facts.repo.name}` })
   if (!project) steps.push({ id: 'project', title: `Create the project "${name}" and link it to ${facts.repo.name}` })
   const status = mergeStatuses(existing, roles)

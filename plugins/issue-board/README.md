@@ -14,7 +14,9 @@ until it is updated.
 
 1. Run `/issues` to open the pane.
 2. Run `/issues setup` once if the repo has no GitHub Project yet. It shows
-   what it would change and waits for **Apply**.
+   what it would change and waits for **Apply**. The board only reads a
+   project until you let it write there; see
+   [Letting the board write to a project](#letting-the-board-write-to-a-project).
 3. Press Enter on an issue, then **▶ Start** to hand it to Claude.
 
 `/issues help` lists every key, subcommand and tool. `/issues check` says
@@ -325,12 +327,54 @@ won't undo, needs a second, confirmed call.
   off, or the Status the project has no option for. `/issues help` lists
   them too. Nothing else nags about a feature that is off.
 
+## Letting the board write to a project
+
+The board reads any project linked to the repo, but writes to one only after
+you adopt it for this repo. Until then the project is read-only to the board,
+whatever the settings below say.
+
+While the board reads a project it may not write to, the pane asks once:
+**Let the board write to Void Sector, owned by astrosteveo?** It says what
+the board would write: Status and Priority, adding issues as items,
+archiving items when asked, and status updates. It says these are GitHub API
+calls made with your `gh` token, and how often the board reads GitHub (the
+`refresh` setting). The band shows a short line with **Review**, which opens
+the pane.
+
+- **Let it write** adopts the project for this repo. So does **Apply** in
+  `/issues setup`, whose plan says *Let the board write to …*. A project
+  setup creates is adopted as it is made.
+- **Keep read-only**, or `✕` on the band's line, puts the question away for
+  that project. `/issues setup` can still adopt it.
+- `/issues setup` shows which project the board may write to, with
+  **Release** to make it read-only again.
+- A repo whose saved setup already names a project counts as having adopted
+  it, so a board set up before this keeps working.
+
+What stays the same without an adopted project:
+
+- Every read: the pane, the band, the filters, Status and Priority as the
+  project has them.
+- Changes to issues themselves: Start still tracks the issue and assigns it
+  to you, boxes still tick, an epic still closes when its last sub-issue
+  does, and issue_create still files the issue.
+- What doesn't happen: Start, triage's Accept and the moves a read makes
+  leave the project's Status and Priority alone, and new issues aren't added
+  as items. A tool asked to change the project, such as issue_update with a
+  Status or project_status posting an update, is refused, and the refusal
+  says why and how to adopt the project. `/issues check` and `/issues help`
+  list it under Off.
+
+Every project write goes through one check of the adopted project's id. A
+write to any other project is refused.
+
 ## What the board changes, and how to turn it off
 
 Change these in Claude Code's `/config`, under the issue board. The setting's
 key is what `.claude/settings.json` takes.
 
-On GitHub, by itself:
+On GitHub, by itself (project changes only in a project you let the board
+write to):
 
 | What | Setting | Default |
 |---|---|---|
