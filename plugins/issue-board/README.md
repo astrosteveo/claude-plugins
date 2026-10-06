@@ -300,6 +300,8 @@ stays quiet there.
     and Priority, and the board shows them at once. Moving the Status of the
     issue you pressed Start on doesn't ask for permission; any other change
     asks, unless you allow it.
+  - If your organization requires Claude Code to ask before `issues` or
+    `issue_update` runs, the board doesn't skip that prompt.
 - After you press Start, a short note in the system prompt names the issue.
   It tells Claude to tick boxes as it finishes them. In the pull request,
   Claude writes `Closes #<number>` only if every box is ticked by then, and

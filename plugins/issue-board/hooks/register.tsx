@@ -187,6 +187,10 @@ const runs = atom({ plugin: 'issue-board', key: 'runs' } as const, [])
 const workers = atom({ plugin: 'issue-board', key: 'workers' } as const, [])
 const launching = atom({ plugin: 'issue-board', key: 'launching' } as const, [])
 
+// Whether a tool's calls may be allowed without asking: an organization can set a ceiling, the most permissive verdict
+// a call of the tool may reach. None set, they may.
+const mayAllow = (ceiling: 'allow' | 'ask' | 'deny' | undefined): boolean => ceiling === undefined || ceiling === 'allow'
+
 // The filters; with a project, the first two read Priority and say so.
 const FILTERS: { id: Filter; label: string; planned: string; hotkey: string }[] = [
   { id: 'active', label: 'Active', planned: 'Now', hotkey: '1' },
@@ -1660,19 +1664,21 @@ export const register: Register = on => {
   })
 
   // Moving the Status of the issue the person started is part of working on it, so it doesn't ask. Any other change
-  // asks, as a tool that changes something does; a rule that allows or denies still stands.
+  // asks, as a tool that changes something does; a rule that allows or denies still stands, and so does an
+  // organization's ceiling that keeps the tool at asking.
   on('tool.check', { tool: UPDATE_TOOL }, async ($, e, next) => {
     const verdict = await next(e)
-    if (verdict.decision !== 'ask') return verdict
+    if (verdict.decision !== 'ask' || !mayAllow(e.ceiling)) return verdict
     const changes = changesOf(e.input)
     const doing = await read($, working)
     return changes && doing && changes.number === doing.number && statusOnly(changes) ? { decision: 'allow' as const } : verdict
   })
 
-  // Reading the board changes nothing, so it needs no permission prompt; a rule that denies it still stands.
+  // Reading the board changes nothing, so it needs no permission prompt; a rule that denies it still stands, and so
+  // does an organization's ceiling that keeps the tool at asking.
   on('tool.check', { tool: ISSUES_TOOL }, async ($, e, next) => {
     const verdict = await next(e)
-    return verdict.decision === 'ask' ? { decision: 'allow' as const } : verdict
+    return verdict.decision === 'ask' && mayAllow(e.ceiling) ? { decision: 'allow' as const } : verdict
   })
 
   // Closing an epic whose sub-issues are still open asks the person first, whatever their rules allow: the sub-issues

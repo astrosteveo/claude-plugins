@@ -107,6 +107,29 @@ test("moving the Status of the issue Claude is on doesn't ask; any other change 
   await ui.unmount()
 })
 
+test("an organization's ceiling of ask keeps both board tools asking; one of allow, or none, changes nothing", async ($, on) => {
+  mock.store(on)
+  github(on)
+  on('tool.check', async () => ({ decision: 'ask' as const }))
+  on('prompt.submit', async (_$, e) => ({ text: e.text }))
+  await $.command.run({ ...RUN, args: 'refresh' })
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'filter-all' })
+  await ui.press({ key: 'issue-43' })
+  await ui.press({ key: 'start-43' })
+
+  const move = { number: 43, status: 'Verification' }
+  const update = (ceiling?: 'allow' | 'ask') => $.tool.check({ tool: 'mcp__issue-board__issue_update', input: move, ...(ceiling ? { ceiling } : {}) })
+  const issues = (ceiling?: 'allow' | 'ask') => $.tool.check({ tool: 'mcp__issue-board__issues', input: {}, ...(ceiling ? { ceiling } : {}) })
+  expect((await update('ask')).decision).toBe('ask')
+  expect((await issues('ask')).decision).toBe('ask')
+  expect((await update('allow')).decision).toBe('allow')
+  expect((await issues('allow')).decision).toBe('allow')
+  expect((await update()).decision).toBe('allow')
+  expect((await issues()).decision).toBe('allow')
+  await ui.unmount()
+})
+
 test("the card's editor changes labels, assignee and milestone, comments, and asks twice to close an epic with open sub-issues", async ($, on) => {
   mock.store(on)
   const gh = github(on)
