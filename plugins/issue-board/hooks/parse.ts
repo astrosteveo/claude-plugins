@@ -435,24 +435,21 @@ export const wrappedLines = (widths: number[], width: number, gap = 1): number =
   return lines
 }
 
-// Where a row's hover card goes, given the lines free above and below the row, and what it holds: the title and how
-// far along, then up to four open boxes, "+N more" for the rest, and the hint line. Whole, it goes above the row, else
-// below. Short of room on both sides, it goes on the roomier one without the hint, listing the boxes that fit. Null
-// when not even the title and how far along fit.
-export type PeekPlace = { side: 'above' | 'below'; listed: number; more: boolean; hint: boolean }
-export const peekPlace = (above: number, below: number, todo: number): PeekPlace | null => {
+// What a row's hover card holds, given the lines free above the row: the title and how far along, then up to four open
+// boxes, "+N more" for the rest, and the hint line. Short of room, it drops the hint and lists the boxes that fit. Null
+// when not even the title and how far along fit. The card only ever goes above its row: a floating box paints over what
+// is drawn before it, and the rows after it would paint over a card below.
+export type PeekPlace = { listed: number; more: boolean; hint: boolean }
+export const peekPlace = (above: number, todo: number): PeekPlace | null => {
   const listed = Math.min(todo, 4)
   const more = todo > listed
   // Two lines of border, the title, how far along and the hint.
-  const whole = 5 + listed + (more ? 1 : 0)
-  if (above >= whole) return { side: 'above', listed, more, hint: true }
-  if (below >= whole) return { side: 'below', listed, more, hint: true }
-  const spare = Math.max(above, below) - 4
+  if (above >= 5 + listed + (more ? 1 : 0)) return { listed, more, hint: true }
+  const spare = above - 4
   if (spare < 0) return null
-  const side = above >= below ? 'above' : 'below'
-  if (spare >= listed + (more ? 1 : 0)) return { side, listed, more, hint: false }
+  if (spare >= listed + (more ? 1 : 0)) return { listed, more, hint: false }
   const fits = Math.max(0, spare - 1)
-  return { side, listed: fits, more: spare > fits, hint: false }
+  return { listed: fits, more: spare > fits, hint: false }
 }
 
 export const progress = (checks: Check[]): Progress => ({ done: checks.filter(check => check.done).length, total: checks.length })

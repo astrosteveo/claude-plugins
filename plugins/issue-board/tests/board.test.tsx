@@ -91,8 +91,8 @@ test("a preview line holding an emoji keeps the card's width, so nothing shows t
     body: '- [ ] A blocked row shows `⛔ #N`.\n- [ ] Ready ones come first.',
     updatedAt: '2026-10-03T20:00:00Z',
   }
-  // Rows enough that the card has room beside the row.
-  const others = [1, 2, 3, 4, 5, 6].map(number => ({ number, title: `Other ${number}`, labels: [], body: '', updatedAt: '2026-10-03T20:00:00Z' }))
+  // Rows enough above it for its card: numbered higher, so they sort first.
+  const others = [101, 102, 103, 104, 105, 106].map(number => ({ number, title: `Other ${number}`, labels: [], body: '', updatedAt: '2026-10-03T20:00:00Z' }))
   on('process.run', async (_$, e) => {
     const stdout = isIssuesQuery(e.argv) ? graphPage([blocked, ...others]) : e.argv[1] === 'repo' ? JSON.stringify({ nameWithOwner: 'astrosteveo/claude-plugins', hasIssuesEnabled: true }) : '[]'
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
@@ -107,16 +107,16 @@ test("a preview line holding an emoji keeps the card's width, so nothing shows t
   await ui.unmount()
 })
 
-test('a hover card goes above its row when it fits, else below, else trimmed to the roomier side, else not at all', () => {
+test('a hover card goes above its row, whole when it fits, trimmed when short of room, else not at all', () => {
   // Five boxes open: the title, how far along, four boxes, +1 more and the hint, in a border, take ten lines.
-  expect(peekPlace(10, 0, 5)).toEqual({ side: 'above', listed: 4, more: true, hint: true })
-  expect(peekPlace(6, 10, 5)).toEqual({ side: 'below', listed: 4, more: true, hint: true })
-  // Short of room on both sides: the roomier one, without the hint, with the boxes that fit and +N more.
-  expect(peekPlace(6, 1, 5)).toEqual({ side: 'above', listed: 1, more: true, hint: false })
-  expect(peekPlace(1, 6, 2)).toEqual({ side: 'below', listed: 2, more: false, hint: false })
-  expect(peekPlace(4, 1, 5)).toEqual({ side: 'above', listed: 0, more: false, hint: false })
+  expect(peekPlace(10, 5)).toEqual({ listed: 4, more: true, hint: true })
+  expect(peekPlace(7, 2)).toEqual({ listed: 2, more: false, hint: true })
+  // Short of room: no hint, the boxes that fit, and +N more for the rest.
+  expect(peekPlace(6, 5)).toEqual({ listed: 1, more: true, hint: false })
+  expect(peekPlace(6, 2)).toEqual({ listed: 2, more: false, hint: false })
+  expect(peekPlace(4, 5)).toEqual({ listed: 0, more: false, hint: false })
   // Not even the title and how far along fit.
-  expect(peekPlace(3, 3, 5)).toBeNull()
+  expect(peekPlace(3, 5)).toBeNull()
 })
 
 test('a wrapping row counts the lines its items take', () => {
@@ -127,7 +127,7 @@ test('a wrapping row counts the lines its items take', () => {
   expect(wrappedLines([50, 4], 40)).toBe(2)
 })
 
-test('hovering a row near the top shows its card below the row, and a pane too short shows none', async ($, on) => {
+test('every hover card sits above its row, trimmed near the top, and none where there is no room', async ($, on) => {
   const issues = [1, 2, 3, 4, 5, 6, 7].map(number => ({
     number,
     title: `Issue ${number}`,
@@ -147,16 +147,12 @@ test('hovering a row near the top shows its card below the row, and a pane too s
     return found
   }
   // A whole card takes seven lines. Above the first row are four: the repo line, the trends, the Issues heading and the
-  // group's. So its card goes below, and the last row's above.
-  const roomy = await tops(0, 40)
-  expect(roomy).toHaveLength(7)
-  expect(roomy[0]).toBe(1)
-  expect(roomy[6]).toBe(-7)
-  // A pane of six rows: two lines below the first row, four above, so its card is the title and how far along, above.
-  expect((await tops(0, 6))[0]).toBe(-4)
-  // A window of four rows scrolled to the first row: no row in it has room for a card on either side, so none shows.
-  // The three rows past the window's end keep cards above them, out of sight.
-  expect(await tops(4, 4)).toEqual([-4, -5, -6])
+  // group's. The first rows' cards are trimmed to fit above them; from the fourth row down they are whole. None goes
+  // below its row, where the rows after it would paint over it.
+  const tops$ = await tops(0, 40)
+  expect(tops$).toEqual([-4, -5, -6, -7, -7, -7, -7])
+  // Scrolled so the first row is at the window's top: the rows near it have no room for a card, so none shows.
+  expect(await tops(4, 40)).toEqual([-4, -5, -6])
 })
 
 test('a narrow row drops its chips, then its bar, then its age, and the title keeps the rest', () => {
