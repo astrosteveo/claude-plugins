@@ -388,7 +388,9 @@ test("only an issue that had an item and wasn't at Done yet is looked at, and no
   })
   const before = board([issue(1, 'Ready', 'I1'), issue(2, 'Done', 'I2'), issue(3, 'Ready', null), issue(4, 'Ready', 'I4')], ['Ready', 'Done'])
   expect(leftForDone(before, board([issue(4, 'Ready', 'I4')], ['Ready', 'Done']))).toEqual([{ number: 1, item: 'I1' }])
-  expect(leftForDone(before, board([], ['Ready', 'Shipped']))).toEqual([])
+  expect(leftForDone(before, board([], ['Ready', 'Finished']))).toEqual([])
+  // Shipped is a common name for Done, so a project that says it moves closed issues there without setup.
+  expect(leftForDone(before, board([], ['Ready', 'Shipped'])).map(one => one.number)).toEqual([1, 2, 4])
   expect(leftForDone(null, board([], ['Ready', 'Done']))).toEqual([])
 
   // A pull request that left: the open issues it refers to, unless at Verification or Done, or without Verification.

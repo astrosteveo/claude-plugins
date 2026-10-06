@@ -1174,7 +1174,7 @@ test('/issues help names every filter, subcommand and tool the board has, and th
   for (const sub of ['refresh', 'new <what>', 'new epic <what>', 'setup', 'check', 'help']) expect(help).toContain(`- /issues ${sub}: `)
   // Without a project there is no Inbox; every other filter is there.
   expect(help).toContain('Filters: 1 Active, 2 Future, 3 Bugs, 4 Mine, 5 All, 7 Closed.')
-  expect(hint).toBe('[refresh | new | new epic | setup | check | help]')
+  expect(hint).toBe('[refresh | new | new epic | setup | statuses | check | help]')
   await clock.settle()
 })
 
@@ -1404,7 +1404,7 @@ test("a role setup left unset turns its part off, even where an option has the b
   // Said once, in /issues check and /issues help, and not as a problem in the band or the hint.
   const said = String((await $.command.run({ ...REFRESH, args: 'check' })).text)
   expect(said).toContain('\nOff:\n')
-  expect(said).toContain('- The Inbox filter, its triage, and new issues landing in the Inbox: Void Sector has no Status option as the Inbox; pick one in /issues setup.')
+  expect(said).toContain('- The Inbox filter, its triage, and new issues landing in the Inbox: Void Sector has no Status option as the Inbox; pick one in /issues statuses.')
   // Verification is off by its setting too, which says why first.
   expect(said).toContain('- Moving an issue a Refs merge touched to Verification: turned off in /config by Move to Verification on a Refs merge (moveToVerification).')
   expect(said).not.toContain('Moving closed issues to Done: Void Sector')
@@ -1425,7 +1425,7 @@ test('a board with no Done set archives one issue, but not by doneBefore', async
   gh.project = true
   await $.command.run(REFRESH)
   const by = await $.tool.call({ tool: 'mcp__issue-board__project_archive', doneBefore: '2026-10-01' })
-  expect(by.deny).toBe("Couldn't archive: Void Sector has no Done option set; pick one in /issues setup")
+  expect(by.deny).toBe("Couldn't archive: Void Sector has no Done option set; pick one in /issues statuses")
   const one = await $.tool.call({ tool: 'mcp__issue-board__project_archive', number: 290 })
   expect(String(one.result)).toMatch(/^Archiving #290 takes 1 item/)
 })

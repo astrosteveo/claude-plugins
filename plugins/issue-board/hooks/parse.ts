@@ -1449,6 +1449,7 @@ export const SUBCOMMANDS: { name: string; what: string }[] = [
   { name: 'new <what>', what: 'drafts an issue from the conversation, to check before it is filed' },
   { name: 'new epic <what>', what: 'drafts an epic and its sub-issues' },
   { name: 'setup', what: 'links or makes a project with Status and Priority, and says what it would change first' },
+  { name: 'statuses', what: "picks which of the project's Status options plays each part, saved here and not on GitHub" },
   { name: 'check', what: 'says what the board is missing, such as a gh permission, and how to fix it' },
   { name: 'help', what: 'this list' },
 ]
@@ -1531,7 +1532,7 @@ export const featuresOff = (switches: Switches, project: Project | null | undefi
   ...FEATURES.flatMap(({ feature, setting, role }) => {
     if (setting && !switches[setting[0]]) return [{ feature, why: `turned off in /config by ${setting[1]} (${setting[0]})` }]
     if (role && project?.status && !roleOf(project, role)) {
-      return [{ feature, why: `${project.title} has no Status option as the ${ROLE_NAMES[role]}; pick one in /issues setup` }]
+      return [{ feature, why: `${project.title} has no Status option as the ${ROLE_NAMES[role]}; pick one in /issues statuses` }]
     }
     return []
   }),

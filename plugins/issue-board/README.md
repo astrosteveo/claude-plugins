@@ -240,6 +240,37 @@ reason. Change any pick, then **✓ Accept**.
 Status and Priority come from the repo's GitHub Project, set from the card,
 by Start, or by Claude.
 
+### Which Status is which
+
+The board gives six Status options a part each: Inbox, Ready, Backlog (the
+one that folds), In progress, Verification and Done. Until a mapping is
+saved, it finds them by name, whatever their case:
+
+| Part | Names it goes by |
+| --- | --- |
+| Inbox | Inbox, Triage, New |
+| Ready | Ready, Todo, To do, Up next |
+| Backlog | Backlog, Icebox, Later |
+| In progress | In progress, Doing, Active, Started |
+| Verification | Verification, In review, Review, QA, Testing |
+| Done | Done, Shipped, Closed, Complete, Completed |
+
+The board's own name wins, then the list's order: a project with both
+`Ready` and `Todo` has `Ready` as Ready. One option never plays two parts.
+A part with no option is off, and `/issues check` says so.
+
+When a name other than the board's own plays a part, the band shows the guess
+once, such as `Status: Todo is Ready, Doing is In progress, Shipped is Done`.
+`/issues check` shows it too, until you answer. **Looks right** saves it, and
+**Change** opens `/issues statuses`.
+
+`/issues statuses` shows only the **Which Status is which** step, at the top
+of the pane, with the project's own options and **none** for each part.
+**Save** keeps the mapping in Claude Code and changes nothing on GitHub, so it
+doesn't need the board to be let write to the project. A saved mapping, from
+here or from setup, always wins over the names. Adding a missing option stays
+in `/issues setup`.
+
 - With its setting on, an issue that closes as **completed** moves to Done
   at the board's next read, wherever it closed. One closed as not planned or as a duplicate
   stays where it was, so Done means shipped.
@@ -304,6 +335,8 @@ won't undo, needs a second, confirmed call.
 - `/issues help` lists what the board does.
 - `/issues refresh` reads GitHub again and replies with the summary.
 - `/issues new <what>` and `/issues new epic <what>` draft issues.
+- `/issues statuses` picks which Status option plays each part; see
+  [Which Status is which](#which-status-is-which).
 - `/issues setup` prepares the repo and its project. It lists what it
   would change at the top of the pane, and nothing changes until
   **Apply**: it turns issues on, uses the linked project or creates one,

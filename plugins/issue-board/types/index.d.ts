@@ -62,8 +62,10 @@ export type Project = {
   update?: StatusUpdate | null
   // Whether its "Item closed" workflow is on, which marks every closed issue Done, whatever the reason.
   closesToDone?: boolean
-  // Which Status option has which role, as setup saved them; absent when setup didn't, and the board's names count.
+  // Which Status option has which role: as setup or /issues statuses saved them, or else found by name.
   roles?: Roles
+  // The roles were found by name, with no mapping saved: the band asks the person to confirm any common name it used.
+  guessed?: boolean
   // How many of the first Priority options count as Now; absent for the first two.
   nowCount?: number
 }
@@ -277,6 +279,10 @@ export type Adopted = { id: string; title: string; owner: string | null }
 // asked again.
 export type Adoption = { adopted: Adopted | null; declined: string[] }
 
+// `/issues statuses` while it shows in the pane: the project, its Status options, and the option picked for each role,
+// by id. A role left out has none.
+export type StatusPicks = { project: { id: string; title: string }; options: { id: string; name: string }[]; picks: Roles }
+
 // What setup saves for a repo: the project the board reads, its fields, and which Status option means what.
 export type SavedSetup = {
   project: { id: string; number: number; title: string }
@@ -354,6 +360,10 @@ declare module 'claude-code' {
       drafted: number | null
       // The project the board may write to, and the prompts the person turned down.
       adoption: Adoption
+      // `/issues statuses` while it shows in the pane; null otherwise.
+      statusPicks: StatusPicks | null
+      // The guessed Status mappings the person answered in the band, by guessKey, so each shows once.
+      guessSeen: string[]
     }
   }
 }
