@@ -37,7 +37,7 @@ test('a change becomes gh commands in order: the edit, then the comment, then th
 const EPIC = { number: 35, title: 'Make the issue board a full issue tracker', total: 12, completed: 6 }
 
 // GitHub for claude-plugins with its project: every gh command asked for, its stdin, and how often the issues were read.
-const github = (on: On, prs: unknown[] = []) => {
+const github = (on: On, prs: unknown[] = [], extra: Raw[] = []) => {
   // `blocked`: what #43 is blocked by on GitHub, as the links made leave it.
   // `closed`: how an issue closed on GitHub, which takes it off the board's next read.
   // `title` and `body`: #43's on GitHub, which a PATCH changes; `patched`, what each PATCH sent.
@@ -57,6 +57,9 @@ const github = (on: On, prs: unknown[] = []) => {
     posted: [] as string[],
     closes: [] as string[],
     noDuplicate: false,
+    // #35's sub-issues in GitHub's order, and each move made, as `<sub-issue id> <before_id|after_id>=<id>`.
+    order: [43] as number[],
+    moves: [] as string[],
   }
   on('process.run', async (_$, e) => {
     const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
@@ -80,6 +83,7 @@ const github = (on: On, prs: unknown[] = []) => {
               priority: 'P1',
               blockedBy: state.blocked.map(number => ({ number, state: 'OPEN' })),
             },
+              ...extra,
             ] as Raw[]
           ).filter(raw => !state.closed[raw.number]),
           argv,
@@ -91,6 +95,18 @@ const github = (on: On, prs: unknown[] = []) => {
     state.calls.push({ argv: argv.slice(1), ...(e.init?.stdin !== undefined ? { stdin: e.init.stdin } : {}) })
     if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/claude-plugins', hasIssuesEnabled: true }))
     if (argv[1] === 'label' && argv[2] === 'list') return answer(JSON.stringify([{ name: 'bug' }, { name: 'enhancement' }, { name: 'area:issue-board' }]))
+    if (argv[1] === 'api' && argv[2]?.endsWith('/issues/35/sub_issues?per_page=100')) return answer(JSON.stringify(state.order.map(number => ({ number }))))
+    if (argv[1] === 'api' && argv[3] === 'PATCH' && argv[4]?.endsWith('/sub_issues/priority')) {
+      const id = argv[6]?.split('=')[1] ?? ''
+      const [side, other] = argv[8]?.split('=') ?? []
+      state.moves.push(`${id} ${side}=${other}`)
+      const number = Number(id.slice(2))
+      const beside = Number(other?.slice(2))
+      const rest = state.order.filter(one => one !== number)
+      const at = rest.indexOf(beside) + (side === 'after_id' ? 1 : 0)
+      state.order = [...rest.slice(0, at), number, ...rest.slice(at)]
+      return answer('{}')
+    }
     if (argv[1] === 'api' && argv[3] === 'POST' && argv[4]?.endsWith('/comments')) {
       state.posted.push(`${/issues\/(\d+)\//.exec(argv[4])?.[1]} ${argv[6]?.slice(5)}`)
       return answer('{}')
@@ -126,7 +142,7 @@ const github = (on: On, prs: unknown[] = []) => {
     // An issue's REST id, by number: #35 and #43 exist, nothing else does.
     const one = /^repos\/[^/]+\/[^/]+\/issues\/(\d+)$/.exec(argv[2] ?? '')
     if (argv[1] === 'api' && one) {
-      if (!['35', '43'].includes(one[1] ?? '')) return { value: { exitCode: 1, stdout: '', stderr: 'gh: Not Found (HTTP 404)', isStdoutTruncated: false, isStderrTruncated: false } }
+      if (!['35', '43', '44', '45'].includes(one[1] ?? '')) return { value: { exitCode: 1, stdout: '', stderr: 'gh: Not Found (HTTP 404)', isStdoutTruncated: false, isStderrTruncated: false } }
       return answer(`90${one[1]}\n`)
     }
     if (argv[1] === 'api' && argv[2] === '-X' && argv[4]?.includes('/dependencies/blocked_by')) {
@@ -432,6 +448,29 @@ test("the card closes an issue as a duplicate, as not planned where GitHub refus
   expect(gh.posted).toEqual(['43 Duplicate of #35'])
   expect(gh.closes).toEqual(['43 not_planned'])
   await ui.unmount()
+})
+
+test("an epic's sub-issues follow GitHub's order where the board has no reason to change it, and move before or after a sibling", async ($, on) => {
+  mock.store(on)
+  const sub = (number: number) => ({ number, title: `Part ${number}`, labels: [], body: '', updatedAt: '2026-10-05T00:00:00Z', parent: EPIC, status: 'Ready', priority: 'P1' })
+  const gh = github(on, [], [sub(44), sub(45)])
+  gh.order = [45, 43, 44]
+  on('ui.toast', async () => ({ value: undefined }))
+  await $.command.run({ ...RUN, args: 'refresh' })
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'filter-all' })
+  await ui.press({ key: 'group-epic' })
+  const rows = async () => (await ui.findAll({ type: 'Button' })).map(one => one.key ?? '').filter(key => /^issue-4[345]$/.test(key))
+  expect(await rows()).toEqual(['issue-45', 'issue-43', 'issue-44'])
+
+  const moved = await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 44, moveBefore: 45 })
+  expect(String(moved.result)).toBe('#44 moved before #45.')
+  expect(gh.moves).toEqual(['9044 before_id=9045'])
+  expect(await rows()).toEqual(['issue-44', 'issue-45', 'issue-43'])
+  await ui.unmount()
+
+  // A sibling outside the epic can't be the place.
+  expect((await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, moveAfter: 35 })).deny).toBe("Couldn't change #43: #35 isn't a sub-issue of #35, as #43 is")
 })
 
 test("a label the repo hasn't got is made first, an area one in the areas' color, and the answer says so", async ($, on) => {

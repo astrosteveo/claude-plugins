@@ -30,6 +30,8 @@ export type Issue = {
   comments?: number
   // Its issue type, such as Bug or Task, where the repo's organization has types.
   type?: string | null
+  // An epic's sub-issues in GitHub's order, by number; absent on one that isn't an epic, or on an older board.
+  subOrder?: number[]
 }
 
 // A single-select field of a project, such as Status, with its options in the project's order.

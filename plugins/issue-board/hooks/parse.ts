@@ -311,14 +311,21 @@ export const isBlocked = (issue: Issue): boolean => (issue.blockedBy ?? []).leng
 // The most pressing first: by priority when there is a project, then bugs, issues under way and the newest. With
 // `readyFirst`, as within an epic, the ones nothing blocks come before the ones that wait, and the oldest before the
 // newest: an epic's sub-issues are mostly written in the order they're meant to be done.
-export const sortIssues = (issues: Issue[], project: Project | null = null, readyFirst = false): Issue[] =>
-  [...issues].sort(
+export const sortIssues = (issues: Issue[], project: Project | null = null, readyFirst = false, order?: number[]): Issue[] => {
+  // GitHub's order of an epic's sub-issues settles what the board has no reason to: one it doesn't list goes last.
+  const at = (issue: Issue) => {
+    const index = order?.indexOf(issue.number) ?? -1
+    return index < 0 ? Number.MAX_SAFE_INTEGER : index
+  }
+  return [...issues].sort(
     (a, b) =>
       (readyFirst ? Number(isBlocked(a)) - Number(isBlocked(b)) : 0) ||
       priorityRank(project, a.priority) - priorityRank(project, b.priority) ||
       rank(a) - rank(b) ||
+      (order ? at(a) - at(b) : 0) ||
       (readyFirst ? a.number - b.number : b.number - a.number),
   )
+}
 
 // The sub-issue an epic's Next starts: the first open one nothing blocks, in the order the epic lists them.
 export const nextOf = (issues: Issue[], epic: number, project: Project | null = null): Issue | undefined =>
@@ -326,6 +333,7 @@ export const nextOf = (issues: Issue[], epic: number, project: Project | null = 
     issues.filter(issue => issue.parent?.number === epic),
     project,
     true,
+    issues.find(issue => issue.number === epic)?.subOrder,
   ).find(issue => !isBlocked(issue))
 
 // A heading of the issue list and the issues under it. `folded`: drawn shut until the person opens it, as Backlog is.
@@ -358,6 +366,7 @@ export const groupsOf = (issues: Issue[], by: GroupBy, project: Project | null =
           issues.filter(issue => issue.parent?.number === parent.number),
           project,
           true,
+          issues.find(issue => issue.number === parent.number)?.subOrder,
         ),
         folded: false,
         epic: { number: parent.number, total: parent.total, completed: parent.completed },
@@ -982,6 +991,9 @@ export type IssueChanges = {
   duplicateOf?: number
   // Its issue type, by name; null takes it off.
   type?: string | null
+  // A place among its epic's sub-issues: just before or just after a sibling, by number.
+  moveBefore?: number
+  moveAfter?: number
   // The project's other fields to set, by name; null clears one.
   fields?: Record<string, string | number | null>
 }
@@ -1029,6 +1041,7 @@ export const changesText = (number: number, changes: IssueChanges): string => {
     changes.close ? `closed as ${changes.close}` : '',
     changes.duplicateOf ? `closed as a duplicate of #${changes.duplicateOf}` : '',
     changes.type === null ? 'its type taken off' : changes.type ? `typed ${changes.type}` : '',
+    changes.moveBefore ? `moved before #${changes.moveBefore}` : changes.moveAfter ? `moved after #${changes.moveAfter}` : '',
     ...Object.entries(changes.fields ?? {}).map(([name, value]) => (value === null ? `${name} cleared` : `${name} set to ${value}`)),
     changes.reopen && !changes.close ? 'reopened' : '',
   ].filter(Boolean)
@@ -1132,6 +1145,14 @@ export const fieldValueOf = (field: ProjectField, given: unknown): { value: Reco
   }
 }
 
+// An epic's order with one sub-issue moved just before or just after a sibling; one the order didn't list is added.
+export const reordered = (order: number[], number: number, beside: number, before: boolean): number[] => {
+  const rest = order.filter(one => one !== number)
+  const at = rest.indexOf(beside)
+  if (at < 0) return [...rest, number]
+  return [...rest.slice(0, before ? at : at + 1), number, ...rest.slice(before ? at : at + 1)]
+}
+
 // The labels asked for that the repo hasn't got, by name, ignoring case, each once.
 export const missingLabels = (wanted: string[], existing: { name: string }[]): string[] => {
   const have = new Set(existing.map(one => one.name.toLowerCase()))
@@ -1217,6 +1238,8 @@ export const statusOnly = (changes: IssueChanges): boolean =>
   !changes.rewordBoxes?.length &&
   !changes.duplicateOf &&
   changes.type === undefined &&
+  !changes.moveBefore &&
+  !changes.moveAfter &&
   Object.keys(changes.fields ?? {}).length === 0
 
 // An issue's or pull request's page on GitHub: the URL gh gave, or one made from the repo for a board saved without it.
