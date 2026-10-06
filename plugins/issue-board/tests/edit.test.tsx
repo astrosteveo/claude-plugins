@@ -62,10 +62,13 @@ const github = (on: On, prs: unknown[] = [], extra: Raw[] = []) => {
     moves: [] as string[],
     // When set, GitHub refuses to set a project field.
     refuseFields: false,
+    // Every command run, answered or not, as one line each.
+    ran: [] as string[],
   }
   on('process.run', async (_$, e) => {
     const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
     const argv = [...e.argv]
+    state.ran.push(argv.join(' '))
     if (argv[0] === 'git') return answer('main\n')
     if (isIssuesQuery(argv)) {
       state.reads += 1
@@ -277,7 +280,7 @@ test("issue_update links and unlinks blocked-by issues over REST, the row shows 
   expect((await $.tool.check({ tool: 'mcp__issue-board__issue_update', input: { number: 43, status: 'Done', addBlockedBy: [35] } })).decision).toBe('ask')
 })
 
-test('an issue that closes as completed moves to Done in the project; one closed as not planned stays', async ($, on) => {
+test('an issue that closes as completed moves to Done in the project; one closed as not planned stays', { options: { moveToDone: true } }, async ($, on) => {
   mock.store(on)
   const gh = github(on)
   const toasts: string[] = []
@@ -298,7 +301,7 @@ test('an issue that closes as completed moves to Done in the project; one closed
   expect(toasts.filter(text => text.startsWith('Moved'))).toEqual(['Moved #43 to Done: it closed as completed.'])
 })
 
-test("a move the board makes on its own that GitHub refuses says so once, with where to look", async ($, on) => {
+test("a move the board makes on its own that GitHub refuses says so once, with where to look", { options: { moveToDone: true } }, async ($, on) => {
   mock.store(on)
   const gh = github(on)
   const toasts: string[] = []
@@ -314,6 +317,51 @@ test("a move the board makes on its own that GitHub refuses says so once, with w
   expect(toasts.filter(text => text.startsWith("Couldn't move"))).toEqual([
     "Couldn't move 2 issues (#35, #43) to Done: gh: Resource not accessible by integration. /issues check may say why.",
   ])
+})
+
+test('by default the board moves nothing on its own, and asks GitHub nothing for it', async ($, on) => {
+  mock.store(on)
+  const gh = github(on, [
+    {
+      number: 50,
+      title: 'Part of the work',
+      url: 'https://github.com/astrosteveo/claude-plugins/pull/50',
+      headRefName: 'feat/50',
+      isDraft: false,
+      body: 'Refs #35',
+      statusCheckRollup: [],
+      reviewDecision: null,
+      additions: 1,
+      deletions: 1,
+      author: { login: 'astrosteveo' },
+      updatedAt: '2026-10-05T00:00:00Z',
+    },
+  ])
+  const toasts: string[] = []
+  on('ui.toast', async (_$, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  await $.command.run({ ...RUN, args: 'refresh' })
+  const before = gh.ran.length
+  // #43 closes as completed and pull request #50, which refers to #35, merges and leaves.
+  gh.closed = { 43: 'completed' }
+  gh.merged = { 50: true }
+  await $.command.run({ ...RUN, args: 'refresh' })
+  await $.command.run({ ...RUN, args: 'refresh' })
+  const asked = gh.ran.slice(before)
+  expect(asked.filter(line => line.includes('state_reason') || line.includes('/pulls/') || line.includes('updateProjectV2ItemFieldValue'))).toEqual([])
+  expect(toasts.filter(text => text.startsWith('Moved'))).toEqual([])
+})
+
+test("with Start's own changes turned off, Claude starting on an issue leaves its assignees and Status alone", { options: { claimOnStart: false } }, async ($, on) => {
+  mock.store(on)
+  const gh = github(on)
+  on('ui.toast', async () => ({ value: undefined }))
+  await $.command.run({ ...RUN, args: 'refresh' })
+  const started = await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, start: true })
+  expect(String(started.result)).toBe('Started #43: it is the issue this session is on.')
+  expect(writes(gh.calls)).toEqual([])
 })
 
 test('many moves at once read as one line', () => {
@@ -413,7 +461,7 @@ test("the card's editor renames an issue, adds a box, and hands a body edit to C
   await ui.unmount()
 })
 
-test('an issue a merged pull request refers to with Refs moves to Verification, and the next prompt says so', async ($, on) => {
+test('an issue a merged pull request refers to with Refs moves to Verification, and the next prompt says so', { options: { moveToVerification: true } }, async ($, on) => {
   mock.store(on)
   const pr = (number: number, body: string) => ({
     number,

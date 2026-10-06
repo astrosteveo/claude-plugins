@@ -150,6 +150,16 @@ import {
 } from './parse'
 
 const PANE = 'issue-board'
+
+// The person's settings, from the manifest's userConfig. What changes the shared project by itself is off for a new
+// install; Start's own changes are on, since the person pressed Start.
+type Settings = { moveToDone: boolean; moveToVerification: boolean; claimOnStart: boolean }
+const settingsOf = (options: Readonly<Record<string, unknown>> | undefined): Settings => ({
+  moveToDone: options?.moveToDone === true,
+  moveToVerification: options?.moveToVerification === true,
+  claimOnStart: options?.claimOnStart !== false,
+})
+let settings: Settings = settingsOf(undefined)
 const REFRESH_MS = 5 * 60 * 1000
 // While a pull request's CI runs, the board looks again this often, so its pass or failure shows soon after.
 const WATCH_MS = 30 * 1000
@@ -795,7 +805,7 @@ let moved: string[] = []
 const moveToVerification = async ($: EngineInterface, before: Board | null, next: Board): Promise<void> => {
   const project = next.project
   const verify = optionOf(project?.status, 'Verification')
-  if (!project?.status || !verify) return
+  if (!settings.moveToVerification || !project?.status || !verify) return
   const merged = new Map<number, boolean>()
   const verified: number[] = []
   const failed: { number: number; message: string }[] = []
@@ -823,7 +833,8 @@ const moveToVerification = async ($: EngineInterface, before: Board | null, next
 const moveToDone = async ($: EngineInterface, before: Board | null, next: Board): Promise<void> => {
   const project = next.project
   const done = optionOf(project?.status, 'Done')
-  if (!project?.status || !done) return
+  // Turned off, the board neither moves closed issues nor asks GitHub how they closed.
+  if (!settings.moveToDone || !project?.status || !done) return
   const done$: number[] = []
   const failed: { number: number; message: string }[] = []
   for (const left of leftForDone(before, next)) {
@@ -1095,6 +1106,8 @@ const setField = async ($: EngineInterface, issue: Issue, field: 'status' | 'pri
 // Start, on GitHub too: the issue moves to In progress in the project and is assigned to the person, so the project
 // says who is on what. Then the issue is read again, so the band doesn't call these changes news.
 const claim = async ($: EngineInterface, issue: Issue): Promise<void> => {
+  // Turned off, Start leaves the issue's assignees and Status as they are.
+  if (!settings.claimOnStart) return
   const failures: string[] = []
   const started = startedOf((await read($, board))?.project)
   if (started && issue.status !== started.name) await setField($, issue, 'status', started.name).catch((cause: unknown) => void failures.push(messageOf(cause)))
@@ -1587,7 +1600,7 @@ const startHere = async ($: EngineInterface, number: number): Promise<string> =>
   await track($, issue, true)
   await claim($, issue)
   $.ui.toast(`Working on #${issue.number} now`)
-  return `Started #${issue.number}${pr ? `, the issue pull request #${number} is for` : ''}: it is the issue this session is on, In progress and assigned.`
+  return `Started #${issue.number}${pr ? `, the issue pull request #${number} is for` : ''}: it is the issue this session is on${settings.claimOnStart ? ', In progress and assigned' : ''}.`
 }
 
 // A GraphQL call with its variables as JSON, which `-f` can't carry for a list such as a field's options.
@@ -2203,7 +2216,8 @@ const loadPalette = async ($: EngineInterface): Promise<void> => {
   }
 }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  settings = settingsOf(options)
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'issues',

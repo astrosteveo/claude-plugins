@@ -2,13 +2,39 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "issue-board",
   "displayName": "Issue Board",
-  "version": "0.45.3",
+  "version": "0.46.0",
   "description": "The repository's open GitHub issues and pull requests in a pane and under the prompt, with acceptance progress and CI, and a button that hands an issue to Claude.",
   "author": {
     "name": "astrosteveo"
   },
   "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/issue-board",
   "repository": "https://github.com/astrosteveo/claude-plugins",
-  "keywords": ["mod", "github", "issues", "pull-requests", "pane"],
-  "types": "./types/index.d.ts"
+  "keywords": [
+    "mod",
+    "github",
+    "issues",
+    "pull-requests",
+    "pane"
+  ],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "moveToDone": {
+      "type": "boolean",
+      "title": "Move closed issues to Done",
+      "description": "When an issue closes as completed, move it to Done in the project. It changes the shared project from your session.",
+      "default": false
+    },
+    "moveToVerification": {
+      "type": "boolean",
+      "title": "Move to Verification on a Refs merge",
+      "description": "When a pull request that refers to an issue with Refs merges, move the issue to Verification in the project. It changes the shared project from your session.",
+      "default": false
+    },
+    "claimOnStart": {
+      "type": "boolean",
+      "title": "Start assigns and moves the issue",
+      "description": "Start, and Claude starting on an issue, assign it to you and move it to In progress.",
+      "default": true
+    }
+  }
 }

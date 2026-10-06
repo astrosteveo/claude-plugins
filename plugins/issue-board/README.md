@@ -169,11 +169,11 @@ reason. Change any pick, then **✓ Accept**.
 Status and Priority come from the repo's GitHub Project, set from the card,
 by Start, or by Claude.
 
-- An issue that closes as **completed** moves to Done at the board's next
-  read, wherever it closed. One closed as not planned or as a duplicate
+- With its setting on, an issue that closes as **completed** moves to Done
+  at the board's next read, wherever it closed. One closed as not planned or as a duplicate
   stays where it was, so Done means shipped.
-- An issue a merged pull request names with `Refs #N` moves to
-  Verification: merging didn't finish it. Claude's next prompt says so.
+- With its setting on, an issue a merged pull request names with `Refs #N`
+  moves to Verification: merging didn't finish it. Claude's next prompt says so.
 - Each time the board moves issues on its own, a toast says which and why,
   such as `Moved #43 to Done: it closed as completed.` A move GitHub refuses
   says so once.
@@ -237,6 +237,24 @@ won't undo, needs a second, confirmed call.
   Auto-add workflows on, **Item closed** off, and **Item added to project**
   set to Inbox rather than GitHub's Todo, so new issues land in the Inbox.
 - `/issues check` checks what the board needs; see [Permissions](#permissions).
+
+## Settings
+
+Change these in Claude Code's `/config`, under the issue board:
+
+| Setting | Default | What it does |
+|---|---|---|
+| Move closed issues to Done | off | An issue closed as completed moves to Done in the project. |
+| Move to Verification on a Refs merge | off | An issue a merged pull request names with `Refs #N` moves to Verification. |
+| Start assigns and moves the issue | on | Start, and Claude starting on an issue, assign it to you and move it to In progress. |
+
+The first two change the shared project from your session, so they start off.
+A repo can turn them on for everyone who works in it, in its
+`.claude/settings.json`:
+
+```json
+{ "pluginConfigs": { "issue-board@astrosteveo-plugins": { "options": { "moveToDone": true, "moveToVerification": true } } } }
+```
 
 ## How it reads GitHub
 
