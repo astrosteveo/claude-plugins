@@ -1,5 +1,5 @@
 import type { ThemeKey } from 'claude-code'
-import type { Alert, Board, BoxTask, Check, Ci, Comment, Draft, Field, Filter, Found, GroupBy, Issue, Known, Label, Project, PullRequest, RunWatch, Suggestion, Worker, Working } from '../types'
+import type { Alert, Board, BoxTask, Check, Ci, Comment, Draft, Field, Filter, Found, GroupBy, Issue, Known, Label, Milestone, Project, PullRequest, RunWatch, Suggestion, Worker, Working } from '../types'
 import { isLater, isNow, priorityRank } from './project'
 
 type RawLabel = { name: string; color?: string }
@@ -1028,6 +1028,24 @@ export const leftForVerification = (before: Board | null, next: Board): { pr: nu
         return issue?.item && !['verification', 'done'].includes(issue.status?.toLowerCase() ?? '') ? [{ pr: pr.number, number, item: issue.item }] : []
       }),
     )
+}
+
+// Milestones as GitHub's REST answers them.
+export const milestonesOf = (items: unknown[]): Milestone[] =>
+  (items as { number: number; title: string; due_on?: string | null; description?: string | null; open_issues?: number; closed_issues?: number }[]).map(raw => ({
+    number: raw.number,
+    title: raw.title,
+    due: raw.due_on ? raw.due_on.slice(0, 10) : null,
+    description: raw.description ?? '',
+    open: raw.open_issues ?? 0,
+    closed: raw.closed_issues ?? 0,
+  }))
+
+// One milestone in a line: how many of its issues are closed, and when it is due, or how long since it was.
+export const milestoneLine = (milestone: Milestone, today: string): string => {
+  const total = milestone.open + milestone.closed
+  const due = milestone.due ? (milestone.due < today && milestone.open > 0 ? `was due ${milestone.due}` : `due ${milestone.due}`) : 'no due date'
+  return `${milestone.title} · ${milestone.closed}/${total} closed · ${due}`
 }
 
 // The labels asked for that the repo hasn't got, by name, ignoring case, each once.

@@ -19,6 +19,10 @@ CLI, signed in, in the folder the session started in.
     many task-list boxes are ticked, and sparklines of the issues closed and
     pull requests merged each week over the last 12 weeks, such as
     `closed ▁▂▅▃▇█▁▂▅▃▇█ 41`.
+  - The open milestones, under a **Milestones** heading: how many of each
+    one's issues are closed, as a bar, and when it is due, in red once it
+    is past due with issues still open. The section shows only when the
+    repo has open milestones.
   - Open pull requests, one row each, under a **Pull requests** heading. The
     section shows only when pull requests are open. Each row has a CI
     badge (`✓ PASS`, `✗ FAIL`, `◷ CI`), the title, the issue it is for (`→ #38`), a dot for the review
@@ -316,7 +320,7 @@ stays quiet there.
 
 ## What Claude gets
 
-- Four tools:
+- Five tools:
   - `issues` lists the board's issues and pull requests, one line each, or
     one issue in full with its boxes numbered. It reads the board's copy, so
     it doesn't run `gh`, and it needs no permission prompt. A label,
@@ -347,6 +351,10 @@ stays quiet there.
     blocked by others. It all shows on the board at once. Claude Code asks before it runs. If a step
     after filing fails, such as putting it under an epic, Claude is told
     which, with the new issue's number.
+  - `milestone` makes a milestone, with a due date and description, or
+    changes one by its title: renames it, moves its due date, closes or
+    reopens it. Claude Code asks before it runs. `issues` with `milestones`
+    lists the open ones with their progress.
   - If your organization requires Claude Code to ask before `issues` or
     `issue_update` runs, the board doesn't skip that prompt.
   - When you ask Claude in the conversation to work on an issue, Claude

@@ -78,6 +78,8 @@ export type Board = {
   fetchedAt: number
   // When the velocity was read: it changes a little a day, so it is read again only after an hour.
   velocityAt?: number
+  // The repo's open milestones, read with each full read; absent on an older board.
+  milestones?: Milestone[]
   // The repo's project; null without one, or when gh may not read projects. The board then works from labels.
   project?: Project | null
 }
@@ -142,6 +144,9 @@ export type Alert =
 // is the project's issues with Status Inbox or none, to triage; without a project it holds nothing. `closed` lists the
 // issues closed lately, which the board's copy doesn't hold: they are read when the filter is chosen.
 export type Filter = 'active' | 'future' | 'bugs' | 'mine' | 'all' | 'inbox' | 'closed'
+
+// A milestone: release scope. `due` is a date, `YYYY-MM-DD`, or null; `open` and `closed` count its issues.
+export type Milestone = { number: number; title: string; due: string | null; description: string; open: number; closed: number }
 
 // An issue as GitHub's search or REST answers it, open or closed, for what the board's copy of open issues can't show.
 export type Found = { number: number; title: string; url: string; state: 'open' | 'closed'; reason: string | null; closedAt: string | null; labels: string[] }
