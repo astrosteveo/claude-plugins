@@ -10,6 +10,17 @@ maintained by astrosteveo.
 | [issue-board](plugins/issue-board) | Open GitHub issues and pull requests in a pane and under the prompt, with acceptance progress and CI, and a button that hands an issue to Claude. |
 | [ask](plugins/ask) | Ask Claude a side question or for prompt ideas; it answers in a pane, in the background, and nothing lands in the chat. |
 
+## Requirements
+
+The plugins here are mods: plugins of function hooks that draw panes and hook
+Claude Code's events. They need Claude Code v2.1.287 or later. Mods are an
+early access part of Claude Code: their API may change between releases, and
+a release may break a mod until it is updated.
+
+The issue board changes some things by itself and adds to Claude's prompts.
+Its README lists each, with its setting and default:
+[What the board changes, and how to turn it off](plugins/issue-board/README.md#what-the-board-changes-and-how-to-turn-it-off).
+
 ## Install
 
 Inside Claude Code, add the marketplace from GitHub and install a plugin:
@@ -158,3 +169,7 @@ pushes to `main` and on pull requests. Run them locally before committing.
 - [Plugins reference](https://code.claude.com/docs/en/plugins-reference)
 - [Skills](https://code.claude.com/docs/en/skills)
 - [Subagents](https://code.claude.com/docs/en/sub-agents)
+
+## License
+
+[MIT](LICENSE).

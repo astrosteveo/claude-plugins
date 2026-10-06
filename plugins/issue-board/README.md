@@ -6,7 +6,9 @@ the prompt for what needs you, and tools that let Claude run the project with
 you.
 
 It needs Claude Code v2.1.287 or later, and the `gh` CLI signed in, in the
-folder the session started in.
+folder the session started in. Mods are an early access part of Claude Code:
+their API may change between releases, and a release may break the board
+until it is updated.
 
 ## Quick start
 
@@ -247,21 +249,42 @@ won't undo, needs a second, confirmed call.
   set to Inbox rather than GitHub's Todo, so new issues land in the Inbox.
 - `/issues check` checks what the board needs; see [Permissions](#permissions).
 
-## Settings
+## What the board changes, and how to turn it off
 
-Change these in Claude Code's `/config`, under the issue board:
+Change these in Claude Code's `/config`, under the issue board. The setting's
+key is what `.claude/settings.json` takes.
 
-| Setting | Default | What it does |
+On GitHub, by itself:
+
+| What | Setting | Default |
 |---|---|---|
-| Move closed issues to Done | off | An issue closed as completed moves to Done in the project. |
-| Move to Verification on a Refs merge | off | An issue a merged pull request names with `Refs #N` moves to Verification. |
-| Start assigns and moves the issue | on | Start, and Claude starting on an issue, assign it to you and move it to In progress. |
-| Working note in the system prompt | on | While Claude is on an issue you started, the system prompt names it. |
-| Working note's pull request rule | none | `closes-when-ticked`: `Closes #N` only when every box is ticked, `Refs #N` otherwise. `always-closes`: always `Closes #N`. `none`: the note says nothing about it. Start in background follows it too. |
-| Copies of issues a prompt names | on | A prompt that names `#123` carries the board's copy of it. |
-| Suggest the next step | off | After Claude's turn, the prompt box suggests the board's next step in place of Claude Code's own. |
-| Follow the branch | off | Checking out a branch named for an issue makes it the one Claude is on. |
-| Priorities that count as Now | 2 | How many of the project's first Priority options the Now filter shows, and triage sends to Ready. The rest are Later. |
+| An issue closed as completed moves to Done in the project. | Move closed issues to Done (`moveToDone`) | off |
+| An issue a merged pull request names with `Refs #N` moves to Verification. | Move to Verification on a Refs merge (`moveToVerification`) | off |
+| Start, and Claude starting on an issue, assign it to you and move it to In progress. | Start assigns and moves the issue (`claimOnStart`) | on |
+
+In Claude's prompts and the prompt box:
+
+| What | Setting | Default |
+|---|---|---|
+| While Claude is on an issue you started, a note in the system prompt names it and says how to tick its boxes. | Working note in the system prompt (`workingNote`) | on |
+| The note tells Claude how to name the issue in a pull request: `closes-when-ticked` (`Closes #N` only when every box is ticked, `Refs #N` otherwise), `always-closes`, or `none`. Start in background follows it too. | Working note's pull request rule (`prRule`) | `none` |
+| A prompt that names `#123` carries the board's copy of it, unseen. | Copies of issues a prompt names (`issueCopies`) | on |
+| After Claude's turn, the prompt box suggests the board's next step in place of Claude Code's own. | Suggest the next step (`suggestNextStep`) | off |
+| Checking out a branch named for an issue makes it the one Claude is on. | Follow the branch (`followBranch`) | off |
+
+Two more have no setting:
+
+- The next prompt notes what changed on GitHub to the issue Claude is on.
+  Press `✕` on its row to stop tracking it.
+- Claude Code doesn't ask before the board's reads, moving the Status of the
+  issue you started, or listing what an archive would take. Every other
+  change the board's tools make asks, as any tool does. See
+  [What Claude can do](#what-claude-can-do).
+
+One more setting changes no behavior, only the filters: **Priorities that
+count as Now** (`nowCount`, default 2) is how many of the project's first
+Priority options the Now filter shows, and triage sends to Ready. The rest
+are Later.
 
 The two moves change the shared project from your session, so they start off.
 The PR rule is a repo's own convention, so it starts at none. A repo can set
