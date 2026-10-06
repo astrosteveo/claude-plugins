@@ -1,5 +1,5 @@
 import type { ModelTextBlock, ThemeKey } from 'claude-code'
-import type { Alert, Board, BoxTask, Check, Ci, Comment, Draft, Field, Filter, Found, GroupBy, Issue, Known, Label, Milestone, ProjectField, StatusUpdate, Project, PullRequest, Role, RunWatch, Suggestion, Worker, Working } from '../types'
+import type { Alert, Board, BoxTask, Check, Ci, Comment, Draft, EpicNote, Field, Filter, Found, GroupBy, Issue, Known, Label, Milestone, ProjectField, StatusUpdate, Project, PullRequest, Role, RunWatch, Suggestion, Worker, Working } from '../types'
 import { ROLE_NAMES, isLater, isNow, isRole, nowCountOf, priorityRank, roleOf } from './project'
 
 type RawLabel = { name: string; color?: string }
@@ -1289,6 +1289,25 @@ export const epicChanges = (before: Board | null, next: Board): EpicChanges => {
     if (then && now && now.completed < then.completed) changes.reopened.push({ number: issue.number, epic })
   }
   return changes
+}
+
+// How long an epic line may stay in the band, whatever else holds: a backstop for a line nothing else clears.
+export const EPIC_NOTE_MS = 24 * 60 * 60 * 1000
+
+// The epic lines that still apply on this read of the board, which holds only open issues. A Verification line goes
+// once its epic closes or every box is ticked. A reopened line goes once the sub-issue closes or leaves the epic, or the
+// epic closes. An orphaned line goes once the sub-issue closes or leaves the epic, or the epic reopens. Any line goes
+// after a day.
+export const liveEpicNotes = (notes: EpicNote[], board: Board, now: number): EpicNote[] => {
+  const open = new Map(board.issues.map(one => [one.number, one]))
+  return notes.filter(note => {
+    if (now - note.at >= EPIC_NOTE_MS) return false
+    const epic = open.get(note.epic)
+    if (note.kind === 'verify') return !!epic && epic.checks.some(check => !check.done)
+    const sub = note.number === undefined ? undefined : open.get(note.number)
+    if (!sub || sub.parent?.number !== note.epic) return false
+    return note.kind === 'reopened' ? !!epic : !epic
+  })
 }
 
 // Where GitHub's REST API keeps a project, from the project's page: `users/<login>/projectsV2/<n>` or the `orgs/` one.

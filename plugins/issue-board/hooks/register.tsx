@@ -160,6 +160,7 @@ import {
   unmovedText,
   epicChanges,
   epicToStart,
+  liveEpicNotes,
   subIssuesBoxOf,
   withSubIssuesBox,
 } from './parse'
@@ -869,6 +870,9 @@ const land = async ($: EngineInterface, before: Board | null, next: Board, seen:
   if ((await read($, filter)) === 'inbox' && !(await read($, triage)).failed) void suggestInbox($)
   void moveToDone($, before, next)
   void moveToVerification($, before, next)
+  // Epic lines that no longer hold on this read go before advanceEpics raises new ones.
+  const clock = await nowOf($)
+  await update($, epicNotes, list => liveEpicNotes(list, next, clock))
   void advanceEpics($, before, next)
 }
 
@@ -938,9 +942,10 @@ const advanceEpics = async ($: EngineInterface, before: Board | null, next: Boar
   if (!settings.advanceEpics) return
   const { finished, reopened, orphaned } = epicChanges(before, next)
   const titleOf = (number: number) => next.issues.find(one => one.number === number)?.title ?? next.issues.find(one => one.parent?.number === number)?.parent?.title ?? ''
+  const at = await nowOf($)
   const notes: EpicNote[] = [
-    ...reopened.map(one => ({ key: `epic-reopened-${one.epic}-${one.number}`, epic: one.epic, title: titleOf(one.epic), text: `#${one.number} reopened under it` })),
-    ...orphaned.map(one => ({ key: `epic-orphaned-${one.epic}-${one.number}`, epic: one.epic, title: titleOf(one.epic), text: `#${one.number} is open under it, and it is closed` })),
+    ...reopened.map(one => ({ key: `epic-reopened-${one.epic}-${one.number}`, kind: 'reopened' as const, epic: one.epic, number: one.number, title: titleOf(one.epic), text: `#${one.number} reopened under it`, at })),
+    ...orphaned.map(one => ({ key: `epic-orphaned-${one.epic}-${one.number}`, kind: 'orphaned' as const, epic: one.epic, number: one.number, title: titleOf(one.epic), text: `#${one.number} is open under it, and it is closed`, at })),
   ]
   const project = next.project
   for (const number of finished) {
@@ -967,7 +972,7 @@ const advanceEpics = async ($: EngineInterface, before: Board | null, next: Boar
       const further = !!epic.status && [verify?.name, roleOf(project, 'done')?.name].includes(epic.status)
       if (project?.status && verify && !further) await setField($, epic, 'status', verify.name)
       moved.push(`#${number} ${verify && !further ? `moved to ${verify.name}` : 'stays open'}: every sub-issue is closed, but ${left}.`)
-      notes.push({ key: `epic-verify-${number}`, epic: number, title: epic.title, text: `every sub-issue is closed, but ${left}` })
+      notes.push({ key: `epic-verify-${number}`, kind: 'verify', epic: number, title: epic.title, text: `every sub-issue is closed, but ${left}`, at })
     } catch (cause) {
       $.ui.toast(`Couldn't move epic #${number} on: ${messageOf(cause)}. /issues check may say why.`)
     }
@@ -4903,8 +4908,9 @@ export const register: Register = (on, options) => {
     })
     // Background agents still at work. One that ended drops out: the conversation line and Claude's handoff say so.
     const agents = (await read($, workers)).filter(one => ACTIVE.includes(one.status))
-    // What the board noticed about epics: why one moved to Verification, or a sub-issue open again under one.
-    const notes = now ? await read($, epicNotes) : []
+    // What the board noticed about epics: why one moved to Verification, or a sub-issue open again under one. A line
+    // past its age limit goes here too, since a quiet board may not read again for a while.
+    const notes = now ? liveEpicNotes(await read($, epicNotes), now, await nowOf($)) : []
     if (problems.length === 0 && alerts.length === 0 && offers.length === 0 && agents.length === 0 && notes.length === 0) return next(e)
 
     const { Box, Text, Button, Link } = $.ui.resolve(e)
@@ -5119,9 +5125,10 @@ export const register: Register = (on, options) => {
       <Box flexDirection="column">
         {problems.slice(0, 2).map(problemLine)}
         {alerts.slice(0, 3).map(line)}
-        {notes.slice(-2).map(epicLine)}
         {offers.slice(0, 3).map(offerLine)}
         {agents.slice(0, 3).map(agentLine)}
+        {/* Epic lines come last: they report what happened, and the lines above ask for something now. */}
+        {notes.slice(-2).map(epicLine)}
       </Box>
     )
   })
