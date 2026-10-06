@@ -22,6 +22,11 @@ CLI, signed in, in the folder the session started in.
   - The project's latest status update, under the header line, such as
     `◉ At risk · Docking slipped. · target 2026-10-20 · 2h ago`, in green,
     yellow or red by how it stands.
+  - The **Milestones** and **Pull requests** headings fold: press one to
+    fold its section to a line that sums it up, such as `Launch 5/7` or
+    `3 open · ✓ 2 · ✗ 1`, and press it again to open it. On a pane shorter
+    than 24 rows they start folded, so the issues show first. The board
+    remembers how you left them.
   - The open milestones, under a **Milestones** heading: how many of each
     one's issues are closed, as a bar, and when it is due, in red once it
     is past due with issues still open. The section shows only when the

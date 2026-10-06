@@ -253,6 +253,11 @@ const typing = atom({ plugin: 'issue-board', key: 'typing' } as const, { comment
 const recent = atom({ plugin: 'issue-board', key: 'recent' } as const, null)
 const values = atom({ plugin: 'issue-board', key: 'values' } as const, {})
 const typedFields = atom({ plugin: 'issue-board', key: 'typedFields' } as const, {})
+// Which of the pane's sections above the issues the person opened (true) or folded (false); one not set yet follows the
+// pane's height. Saved with the board.
+const sections = atom({ plugin: 'issue-board', key: 'sections' } as const, {})
+// Below this many rows, the sections above the issues start folded, so the issues show without scrolling.
+const SHORT_ROWS = 24
 const talk = atom({ plugin: 'issue-board', key: 'talk' } as const, null)
 const openPr = atom({ plugin: 'issue-board', key: 'openPr' } as const, null)
 const access = atom({ plugin: 'issue-board', key: 'access' } as const, null)
@@ -521,7 +526,7 @@ const costOf = (page: string): { cost: number; remaining: number; resetAt: strin
 }
 
 // What the board keeps between sessions, one entry per repository; `setup` is what `/issues setup` last saved.
-type Saved = { board: Board | null; working: Working | null; dismissed: string[]; viewer: string | null; setup?: SavedSetup }
+type Saved = { board: Board | null; working: Working | null; dismissed: string[]; viewer: string | null; setup?: SavedSetup; sections?: Record<string, boolean> }
 
 let storeKey: string | undefined
 const keyOf = async ($: EngineInterface): Promise<string> => {
@@ -547,7 +552,14 @@ const save = async ($: EngineInterface): Promise<void> => {
     const now = await read($, board)
     const kept = now && { ...now, issues: now.issues.map(issue => ({ ...issue, body: '' })) }
     const before = await savedSetup($)
-    const saved: Saved = { board: kept, working: await read($, working), dismissed: await read($, dismissed), viewer: await read($, viewer), ...(before ? { setup: before } : {}) }
+    const saved: Saved = {
+      board: kept,
+      working: await read($, working),
+      dismissed: await read($, dismissed),
+      viewer: await read($, viewer),
+      sections: await read($, sections),
+      ...(before ? { setup: before } : {}),
+    }
     await $.store.set(await keyOf($), saved)
   } catch (cause) {
     $.ui.log(`issue-board: couldn't save the board: ${messageOf(cause)}`, { to: 'debug' })
@@ -565,6 +577,7 @@ const restore = async ($: EngineInterface): Promise<void> => {
     if (saved.working) await update($, working, now => now ?? saved.working ?? null)
     if (saved.dismissed) await update($, dismissed, now => (now.length > 0 ? now : (saved.dismissed ?? [])))
     if (saved.viewer) await update($, viewer, now => now ?? saved.viewer ?? null)
+    if (saved.sections) await update($, sections, now => (Object.keys(now).length > 0 ? now : (saved.sections ?? {})))
   } catch (cause) {
     $.ui.log(`issue-board: couldn't read the saved board: ${messageOf(cause)}`, { to: 'debug' })
   }
@@ -3214,6 +3227,17 @@ export const register: Register = on => {
     const otherFields = (project?.fields ?? []).filter(field => !/^(status|priority)$/i.test(field.name))
     const fieldValues = await read($, values)
     const typedField = await read($, typedFields)
+    // The sections above the issues: open or folded as the person left them, else folded on a short pane.
+    const opened$ = await read($, sections)
+    const sectionOpen = (key: string) => opened$[key] ?? e.props.scroll.bodyRows >= SHORT_ROWS
+    const fold = (key: string) => () => void update($, sections, was => ({ ...was, [key]: !sectionOpen(key) })).then(() => save($))
+    const heading = (key: string, title: string) => (
+      <Box key={`section-head-${key}`}>
+        <Button key={`section-${key}`} plain hover={{ bold: true }} onPress={fold(key)}>
+          {`${sectionOpen(key) ? '▾' : '▸'} ${title}`}
+        </Button>
+      </Box>
+    )
     // One card open: its letter keys work.
     const single = open.filter(number => shown.some(issue => issue.number === number)).length === 1
     const named = FILTERS.find(one => one.id === chosen)
@@ -3725,8 +3749,8 @@ export const register: Register = on => {
       (trends ? 1 : 0) +
       (failure ? 1 : 0) +
       (project?.update ? 1 : 0) +
-      (now.prs.length > 0 ? 1 + now.prs.length : 0) +
-      ((now.milestones ?? []).length > 0 ? 1 + (now.milestones ?? []).length : 0) +
+      (now.prs.length > 0 ? 1 + (sectionOpen('prs') ? now.prs.length : 0) : 0) +
+      ((now.milestones ?? []).length > 0 ? 1 + (sectionOpen('milestones') ? (now.milestones ?? []).length : 0) : 0) +
       (arming && now.prs.length > 0 ? 1 : 0) +
       watched.length +
       (triaging ? 1 + (triaged.failed ? 1 : 0) : 0)
@@ -4241,12 +4265,20 @@ export const register: Register = on => {
 
         {now.prs.length > 0 && (
           <Box flexDirection="row" justifyContent="space-between">
-            <Text>
-              <Text bold color="suggestion">
-                Pull requests
+            <Box flexDirection="row" gap={1}>
+              {heading('prs', 'Pull requests')}
+              <Text dimColor>
+                {sectionOpen('prs')
+                  ? `${now.prs.length} open`
+                  : [
+                      `${now.prs.length} open`,
+                      ...(['pass', 'fail', 'pending'] as const).flatMap(ci => {
+                        const count = now.prs.filter(pr => pr.ci === ci).length
+                        return count > 0 ? [`${ciBadge[ci].text.trim().split(' ')[0]} ${count}`] : []
+                      }),
+                    ].join(' · ')}
               </Text>
-              <Text dimColor>{` ${now.prs.length} open`}</Text>
-            </Text>
+            </Box>
             {!arming && (
               <Button key="close-out-all" dimColor hotkey="m" onPress={arm(true)}>
                 {`⇶ Merge all ${now.prs.length}…`}
@@ -4265,7 +4297,7 @@ export const register: Register = on => {
             </Button>
           </Box>
         )}
-        {now.prs.map(prRow)}
+        {sectionOpen('prs') && now.prs.map(prRow)}
         {watched.map(run => (
           <Box key={`run-${run.id}`} flexDirection="row" gap={1}>
             <Text color={run.failed > 0 ? 'error' : 'warning'}>◷</Text>
@@ -4286,13 +4318,15 @@ export const register: Register = on => {
         {(now.milestones ?? []).length > 0 && (
           // The open milestones, release scope: how far along each is, and when it is due.
           <Box key="milestones" flexDirection="column">
-            <Text>
-              <Text bold color="suggestion">
-                Milestones
+            <Box flexDirection="row" gap={1}>
+              {heading('milestones', 'Milestones')}
+              <Text dimColor>
+                {sectionOpen('milestones')
+                  ? `${(now.milestones ?? []).length} open`
+                  : fit((now.milestones ?? []).map(one => `${one.title} ${one.closed}/${one.open + one.closed}`).join(' · '), Math.max(12, width - 16))}
               </Text>
-              <Text dimColor>{` ${(now.milestones ?? []).length} open`}</Text>
-            </Text>
-            {(now.milestones ?? []).map(one => {
+            </Box>
+            {(sectionOpen('milestones') ? (now.milestones ?? []) : []).map(one => {
               const total = one.open + one.closed
               const late = one.due !== null && one.due < new Date(clock).toISOString().slice(0, 10) && one.open > 0
               return (
