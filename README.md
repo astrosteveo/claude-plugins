@@ -130,8 +130,10 @@ repository is a catalog of plugins, each with its own manifest.
 manifest and on every directory under `plugins/`. While there are no plugins it
 checks the marketplace without `--strict`, because an empty marketplace always
 warns that it has no plugins. It also fails when a plugin has a hook at a gating
-site, such as `tool.check` or `prompt.submit`, without a `.catch`. The GitHub Actions workflow runs the same script
-on pushes to `main` and on pull requests. Run it locally before committing.
+site, such as `tool.check` or `prompt.submit`, without a `.catch`. The GitHub Actions workflow runs the same script,
+then `scripts/test.sh`, which runs `claude plugin test` on every plugin that
+has tests, on pushes to `main` and on pull requests. Run both locally before
+committing.
 
 ## Conventions
 

@@ -17,3 +17,5 @@ jobs:
         run: npm install -g @anthropic-ai/claude-code
       - name: Validate marketplace and plugins
         run: sh scripts/validate.sh
+      - name: Test plugins
+        run: sh scripts/test.sh
