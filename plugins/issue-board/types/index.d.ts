@@ -53,6 +53,8 @@ export type Project = {
   fields?: ProjectField[]
   // The project's latest status update, such as On track with a note; absent when it has none.
   update?: StatusUpdate | null
+  // Whether its "Item closed" workflow is on, which marks every closed issue Done, whatever the reason.
+  closesToDone?: boolean
 }
 
 // A project status update: how it stands (On track, At risk, Off track, Complete, Inactive), the note, when it was

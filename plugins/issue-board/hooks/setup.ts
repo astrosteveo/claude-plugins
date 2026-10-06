@@ -17,7 +17,11 @@ export const PRIORITIES: SetupOption[] = [
 ]
 
 // The project automations the board relies on. GitHub's API can read them but not turn them on.
-export const AUTOMATIONS = ['Item closed', 'Auto-add to project', 'Auto-add sub-issues to project']
+// The project's own workflows the board wants on: they put new issues and sub-issues in the project.
+export const AUTOMATIONS = ['Auto-add to project', 'Auto-add sub-issues to project']
+// And the one it wants off: "Item closed" marks every closed issue Done, even one closed as not planned or as a duplicate,
+// so Done stops meaning shipped. The board moves only issues closed as completed to Done.
+export const UNWANTED = ['Item closed']
 
 const OPTION = 'options { id name color description }'
 
@@ -187,6 +191,10 @@ export const stepsOf = (facts: SetupFacts, chosen: string | null, typed: string)
 // The automations that are off in a project, which only its settings page can turn on.
 export const automationsOff = (project: SetupProject | undefined): string[] =>
   project ? AUTOMATIONS.filter(name => project.workflows.some(one => one.name === name && !one.enabled)) : AUTOMATIONS
+
+// The workflows the project has on that the board wants off.
+export const automationsOn = (project: SetupProject | undefined): string[] =>
+  project ? UNWANTED.filter(name => project.workflows.some(one => one.name === name && one.enabled)) : []
 
 // Whether the project still has GitHub's own Todo, which its "Item added to project" automation sets on new issues
 // unless told otherwise. The API can't read or change what it sets, so setup asks the person to set it to Inbox.

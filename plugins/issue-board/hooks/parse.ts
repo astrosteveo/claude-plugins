@@ -391,7 +391,16 @@ const fieldsOf = (project: RawProject): ProjectField[] =>
     return [{ id: one.id, name: one.name, kind, ...(options ? { options } : {}) }]
   })
 type RawUpdate = { status?: string | null; body?: string | null; createdAt: string; startDate?: string | null; targetDate?: string | null }
-type RawProject = { id: string; number: number; title: string; url: string; closed?: boolean; fields?: RawNodes<RawField>; statusUpdates?: RawNodes<RawUpdate> }
+type RawProject = {
+  id: string
+  number: number
+  title: string
+  url: string
+  closed?: boolean
+  fields?: RawNodes<RawField>
+  statusUpdates?: RawNodes<RawUpdate>
+  workflows?: RawNodes<{ name: string; enabled: boolean }>
+}
 type RawValue = { name?: string } | null | undefined
 type RawItem = { id: string; project?: { id: string } | null; status?: RawValue; priority?: RawValue }
 type RawGraphIssue = {
@@ -458,6 +467,7 @@ export const parseGraph = (pages: string[], preferred?: string): { issues: Issue
         priority: fieldOf(linked, 'Priority'),
         fields: fieldsOf(linked),
         update: updateOf(nodesOf(linked.statusUpdates).at(-1)),
+        closesToDone: nodesOf(linked.workflows).some(one => one.name === 'Item closed' && one.enabled),
       }
     : null
   const issues = parsed.flatMap(page => (page.data?.repository?.issues?.nodes ?? []).filter((one): one is RawGraphIssue => one !== null))

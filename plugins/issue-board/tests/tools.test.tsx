@@ -113,6 +113,8 @@ const world = (on: On) => {
     autoAdded: false,
     // A field the project gained since the board's last read: its next read sees it.
     newField: null as Record<string, unknown> | null,
+    // Whether the project's Item closed workflow is on.
+    itemClosed: false,
     // The number the next filed issue gets, and the blocked-by links made, as `<issue> <blocker's id>`.
     next: 340,
     blocks: [] as string[],
@@ -154,6 +156,8 @@ const world = (on: On) => {
         graphPage([{ ...issue(state.body), ...state.planned[315], ...(state.type315 ? { type: state.type315 } : {}) }, { ...other, ...state.planned[289] }], argv, state.project, state.types),
       ) as { data: { repository: { projectsV2?: { nodes: { fields: { nodes: unknown[] } }[] } } } }
       if (state.newField) page.data.repository.projectsV2?.nodes[0]?.fields.nodes.push(state.newField)
+      const linked = page.data.repository.projectsV2?.nodes[0] as Record<string, unknown> | undefined
+      if (linked) linked.workflows = { nodes: [{ name: 'Item closed', enabled: state.itemClosed }] }
       return answer(JSON.stringify(page))
     }
     if (argv[1] === 'api' && argv[2] === 'graphql' && argv[3] === '--input') {
@@ -1129,6 +1133,23 @@ test('/issues help names every filter, subcommand and tool the board has, and th
   // Without a project there is no Inbox; every other filter is there.
   expect(help).toContain('Filters: 1 Active, 2 Future, 3 Bugs, 4 Mine, 5 All, 7 Closed.')
   expect(hint).toBe('[refresh | new | new epic | setup | check | help]')
+  await clock.settle()
+})
+
+test("/issues check notes the project's Item closed workflow when it's on, as a limit that doesn't block", async ($, on) => {
+  mock.store(on)
+  const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
+  const gh = world(on)
+  gh.project = true
+  gh.itemClosed = true
+  await $.command.run(REFRESH)
+  const said = String((await $.command.run({ ...REFRESH, args: 'check' })).text)
+  expect(said).toContain("Void Sector's Item closed workflow is on.")
+  expect(said).toContain('the board moves issues closed as completed to Done by itself.')
+
+  gh.itemClosed = false
+  await $.command.run(REFRESH)
+  expect(String((await $.command.run({ ...REFRESH, args: 'check' })).text)).not.toContain('Item closed')
   await clock.settle()
 })
 
