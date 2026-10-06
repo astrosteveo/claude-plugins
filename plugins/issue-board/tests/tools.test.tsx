@@ -121,6 +121,9 @@ const world = (on: On) => {
     // The repo's milestones as REST has them, and what each POST or PATCH to them sent.
     milestones: [{ number: 3, title: 'Launch', state: 'open', due_on: '2026-10-20T00:00:00Z', description: '', open_issues: 2, closed_issues: 5 }] as Record<string, unknown>[],
     milestoneWrites: [] as string[],
+    // Each item's field values by name, and the field writes made, as `item field value`.
+    values: {} as Record<string, Record<string, unknown>>,
+    valueWrites: [] as string[],
   }
   on('process.run', async (_$, e) => {
     const argv = e.argv
@@ -137,6 +140,22 @@ const world = (on: On) => {
       if (state.limited) return { value: { exitCode: 1, stdout: '', stderr: 'GraphQL: API rate limit already exceeded for user ID 1.', isStdoutTruncated: false, isStderrTruncated: false } }
       if (state.refuseProject && asksProject(argv)) return { value: { exitCode: 1, stdout: '', stderr: state.refuseProject, isStdoutTruncated: false, isStderrTruncated: false } }
       return answer(graphPage([{ ...issue(state.body), ...state.planned[315] }, { ...other, ...state.planned[289] }], argv, state.project))
+    }
+    if (argv[1] === 'api' && argv[2] === 'graphql' && argv[3] === '--input') {
+      const asked = JSON.parse(e.init?.stdin ?? '{}') as { query: string; variables: Record<string, unknown> }
+      const item = String(asked.variables.item)
+      if (asked.query.includes('fieldValues')) {
+        const nodes = Object.entries(state.values[item] ?? {}).map(([name, value]) => ({ [typeof value === 'number' ? 'number' : 'text']: value, field: { name } }))
+        return answer(JSON.stringify({ data: { node: { fieldValues: { nodes } } } }))
+      }
+      const field = String(asked.variables.field)
+      const value = asked.query.includes('clearProjectV2') ? null : (asked.variables.value as Record<string, unknown>)
+      state.valueWrites.push(`${item} ${field} ${JSON.stringify(value)}`)
+      const name = { F_estimate: 'Estimate', F_sprint: 'Sprint', F_due: 'Due', F_notes: 'Notes' }[field] ?? field
+      const shown = value === null ? undefined : (value.number ?? value.date ?? value.text ?? (value.iterationId === 'IT2' ? 'Iteration 2' : 'Iteration 1'))
+      state.values[item] = { ...state.values[item], [name]: shown }
+      if (shown === undefined) delete state.values[item]?.[name]
+      return answer(JSON.stringify({ data: {} }))
     }
     if (argv[1] === 'api' && argv[2] === 'graphql') {
       // A mutation: its `-f name=value` arguments, and the change it makes to the project.
@@ -240,6 +259,7 @@ const world = (on: On) => {
       if (fields === 'id') return answer(JSON.stringify({ id: `I_${argv[3]}` }))
       return answer(JSON.stringify(fields === 'body' ? { body: state.body } : issue(state.body, '2026-10-04T09:00:00Z')))
     }
+    if (argv[1] === 'label' && argv[2] === 'list') return answer(JSON.stringify([{ name: 'bug' }, { name: 'enhancement' }, { name: 'area:simulation' }]))
     if (argv.includes('closed') || argv.includes('merged')) {
       state.searches += 1
       return answer('[]')
@@ -868,6 +888,49 @@ test("a project's REST path comes from its page, for a user's project or an orga
   expect(projectPathOf('https://github.com/users/astrosteveo/projects/9')).toBe('users/astrosteveo/projectsV2/9')
   expect(projectPathOf('https://github.com/orgs/anthropics/projects/12')).toBe('orgs/anthropics/projectsV2/12')
   expect(projectPathOf('https://example.com/elsewhere')).toBeNull()
+})
+
+test("issue_update sets the project's other fields by name, checked against each field's kind, and the card shows them", async ($, on) => {
+  mock.store(on)
+  const gh = world(on)
+  gh.project = true
+  gh.planned[315] = { status: 'Ready', priority: 'P1' }
+  on('ui.toast', async () => ({ value: undefined }))
+  await $.command.run(REFRESH)
+  const set = (fields: Record<string, unknown>) => $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 315, fields })
+
+  const done = await set({ Estimate: 3, Sprint: 'iteration 2', Due: '2026-10-20', Notes: 'Pairs with #289.' })
+  expect(String(done.result)).toBe('#315 Estimate set to 3, Sprint set to iteration 2, Due set to 2026-10-20, Notes set to Pairs with #289..')
+  expect(gh.valueWrites).toEqual([
+    'PVTI_315 F_estimate {"number":3}',
+    'PVTI_315 F_sprint {"iterationId":"IT2"}',
+    'PVTI_315 F_due {"date":"2026-10-20"}',
+    'PVTI_315 F_notes {"text":"Pairs with #289."}',
+  ])
+  expect(String((await set({ Notes: null })).result)).toBe('#315 Notes cleared.')
+  expect(gh.valueWrites.at(-1)).toBe('PVTI_315 F_notes null')
+
+  // A value that doesn't fit its field, a field the project hasn't got, or Status by this road, sets nothing.
+  const writes = gh.valueWrites.length
+  expect((await set({ Estimate: 'lots' })).deny).toBe("Couldn't change #315: Estimate takes a number, not lots")
+  expect((await set({ Due: 'Friday' })).deny).toBe("Couldn't change #315: Due takes a date, YYYY-MM-DD, not Friday")
+  expect((await set({ Sprint: 'Iteration 9' })).deny).toBe("Couldn't change #315: Sprint has no iteration called Iteration 9; it has Iteration 1, Iteration 2")
+  expect((await set({ Effort: 1 })).deny).toBe("Couldn't change #315: Void Sector has no field called Effort; it has Status, Priority, Estimate, Sprint, Due, Notes")
+  expect((await set({ Status: 'Done' })).deny).toBe("Couldn't change #315: set Status with status, not fields")
+  expect(gh.valueWrites).toHaveLength(writes)
+
+  // One issue in full lists its fields; the card shows them, and its editor sets them.
+  expect(String((await $.tool.call({ tool: 'mcp__issue-board__issues', number: 315 })).result)).toMatch(/\nFields: Estimate 3, Sprint Iteration 2, Due 2026-10-20\n/)
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'filter-all' })
+  await ui.press({ key: 'issue-315' })
+  expect(await ui.find({ text: /Estimate 3 · Sprint Iteration 2 · Due 2026-10-20/ })).toBeDefined()
+  await ui.press({ key: 'edit-315' })
+  await ui.press({ key: 'field-315-F_sprint-IT1' })
+  expect(gh.valueWrites.at(-1)).toBe('PVTI_315 F_sprint {"iterationId":"IT1"}')
+  await ui.input({ key: 'field-315-F_estimate', text: '5' })
+  expect(gh.valueWrites.at(-1)).toBe('PVTI_315 F_estimate {"number":5}')
+  await ui.unmount()
 })
 
 test('the pane draws on every surface, with search where the surface has a text field', async ($, on) => {

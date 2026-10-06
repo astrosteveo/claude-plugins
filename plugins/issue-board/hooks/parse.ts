@@ -1,5 +1,5 @@
 import type { ThemeKey } from 'claude-code'
-import type { Alert, Board, BoxTask, Check, Ci, Comment, Draft, Field, Filter, Found, GroupBy, Issue, Known, Label, Milestone, Project, PullRequest, RunWatch, Suggestion, Worker, Working } from '../types'
+import type { Alert, Board, BoxTask, Check, Ci, Comment, Draft, Field, Filter, Found, GroupBy, Issue, Known, Label, Milestone, ProjectField, Project, PullRequest, RunWatch, Suggestion, Worker, Working } from '../types'
 import { isLater, isNow, priorityRank } from './project'
 
 type RawLabel = { name: string; color?: string }
@@ -370,7 +370,17 @@ export const groupsOf = (issues: Issue[], by: GroupBy, project: Project | null =
 }
 
 type RawNodes<T> = { nodes?: (T | null)[] | null } | null | undefined
-type RawField = { id?: string; name?: string; options?: { id: string; name: string }[] }
+type RawField = { id?: string; name?: string; dataType?: string; options?: { id: string; name: string }[]; configuration?: { iterations?: { id: string; title: string }[] } | null }
+
+// The kind of each field the board can set, by GitHub's data type; the rest, such as Assignees or Labels, are the issue's.
+const KINDS: Record<string, ProjectField['kind']> = { TEXT: 'text', NUMBER: 'number', DATE: 'date', ITERATION: 'iteration', SINGLE_SELECT: 'select' }
+const fieldsOf = (project: RawProject): ProjectField[] =>
+  nodesOf(project.fields).flatMap(one => {
+    const kind = one.dataType ? KINDS[one.dataType] : one.options ? 'select' : undefined
+    if (!one.id || !one.name || !kind) return []
+    const options = kind === 'iteration' ? (one.configuration?.iterations ?? []).map(it => ({ id: it.id, name: it.title })) : one.options
+    return [{ id: one.id, name: one.name, kind, ...(options ? { options } : {}) }]
+  })
 type RawProject = { id: string; number: number; title: string; url: string; closed?: boolean; fields?: RawNodes<RawField> }
 type RawValue = { name?: string } | null | undefined
 type RawItem = { id: string; project?: { id: string } | null; status?: RawValue; priority?: RawValue }
@@ -413,7 +423,15 @@ export const parseGraph = (pages: string[], preferred?: string): { issues: Issue
   const open = nodesOf(parsed[0]?.data?.repository?.projectsV2).filter(one => !one.closed)
   const linked = open.find(one => one.id === preferred) ?? open[0]
   const project: Project | null = linked
-    ? { id: linked.id, number: linked.number, title: linked.title, url: linked.url, status: fieldOf(linked, 'Status'), priority: fieldOf(linked, 'Priority') }
+    ? {
+        id: linked.id,
+        number: linked.number,
+        title: linked.title,
+        url: linked.url,
+        status: fieldOf(linked, 'Status'),
+        priority: fieldOf(linked, 'Priority'),
+        fields: fieldsOf(linked),
+      }
     : null
   const issues = parsed.flatMap(page => (page.data?.repository?.issues?.nodes ?? []).filter((one): one is RawGraphIssue => one !== null))
   return {
@@ -958,6 +976,8 @@ export type IssueChanges = {
   rewordBoxes?: { box: number; text: string }[]
   // Close it as a duplicate of this issue, which GitHub then links.
   duplicateOf?: number
+  // The project's other fields to set, by name; null clears one.
+  fields?: Record<string, string | number | null>
 }
 
 const listed = (values: string[] | undefined): string => (values ?? []).filter(Boolean).join(',')
@@ -1002,6 +1022,7 @@ export const changesText = (number: number, changes: IssueChanges): string => {
     changes.comment?.trim() ? 'commented on' : '',
     changes.close ? `closed as ${changes.close}` : '',
     changes.duplicateOf ? `closed as a duplicate of #${changes.duplicateOf}` : '',
+    ...Object.entries(changes.fields ?? {}).map(([name, value]) => (value === null ? `${name} cleared` : `${name} set to ${value}`)),
     changes.reopen && !changes.close ? 'reopened' : '',
   ].filter(Boolean)
   return said.length > 0 ? `#${number} ${said.join(', ')}.` : `Nothing to change on #${number}.`
@@ -1068,6 +1089,40 @@ export const milestoneLine = (milestone: Milestone, today: string): string => {
   const total = milestone.open + milestone.closed
   const due = milestone.due ? (milestone.due < today && milestone.open > 0 ? `was due ${milestone.due}` : `due ${milestone.due}`) : 'no due date'
   return `${milestone.title} · ${milestone.closed}/${total} closed · ${due}`
+}
+
+// An item's field values, by field name, from the ITEM_VALUES query: each as text, as the card and Claude read it.
+export const itemValuesOf = (answer: unknown): Record<string, string> => {
+  const nodes =
+    (answer as { node?: { fieldValues?: { nodes?: ({ text?: string; number?: number; date?: string; title?: string; name?: string; field?: { name?: string } } | null)[] } } })?.node?.fieldValues
+      ?.nodes ?? []
+  return Object.fromEntries(
+    nodes.flatMap(one => {
+      const value = one?.text ?? (one?.number !== undefined ? String(one.number) : undefined) ?? one?.date ?? one?.title ?? one?.name
+      return one?.field?.name && value !== undefined ? [[one.field.name, value]] : []
+    }),
+  )
+}
+
+// A value for a field, as GitHub's mutation takes it, from what Claude or the person gave; or why it doesn't fit.
+export const fieldValueOf = (field: ProjectField, given: unknown): { value: Record<string, string | number> } | string => {
+  const text = typeof given === 'number' ? String(given) : typeof given === 'string' ? given.trim() : ''
+  if (!text) return `give ${field.name} a value, or null to clear it`
+  switch (field.kind) {
+    case 'text':
+      return { value: { text } }
+    case 'number':
+      return Number.isFinite(Number(text)) ? { value: { number: Number(text) } } : `${field.name} takes a number, not ${text}`
+    case 'date':
+      return /^\d{4}-\d{2}-\d{2}$/.test(text) ? { value: { date: text } } : `${field.name} takes a date, YYYY-MM-DD, not ${text}`
+    case 'iteration':
+    case 'select': {
+      const option = field.options?.find(one => one.name.toLowerCase() === text.toLowerCase())
+      const names = (field.options ?? []).map(one => one.name).join(', ')
+      if (!option) return `${field.name} has no ${field.kind === 'iteration' ? 'iteration' : 'option'} called ${text}${names ? `; it has ${names}` : ''}`
+      return { value: field.kind === 'iteration' ? { iterationId: option.id } : { singleSelectOptionId: option.id } }
+    }
+  }
 }
 
 // The labels asked for that the repo hasn't got, by name, ignoring case, each once.
@@ -1150,7 +1205,8 @@ export const statusOnly = (changes: IssueChanges): boolean =>
   changes.body === undefined &&
   !changes.addBoxes?.length &&
   !changes.rewordBoxes?.length &&
-  !changes.duplicateOf
+  !changes.duplicateOf &&
+  Object.keys(changes.fields ?? {}).length === 0
 
 // An issue's or pull request's page on GitHub: the URL gh gave, or one made from the repo for a board saved without it.
 export const pageOf = (repo: string, kind: 'issues' | 'pull', item: { number: number; url: string }): string =>

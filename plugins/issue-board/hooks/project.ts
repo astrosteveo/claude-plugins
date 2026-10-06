@@ -1,7 +1,12 @@
 import type { Field, Issue, Project } from '../types'
 
-// The repo's projects with their single-select fields, which needs gh to have the read:project permission.
-const PROJECTS = 'projectsV2(first: 5) { nodes { id number title url closed fields(first: 30) { nodes { ... on ProjectV2SingleSelectField { id name options { id name } } } } } }'
+// The repo's projects with their fields, which needs gh to have the read:project permission. A field's kind and its
+// options or iterations are the project's, not each issue's, so reading them costs little.
+const PROJECTS =
+  'projectsV2(first: 5) { nodes { id number title url closed fields(first: 30) { nodes { ' +
+  '... on ProjectV2Field { id name dataType } ' +
+  '... on ProjectV2SingleSelectField { id name dataType options { id name } } ' +
+  '... on ProjectV2IterationField { id name dataType configuration { iterations { id title } } } } } } }'
 // Each issue's items in those projects, with the Status and Priority set on them.
 const ITEMS =
   'projectItems(first: 10) { nodes { id project { id } ' +
@@ -27,6 +32,23 @@ export const issuesQuery = (withProject: boolean): string =>
   ]
     .filter(Boolean)
     .join(' ')
+
+// One item's values for every field, read when an issue's card opens or a tool asks: reading them for every issue on
+// each read would multiply the board's cost.
+export const ITEM_VALUES =
+  'query($item: ID!) { node(id: $item) { ... on ProjectV2Item { fieldValues(first: 30) { nodes { ' +
+  '... on ProjectV2ItemFieldTextValue { text field { ... on ProjectV2FieldCommon { name } } } ' +
+  '... on ProjectV2ItemFieldNumberValue { number field { ... on ProjectV2FieldCommon { name } } } ' +
+  '... on ProjectV2ItemFieldDateValue { date field { ... on ProjectV2FieldCommon { name } } } ' +
+  '... on ProjectV2ItemFieldIterationValue { title field { ... on ProjectV2FieldCommon { name } } } ' +
+  '... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2FieldCommon { name } } } } } } } }'
+
+// Sets any field on an item, with the value as the field's kind takes it; and clears one.
+export const SET_VALUE =
+  'mutation($project: ID!, $item: ID!, $field: ID!, $value: ProjectV2FieldValue!) { updateProjectV2ItemFieldValue(input: ' +
+  '{projectId: $project, itemId: $item, fieldId: $field, value: $value}) { projectV2Item { id } } }'
+export const CLEAR_VALUE =
+  'mutation($project: ID!, $item: ID!, $field: ID!) { clearProjectV2ItemFieldValue(input: {projectId: $project, itemId: $item, fieldId: $field}) { projectV2Item { id } } }'
 
 // Sets a single-select field, such as Status, on an issue's item in a project.
 export const SET_FIELD =
