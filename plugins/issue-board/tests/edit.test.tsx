@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
 import type { Board, Issue } from '../types'
-import { changesText, commandsOf, leftForDone, statusOnly } from '../hooks/parse'
+import { addBoxes, changesText, commandsOf, leftForDone, rewordBoxes, statusOnly } from '../hooks/parse'
 import { asksProject, graphPage, isIssuesQuery, optionId } from './graph'
 
 type Raw = Parameters<typeof graphPage>[0][number]
@@ -40,7 +40,17 @@ const EPIC = { number: 35, title: 'Make the issue board a full issue tracker', t
 const github = (on: On, prs: unknown[] = []) => {
   // `blocked`: what #43 is blocked by on GitHub, as the links made leave it.
   // `closed`: how an issue closed on GitHub, which takes it off the board's next read.
-  const state = { calls: [] as { argv: string[]; stdin?: string }[], reads: 0, links: [] as string[], blocked: [] as number[], closed: {} as Record<number, string> }
+  // `title` and `body`: #43's on GitHub, which a PATCH changes; `patched`, what each PATCH sent.
+  const state = {
+    calls: [] as { argv: string[]; stdin?: string }[],
+    reads: 0,
+    links: [] as string[],
+    blocked: [] as number[],
+    closed: {} as Record<number, string>,
+    title: 'Edit issues from the board',
+    body: '- [ ] Edit',
+    patched: [] as Record<string, string>[],
+  }
   on('process.run', async (_$, e) => {
     const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
     const argv = [...e.argv]
@@ -54,9 +64,9 @@ const github = (on: On, prs: unknown[] = []) => {
             { number: 35, title: EPIC.title, labels: [], body: 'The whole.', updatedAt: '2026-10-05T00:00:00Z', subIssues: { total: 12, completed: 6 }, status: 'In progress', priority: 'P1' },
             {
               number: 43,
-              title: 'Edit issues from the board',
+              title: state.title,
               labels: [{ name: 'enhancement' }],
-              body: '- [ ] Edit',
+              body: state.body,
               updatedAt: '2026-10-05T00:00:00Z',
               parent: EPIC,
               status: 'Ready',
@@ -74,6 +84,14 @@ const github = (on: On, prs: unknown[] = []) => {
     state.calls.push({ argv: argv.slice(1), ...(e.init?.stdin !== undefined ? { stdin: e.init.stdin } : {}) })
     if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/claude-plugins', hasIssuesEnabled: true }))
     if (argv[1] === 'label' && argv[2] === 'list') return answer(JSON.stringify([{ name: 'bug' }, { name: 'enhancement' }, { name: 'area:issue-board' }]))
+    if (argv[1] === 'api' && argv.includes('{body, updated_at}')) return answer(JSON.stringify({ body: state.body, updated_at: '2026-10-05T00:00:00Z' }))
+    if (argv[1] === 'api' && argv[2] === '-X' && argv[3] === 'PATCH') {
+      const fields = JSON.parse(e.init?.stdin ?? '{}') as Record<string, string>
+      state.patched.push(fields)
+      state.title = fields.title ?? state.title
+      state.body = fields.body ?? state.body
+      return answer(JSON.stringify({ title: state.title, body: state.body, updated_at: '2026-10-05T00:00:00Z' }))
+    }
     if (argv[1] === 'api' && argv.includes('{state, state_reason}')) {
       const how = state.closed[Number(/issues\/(\d+)$/.exec(argv[2] ?? '')?.[1])]
       return answer(JSON.stringify(how ? { state: 'closed', state_reason: how } : { state: 'open', state_reason: null }))
@@ -237,6 +255,73 @@ test("only an issue that had an item and wasn't at Done yet is looked at, and no
   expect(leftForDone(before, board([issue(4, 'Ready', 'I4')], ['Ready', 'Done']))).toEqual([{ number: 1, item: 'I1' }])
   expect(leftForDone(before, board([], ['Ready', 'Shipped']))).toEqual([])
   expect(leftForDone(null, board([], ['Ready', 'Done']))).toEqual([])
+})
+
+test('boxes are added after the last one, or under a new Acceptance heading, and reworded by number', () => {
+  expect(addBoxes('Intro.\n\n## Acceptance\n- [x] One\n- [ ] Two\n\nNotes.', ['Three'])).toBe('Intro.\n\n## Acceptance\n- [x] One\n- [ ] Two\n- [ ] Three\n\nNotes.')
+  expect(addBoxes('- [ ] One', ['Two', 'Three'])).toBe('- [ ] One\n- [ ] Two\n- [ ] Three')
+  expect(addBoxes('Intro.\n', ['One'])).toBe('Intro.\n\n## Acceptance\n- [ ] One\n')
+  expect(addBoxes('', ['One'])).toBe('## Acceptance\n- [ ] One\n')
+  // A body the web editor saved with \r\n keeps them.
+  expect(addBoxes('- [ ] One\r\nNotes.\r\n', ['Two'])).toBe('- [ ] One\r\n- [ ] Two\r\nNotes.\r\n')
+  expect(rewordBoxes('- [x] One\n- [ ] Two\r\n', [{ box: 1, text: 'First' }, { box: 2, text: 'Second' }])).toEqual({ body: '- [x] First\n- [ ] Second\r\n', missing: [] })
+  expect(rewordBoxes('- [ ] One', [{ box: 3, text: 'x' }]).missing).toEqual([3])
+})
+
+test("issue_update changes the title and body over REST, adds and rewords boxes, and won't overwrite a body changed meanwhile", async ($, on) => {
+  mock.store(on)
+  const gh = github(on)
+  on('ui.toast', async () => ({ value: undefined }))
+  await $.command.run({ ...RUN, args: 'refresh' })
+  const call = (fields: Record<string, unknown>) => $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, ...fields })
+
+  expect(String((await call({ title: 'Edit issues in place' })).result)).toBe('#43 retitled “Edit issues in place”.')
+  expect(String((await call({ addBoxes: ['Undo a change'] })).result)).toBe('#43 1 box added.')
+  expect(gh.body).toBe('- [ ] Edit\n- [ ] Undo a change')
+  expect(String((await call({ rewordBoxes: [{ box: 1, text: 'Edit any field' }] })).result)).toBe('#43 box 1 reworded.')
+  expect(gh.body).toBe('- [ ] Edit any field\n- [ ] Undo a change')
+  expect((await call({ rewordBoxes: [{ box: 5, text: 'x' }] })).deny).toBe("Couldn't change #43: #43 has 2 boxes, so there is no box 5")
+
+  // A whole new body goes in while GitHub's is the one the board read.
+  expect(String((await call({ body: 'Rewritten.\n- [ ] Edit' })).result)).toBe('#43 its body rewritten.')
+
+  // Someone edits the body on GitHub: a whole new body is refused, and nothing is sent.
+  gh.body = 'Changed on GitHub.'
+  const sent = gh.patched.length
+  expect((await call({ body: 'Mine.' })).deny).toBe(
+    "Couldn't change #43: #43's body changed on GitHub since the board read it, so it wasn't overwritten. Read it again with the issues tool, then change it",
+  )
+  expect(gh.patched).toHaveLength(sent)
+
+  // The board shows the new title and boxes at once.
+  gh.body = '- [ ] Edit\n- [ ] Undo a change'
+  await call({ addBoxes: ['Redo'] })
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'filter-all' })
+  expect(await ui.find({ text: /Edit issues in place/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test("the card's editor renames an issue, adds a box, and hands a body edit to Claude", async ($, on) => {
+  mock.store(on)
+  const gh = github(on)
+  on('ui.toast', async () => ({ value: undefined }))
+  const filled: string[] = []
+  on('prompt.fill', async (_$, e) => {
+    filled.push(e.text)
+    return { isFilled: true }
+  })
+  await $.command.run({ ...RUN, args: 'refresh' })
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'filter-all' })
+  await ui.press({ key: 'issue-43' })
+  await ui.press({ key: 'edit-43' })
+  await ui.input({ key: 'title-43', text: 'Edit issues in place' })
+  await ui.input({ key: 'box-43', text: 'Undo a change' })
+  expect(gh.patched).toEqual([{ title: 'Edit issues in place' }, { body: '- [ ] Edit\n- [ ] Undo a change' }])
+  await ui.press({ key: 'body-43' })
+  expect(filled).toEqual(['Edit the body of #43: '])
+  await ui.unmount()
 })
 
 test("moving the Status of the issue Claude is on doesn't ask; any other change does", async ($, on) => {

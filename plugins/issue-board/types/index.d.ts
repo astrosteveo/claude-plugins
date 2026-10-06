@@ -250,7 +250,7 @@ declare module 'claude-code' {
       // An epic whose Close was pressed once while it has open sub-issues; the next press closes it.
       closing: number | null
       // What the editor's fields hold: the comment being written, and the epic number typed.
-      typing: { comment: string; parent: string }
+      typing: { comment: string; parent: string; title: string; box: string }
       // The open card's comments, read when it opens; `comments` null while they're being read.
       talk: { number: number; comments: Comment[] | null; total: number } | null
       // The last permission check; null until one has run.

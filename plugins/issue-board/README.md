@@ -126,6 +126,10 @@ CLI, signed in, in the folder the session started in.
     soon as you press it, and the board reads GitHub again straight after:
     - **Labels**: the repo's labels, the ones the issue has highlighted;
       press one to add or take it off.
+    - **Title**: type a new title to rename the issue.
+    - **Boxes**: type a box to add it to the acceptance list. **✎ Edit the
+      body with Claude** puts `Edit the body of #N:` in the prompt box, for
+      a bigger change.
     - **Assignee**: assign yourself or unassign yourself.
     - **Epic**: type an epic's number to put the issue under it, or take it
       out of its epic.
@@ -319,7 +323,10 @@ stays quiet there.
     and Priority, and the board shows them at once. Moving the Status of the
     issue you pressed Start on doesn't ask for permission; any other change
     asks, unless you allow it. It also adds and removes blocked-by links,
-    and the row's `⛔` follows at once.
+    and the row's `⛔` follows at once. It also changes the title and the
+    body, adds boxes and rewords them by number. Boxes go into the body as
+    GitHub has it, so nothing else is lost. A whole new body is refused if
+    the body changed on GitHub since the board read it.
   - `issue_create` files a new issue: its title and body, labels,
     assignees, milestone, the epic it goes under, and its Status and
     Priority in the project. Without a Status it goes to the Inbox. For an
