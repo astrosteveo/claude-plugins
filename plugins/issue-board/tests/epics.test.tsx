@@ -132,13 +132,17 @@ test("Start on an epic's card names its first ready sub-issue and starts that, n
   await ui.unmount()
 })
 
-test('Start in background on an epic dispatches the worker on its first ready sub-issue', async ($, on) => {
+test('Start in background on an epic starts the worker on its first ready sub-issue', async ($, on) => {
+  const spawned: { description?: string; prompt: string }[] = []
+  on('agent.spawn', async (_$, e) => {
+    spawned.push({ description: e.description, prompt: e.prompt })
+    return { model: 'claude-sonnet-5-5', agentId: 'agent-1' }
+  })
   const { ui, sent } = await epicCard($, on)
   expect(await ui.find({ key: 'background-35' })).toMatchObject({ text: '⚙ Start #43 in background' })
   await ui.press({ key: 'background-35' })
-  expect(sent).toHaveLength(1)
-  expect(sent[0]).toMatch(/^Dispatch a background agent to work on #43: Edit issues from the board\./)
-  expect(sent[0]).toContain('description `#43 Edit issues from the board`')
+  expect(spawned).toEqual([{ description: '#43 Edit issues from the board', prompt: expect.stringMatching(/^Let's start on #43: Edit issues from the board\./) }])
+  expect(sent).toEqual([])
   await ui.unmount()
 })
 
