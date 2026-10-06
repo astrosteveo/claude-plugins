@@ -12,7 +12,7 @@ const ITEMS =
 // item when `withProject`, which a token without read:project would have GitHub refuse.
 export const issuesQuery = (withProject: boolean): string =>
   [
-    'query($owner: String!, $name: String!, $after: String) { repository(owner: $owner, name: $name) {',
+    'query($owner: String!, $name: String!, $after: String) { rateLimit { cost remaining resetAt } repository(owner: $owner, name: $name) {',
     withProject ? PROJECTS : '',
     'issues(first: 100, states: OPEN, after: $after, orderBy: {field: UPDATED_AT, direction: DESC}) {',
     'pageInfo { hasNextPage endCursor }',

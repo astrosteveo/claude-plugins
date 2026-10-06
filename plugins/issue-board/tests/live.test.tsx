@@ -33,7 +33,7 @@ const pr = (ci: 'pending' | 'pass') => ({
 
 // Two drawings `gh run watch` makes, a few seconds apart: one job done and one running, then both ended.
 const RUNNING = [
-  'Refreshing run status every 5 seconds. Press Ctrl+C to quit.',
+  'Refreshing run status every 15 seconds. Press Ctrl+C to quit.',
   '',
   '* fix/315-glide Validate plugins · 987',
   'Triggered via pull_request less than a minute ago',
@@ -48,7 +48,7 @@ const RUNNING = [
   '',
 ].join('\n')
 const ENDED = [
-  'Refreshing run status every 5 seconds. Press Ctrl+C to quit.',
+  'Refreshing run status every 15 seconds. Press Ctrl+C to quit.',
   '',
   'X fix/315-glide Validate plugins · 987',
   '',
@@ -108,7 +108,7 @@ test('what an event, a run list and a watch drawing say', () => {
     { id: 987, workflow: 'Validate plugins' },
   ])
 
-  expect(runProgressOf('Refreshing run status every 5 seconds.\n')).toBeNull()
+  expect(runProgressOf('Refreshing run status every 15 seconds.\n')).toBeNull()
   expect(runProgressOf(RUNNING)).toEqual({ done: 1, total: 2, failed: 0, running: 'validate', step: 'Install Claude Code' })
   // The last drawing counts.
   expect(runProgressOf(`${RUNNING}${ENDED}`)).toEqual({ done: 2, total: 2, failed: 1, running: null, step: null })
@@ -116,7 +116,7 @@ test('what an event, a run list and a watch drawing say', () => {
 
   // What gh 2.102 wrote watching this repo's own CI: no line between one drawing and the next.
   const real = [
-    'Refreshing run status every 5 seconds. Press Ctrl+C to quit.',
+    'Refreshing run status every 15 seconds. Press Ctrl+C to quit.',
     '',
     '* feat/47-live-board Validate plugins astrosteveo/claude-plugins#75 · 37261969398',
     'Triggered via pull_request less than a minute ago',
@@ -192,7 +192,7 @@ test("while the branch's CI runs, the pane shows its progress from gh run watch,
 
   await $.command.run(REFRESH)
   await clock.settle()
-  expect(gh.watched).toEqual([['gh', 'run', 'watch', '987', '--interval', '5']])
+  expect(gh.watched).toEqual([['gh', 'run', 'watch', '987', '--interval', '15']])
   const band = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...BAND })
   expect(await band.find({ text: / ◷ CI / })).toBeUndefined()
   const pane = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })

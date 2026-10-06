@@ -233,16 +233,28 @@ CLI, signed in, in the folder the session started in.
   or a few seconds after a `git push`, and reads GitHub again when the run
   ends. The band says nothing until the run fails or passes.
 
-The board refreshes every 5 minutes, and every 30 seconds while a pull
-request's CI is running. It also refreshes straight after Claude changes
-GitHub: a `gh issue` or `gh pr` command that changes something,
-`gh project item-edit`, a `gh api` call that writes, or `git push`. When a
-turn ends and Claude ran `git` or `gh` since the last refresh, the board
-refreshes again. And when the session gets a GitHub event for a pull
-request it is subscribed to, such as CI finished, a merge or a review, the
-board refreshes at once. The event still reaches Claude as before. Events
-come only for pull requests the session subscribes to, so the board keeps
-polling as well.
+The board looks at GitHub every 5 minutes, and every 30 seconds while a
+pull request's CI is running. A look is a cheap check first: it asks GitHub
+whether the repo's issues and pull requests, or the running CI's checks,
+changed since the last look. An unchanged answer doesn't count against
+GitHub's rate limit, and the board reads in full only when something
+changed. It reads in full at least every 15 minutes anyway, because a
+change to a project field, such as Status, doesn't show in the check. The
+weekly counts behind the sparklines are read at most once an hour.
+
+The board also reads straight after Claude changes GitHub: a `gh issue` or
+`gh pr` command that changes something, `gh project item-edit`, a `gh api`
+call that writes, or `git push`. When a turn ends and Claude ran `git` or
+`gh` since the last look, the board looks again. And when the session gets
+a GitHub event for a pull request it is subscribed to, such as CI
+finished, a merge or a review, the board reads at once. The event still
+reaches Claude as before. Events come only for pull requests the session
+subscribes to, so the board keeps looking as well.
+
+Sessions on the same repository share the board: a session takes another's
+newer read rather than read GitHub again. The rate limit is shared too,
+across every session and agent on your account. If it runs out, the board
+says when it resets and reads nothing until then.
 
 The board is saved for each repository. A new session shows the last board
 straight away, and still knows the issue you were working on. The issues'
