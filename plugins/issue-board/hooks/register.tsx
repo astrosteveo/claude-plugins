@@ -1,10 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { Caught, EngineInterface, HookFailure, ModelForkResult, Register, ThemeKey, Timer, UiCopyArgs } from 'claude-code'
 
-import type { Alert, Board, BoxTask, Check, Comment, Draft, DraftEdit, Filter, GroupBy, Issue, Known, Launch, Problem, Project, ProjectField, StatusUpdate, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
+import type { Alert, Board, BoxTask, Check, Comment, Draft, DraftEdit, Filter, GroupBy, Issue, Known, Launch, Problem, Project, ProjectField, Role, StatusUpdate, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
 import type { Ended, IssueChanges, NewIssue, PrRule } from './parse'
 import { authOf, problemsOf, problemsText, repoOf } from './access'
-import { ADD_ITEM, ARCHIVE_ITEM, CLEAR_VALUE, ISSUE_ITEMS, ITEM_VALUES, POST_STATUS, SET_FIELD, SET_VALUE, issuesQuery, optionOf, startedOf } from './project'
+import { ADD_ITEM, ARCHIVE_ITEM, CLEAR_VALUE, ISSUE_ITEMS, ITEM_VALUES, POST_STATUS, SET_FIELD, SET_VALUE, ROLE_NAMES, ROLE_ORDER, issuesQuery, nowNames, optionOf, roleOf, rolesFor, startedOf } from './project'
 import {
   CREATE_FIELD,
   CREATE_PROJECT,
@@ -20,8 +20,10 @@ import {
   factsOf,
   mergeStatuses,
   nextItemsOf,
+  picksFor,
   projectOf,
   rolesOf,
+  statusOptionsOf,
   stepsOf,
   suggestAreas,
   templatePrompt,
@@ -165,6 +167,7 @@ type Settings = {
   issueCopies: boolean
   suggestNextStep: boolean
   followBranch: boolean
+  nowCount: number
 }
 const settingsOf = (options: Readonly<Record<string, unknown>> | undefined): Settings => ({
   moveToDone: options?.moveToDone === true,
@@ -175,6 +178,8 @@ const settingsOf = (options: Readonly<Record<string, unknown>> | undefined): Set
   issueCopies: options?.issueCopies !== false,
   suggestNextStep: options?.suggestNextStep === true,
   followBranch: options?.followBranch === true,
+  // How many of the first Priority options count as Now.
+  nowCount: typeof options?.nowCount === 'number' && options.nowCount >= 0 ? Math.floor(options.nowCount) : 2,
 })
 let settings: Settings = settingsOf(undefined)
 const REFRESH_MS = 5 * 60 * 1000
@@ -318,9 +323,12 @@ const FILTERS: { id: Filter; label: string; planned: string; hotkey: string }[] 
   { id: 'closed', label: 'Closed', planned: 'Closed', hotkey: '7' },
 ]
 
-// The filters as the pane offers them, with the names it shows: Inbox only with a project.
-const filtersFor = (project: boolean): { hotkey: string; name: string }[] =>
-  FILTERS.filter(one => one.id !== 'inbox' || project).map(one => ({ hotkey: one.hotkey, name: project ? one.planned : one.label }))
+// Whether the project has an Inbox: an option with its role.
+const hasInbox = (project: Project | null | undefined): boolean => roleOf(project, 'inbox') !== undefined
+
+// The filters as the pane offers them, with the names it shows: Inbox only with a project that has one.
+const filtersFor = (project: Project | null | undefined): { hotkey: string; name: string }[] =>
+  FILTERS.filter(one => one.id !== 'inbox' || hasInbox(project)).map(one => ({ hotkey: one.hotkey, name: project ? one.planned : one.label }))
 
 const GROUPINGS: { id: GroupBy; label: string }[] = [
   { id: 'status', label: 'Status' },
@@ -363,6 +371,16 @@ const MISSING = /ENOENT|not found|no such file/i
 // A gh error that may come from a missing permission rather than from the request itself.
 const ACCESS_ERROR = /scope|credentials|not accessible|gh auth login|HTTP 40[13]|permission/i
 
+// What the board doesn't do while a Status role has no option.
+const ROLE_OFF: Record<Role, string> = {
+  inbox: "New issues don't land in the Inbox, and the Inbox filter and its triage are gone",
+  ready: "Triage's Accept doesn't move issues to Ready",
+  backlog: "No Status group starts folded, and triage's Accept doesn't move issues to Backlog",
+  started: "Start doesn't move the issue's Status",
+  verification: "An issue a Refs merge touched isn't moved to Verification",
+  done: "Closed issues aren't moved to Done, and project_archive can't archive by doneBefore",
+}
+
 // Asks gh who it is signed in as and what it may do in this repository, and keeps what is missing. `message` is an
 // error gh just gave, which may name a permission the token lacks. One at a time, so a check asked for during another
 // runs after it with its own message.
@@ -398,6 +416,19 @@ const checkAccess = ($: EngineInterface, message?: string): Promise<Problem[]> =
         url: `${project.url}/workflows`,
         blocks: false,
       })
+    }
+    // A Status role with no option: what goes with it is off. A limit too, which setup fixes.
+    if (project?.status) {
+      for (const role of ROLE_ORDER) {
+        if (roleOf(project, role)) continue
+        problems.push({
+          id: `role-${role}`,
+          title: `${project.title} has no ${ROLE_NAMES[role]} Status set`,
+          detail: `${ROLE_OFF[role]}, as no Status option is the board's ${ROLE_NAMES[role]}.`,
+          fix: `Run /issues setup and pick the option for ${ROLE_NAMES[role]} under "Which Status is which", or let setup add it.`,
+          blocks: false,
+        })
+      }
     }
     const login = auth?.state === 'signed-in' && auth.login ? auth.login : null
     await update($, access, () => ({ login, repo: repo?.name ?? null, permission: repo?.permission ?? null, problems, checkedAt: Date.now() }))
@@ -644,7 +675,10 @@ const fetchIssues = async ($: EngineInterface, nameWithOwner: string): Promise<{
       const cost = limits.reduce((sum, limit) => sum + limit.cost, 0)
       $.ui.log(`issue-board: the issues query cost ${cost} GraphQL points over ${pages.length} ${pages.length === 1 ? 'page' : 'pages'}; ${last.remaining} left until ${last.resetAt}`, { to: 'debug' })
     }
-    return parseGraph(pages, preferred)
+    const parsed = parseGraph(pages, preferred)
+    // The board goes by the roles setup saved for the project it reads, and by the person's count of Now priorities.
+    const roles = saved?.status && saved.project.id === parsed.project?.id ? saved.status.roles : undefined
+    return parsed.project ? { ...parsed, project: { ...parsed.project, roles: rolesFor(parsed.project.status, roles), nowCount: settings.nowCount } } : parsed
   }
   const unread = projectRefusal !== undefined || ((await read($, access))?.problems.some(problem => problem.id === 'scope-project') ?? false)
   if (!unread) {
@@ -822,7 +856,7 @@ let moved: string[] = []
 // GraphQL. An issue already at Verification or Done, or a project without Verification, is left alone.
 const moveToVerification = async ($: EngineInterface, before: Board | null, next: Board): Promise<void> => {
   const project = next.project
-  const verify = optionOf(project?.status, 'Verification')
+  const verify = roleOf(project, 'verification')
   if (!settings.moveToVerification || !project?.status || !verify) return
   const merged = new Map<number, boolean>()
   const verified: number[] = []
@@ -850,7 +884,7 @@ const moveToVerification = async ($: EngineInterface, before: Board | null, next
 // spends GraphQL.
 const moveToDone = async ($: EngineInterface, before: Board | null, next: Board): Promise<void> => {
   const project = next.project
-  const done = optionOf(project?.status, 'Done')
+  const done = roleOf(project, 'done')
   // Turned off, the board neither moves closed issues nor asks GitHub how they closed.
   if (!settings.moveToDone || !project?.status || !done) return
   const done$: number[] = []
@@ -994,7 +1028,7 @@ const fileDraft = async ($: EngineInterface): Promise<void> => {
     const children: number[] = []
     for (const child of made.children ?? []) children.push(await createIssue($, child, number))
     const project = (await read($, board))?.project
-    const inbox = optionOf(project?.status, 'Inbox')
+    const inbox = roleOf(project, 'inbox')
     if (project) {
       for (const one of [number, ...children]) {
         const { id } = JSON.parse(await gh($, ['issue', 'view', String(one), '--json', 'id'])) as { id: string }
@@ -1402,9 +1436,11 @@ const archiveItems = async ($: EngineInterface, project: Project, ask: { number?
   if (!path) throw new Error(`couldn't tell where ${project.title} lives on GitHub`)
   if (ask.number === undefined && !ask.doneBefore) throw new Error('give an issue number, or doneBefore a date')
   if (ask.doneBefore && !/^\d{4}-\d{2}-\d{2}$/.test(ask.doneBefore)) throw new Error('give doneBefore as a date, YYYY-MM-DD')
+  const done = roleOf(project, 'done')
+  if (ask.number === undefined && !done) throw new Error(`${project.title} has no Done option set; pick one in /issues setup`)
   const items = await projectItems($, path, project)
-  const chosen = toArchive(items, ask)
-  const what = ask.number !== undefined ? `#${ask.number}` : `the items at Done that closed before ${ask.doneBefore}`
+  const chosen = toArchive(items, ask, done?.name)
+  const what = ask.number !== undefined ? `#${ask.number}` : `the items at ${done?.name ?? 'Done'} that closed before ${ask.doneBefore}`
   if (chosen.length === 0) return ask.number !== undefined ? `#${ask.number} isn't in ${project.title}, or is archived already.` : `Nothing in ${project.title} to archive: no ${what.slice(4)}.`
   const listed = chosen.map(one => `#${one.number} ${one.title}`).join('\n')
   const count = `${chosen.length} ${chosen.length === 1 ? 'item' : 'items'}`
@@ -1538,14 +1574,14 @@ const fileOne = async ($: EngineInterface, spec: NewIssue): Promise<{ number: nu
     }
   }
 
-  // Into the project, at the Status asked for, or Inbox where the project has one, to be triaged.
+  // Into the project, at the Status asked for, or the Inbox where the project has one, to be triaged.
   const project = now.project
   let item: string | null = null
   const set: { status?: string; priority?: string } = {}
   if (project) {
     try {
       item = await addItem($, project, raw.node_id)
-      for (const [field, wanted] of [['status', spec.status ?? (optionOf(project.status, 'Inbox') ? 'Inbox' : undefined)], ['priority', spec.priority]] as const) {
+      for (const [field, wanted] of [['status', spec.status ?? roleOf(project, 'inbox')?.name], ['priority', spec.priority]] as const) {
         if (!wanted) continue
         const target = field === 'status' ? project.status : project.priority
         const option = optionOf(target, wanted)
@@ -1618,7 +1654,9 @@ const startHere = async ($: EngineInterface, number: number): Promise<string> =>
   await track($, issue, true)
   await claim($, issue)
   $.ui.toast(`Working on #${issue.number} now`)
-  return `Started #${issue.number}${pr ? `, the issue pull request #${number} is for` : ''}: it is the issue this session is on${settings.claimOnStart ? ', In progress and assigned' : ''}.`
+  const started = startedOf(now?.project)
+  const claimed = settings.claimOnStart ? (started ? `, ${started.name} and assigned` : ', assigned') : ''
+  return `Started #${issue.number}${pr ? `, the issue pull request #${number} is for` : ''}: it is the issue this session is on${claimed}.`
 }
 
 // A GraphQL call with its variables as JSON, which `-f` can't carry for a list such as a field's options.
@@ -1666,12 +1704,14 @@ const readSetup = async ($: EngineInterface): Promise<void> => {
     } while (after && pages.length < PAGES)
     const root = (await $.session.repo().catch(() => null))?.root ?? (await $.session.root())
     const labels = ((facts.repository?.labels?.nodes ?? []) as { name: string }[]).map(label => label.name)
-    const found = factsOf(JSON.stringify({ data: facts }), pages, suggestAreas(labels, await foldersOf($, root)), await hasTemplate($, root))
-    // The project the board already reads, when setup saved one and it's still linked; else the first linked.
     const saved = await savedSetup($)
+    const read$ = factsOf(JSON.stringify({ data: facts }), pages, suggestAreas(labels, await foldersOf($, root)), await hasTemplate($, root))
+    const found = saved?.status ? { ...read$, saved: { project: saved.project.id, roles: saved.status.roles } } : read$
+    // The project the board already reads, when setup saved one and it's still linked; else the first linked.
     const chosen = found.projects.find(one => one.id === saved?.project.id)?.id ?? found.projects[0]?.id ?? null
     const areas = found.suggested.join(', ')
-    await update($, setup, () => ({ phase: 'ready' as const, facts: found, chosen, areas, steps: stepsOf(found, chosen, areas) }))
+    const roles = picksFor(found, chosen)
+    await update($, setup, () => ({ phase: 'ready' as const, facts: found, chosen, areas, roles, steps: stepsOf(found, chosen, areas, roles) }))
   } catch (cause) {
     const message = messageOf(cause)
     await update($, setup, () => ({ phase: 'failed' as const, message }))
@@ -1715,10 +1755,12 @@ const applySetup = async ($: EngineInterface): Promise<void> => {
     let current: SetupProject = project
     await run('status', async () => {
       if (!current.status) throw new Error('the project has no Status field')
-      const { options } = mergeStatuses(current.status.options)
+      const { options } = mergeStatuses(current.status.options, now.roles)
       await graphql($, UPDATE_FIELD, { field: current.status.id, options: options.map(one => ({ ...(one.id ? { id: one.id } : {}), name: one.name, color: one.color, description: one.description })) })
       current = await reread(current.id)
     })
+    // The roles are saved with the rest once Apply ends.
+    await run('roles', async () => undefined)
     await run('priority', async () => {
       await graphql($, CREATE_FIELD, { project: current.id, name: 'Priority', options: PRIORITIES })
       current = await reread(current.id)
@@ -1733,8 +1775,9 @@ const applySetup = async ($: EngineInterface): Promise<void> => {
       }
     })
     await run('inbox', async () => {
-      const inbox = current.status?.options.find(option => option.name.toLowerCase() === 'inbox')
-      if (!current.status || !inbox?.id) throw new Error('the project has no Inbox status')
+      const picked = now.roles.inbox
+      const inbox = picked === null ? undefined : current.status?.options.find(option => option.name.toLowerCase() === picked.toLowerCase())
+      if (!current.status || !inbox?.id) throw new Error(`the project has no ${picked ?? 'Inbox'} status`)
       for (const { item, status } of items.values()) {
         if (status) continue
         await graphql($, SET_FIELD, { project: current.id, item, field: current.status.id, option: inbox.id })
@@ -1754,7 +1797,7 @@ const applySetup = async ($: EngineInterface): Promise<void> => {
   if (ended) {
     const kept: SavedSetup = {
       project: { id: ended.id, number: ended.number, title: ended.title },
-      status: ended.status ? { id: ended.status.id, roles: rolesOf(ended.status.options) } : null,
+      status: ended.status ? { id: ended.status.id, roles: rolesOf(ended.status.options, now.roles) } : null,
       priority: ended.priority ? { id: ended.priority.id } : null,
       at: Date.now(),
     }
@@ -1765,7 +1808,20 @@ const applySetup = async ($: EngineInterface): Promise<void> => {
   // Done: the pane shows the project as it now is, a new one included, so its automations still off can be linked.
   await update($, setup, was =>
     was?.phase === 'applying'
-      ? { ...was, phase: 'done' as const, ...(ended ? { chosen: ended.id, facts: { ...was.facts, projects: [...was.facts.projects.filter(one => one.id !== ended.id), ended] } } : {}) }
+      ? {
+          ...was,
+          phase: 'done' as const,
+          ...(ended
+            ? {
+                chosen: ended.id,
+                facts: {
+                  ...was.facts,
+                  projects: [...was.facts.projects.filter(one => one.id !== ended.id), ended],
+                  ...(ended.status ? { saved: { project: ended.id, roles: rolesOf(ended.status.options, now.roles) } } : {}),
+                },
+              }
+            : {}),
+        }
       : was,
   )
   projectRefusal = undefined
@@ -2152,7 +2208,7 @@ const suggestInbox = async ($: EngineInterface): Promise<void> => {
       const project = now?.project
       if (!now || !project) return
       const known = (await read($, triage)).suggestions
-      const due = now.issues.filter(issue => isInbox(issue) && !known.some(one => one.number === issue.number && one.updatedAt === issue.updatedAt)).slice(0, TRIAGE_BATCH)
+      const due = now.issues.filter(issue => isInbox(issue, now.project) && !known.some(one => one.number === issue.number && one.updatedAt === issue.updatedAt)).slice(0, TRIAGE_BATCH)
       if (due.length === 0) return
       await update($, triage, was => ({ ...was, asking: true, failed: null }))
       // Kept first, so the person can pick any of them should Claude not answer.
@@ -2178,18 +2234,23 @@ const suggestInbox = async ($: EngineInterface): Promise<void> => {
 
 // Suggest again: Claude's suggestions for the Inbox are dropped and asked for afresh; the person's picks stay.
 const suggestAgain = async ($: EngineInterface): Promise<void> => {
-  const inbox = ((await read($, board))?.issues ?? []).filter(isInbox).map(issue => issue.number)
+  const now = await read($, board)
+  const inbox = (now?.issues ?? []).filter(issue => isInbox(issue, now?.project)).map(issue => issue.number)
   await update($, triage, was => ({ ...was, suggestions: was.suggestions.filter(one => !inbox.includes(one.number)) }))
   await suggestInbox($)
 }
 
+// The project's option for Ready or Backlog, by name, if it has one.
+const triageTarget = (project: Project | null | undefined, status: 'Ready' | 'Backlog'): string | undefined => roleOf(project, status === 'Ready' ? 'ready' : 'backlog')?.name
+
 // Accept on an Inbox issue: its Priority and area as picked, Claude's suggestion unless changed, and its Status moved
-// on to Ready or Backlog, so it leaves the Inbox. Another area label it had comes off.
+// on to Ready or Backlog, so it leaves the Inbox, where the project has that option. Another area label it had comes off.
 const acceptTriage = async ($: EngineInterface, issue: Issue, choice: { priority: string | null; area: string | null }, status: 'Ready' | 'Backlog'): Promise<void> => {
   const label = choice.area ? `area:${choice.area}` : null
   const others = label ? issue.labels.map(one => one.name).filter(name => name.startsWith('area:') && name !== label) : []
+  const target = triageTarget((await read($, board))?.project, status)
   const changes: IssueChanges = {
-    status,
+    ...(target ? { status: target } : {}),
     ...(choice.priority && choice.priority !== issue.priority ? { priority: choice.priority } : {}),
     ...(label && !issue.labels.some(one => one.name === label) ? { addLabels: [label] } : {}),
     ...(others.length > 0 ? { removeLabels: others } : {}),
@@ -2499,7 +2560,7 @@ export const register: Register = (on, options) => {
       void readSetup($)
       return { text: 'Reading the repo and its project. What setup would change shows at the top of the issues pane, and nothing changes until you press Apply.' }
     }
-    if (e.args.trim() === 'help') return { text: helpText(filtersFor(Boolean((await read($, board))?.project))) }
+    if (e.args.trim() === 'help') return { text: helpText(filtersFor((await read($, board))?.project)) }
     if (e.args.trim() === 'check') {
       const problems = await checkAccess($)
       const found = await read($, access)
@@ -2530,7 +2591,7 @@ export const register: Register = (on, options) => {
     if ((await read($, board)) === null) void refresh($)
 
     return {
-      text: openedText(filtersFor(Boolean((await read($, board))?.project))),
+      text: openedText(filtersFor((await read($, board))?.project)),
     }
   })
 
@@ -2751,7 +2812,11 @@ export const register: Register = (on, options) => {
       project,
     ).flatMap(group => group.issues)
     const label =
-      project && (chosen === 'active' || chosen === 'future') ? (chosen === 'active' ? 'now: P0 and P1' : 'later: P2') : chosen === 'inbox' ? 'inbox: Status Inbox or none' : chosen
+      project && (chosen === 'active' || chosen === 'future')
+        ? `${chosen === 'active' ? 'now' : 'later'}: ${nowNames(project)[chosen === 'active' ? 'now' : 'later'].join(' and ') || 'none'}`
+        : chosen === 'inbox'
+          ? `inbox: Status ${roleOf(project, 'inbox')?.name ?? 'Inbox'} or none`
+          : chosen
     return { result: boardText(now, kept, label, Date.now()) }
   }).catch(($, _e, next) => toolFailed($, next, 'issues'))
 
@@ -3122,9 +3187,19 @@ export const register: Register = (on, options) => {
     const facts = planned && 'facts' in planned ? planned.facts : undefined
     const chosenProject = facts && planned && 'chosen' in planned ? facts.projects.find(one => one.id === planned.chosen) : undefined
     const choose = (id: string | null) => () =>
-      void update($, setup, was => (was?.phase === 'ready' ? { ...was, chosen: id, steps: stepsOf(was.facts, id, was.areas) } : was))
+      void update($, setup, was => {
+        if (was?.phase !== 'ready') return was
+        const roles = picksFor(was.facts, id)
+        return { ...was, chosen: id, roles, steps: stepsOf(was.facts, id, was.areas, roles) }
+      })
     const typeAreas = (text: string) =>
-      void update($, setup, was => (was?.phase === 'ready' ? { ...was, areas: text, steps: stepsOf(was.facts, was.chosen, text) } : was))
+      void update($, setup, was => (was?.phase === 'ready' ? { ...was, areas: text, steps: stepsOf(was.facts, was.chosen, text, was.roles) } : was))
+    const pickRole = (role: Role, name: string | null) => () =>
+      void update($, setup, was => {
+        if (was?.phase !== 'ready') return was
+        const roles = { ...was.roles, [role]: name }
+        return { ...was, roles, steps: stepsOf(was.facts, was.chosen, was.areas, roles) }
+      })
     const manual = facts ? automationsOff(chosenProject) : []
     const unwanted = facts ? automationsOn(chosenProject) : []
     const setupPlan = planned && (
@@ -3194,7 +3269,31 @@ export const register: Register = (on, options) => {
                 />
               </Box>
             )}
-            {(manual.length > 0 || unwanted.length > 0 || addsAsTodo(chosenProject)) && (
+            {chosenProject?.status && (
+              <Box key="setup-roles" flexDirection="column" marginTop={1}>
+                <Text bold>Which Status is which</Text>
+                {ROLE_ORDER.map(role => {
+                  const options = statusOptionsOf(chosenProject).map(one => one.name)
+                  const own = ROLE_NAMES[role]
+                  const pick = planned.roles[role]
+                  const ready = planned.phase === 'ready'
+                  const choice = (key: string, label: string, name: string | null) => (
+                    <Button key={`setup-role-${role}-${key}`} variant={pick === name ? 'primary' : undefined} dimColor={pick !== name} onPress={ready ? pickRole(role, name) : () => undefined}>
+                      {label}
+                    </Button>
+                  )
+                  return (
+                    <Box key={`setup-role-${role}`} flexDirection="row" gap={1} flexWrap="wrap">
+                      <Text dimColor>{`${own}${role === 'backlog' ? ' (folds)' : ''}`}</Text>
+                      {options.map(name => choice(name, name, name))}
+                      {!options.some(name => name.toLowerCase() === own.toLowerCase()) && choice('add', `＋ ${own}`, own)}
+                      {choice('none', 'none', null)}
+                    </Box>
+                  )
+                })}
+              </Box>
+            )}
+            {(manual.length > 0 || unwanted.length > 0 || addsAsTodo(chosenProject, planned.roles.inbox)) && (
               <Box flexDirection="column" marginTop={1}>
                 <Text color="warning">In the project's Workflows settings, by hand:</Text>
                 {manual.length > 0 && <Text color="warning" wrap="wrap">{`  · turn on ${manual.join(', ')}`}</Text>}
@@ -3203,11 +3302,9 @@ export const register: Register = (on, options) => {
                     {`  · turn off ${unwanted.join(', ')}: it marks every closed issue Done, even an abandoned one; the board moves issues closed as completed`}
                   </Text>
                 )}
-                {addsAsTodo(chosenProject) && (
+                {addsAsTodo(chosenProject, planned.roles.inbox) && (
                   <Text color="warning" wrap="wrap">
-                    {
-                      "  · new issues arrive with Status Todo, GitHub's default, so they skip the Inbox: open Item added to project and set its Status to Inbox. Once it's set, delete the Todo option, which this note looks for."
-                    }
+                    {`  · new issues arrive with Status Todo, GitHub's default, so they skip the Inbox: open Item added to project and set its Status to ${planned.roles.inbox}. Once it's set, delete the Todo option, which this note looks for.`}
                   </Text>
                 )}
                 {chosenProject && <Link href={`${chosenProject.url}/workflows`} label="↗ Workflows" />}
@@ -3358,7 +3455,7 @@ export const register: Register = (on, options) => {
         <Text bold color="claude">
           Issues
         </Text>
-        {FILTERS.filter(one => one.id !== 'inbox' || project).map(one => (
+        {FILTERS.filter(one => one.id !== 'inbox' || hasInbox(project)).map(one => (
           <Button
             key={`filter-${one.id}`}
             hotkey={one.hotkey}
@@ -3735,6 +3832,8 @@ export const register: Register = (on, options) => {
       const area = mine && 'area' in mine ? (mine.area ?? null) : said ? said.area : had === 'other' ? null : had
       const status = said?.status ?? statusFor(project, priority)
       const other = status === 'Ready' ? 'Backlog' : 'Ready'
+      const target = triageTarget(project, status)
+      const otherTarget = triageTarget(project, other)
       const choosing = (edit: { priority?: string; area?: string | null }) => () =>
         void update($, triage, was => ({ ...was, picks: [...was.picks.filter(one => one.number !== issue.number), { ...was.picks.find(one => one.number === issue.number), number: issue.number, ...edit }] }))
       const option = (key: string, label: string, chosen: boolean, onPress: () => void) => (
@@ -3761,11 +3860,13 @@ export const register: Register = (on, options) => {
             {option(`triage-${issue.number}-area-none`, 'no area', area === null, choosing({ area: null }))}
             <Text dimColor>·</Text>
             <Button key={`triage-${issue.number}-accept`} variant="primary" onPress={() => void acceptTriage($, issue, { priority, area }, status)}>
-              {`✓ Accept → ${status}`}
+              {target ? `✓ Accept → ${target}` : '✓ Accept'}
             </Button>
-            <Button key={`triage-${issue.number}-${other.toLowerCase()}`} dimColor onPress={() => void acceptTriage($, issue, { priority, area }, other)}>
-              {`→ ${other}`}
-            </Button>
+            {otherTarget && (
+              <Button key={`triage-${issue.number}-${other.toLowerCase()}`} dimColor onPress={() => void acceptTriage($, issue, { priority, area }, other)}>
+                {`→ ${otherTarget}`}
+              </Button>
+            )}
           </Box>
           <Box paddingLeft={2}>
             <Text dimColor wrap="wrap">
@@ -3794,7 +3895,7 @@ export const register: Register = (on, options) => {
     const heading$ = wrappedLines(
       [
         cells('Issues'),
-        ...FILTERS.filter(one => one.id !== 'inbox' || project).map(
+        ...FILTERS.filter(one => one.id !== 'inbox' || hasInbox(project)).map(
           one => cells(one.id === 'closed' ? one.label : `${project ? one.planned : one.label} ${now.issues.filter(issue => matches(one.id, issue, who, project)).length}`) + 4,
         ),
         cells('by'),
@@ -4457,7 +4558,7 @@ export const register: Register = (on, options) => {
         {triaging &&
           shown.map(issue => (
             <Box key={`triage-entry-${issue.number}`} flexDirection="column">
-              {isInbox(issue) ? triageRow(issue) : issueRow(issue)}
+              {isInbox(issue, project) ? triageRow(issue) : issueRow(issue)}
               {open.includes(issue.number) && issueCard(issue, single)}
             </Box>
           ))}
@@ -4535,7 +4636,7 @@ export const register: Register = (on, options) => {
                       : [
                           ...(made ? ['c create the issue', 'e edit it'] : []),
                           '⏎ open an issue',
-                          filterKeys(filtersFor(Boolean(project))),
+                          filterKeys(filtersFor(project)),
                           'r refresh',
                           ...(now.prs.length > 0 ? ['m merge all PRs'] : []),
                         ],

@@ -37,6 +37,13 @@ export type Issue = {
 // A single-select field of a project, such as Status, with its options in the project's order.
 export type Field = { id: string; options: { id: string; name: string }[] }
 
+// What a Status option means to the board: where new issues wait, where triage sends them, the one that folds, where
+// Start moves an issue, where a Refs merge leaves it, and where a finished one ends.
+export type Role = 'inbox' | 'ready' | 'backlog' | 'started' | 'verification' | 'done'
+
+// Which Status option, by id, has each role. A role left out has no option, and what the board does with it is off.
+export type Roles = Partial<Record<Role, string>>
+
 // A field of the project beyond Status and Priority, by its kind. `options` are a single-select field's options, or an
 // iteration field's iterations, by title.
 export type ProjectField = { id: string; name: string; kind: 'text' | 'number' | 'date' | 'iteration' | 'select'; options?: { id: string; name: string }[] }
@@ -55,6 +62,10 @@ export type Project = {
   update?: StatusUpdate | null
   // Whether its "Item closed" workflow is on, which marks every closed issue Done, whatever the reason.
   closesToDone?: boolean
+  // Which Status option has which role, as setup saved them; absent when setup didn't, and the board's names count.
+  roles?: Roles
+  // How many of the first Priority options count as Now; absent for the first two.
+  nowCount?: number
 }
 
 // A project status update: how it stands (On track, At risk, Off track, Complete, Inactive), the note, when it was
@@ -226,11 +237,13 @@ export type SetupFacts = {
   issues: { id: string; number: number; items: { project: string; item: string; status: string | null }[] }[]
   suggested: string[]
   hasTemplate: boolean
+  // The roles setup saved last time, and for which project.
+  saved?: { project: string; roles: Roles }
 }
 
 // One change setup makes. `state` is how it went once Apply ran.
 export type SetupStep = {
-  id: 'issues' | 'project' | 'status' | 'priority' | 'bug' | 'areas' | 'items' | 'inbox'
+  id: 'issues' | 'project' | 'status' | 'roles' | 'priority' | 'bug' | 'areas' | 'items' | 'inbox'
   title: string
   state?: 'running' | 'done' | 'failed' | 'skipped'
   message?: string
@@ -241,12 +254,16 @@ export type SetupStep = {
 export type Setup =
   | { phase: 'reading' }
   | { phase: 'failed'; message: string }
-  | { phase: 'ready' | 'applying' | 'done'; facts: SetupFacts; chosen: string | null; areas: string; steps: SetupStep[] }
+  | { phase: 'ready' | 'applying' | 'done'; facts: SetupFacts; chosen: string | null; areas: string; steps: SetupStep[]; roles: RolePicks }
+
+// The Status option the person picked for each role in setup, by name: an option the project has, or the board's own
+// name for one setup adds. null: none, and the role's features are off.
+export type RolePicks = Record<Role, string | null>
 
 // What setup saves for a repo: the project the board reads, its fields, and which Status option means what.
 export type SavedSetup = {
   project: { id: string; number: number; title: string }
-  status: { id: string; roles: Partial<Record<'inbox' | 'backlog' | 'ready' | 'started' | 'verification' | 'done', string>> } | null
+  status: { id: string; roles: Roles } | null
   priority: { id: string } | null
   at: number
 }

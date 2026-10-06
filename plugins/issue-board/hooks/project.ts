@@ -1,4 +1,4 @@
-import type { Field, Issue, Project } from '../types'
+import type { Field, Issue, Project, Role, Roles } from '../types'
 
 // The repo's projects with their fields, which needs gh to have the read:project permission. A field's kind and its
 // options or iterations are the project's, not each issue's, so reading them costs little.
@@ -75,9 +75,39 @@ export const ADD_ITEM = 'mutation($project: ID!, $content: ID!) { addProjectV2It
 export const optionOf = (field: Field | null | undefined, name: string): { id: string; name: string } | undefined =>
   field?.options.find(option => option.name.toLowerCase() === name.toLowerCase())
 
+// The board's own name for each role: what setup suggests, and what counts for a project setup saved no roles for.
+export const ROLE_NAMES: Record<Role, string> = { inbox: 'Inbox', ready: 'Ready', backlog: 'Backlog', started: 'In progress', verification: 'Verification', done: 'Done' }
+export const ROLE_ORDER: Role[] = ['inbox', 'ready', 'backlog', 'started', 'verification', 'done']
+
+// Which option has each role by the board's names, whatever their case.
+export const rolesByName = (options: readonly { id?: string; name: string }[]): Roles =>
+  Object.fromEntries(ROLE_ORDER.flatMap(role => {
+    const id = options.find(option => option.name.toLowerCase() === ROLE_NAMES[role].toLowerCase())?.id
+    return id ? [[role, id]] : []
+  })) as Roles
+
+// The roles the board goes by for a project: the ones setup saved for it, kept to options it still has, or else the
+// board's names.
+export const rolesFor = (status: Field | null, saved: Roles | undefined): Roles => {
+  if (!status) return {}
+  if (!saved) return rolesByName(status.options)
+  return Object.fromEntries(Object.entries(saved).filter(([, id]) => status.options.some(option => option.id === id))) as Roles
+}
+
+// The Status option that has a role in the project, if one does. An older board without roles goes by the names.
+export const roleOf = (project: Project | null | undefined, role: Role): { id: string; name: string } | undefined => {
+  const status = project?.status
+  if (!status) return undefined
+  const id = (project.roles ?? rolesByName(status.options))[role]
+  return id ? status.options.find(option => option.id === id) : undefined
+}
+
+// Whether a Status name is the option with a role.
+export const isRole = (project: Project | null | undefined, status: string | null | undefined, role: Role): boolean =>
+  !!status && roleOf(project, role)?.name === status
+
 // The Status option Start moves an issue to.
-export const startedOf = (project: Project | null | undefined): { id: string; name: string } | undefined =>
-  project?.status?.options.find(option => /^in progress$/i.test(option.name))
+export const startedOf = (project: Project | null | undefined): { id: string; name: string } | undefined => roleOf(project, 'started')
 
 const UNSET = Number.POSITIVE_INFINITY
 
@@ -91,9 +121,18 @@ export const priorityRank = (project: Project | null | undefined, priority: stri
   return named ? Number(named[1]) : 2
 }
 
-// Now is the first two priorities (P0 and P1), Later the rest; an issue with none is neither.
-export const isNow = (project: Project | null | undefined, issue: Issue): boolean => priorityRank(project, issue.priority) < 2
+// How many of the first priorities are Now: the setting, or two (P0 and P1).
+export const nowCountOf = (project: Project | null | undefined): number => project?.nowCount ?? 2
+
+// The Priority options that are Now and the ones that are Later, by name.
+export const nowNames = (project: Project | null | undefined): { now: string[]; later: string[] } => {
+  const names = project?.priority?.options.map(option => option.name) ?? []
+  return { now: names.slice(0, nowCountOf(project)), later: names.slice(nowCountOf(project)) }
+}
+
+// Now is the first priorities, two unless set otherwise, Later the rest; an issue with none is neither.
+export const isNow = (project: Project | null | undefined, issue: Issue): boolean => priorityRank(project, issue.priority) < nowCountOf(project)
 export const isLater = (project: Project | null | undefined, issue: Issue): boolean => {
   const rank = priorityRank(project, issue.priority)
-  return rank >= 2 && rank !== UNSET
+  return rank >= nowCountOf(project) && rank !== UNSET
 }

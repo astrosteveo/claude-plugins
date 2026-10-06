@@ -1,4 +1,5 @@
-import type { SavedSetup, SetupFacts, SetupOption, SetupProject, SetupStep } from '../types'
+import type { RolePicks, Roles, SetupFacts, SetupOption, SetupProject, SetupStep } from '../types'
+import { ROLE_NAMES, ROLE_ORDER, rolesFor } from './project'
 
 // The board's Status options, in its order, with the color and description a new one gets.
 export const STATUSES: SetupOption[] = [
@@ -122,14 +123,21 @@ export const nextItemsOf = (json: string): string | null => {
   return info?.hasNextPage && info.endCursor ? info.endCursor : null
 }
 
-// The Status options with the board's missing ones added. The existing ones stay as they are, ids and all, so issues keep
-// their Status, and where they are. A new one goes in before the next of the board's options the project has, or last.
-// A name matches whatever its case, so a project's `In Progress` stands for `In progress`.
-export const mergeStatuses = (existing: SetupOption[]): { options: SetupOption[]; added: string[] } => {
+// What setup suggests for each role: the project's option with the board's name, whatever its case, or the board's name
+// for setup to add.
+export const suggestRoles = (options: readonly SetupOption[]): RolePicks =>
+  Object.fromEntries(ROLE_ORDER.map(role => [role, options.find(one => same(one.name, ROLE_NAMES[role]))?.name ?? ROLE_NAMES[role]])) as RolePicks
+
+// The Status options with the ones the picks name but the project lacks added: by default, every one of the board's it
+// lacks. The existing ones stay as they are, ids and all, so issues keep their Status, and where they are. A new one goes
+// in before the next of the board's options the project has, or last. A name matches whatever its case, so a project's
+// `In Progress` stands for `In progress`.
+export const mergeStatuses = (existing: SetupOption[], picks: RolePicks = suggestRoles(existing)): { options: SetupOption[]; added: string[] } => {
   const options = [...existing]
   const added: string[] = []
+  const picked = Object.values(picks).filter((name): name is string => name !== null)
   STATUSES.forEach((wanted, index) => {
-    if (options.some(one => same(one.name, wanted.name))) return
+    if (!picked.some(name => same(name, wanted.name)) || options.some(one => same(one.name, wanted.name))) return
     const next = STATUSES.slice(index + 1).find(later => options.some(one => same(one.name, later.name)))
     const at = next ? options.findIndex(one => same(one.name, next.name)) : options.length
     options.splice(at, 0, { ...wanted })
@@ -167,16 +175,35 @@ export const suggestAreas = (labels: string[], folders: { top: string[]; nested:
   return [...new Set(names.map(one => one.toLowerCase()).filter(one => !one.startsWith('.') && !skip.has(one) && /^[a-z0-9][a-z0-9._-]*$/.test(one)))].slice(0, 8)
 }
 
-// What setup will change: each step only when something is missing. `chosen` is the project picked (null: create one).
-export const stepsOf = (facts: SetupFacts, chosen: string | null, typed: string): SetupStep[] => {
+// The Status options setup starts from for a project: its own, or GitHub's three for one it creates.
+export const statusOptionsOf = (project: SetupProject | undefined): SetupOption[] => (project ? (project.status?.options ?? []) : DEFAULT_STATUS)
+
+// The roles the board goes by for a project now: what setup saved for it, or the board's names.
+const rolesNow = (facts: SetupFacts, project: SetupProject): Roles =>
+  project.status ? rolesFor({ id: project.status.id, options: project.status.options.map(one => ({ id: one.id ?? '', name: one.name })) }, facts.saved?.project === project.id ? facts.saved.roles : undefined) : {}
+
+// The picks as a line: each role and its option, or none.
+export const picksText = (picks: RolePicks): string => ROLE_ORDER.map(role => `${ROLE_NAMES[role]}: ${picks[role] ?? 'none'}`).join(', ')
+
+// What setup will change: each step only when something is missing. `chosen` is the project picked (null: create one),
+// `picks` the option for each role, the board's names by default.
+export const stepsOf = (facts: SetupFacts, chosen: string | null, typed: string, picks?: RolePicks): SetupStep[] => {
   const steps: SetupStep[] = []
   const project = facts.projects.find(one => one.id === chosen)
   const name = facts.repo.name.split('/')[1] ?? facts.repo.name
+  const existing = statusOptionsOf(project)
+  const roles = picks ?? suggestRoles(existing)
   if (!facts.repo.hasIssues) steps.push({ id: 'issues', title: `Turn on issues for ${facts.repo.name}` })
   if (!project) steps.push({ id: 'project', title: `Create the project "${name}" and link it to ${facts.repo.name}` })
-  const status = mergeStatuses(project ? (project.status?.options ?? []) : DEFAULT_STATUS)
+  const status = mergeStatuses(existing, roles)
   if (project && !project.status) steps.push({ id: 'status', title: 'The project has no Status field; add it in the project, then run setup again' })
   else if (status.added.length > 0) steps.push({ id: 'status', title: `Add Status options: ${status.added.join(', ')}` })
+  // Roles that differ from what the board goes by now are saved, even when nothing else changes.
+  const now = project?.status ? rolesNow(facts, project) : {}
+  const next = rolesOf(existing, roles)
+  if (project?.status && status.added.length === 0 && ROLE_ORDER.some(role => next[role] !== now[role])) {
+    steps.push({ id: 'roles', title: `Go by these Status options: ${picksText(roles)}` })
+  }
   if (!project?.priority) steps.push({ id: 'priority', title: 'Create a Priority field: P0, P1, P2' })
   if (!facts.labels.includes('bug')) steps.push({ id: 'bug', title: 'Create the label bug' })
   const areas = areasOf(typed, facts.labels)
@@ -184,7 +211,7 @@ export const stepsOf = (facts: SetupFacts, chosen: string | null, typed: string)
   const missing = facts.issues.filter(issue => !project || !issue.items.some(item => item.project === project.id))
   if (missing.length > 0) steps.push({ id: 'items', title: `Add ${missing.length} open ${missing.length === 1 ? 'issue' : 'issues'} to the project` })
   const unset = facts.issues.filter(issue => !project || !issue.items.some(item => item.project === project.id && item.status))
-  if (unset.length > 0) steps.push({ id: 'inbox', title: `Set Status to Inbox on ${unset.length} ${unset.length === 1 ? 'issue' : 'issues'} that have none` })
+  if (unset.length > 0 && roles.inbox !== null) steps.push({ id: 'inbox', title: `Set Status to ${roles.inbox} on ${unset.length} ${unset.length === 1 ? 'issue that has' : 'issues that have'} none` })
   return steps
 }
 
@@ -197,15 +224,30 @@ export const automationsOn = (project: SetupProject | undefined): string[] =>
   project ? UNWANTED.filter(name => project.workflows.some(one => one.name === name && one.enabled)) : []
 
 // Whether the project still has GitHub's own Todo, which its "Item added to project" automation sets on new issues
-// unless told otherwise. The API can't read or change what it sets, so setup asks the person to set it to Inbox.
-export const addsAsTodo = (project: SetupProject | undefined): boolean =>
-  (project?.status?.options ?? [{ name: 'Todo' }]).some(option => option.name.toLowerCase() === 'todo')
+// unless told otherwise, and it isn't the Inbox. The API can't read or change what the automation sets, so setup asks
+// the person to set it to the Inbox.
+export const addsAsTodo = (project: SetupProject | undefined, inbox: string | null = 'Inbox'): boolean =>
+  inbox !== null && !same(inbox, 'todo') && (project?.status?.options ?? [{ name: 'Todo' }]).some(option => same(option.name, 'todo'))
 
-// Which Status option means what, for the board to save: the board's names matched whatever their case.
-export const rolesOf = (options: SetupOption[]): NonNullable<SavedSetup['status']>['roles'] => {
-  const find = (name: string) => options.find(one => same(one.name, name))?.id
-  const roles = { inbox: find('Inbox'), backlog: find('Backlog'), ready: find('Ready'), started: find('In progress'), verification: find('Verification'), done: find('Done') }
-  return Object.fromEntries(Object.entries(roles).filter(([, id]) => id !== undefined)) as NonNullable<SavedSetup['status']>['roles']
+// Which Status option means what, for the board to save: each role's pick matched to an option by name, whatever its
+// case; by default the board's names.
+export const rolesOf = (options: SetupOption[], picks: RolePicks = suggestRoles(options)): Roles =>
+  Object.fromEntries(ROLE_ORDER.flatMap(role => {
+    const pick = picks[role]
+    const id = pick === null ? undefined : options.find(one => same(one.name, pick))?.id
+    return id ? [[role, id]] : []
+  })) as Roles
+
+// Roles by option id as picks by name, for setup to start from what the board goes by.
+export const rolesAsPicks = (options: readonly SetupOption[], roles: Roles): RolePicks =>
+  Object.fromEntries(ROLE_ORDER.map(role => [role, options.find(one => one.id !== undefined && one.id === roles[role])?.name ?? null])) as RolePicks
+
+// The picks setup starts from for a project: what the board goes by when setup saved roles for it, else the board's
+// names, with the ones the project lacks to add.
+export const picksFor = (facts: SetupFacts, chosen: string | null): RolePicks => {
+  const project = facts.projects.find(one => one.id === chosen)
+  const options = statusOptionsOf(project)
+  return project?.status && facts.saved?.project === project.id ? rolesAsPicks(options, rolesNow(facts, project)) : suggestRoles(options)
 }
 
 // What the template button hands Claude: a normal change to the repo, for the person to review.
