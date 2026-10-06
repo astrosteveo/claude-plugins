@@ -12,17 +12,16 @@ CLI, signed in, in the folder the session started in.
 - The hint line under the prompt sums up the board in dim text, such as
   `? for shortcuts · 35 issues · 1 bug · PR #335✓`. It shows nothing when
   no issues or pull requests are open.
-- Run `/issues` to open the pane:
+- Run `/issues` to open the pane. Its sections follow one another with no
+  blank lines between them:
   - A header line with the repo, its totals (issues, bugs, pull requests,
     failing CI) and when it last synced. In a wide pane it also shows how
     many task-list boxes are ticked, and sparklines of the issues closed and
     pull requests merged each week over the last 12 weeks, such as
     `closed ▁▂▅▃▇█▁▂▅▃▇█ 41`.
-  - **▶ Working on**: the issue you pressed Start on, with its progress. When
-    a pull request says it is for that issue (`Closes #N` or `Refs #N`), the
-    line names it with its CI.
-  - Open pull requests, one row each: a CI badge (`✓ PASS`, `✗ FAIL`,
-    `◷ CI`), the title, the issue it is for (`→ #38`), a dot for the review
+  - Open pull requests, one row each, under a **Pull requests** heading. The
+    section shows only when pull requests are open. Each row has a CI
+    badge (`✓ PASS`, `✗ FAIL`, `◷ CI`), the title, the issue it is for (`→ #38`), a dot for the review
     state, and `◆` on the one for the branch you have checked out. The row
     also says why it can't merge yet: `⚠ conflicts` with its base or
     `↓ behind` it, how many review threads are still open, and who is asked
@@ -52,18 +51,28 @@ CLI, signed in, in the folder the session started in.
     too.
   - **by Status**, **Epic** or **Area** groups the issues by the project's
     Status (the default, in the project's order), by the epic they are
-    sub-issues of, or by `area:` label. Backlog is folded: press it to open
-    it.
+    sub-issues of, or by `area:` label. Each group's heading is its name
+    and how many issues it holds, such as `In Progress 1`. Backlog is
+    folded: press it to open it.
   - An epic is a parent issue with sub-issues, GitHub's own. Grouped by
     epic, each epic's heading has a bar of its sub-issues closed so far,
     such as `6/12 closed`, and **▶ Next**, which starts Claude on the first
     sub-issue nothing blocks. Within an epic, the sub-issues nothing blocks
     come first, oldest first. Issues in no epic are under No epic. An issue
     waiting on an open one shows `⛔ #N`.
-  - Each issue has a progress bar of its task-list boxes, such as
-    `━━━━━━ 2/4`, its priority, its labels in their GitHub colors, how long
-    since it changed, and the pull request for it with its CI, such as
-    `⇄ #51 ✓`. Within a group the most pressing priority comes first, then
+  - Each issue is one row. It starts with the issue's priority, number and
+    title. At the right are its background agent, if any, the pull request
+    for it with its CI, such as `⇄ #51 ✓`, its labels in their GitHub
+    colors, a short bar of its task-list boxes with the count, such as
+    `━━━ 2/4`, and how long since it changed. An issue with no boxes has
+    no bar. In a narrow pane the labels go first, then the bar, then the
+    age, so the title keeps the rest of the width and the row stays on one
+    line.
+  - The issue this session is on, the one you pressed Start on or whose
+    branch is checked out, has `▶` at the start of its row and `✕` at
+    the end. Press `✕` to stop tracking it. An issue a background agent is
+    working on shows the agent instead.
+  - Within a group the most pressing priority comes first, then
     bugs, marked `▲`, then issues under way. Hover over an issue to preview
     its open boxes without opening it. The preview opens at the pane's right,
     so the rows above stay clear to move the pointer up to.

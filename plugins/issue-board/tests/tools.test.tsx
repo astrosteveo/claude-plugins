@@ -260,15 +260,24 @@ test('Start names the issue in the system prompt; the pane searches, filters Min
   const sections = (await $.prompt.compose(COMPOSE)).sections
   expect(sections.map(section => section.id)).toEqual(['intro', 'issue-board:working'])
   expect(sections.at(-1)?.text).toMatch(/^The person is working on GitHub issue #315: Lay Kessik out for play\./)
-  expect(await ui.find({ text: /▶ Working on/ })).toBeDefined()
-  // Its pull request, which refers to it, and that pull request's CI.
-  expect(await ui.find({ text: /^PR #335 $/ })).toBeDefined()
-  expect(await ui.find({ text: /^✓ PASS$/ })).toBeDefined()
+  // Its own row starts with ▶, and no separate line says so. The row shows its pull request with CI, and its boxes as a
+  // short bar and a count.
+  expect(await ui.find({ text: /Working on/ })).toBeUndefined()
+  expect((await ui.find({ key: 'row-315' }))?.text).toMatch(/^▶ #315 Lay Kessik out for play⇄ #335 ✓.*━━━ 2\/3 +1d✕$/)
+  expect((await ui.findAll({ type: 'Text' })).filter(text => text.text === '▶ ')).toHaveLength(1)
 
   // Ticking the last box changes the issue, not the note, so the prompt cache holds.
   await ui.press({ key: 'box-315-2' })
   expect(await ui.find({ text: / 3\/3/ })).toBeDefined()
   expect((await $.prompt.compose(COMPOSE)).sections.at(-1)?.text).toBe(sections.at(-1)?.text)
+
+  // The ✕ at the end of the ▶ row stops tracking the issue: the ▶ and the ✕ go, and the prompt no longer names it.
+  expect(await ui.find({ key: 'stop-289' })).toBeUndefined()
+  await ui.press({ key: 'stop-315' })
+  expect((await ui.find({ key: 'row-315' }))?.text).toMatch(/^ {2}#315 /)
+  expect((await ui.findAll({ type: 'Text' })).filter(text => text.text === '▶ ')).toHaveLength(0)
+  expect(await ui.find({ key: 'stop-315' })).toBeUndefined()
+  expect((await $.prompt.compose(COMPOSE)).sections.map(section => section.id)).toEqual(['intro'])
   await ui.unmount()
 })
 
