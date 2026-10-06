@@ -919,16 +919,31 @@ export const boardText = (board: Board, issues: Issue[], label: string, clock: n
   ].join('\n')
 }
 
+// How the board tells Claude to name the issue in a pull request: `Closes` only when every box is ticked, always
+// `Closes`, or nothing, which leaves it to the repository's own rules.
+export type PrRule = 'closes-when-ticked' | 'always-closes' | 'none'
+export const PR_RULES: readonly PrRule[] = ['closes-when-ticked', 'always-closes', 'none']
+
+// The PR rule's sentences for an issue; none for `none`.
+const prRuleText = (number: number, rule: PrRule): string[] =>
+  rule === 'closes-when-ticked'
+    ? [
+        `When you open a pull request for #${number}, write \`Closes #${number}\` in its body only if every acceptance box of #${number} is ticked by then.`,
+        `Otherwise write \`Refs #${number}\`, so the issue stays open for what is left. If the repository's contributing guidelines say otherwise, follow them.`,
+      ]
+    : rule === 'always-closes'
+      ? [`When you open a pull request for #${number}, write \`Closes #${number}\` in its body. If the repository's contributing guidelines say otherwise, follow them.`]
+      : []
+
 // The system prompt's section while Claude works on an issue the person started this session. It names the issue and
 // nothing that changes as the work goes on, so the prompt cache holds until the person starts another. `Closes` only
 // when the pull request finishes the issue: some repos keep an issue open for verification, and say `Refs` until then.
-export const workingSection = (working: Working): string =>
+export const workingSection = (working: Working, rule: PrRule): string =>
   [
     `The person is working on GitHub issue #${working.number}: ${working.title}. They handed it to you from the issue board.`,
     `When you finish and check an acceptance box of #${working.number}, tick it with the mcp__issue-board__tick tool. The mcp__issue-board__issues tool with number ${working.number} lists its boxes.`,
     `Change its Status, labels, assignee, parent or milestone, comment on it or close it with the mcp__issue-board__issue_update tool; moving its Status needs no permission.`,
-    `When you open a pull request for #${working.number}, write \`Closes #${working.number}\` in its body only if every acceptance box of #${working.number} is ticked by then.`,
-    `Otherwise write \`Refs #${working.number}\`, so the issue stays open for what is left. If the repository's contributing guidelines say otherwise, follow them.`,
+    ...prRuleText(working.number, rule),
   ].join(' ')
 
 // What `/issues new` asks Claude for, over the conversation so far. With `epic`, a parent issue and its sub-issues.
@@ -1591,18 +1606,23 @@ export const runProgressOf = (output: string): Pick<RunWatch, 'done' | 'total' |
 }
 
 // The system prompt of the agent Start in background sets on an issue: it works alone, in a worktree of its own, and
-// leaves a pull request for the person.
-export const WORKER_PROMPT = [
-  'You work on one GitHub issue of this repository, in the background, in a git worktree of your own. The person is not watching.',
-  "Don't ask the person anything. When something needs their decision, stop and say what it is.",
-  '1. Read the issue and its comments with `gh issue view <number> --comments`.',
-  '2. Make a branch for it from the default branch, named for the issue, such as `fix/<number>-short-name` or `feat/<number>-short-name`.',
-  "3. Do the work. Follow the repository's CLAUDE.md and contributing guidelines, and run its tests and checks.",
-  '4. When you finish an acceptance box and have checked it, tick it with the mcp__issue-board__tick tool.',
-  '5. Commit, push the branch and open a pull request. Write `Closes #<number>` in its body only if every acceptance box is ticked by then, and `Refs #<number>` otherwise.',
-  "Don't merge, don't force-push, and don't push to the default branch.",
-  'End with a short report in plain sentences: the pull request, what you did, and what is left.',
-].join('\n')
+// leaves a pull request for the person. The pull request names the issue by the same rule as the working note.
+export const workerPrompt = (rule: PrRule): string =>
+  [
+    'You work on one GitHub issue of this repository, in the background, in a git worktree of your own. The person is not watching.',
+    "Don't ask the person anything. When something needs their decision, stop and say what it is.",
+    '1. Read the issue and its comments with `gh issue view <number> --comments`.',
+    '2. Make a branch for it from the default branch, named for the issue, such as `fix/<number>-short-name` or `feat/<number>-short-name`.',
+    "3. Do the work. Follow the repository's CLAUDE.md and contributing guidelines, and run its tests and checks.",
+    '4. When you finish an acceptance box and have checked it, tick it with the mcp__issue-board__tick tool.',
+    rule === 'closes-when-ticked'
+      ? '5. Commit, push the branch and open a pull request. Write `Closes #<number>` in its body only if every acceptance box is ticked by then, and `Refs #<number>` otherwise.'
+      : rule === 'always-closes'
+        ? '5. Commit, push the branch and open a pull request. Write `Closes #<number>` in its body.'
+        : '5. Commit, push the branch and open a pull request.',
+    "Don't merge, don't force-push, and don't push to the default branch.",
+    'End with a short report in plain sentences: the pull request, what you did, and what is left.',
+  ].join('\n')
 
 // The agent type Start in background runs, as `$.agent.register` names it.
 export const WORKER = 'issue-board:worker'

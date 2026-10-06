@@ -307,7 +307,7 @@ test("the next prompt notes what changed on the issue Claude is on, but not Clau
   expect(lastContext(gh)).toBe('')
 })
 
-test('a turn that ran git reads GitHub again and suggests the next step; a checkout of fix/289-… makes #289 the issue', async ($, on) => {
+test('a turn that ran git reads GitHub again and suggests the next step; a checkout of fix/289-… makes #289 the issue', { options: { suggestNextStep: true, followBranch: true } }, async ($, on) => {
   mock.store(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   const gh = world(on)
@@ -361,4 +361,60 @@ test('a turn that ran git reads GitHub again and suggests the next step; a check
   const working = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   expect(await working.find({ key: 'stop-289' })).toBeDefined()
   await working.unmount()
+})
+
+test("by default the note names the issue with no PR rule, the prompt box keeps Claude Code's suggestion, and a branch names no issue", async ($, on) => {
+  mock.store(on)
+  const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
+  const gh = world(on)
+  gh.body = '- [x] Layout in place\n- [x] Old saves load\n'
+  await $.command.run(REFRESH)
+  const pane = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await pane.press({ key: 'filter-all' })
+  await pane.press({ key: 'issue-315' })
+  await pane.press({ key: 'start-315' })
+  await pane.unmount()
+  const note = (await $.prompt.compose(COMPOSE)).sections.at(-1)?.text
+  expect(note).toMatch(/^The person is working on GitHub issue #315: Lay Kessik out for play\./)
+  expect(note).not.toMatch(/Closes|Refs/)
+
+  // Every box is ticked, but the box gets no step of the board's, and the engine's own guess stands.
+  await $.turn.complete(TURN)
+  await clock.settle()
+  expect(gh.suggested).toEqual([])
+  await $.prompt.suggest({ text: 'run the tests', origin: { kind: 'suggestion' } })
+  expect(gh.suggested).toEqual(['run the tests'])
+
+  // A branch named for #289 leaves #315 the issue Claude is on.
+  await $.tool.call({ tool: 'Bash', command: 'git checkout -b fix/289-asteroids' })
+  await clock.settle()
+  expect((await $.prompt.compose(COMPOSE)).sections.at(-1)?.text).toBe(note)
+})
+
+test('with its PR rule set, the note says Closes only when every box is ticked', { options: { prRule: 'closes-when-ticked' } }, async ($, on) => {
+  mock.store(on)
+  world(on)
+  await $.command.run(REFRESH)
+  const pane = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await pane.press({ key: 'filter-all' })
+  await pane.press({ key: 'issue-315' })
+  await pane.press({ key: 'start-315' })
+  await pane.unmount()
+  expect((await $.prompt.compose(COMPOSE)).sections.at(-1)?.text).toMatch(/write `Closes #315` in its body only if every acceptance box of #315 is ticked by then\. Otherwise write `Refs #315`/)
+})
+
+test('with the working note and issue copies turned off, the system prompt and a prompt naming #315 carry nothing of the board', { options: { workingNote: false, issueCopies: false } }, async ($, on) => {
+  mock.store(on)
+  const gh = world(on)
+  gh.prs = [pr('pass')]
+  await $.command.run(REFRESH)
+  const pane = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await pane.press({ key: 'filter-all' })
+  await pane.press({ key: 'issue-315' })
+  await pane.press({ key: 'start-315' })
+  await pane.unmount()
+  expect((await $.prompt.compose(COMPOSE)).sections.map(section => section.id)).toEqual(['intro'])
+
+  await $.prompt.submit({ text: "What's left on #315? See also #335.", wait: false, origin: { kind: 'composer' } })
+  expect(gh.prompts.at(-1)?.context).toEqual([])
 })

@@ -93,20 +93,21 @@ GitHub. The card shows the latest three comments, a field to reply, and
 
 The issue this session is on has `▶` on its row and `✕` to stop tracking
 it. It's the one you pressed Start on, the one Claude started on when you
-asked in the conversation, or the one whose branch is checked out: a branch
-such as `fix/315-glide`, `315-glide` or `issue-315` counts. Only the main
-session's checkouts count, not a background agent's.
+asked in the conversation, or, with its setting on, the one whose branch is
+checked out: a branch such as `fix/315-glide`, `315-glide` or `issue-315`
+counts. Only the main session's checkouts count, not a background agent's.
 
 While Claude is on it:
 
 - A short note in the system prompt names it, and tells Claude to tick boxes
-  as it finishes them and to write `Closes #N` in the pull request only when
-  every box is ticked, `Refs #N` otherwise. The note survives compaction.
+  as it finishes them. Its PR rule setting can also tell Claude to write
+  `Closes #N` in the pull request only when every box is ticked, `Refs #N`
+  otherwise, or always `Closes #N`. The note survives compaction.
 - The next prompt carries what changed on GitHub since: boxes, new comments,
   CI on its pull request, or the issue closed. Claude's own changes aren't
   news.
-- After each turn, the prompt box suggests the next step, such as
-  `Open a PR for #N` once every box is ticked. Tab takes it.
+- With its setting on, after each turn the prompt box suggests the next step,
+  such as `Open a PR for #N` once every box is ticked. Tab takes it.
 
 A prompt that names `#123` carries the board's copy of that issue or pull
 request for Claude, unseen. A prompt carries up to three.
@@ -247,13 +248,18 @@ Change these in Claude Code's `/config`, under the issue board:
 | Move closed issues to Done | off | An issue closed as completed moves to Done in the project. |
 | Move to Verification on a Refs merge | off | An issue a merged pull request names with `Refs #N` moves to Verification. |
 | Start assigns and moves the issue | on | Start, and Claude starting on an issue, assign it to you and move it to In progress. |
+| Working note in the system prompt | on | While Claude is on an issue you started, the system prompt names it. |
+| Working note's pull request rule | none | `closes-when-ticked`: `Closes #N` only when every box is ticked, `Refs #N` otherwise. `always-closes`: always `Closes #N`. `none`: the note says nothing about it. Start in background follows it too. |
+| Copies of issues a prompt names | on | A prompt that names `#123` carries the board's copy of it. |
+| Suggest the next step | off | After Claude's turn, the prompt box suggests the board's next step in place of Claude Code's own. |
+| Follow the branch | off | Checking out a branch named for an issue makes it the one Claude is on. |
 
-The first two change the shared project from your session, so they start off.
-A repo can turn them on for everyone who works in it, in its
-`.claude/settings.json`:
+The two moves change the shared project from your session, so they start off.
+The PR rule is a repo's own convention, so it starts at none. A repo can set
+these for everyone who works in it, in its `.claude/settings.json`:
 
 ```json
-{ "pluginConfigs": { "issue-board@astrosteveo-plugins": { "options": { "moveToDone": true, "moveToVerification": true } } } }
+{ "pluginConfigs": { "issue-board@astrosteveo-plugins": { "options": { "moveToDone": true, "moveToVerification": true, "prRule": "closes-when-ticked" } } } }
 ```
 
 ## How it reads GitHub
