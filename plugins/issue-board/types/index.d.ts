@@ -179,8 +179,10 @@ export type Alert =
   | { kind: 'closed'; key: string; working: Working }
 
 // Something the board noticed about an epic, for the band: why it moved to Verification, or a sub-issue open again
-// under it. `key` names the event, so the same one isn't raised twice and a dismissed one stays gone.
-export type EpicNote = { key: string; epic: number; title: string; text: string }
+// under it. `key` names the event, so the same one isn't raised twice and a dismissed one stays gone. `kind` and
+// `number`, the sub-issue a reopened or orphaned line is about, say when the line no longer applies; `at` is when it
+// was raised, in milliseconds.
+export type EpicNote = { key: string; kind: 'verify' | 'reopened' | 'orphaned'; epic: number; number?: number; title: string; text: string; at: number }
 
 // `active` and `future` read Priority when there is a project (Now and Later), and the `future` label when not. `inbox`
 // is the project's issues with Status Inbox or none, to triage; without a project it holds nothing. `closed` lists the
