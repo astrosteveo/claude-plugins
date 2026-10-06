@@ -1,7 +1,7 @@
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { areasOf, automationsOff, mergeStatuses, rolesOf, stepsOf, suggestAreas } from '../hooks/setup'
+import { areasOf, automationsOff, automationsOn, mergeStatuses, rolesOf, stepsOf, suggestAreas } from '../hooks/setup'
 import type { SetupFacts, SetupOption } from '../types'
 
 const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } } as const
@@ -73,6 +73,9 @@ test('setup plans only what is missing', () => {
   const done = facts({ projects: [complete], issues: [{ id: 'I_1', number: 1, items: [{ project: 'PVT_8', item: 'PVTI_1', status: 'Ready' }] }] })
   expect(stepsOf(done, 'PVT_8', '')).toEqual([])
   expect(automationsOff(complete)).toEqual(['Auto-add to project'])
+  // Item closed is on there: setup advises turning it off, since the board moves only completed issues to Done.
+  expect(automationsOn(complete)).toEqual(['Item closed'])
+  expect(automationsOn({ ...complete, workflows: [{ name: 'Item closed', enabled: false }] })).toEqual([])
   expect(rolesOf(complete.status.options)).toEqual({ inbox: 's0', backlog: 's1', ready: 's2', started: 's3', verification: 's4', done: 's5' })
 
   // An issue in the project with no Status is set to Inbox, not added again.
@@ -206,7 +209,8 @@ test('setup on a fresh repo shows its plan, changes nothing until Apply, then ma
   expect(await ui.find({ text: /^none is linked to astrosteveo\/void-sector$/ })).toBeDefined()
   expect(await ui.find({ text: /^Create the labels area:client, area:server$/ })).toBeDefined()
   expect(await ui.find({ text: /^In the project's Workflows settings, by hand:$/ })).toBeDefined()
-  expect(await ui.find({ text: /^ {2}· turn on Item closed, Auto-add to project, Auto-add sub-issues to project$/ })).toBeDefined()
+  // A fresh project has none of its workflows read: the board wants the auto-adds on, and Item closed off.
+  expect(await ui.find({ text: /^ {2}· turn on Auto-add to project, Auto-add sub-issues to project$/ })).toBeDefined()
   // A new project's Status keeps GitHub's Todo, which its automation sets on new issues unless told Inbox.
   expect(await ui.find({ text: /^ {2}· set Item added to project to Inbox/ })).toBeDefined()
   expect(gh.writes).toEqual([])

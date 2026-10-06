@@ -15,6 +15,7 @@ import {
   UPDATE_FIELD,
   areasOf,
   addsAsTodo,
+  automationsOn,
   automationsOff,
   factsOf,
   mergeStatuses,
@@ -347,6 +348,19 @@ const checkAccess = ($: EngineInterface, message?: string): Promise<Problem[]> =
     // The last project refusal counts until Check again clears it, so its fix stays shown while the board reads labels.
     const said = [message, projectRefusal].filter(Boolean).join('\n')
     const problems = onGitHub ? problemsOf({ installed, auth, repo, ...(said ? { message: said } : {}) }) : []
+    // The project's "Item closed" workflow marks every closed issue Done, which the board does only for completed ones.
+    // A limit, not a blocker: it can be waved off.
+    const project = (await read($, board))?.project
+    if (project?.closesToDone) {
+      problems.push({
+        id: 'item-closed',
+        title: `${project.title}'s Item closed workflow is on`,
+        detail: 'It marks every closed issue Done, even one closed as not planned or as a duplicate, so Done stops meaning shipped.',
+        fix: 'Turn it off in the project\'s Workflows settings: the board moves issues closed as completed to Done by itself.',
+        url: `${project.url}/workflows`,
+        blocks: false,
+      })
+    }
     const login = auth?.state === 'signed-in' && auth.login ? auth.login : null
     await update($, access, () => ({ login, repo: repo?.name ?? null, permission: repo?.permission ?? null, problems, checkedAt: Date.now() }))
     if (login && (await read($, viewer)) === null) await update($, viewer, () => login)
@@ -3043,6 +3057,7 @@ export const register: Register = on => {
     const typeAreas = (text: string) =>
       void update($, setup, was => (was?.phase === 'ready' ? { ...was, areas: text, steps: stepsOf(was.facts, was.chosen, text) } : was))
     const manual = facts ? automationsOff(chosenProject) : []
+    const unwanted = facts ? automationsOn(chosenProject) : []
     const setupPlan = planned && (
       <Box key="setup-plan" flexDirection="column" borderStyle="round" borderColor="suggestion" paddingX={1} marginTop={1}>
         <Text color="suggestion" bold>
@@ -3110,10 +3125,15 @@ export const register: Register = on => {
                 />
               </Box>
             )}
-            {(manual.length > 0 || addsAsTodo(chosenProject)) && (
+            {(manual.length > 0 || unwanted.length > 0 || addsAsTodo(chosenProject)) && (
               <Box flexDirection="column" marginTop={1}>
                 <Text color="warning">In the project's Workflows settings, by hand:</Text>
                 {manual.length > 0 && <Text color="warning" wrap="wrap">{`  · turn on ${manual.join(', ')}`}</Text>}
+                {unwanted.length > 0 && (
+                  <Text color="warning" wrap="wrap">
+                    {`  · turn off ${unwanted.join(', ')}: it marks every closed issue Done, even an abandoned one; the board moves issues closed as completed`}
+                  </Text>
+                )}
                 {addsAsTodo(chosenProject) && (
                   <Text color="warning" wrap="wrap">
                     {"  · set Item added to project to Inbox: it sets GitHub's Todo on new issues"}

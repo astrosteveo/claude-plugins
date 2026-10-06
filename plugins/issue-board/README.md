@@ -223,7 +223,11 @@ CLI, signed in, in the folder the session started in.
   has GitHub's Todo.
 - When an issue closes as completed, by a merge, by Claude or on GitHub, the
   board moves it to Done in the project at its next read. One closed as not
-  planned stays where it was.
+  planned or as a duplicate stays where it was, so Done means shipped. For
+  that, turn off the project's own **Item closed** workflow, which marks
+  every closed issue Done: `/issues setup` advises it, and `/issues check`
+  notes it while it's on. Keep the **Auto-add** workflows on; they put new
+  issues and sub-issues in the project.
 - When a pull request that refers to an issue with `Refs #N`, not
   `Closes`, merges, the board moves the issue to Verification: merging
   didn't complete its acceptance. The next prompt tells Claude so.

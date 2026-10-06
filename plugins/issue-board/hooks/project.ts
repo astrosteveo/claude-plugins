@@ -7,7 +7,7 @@ const PROJECTS =
   '... on ProjectV2Field { id name dataType } ' +
   '... on ProjectV2SingleSelectField { id name dataType options { id name } } ' +
   '... on ProjectV2IterationField { id name dataType configuration { iterations { id title } } } } } ' +
-  'statusUpdates(last: 1) { nodes { status body createdAt startDate targetDate } } } }'
+  'statusUpdates(last: 1) { nodes { status body createdAt startDate targetDate } } workflows(first: 20) { nodes { name enabled } } } }'
 // Each issue's items in those projects, with the Status and Priority set on them.
 const ITEMS =
   'projectItems(first: 10) { nodes { id project { id } ' +
