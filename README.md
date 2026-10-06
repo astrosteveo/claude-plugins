@@ -13,9 +13,10 @@ maintained by astrosteveo.
 ## Requirements
 
 The plugins here are mods: plugins of function hooks that draw panes and hook
-Claude Code's events. They need Claude Code v2.1.287 or later. Mods are an
-early access part of Claude Code: their API may change between releases, and
-a release may break a mod until it is updated.
+Claude Code's events. They need Claude Code v2.1.287 or later, and the issue
+board needs v2.1.292 or later. Mods are an early access part of Claude Code:
+their API may change between releases, and a release may break a mod until it
+is updated.
 
 The issue board changes some things by itself and adds to Claude's prompts.
 Its README lists each, with its setting and default:

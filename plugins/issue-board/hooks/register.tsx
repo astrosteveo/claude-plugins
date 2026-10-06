@@ -61,6 +61,7 @@ import {
   greenKey,
   groupsOf,
   handoffPrompt,
+  hashRows,
   hex,
   isBug,
   isInbox,
@@ -2852,6 +2853,15 @@ export const register: Register = (on, options) => {
     if (e.event?.source === 'github' && e.agentId === undefined) void eventArrived($, e.event.data)
     return received
   }).catch(($, e, next) => fallBack($, e, next, 'session.receive'))
+
+  // Typing `#` in the prompt box offers the board's open issues and pull requests, from the board already in state, so
+  // it costs no gh call. The rows go after any that plugins beneath gave. With no board yet, nothing is added.
+  on('prompt.autocomplete', { token: /^#/ }, async ($, e, next) => {
+    const now = await read($, board)
+    if (!now) return next(e)
+    const given = await next(e)
+    return { suggestions: [...given.suggestions, ...hashRows(now, e.token)] }
+  }).catch(($, e, next) => fallBack($, e, next, 'prompt.autocomplete'))
 
   // The engine's guess at the next prompt gives way to the board's next step for the issue Claude is on.
   on('prompt.suggest', async ($, e, next) => (e.origin.kind === 'suggestion' && nextStep ? next({ ...e, text: nextStep }) : next(e)))

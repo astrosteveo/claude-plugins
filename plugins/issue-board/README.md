@@ -5,7 +5,7 @@ GitHub Project into the terminal: a pane to see and change them, a band above
 the prompt for what needs you, and tools that let Claude run the project with
 you.
 
-It needs Claude Code v2.1.287 or later, and the `gh` CLI signed in, in the
+It needs Claude Code v2.1.292 or later, and the `gh` CLI signed in, in the
 folder the session started in. Mods are an early access part of Claude Code:
 their API may change between releases, and a release may break the board
 until it is updated.
@@ -25,6 +25,13 @@ what the board is missing, if anything.
 The line under the prompt sums up the board in dim text, such as
 `? for shortcuts · 35 issues · 1 bug · PR #335✓`. It shows nothing when
 nothing is open.
+
+Type `#` in the prompt box to pick an open issue or pull request from the
+board. `#12` matches by number (#12, #120…), and `#dock` matches titles with
+"dock" in them. Each row shows the title, and the Status, Priority and labels,
+or the CI state for a pull request. Issues in progress come first, then pull
+requests, then Ready, Verification, Backlog and Inbox, each by priority. It
+shows 8 rows at most, and reads no more of GitHub than the board already has.
 
 `/issues` opens the pane. From the top:
 
