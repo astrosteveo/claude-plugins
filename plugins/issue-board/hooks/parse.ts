@@ -142,6 +142,34 @@ type RawComment = { author?: { login?: string } | null; body?: string | null; cr
 export const commentsOf = (json: string): Comment[] =>
   ((JSON.parse(json) as { comments?: RawComment[] | null }).comments ?? []).map(one => ({ author: one.author?.login ?? 'ghost', body: (one.body ?? '').trim(), at: one.createdAt ?? '' }))
 
+// An issue's comments as GitHub's REST answers them, oldest first.
+export const restCommentsOf = (items: unknown[]): Comment[] =>
+  (items as { user?: { login?: string } | null; body?: string | null; created_at?: string }[]).map(one => ({
+    author: one.user?.login ?? 'ghost',
+    body: (one.body ?? '').trim(),
+    at: one.created_at ?? '',
+  }))
+
+// How many comments the issues tool shows, the latest, and how much of each.
+export const TOOL_COMMENTS = 10
+const TOOL_COMMENT_TEXT = 1500
+
+// An issue's latest comments for Claude, newest last, each with who wrote it and when; and how many earlier ones are
+// left out of `total`.
+export const commentsText = (comments: Comment[], total: number, now: number): string => {
+  if (total === 0) return 'No comments.'
+  const shown = comments.slice(-TOOL_COMMENTS)
+  const left = total - shown.length
+  return [
+    left > 0 ? `Comments (the latest ${shown.length} of ${total}; ${left} earlier left out):` : `Comments (${total}):`,
+    ...shown.map(one => {
+      const when = one.at ? ago(one.at, now) : ''
+      const text = one.body.length > TOOL_COMMENT_TEXT ? `${one.body.slice(0, TOOL_COMMENT_TEXT - 1)}…` : one.body
+      return `— @${one.author}${when ? `, ${when === 'now' ? 'just now' : `${when} ago`}` : ''}:\n${text.replace(/^/gm, '  ')}`
+    }),
+  ].join('\n')
+}
+
 // What Ask Claude to answer hands Claude: the issue, the comment to answer, and how to reply.
 export const answerPrompt = (issue: Issue, comment: Comment): string => {
   const quoted = comment.body.length > 400 ? `${comment.body.slice(0, 399)}…` : comment.body
@@ -1085,7 +1113,7 @@ export const mentionText = (board: Board, number: number, clock: number): string
       ...(text ? ['Text, without the boxes:', text] : []),
       prose.length > MENTION_TEXT || !issue.body
         ? `Read the whole issue with \`gh issue view ${number}\`.`
-        : `Its comments aren't here: read them with \`gh issue view ${number} --comments\`.`,
+        : `Its comments aren't here: the issues tool shows them with its \`number\`.`,
     ].join('\n')
   }
   const pr = board.prs.find(one => one.number === number)

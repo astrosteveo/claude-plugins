@@ -122,6 +122,9 @@ import {
   foundOf,
   searchTerms,
   standing,
+  TOOL_COMMENTS,
+  commentsText,
+  restCommentsOf,
 } from './parse'
 
 const PANE = 'issue-board'
@@ -992,7 +995,18 @@ const searchIssues = async ($: EngineInterface, repo: string, ask: { state?: str
 
 // An issue the board doesn't hold, read from GitHub over REST: closed, most often, with how and when, and its boxes.
 const readClosed = async ($: EngineInterface, repo: string, number: number): Promise<string> => {
-  let raw: { title: string; html_url: string; body: string | null; state: string; state_reason: string | null; closed_at: string | null; labels: { name: string }[]; assignees: { login: string }[]; pull_request?: unknown }
+  let raw: {
+    title: string
+    html_url: string
+    body: string | null
+    state: string
+    state_reason: string | null
+    closed_at: string | null
+    labels: { name: string }[]
+    assignees: { login: string }[]
+    comments?: number
+    pull_request?: unknown
+  }
   try {
     raw = JSON.parse(await gh($, ['api', `repos/${repo}/issues/${number}`]))
   } catch (cause) {
@@ -1008,7 +1022,24 @@ const readClosed = async ($: EngineInterface, repo: string, number: number): Pro
     `Assignees: ${raw.assignees.map(user => user.login).join(', ') || 'none'}`,
     ...(checks.length > 0 ? [`Boxes (${checks.filter(check => check.done).length}/${checks.length} ticked):`, ...checks.map((check, index) => `${index + 1}. [${check.done ? 'x' : ' '}] ${check.text}`)] : []),
     `Read the whole issue with \`gh issue view ${number}\`.`,
+    await latestComments($, repo, number, raw.comments),
   ].join('\n')
+}
+
+// An issue's latest comments, for the issues tool, over REST: only the page that holds the latest ones is read, when the
+// count is known. A thread that can't be read says so rather than failing the answer.
+const latestComments = async ($: EngineInterface, repo: string, number: number, total?: number): Promise<string> => {
+  try {
+    if (total === 0) return 'No comments.'
+    const page = total ? Math.max(1, Math.ceil(total / 100)) : 1
+    const read$ = async (at: number) => restCommentsOf(JSON.parse(await gh($, ['api', `repos/${repo}/issues/${number}/comments?per_page=100&page=${at}`])) as unknown[])
+    let comments = await read$(page)
+    // The last page may hold fewer than are shown: the one before fills it up.
+    if (page > 1 && comments.length < TOOL_COMMENTS) comments = [...(await read$(page - 1)), ...comments]
+    return commentsText(comments, total ?? comments.length, await nowOf($))
+  } catch (cause) {
+    return `Couldn't read its comments: ${messageOf(cause)}`
+  }
 }
 
 // The issues closed lately, for the pane's Closed filter: read when the filter is chosen, over REST.
@@ -2157,7 +2188,7 @@ export const register: Register = on => {
 
     if (typeof input.number === 'number') {
       const issue = now.issues.find(one => one.number === input.number)
-      if (issue) return { result: issueText(issue) }
+      if (issue) return { result: `${issueText(issue)}\n${await latestComments($, now.repo, issue.number, issue.comments)}` }
       const pr = now.prs.find(one => one.number === input.number)
       if (pr) return { result: `${prText(pr)}\nRead it in full with \`gh pr view ${pr.number}\`.` }
       return { result: await readClosed($, now.repo, input.number) }
