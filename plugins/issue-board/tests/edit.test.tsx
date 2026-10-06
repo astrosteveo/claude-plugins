@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
 import type { Board, Issue } from '../types'
-import { addBoxes, changesText, commandsOf, leftForDone, rewordBoxes, statusOnly } from '../hooks/parse'
+import { addBoxes, changesText, commandsOf, leftForDone, leftForVerification, rewordBoxes, statusOnly } from '../hooks/parse'
 import { asksProject, graphPage, isIssuesQuery, optionId } from './graph'
 
 type Raw = Parameters<typeof graphPage>[0][number]
@@ -50,8 +50,9 @@ const github = (on: On, prs: unknown[] = []) => {
     title: 'Edit issues from the board',
     body: '- [ ] Edit',
     patched: [] as Record<string, string>[],
-    // Labels made, as `name color`.
+    // Labels made, as `name color`; and which pull requests merged, by number.
     madeLabels: [] as string[],
+    merged: {} as Record<number, boolean>,
   }
   on('process.run', async (_$, e) => {
     const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
@@ -86,6 +87,8 @@ const github = (on: On, prs: unknown[] = []) => {
     state.calls.push({ argv: argv.slice(1), ...(e.init?.stdin !== undefined ? { stdin: e.init.stdin } : {}) })
     if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/claude-plugins', hasIssuesEnabled: true }))
     if (argv[1] === 'label' && argv[2] === 'list') return answer(JSON.stringify([{ name: 'bug' }, { name: 'enhancement' }, { name: 'area:issue-board' }]))
+    const pull = /\/pulls\/(\d+)$/.exec(argv[2] ?? '')
+    if (argv[1] === 'api' && pull) return answer(state.merged[Number(pull[1])] ? '2026-10-05T12:00:00Z\n' : 'null\n')
     if (argv[1] === 'api' && argv[2]?.endsWith('/labels?per_page=100'))
       return answer(JSON.stringify([{ name: 'bug', color: 'd73a4a' }, { name: 'enhancement', color: 'a2eeef' }, { name: 'area:issue-board', color: '1d76db' }]))
     if (argv[1] === 'api' && argv[3] === 'POST' && argv[4]?.endsWith('/labels')) {
@@ -263,6 +266,13 @@ test("only an issue that had an item and wasn't at Done yet is looked at, and no
   expect(leftForDone(before, board([issue(4, 'Ready', 'I4')], ['Ready', 'Done']))).toEqual([{ number: 1, item: 'I1' }])
   expect(leftForDone(before, board([], ['Ready', 'Shipped']))).toEqual([])
   expect(leftForDone(null, board([], ['Ready', 'Done']))).toEqual([])
+
+  // A pull request that left: the open issues it refers to, unless at Verification or Done, or without Verification.
+  const pr = { number: 9, title: '', url: '', author: '', branch: '', ci: 'none' as const, review: null, isDraft: false, additions: 0, deletions: 0, updatedAt: '', sha: '', failing: [], issues: [1, 2, 4, 7] }
+  const open = [issue(1, 'In progress', 'I1'), issue(2, 'Verification', 'I2'), issue(4, 'Done', 'I4')]
+  const had = { ...board(open, ['In progress', 'Verification', 'Done']), prs: [pr] as unknown as Board['prs'] }
+  expect(leftForVerification(had, board(open, ['In progress', 'Verification', 'Done']))).toEqual([{ pr: 9, number: 1, item: 'I1' }])
+  expect(leftForVerification(had, board(open, ['In progress', 'Done']))).toEqual([])
 })
 
 test('boxes are added after the last one, or under a new Acceptance heading, and reworded by number', () => {
@@ -330,6 +340,46 @@ test("the card's editor renames an issue, adds a box, and hands a body edit to C
   await ui.press({ key: 'body-43' })
   expect(filled).toEqual(['Edit the body of #43: '])
   await ui.unmount()
+})
+
+test('an issue a merged pull request refers to with Refs moves to Verification, and the next prompt says so', async ($, on) => {
+  mock.store(on)
+  const pr = (number: number, body: string) => ({
+    number,
+    title: `Part of the work, ${number}`,
+    url: `https://github.com/astrosteveo/claude-plugins/pull/${number}`,
+    headRefName: `feat/${number}`,
+    isDraft: false,
+    body,
+    statusCheckRollup: [],
+    reviewDecision: null,
+    additions: 1,
+    deletions: 1,
+    author: { login: 'astrosteveo' },
+    updatedAt: '2026-10-05T00:00:00Z',
+  })
+  const prs = [pr(50, 'Refs #43'), pr(51, 'Refs #35')]
+  const gh = github(on, prs)
+  const prompts: (readonly string[])[] = []
+  on('prompt.submit', async (_$, e) => {
+    prompts.push(e.context ?? [])
+    return { text: e.text }
+  })
+  await $.command.run({ ...RUN, args: 'refresh' })
+  const before = writes(gh.calls).length
+
+  // #50 merges; #51 is closed without merging. Both leave the board.
+  gh.merged = { 50: true }
+  prs.length = 0
+  await $.command.run({ ...RUN, args: 'refresh' })
+  await $.command.run({ ...RUN, args: 'refresh' })
+  const moved = writes(gh.calls).slice(before)
+  expect(moved.map(call => [call.argv.find(arg => arg.startsWith('item=')), call.argv.find(arg => arg.startsWith('option='))])).toEqual([[expect.stringMatching(/43/), `option=${optionId('Verification')}`]])
+
+  await $.prompt.submit({ text: 'What next?', wait: false, origin: { kind: 'composer' } })
+  expect(prompts.at(-1)).toContain('#43 moved to Verification: pull request #50, which refers to it without closing it, merged.')
+  await $.prompt.submit({ text: 'And then?', wait: false, origin: { kind: 'composer' } })
+  expect(prompts.at(-1)?.join('\n') ?? '').not.toMatch(/Verification/)
 })
 
 test("a label the repo hasn't got is made first, an area one in the areas' color, and the answer says so", async ($, on) => {

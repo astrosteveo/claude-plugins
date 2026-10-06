@@ -206,6 +206,9 @@ CLI, signed in, in the folder the session started in.
 - When an issue closes as completed, by a merge, by Claude or on GitHub, the
   board moves it to Done in the project at its next read. One closed as not
   planned stays where it was.
+- When a pull request that refers to an issue with `Refs #N`, not
+  `Closes`, merges, the board moves the issue to Verification: merging
+  didn't complete its acceptance. The next prompt tells Claude so.
 - Claude closing an epic with `gh issue close` while some of its sub-issues
   are open asks you first, whatever your permission rules allow, and says
   how many are open. A background agent or other subagent is refused
