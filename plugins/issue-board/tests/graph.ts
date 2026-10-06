@@ -18,6 +18,8 @@ type Raw = {
   milestone?: string
   subIssues?: { total: number; completed: number }
   comments?: number
+  // Its issue type, in a repo that has types.
+  type?: string
 }
 
 const option = (prefix: string) => (name: string, index: number) => ({ id: `${prefix}${index}`, name })
@@ -68,6 +70,7 @@ const node = (raw: Raw, project: boolean) => ({
   blockedBy: { nodes: raw.blockedBy ?? [] },
   closedByPullRequestsReferences: { nodes: (raw.prs ?? []).map(number => ({ number })) },
   comments: { totalCount: raw.comments ?? 0 },
+  issueType: raw.type ? { name: raw.type } : null,
   ...(project
     ? {
         projectItems: {
@@ -85,12 +88,13 @@ export const isIssuesQuery = (argv: readonly string[]): boolean => argv[1] === '
 export const asksProject = (argv: readonly string[]): boolean => argv.some(arg => arg.includes('projectsV2'))
 
 // One page of the answer; the project only when the query asked for it and the test gives one.
-export const graphPage = (issues: Raw[], argv: readonly string[] = [], project = false): string => {
+export const graphPage = (issues: Raw[], argv: readonly string[] = [], project = false, types: string[] = []): string => {
   const withProject = project && asksProject(argv)
   return JSON.stringify({
     data: {
       rateLimit: { cost: 1, remaining: 4999, resetAt: '2026-10-04T11:00:00Z' },
       repository: {
+        issueTypes: types.length > 0 ? { nodes: types.map(name => ({ name })) } : null,
         ...(withProject ? { projectsV2: { nodes: [PROJECT] } } : {}),
         issues: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: issues.map(raw => node(raw, withProject)) },
       },

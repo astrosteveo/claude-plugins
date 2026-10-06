@@ -28,6 +28,8 @@ export type Issue = {
   prs?: number[]
   // How many comments it has; absent on an issue read with `gh issue view`, or on an older board.
   comments?: number
+  // Its issue type, such as Bug or Task, where the repo's organization has types.
+  type?: string | null
 }
 
 // A single-select field of a project, such as Status, with its options in the project's order.
@@ -85,6 +87,8 @@ export type Board = {
   velocityAt?: number
   // The repo's open milestones, read with each full read; absent on an older board.
   milestones?: Milestone[]
+  // The issue types the repo offers, by name; none outside an organization that has them.
+  issueTypes?: string[]
   // The repo's project; null without one, or when gh may not read projects. The board then works from labels.
   project?: Project | null
 }

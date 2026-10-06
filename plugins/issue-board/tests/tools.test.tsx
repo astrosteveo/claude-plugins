@@ -124,6 +124,10 @@ const world = (on: On) => {
     // Each item's field values by name, and the field writes made, as `item field value`.
     values: {} as Record<string, Record<string, unknown>>,
     valueWrites: [] as string[],
+    // The repo's issue types, #315's type, and each PATCH of an issue over REST, as `<number> <fields>`.
+    types: [] as string[],
+    type315: '',
+    patches: [] as string[],
   }
   on('process.run', async (_$, e) => {
     const argv = e.argv
@@ -139,7 +143,9 @@ const world = (on: On) => {
       state.issueReads += 1
       if (state.limited) return { value: { exitCode: 1, stdout: '', stderr: 'GraphQL: API rate limit already exceeded for user ID 1.', isStdoutTruncated: false, isStderrTruncated: false } }
       if (state.refuseProject && asksProject(argv)) return { value: { exitCode: 1, stdout: '', stderr: state.refuseProject, isStdoutTruncated: false, isStderrTruncated: false } }
-      return answer(graphPage([{ ...issue(state.body), ...state.planned[315] }, { ...other, ...state.planned[289] }], argv, state.project))
+      return answer(
+        graphPage([{ ...issue(state.body), ...state.planned[315], ...(state.type315 ? { type: state.type315 } : {}) }, { ...other, ...state.planned[289] }], argv, state.project, state.types),
+      )
     }
     if (argv[1] === 'api' && argv[2] === 'graphql' && argv[3] === '--input') {
       const asked = JSON.parse(e.init?.stdin ?? '{}') as { query: string; variables: Record<string, unknown> }
@@ -229,6 +235,12 @@ const world = (on: On) => {
       )
     }
     if (argv[1] === 'api' && argv[2]?.endsWith('/labels?per_page=100')) return answer(JSON.stringify([{ name: 'bug' }, { name: 'enhancement' }, { name: 'area:simulation' }]))
+    if (argv[1] === 'api' && argv[2] === '-X' && argv[3] === 'PATCH' && /\/issues\/\d+$/.test(argv[4] ?? '')) {
+      const fields = JSON.parse(e.init?.stdin ?? '{}') as { type?: string | null }
+      state.patches.push(`${/(\d+)$/.exec(argv[4] ?? '')?.[1]} ${JSON.stringify(fields)}`)
+      if ('type' in fields) state.type315 = fields.type ?? ''
+      return answer('{}')
+    }
     if (argv[1] === 'api' && argv[2] === '-X' && argv[4]?.includes('/milestones')) {
       const fields = JSON.parse(e.init?.stdin ?? '{}') as Record<string, unknown>
       state.milestoneWrites.push(`${argv[3]} ${argv[4].replace(/^repos\/[^/]+\/[^/]+\//, '')} ${JSON.stringify(fields)}`)
@@ -930,6 +942,51 @@ test("issue_update sets the project's other fields by name, checked against each
   expect(gh.valueWrites.at(-1)).toBe('PVTI_315 F_sprint {"iterationId":"IT1"}')
   await ui.input({ key: 'field-315-F_estimate', text: '5' })
   expect(gh.valueWrites.at(-1)).toBe('PVTI_315 F_estimate {"number":5}')
+  await ui.unmount()
+})
+
+test("an issue's type shows on its card and is set by name, where the repo has types, and offered nowhere else", async ($, on) => {
+  mock.store(on)
+  const gh = world(on)
+  gh.types = ['Bug', 'Task']
+  gh.type315 = 'Task'
+  on('ui.toast', async () => ({ value: undefined }))
+  await $.command.run(REFRESH)
+  const update = (type: string | null) => $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 315, type })
+
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'filter-all' })
+  await ui.press({ key: 'issue-315' })
+  expect(await ui.find({ text: /^Type Task$/ })).toBeDefined()
+
+  expect(String((await update('bug')).result)).toBe('#315 typed bug.')
+  expect(gh.patches.at(-1)).toBe('315 {"type":"Bug"}')
+  expect(String((await update(null)).result)).toBe('#315 its type taken off.')
+  expect(gh.patches.at(-1)).toBe('315 {"type":null}')
+  expect((await update('Epic')).deny).toBe("Couldn't change #315: the repo has no issue type called Epic; it has Bug, Task")
+
+  // The card's editor offers the repo's types; filing takes one too.
+  await ui.press({ key: 'edit-315' })
+  await ui.press({ key: 'type-315-Bug' })
+  expect(gh.patches.at(-1)).toBe('315 {"type":"Bug"}')
+  await ui.unmount()
+  await $.tool.call({ tool: 'mcp__issue-board__issue_create', title: 'A task', type: 'task' })
+  expect(gh.filed.at(-1)).toMatchObject({ title: 'A task', type: 'Task' })
+})
+
+test('a repo without issue types offers none, and setting one says why it cannot', async ($, on) => {
+  mock.store(on)
+  world(on)
+  on('ui.toast', async () => ({ value: undefined }))
+  await $.command.run(REFRESH)
+  expect((await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 315, type: 'Bug' })).deny).toBe(
+    "Couldn't change #315: the repo has no issue types; they come with an organization's settings",
+  )
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'filter-all' })
+  await ui.press({ key: 'issue-315' })
+  await ui.press({ key: 'edit-315' })
+  expect(await ui.find({ key: 'type-315-Bug' })).toBeUndefined()
   await ui.unmount()
 })
 

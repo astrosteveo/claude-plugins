@@ -18,12 +18,13 @@ const ITEMS =
 export const issuesQuery = (withProject: boolean): string =>
   [
     'query($owner: String!, $name: String!, $after: String) { rateLimit { cost remaining resetAt } repository(owner: $owner, name: $name) {',
+    'issueTypes(first: 20) { nodes { name } }',
     withProject ? PROJECTS : '',
     'issues(first: 100, states: OPEN, after: $after, orderBy: {field: UPDATED_AT, direction: DESC}) {',
     'pageInfo { hasNextPage endCursor }',
     'nodes { id number title url body updatedAt',
     'labels(first: 20) { nodes { name color } } assignees(first: 10) { nodes { login } } milestone { title }',
-    'parent { number title subIssuesSummary { total completed } } subIssuesSummary { total completed }',
+    'parent { number title subIssuesSummary { total completed } } subIssuesSummary { total completed } issueType { name }',
     'blockedBy(first: 10) { nodes { number state } }',
     'closedByPullRequestsReferences(first: 5, includeClosedPrs: false) { nodes { number } }',
     'comments { totalCount }',

@@ -141,6 +141,9 @@ CLI, signed in, in the folder the session started in.
       out of its epic.
     - **Milestone**: the repo's open milestones; press one to put the issue
       on it, or the highlighted one to take it off.
+    - **Type**: the repo's issue types, such as Bug or Task, where its
+      organization has them; press one to set it. The card shows the
+      issue's type.
     - **The project's other fields**, such as an estimate, a sprint or a
       due date: an iteration or option is a button; a number, date or text
       is a field to type in. **clear** takes a value off. The card itself
@@ -353,7 +356,8 @@ stays quiet there.
     GitHub has it, so nothing else is lost. A whole new body is refused if
     the body changed on GitHub since the board read it. It sets the
     project's other fields by name, each value checked against its field,
-    and `null` clears one.
+    and `null` clears one. It sets the issue's type, as `issue_create` does,
+    where the repo has types.
   - `issue_create` files a new issue: its title and body, labels,
     assignees, milestone, the epic it goes under, and its Status and
     Priority in the project. Without a Status it goes to the Inbox. For an
