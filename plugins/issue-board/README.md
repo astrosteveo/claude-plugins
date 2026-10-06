@@ -113,8 +113,11 @@ CLI, signed in, in the folder the session started in.
     when you ask. When the agent ends, a
     line in the conversation says it is done, failed or was stopped. The
     line names the issue, gives the agent's last answer, and links its
-    pull request when there is one. Claude gets the same news as a message
-    from the board, so it can tell you what the agent did and what's left.
+    pull request when there is one. When Claude started the agent with its
+    Agent tool, Claude Code gives Claude the agent's result, so Claude can
+    tell you what the agent did and what's left. When something else
+    started it, such as another plugin or another agent, Claude gets the
+    same news as a message from the board instead.
     The agent asks for permission as any background agent does, so allow
     what it needs, or it stops to wait.
   - **⚙ Change** opens the card's editor. Each change is made on GitHub as

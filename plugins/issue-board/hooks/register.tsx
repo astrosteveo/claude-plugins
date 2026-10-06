@@ -92,6 +92,7 @@ import {
   since,
   spark,
   startPrompt,
+  startedByClaude,
   statusFor,
   statusOnly,
   rowRoom,
@@ -1098,9 +1099,9 @@ const startInBackground = ($: EngineInterface, issue: Issue): Promise<void> =>
   })
 
 // A spawn of the board's agent, by Claude or anyone: once it starts, the issue's row follows it.
-const workerStarted = async ($: EngineInterface, number: number, agentId: string): Promise<void> => {
+const workerStarted = async ($: EngineInterface, number: number, agentId: string, byClaude: boolean): Promise<void> => {
   const title = (await read($, board))?.issues.find(one => one.number === number)?.title
-  const worker: Worker = { number, ...(title ? { title } : {}), agentId, status: 'running', startedAt: Date.now(), answer: null }
+  const worker: Worker = { number, ...(title ? { title } : {}), agentId, status: 'running', startedAt: Date.now(), answer: null, ...(byClaude ? { byClaude } : {}) }
   await update($, workers, list => [...list.filter(one => one.number !== number), worker])
   pollWorkers($)
   $.ui.toast(`Started a background agent on #${number}`)
@@ -1114,8 +1115,10 @@ const workerEnded = ($: EngineInterface, agentId: string, answer: string, reason
 const told = new Set<string>()
 
 // A background agent ended: the board reads GitHub, where it may have opened a pull request, then a line in the
-// conversation tells the person how it ended, with what it said and its pull request, and Claude gets the same as a
-// prompt of the board's, so it can follow up. Once an agent.
+// conversation tells the person how it ended, with what it said and its pull request. When something other than
+// Claude's own Agent tool call started it, Claude gets the same as a prompt of the board's, so it can follow up; when
+// Claude started it, Claude Code already gives Claude its result, and a second message would only repeat it. Once an
+// agent.
 const handOff = async ($: EngineInterface, agentId: string, status: Ended, answer: string | null): Promise<void> => {
   if (told.has(agentId)) return
   told.add(agentId)
@@ -1130,6 +1133,7 @@ const handOff = async ($: EngineInterface, agentId: string, status: Ended, answe
   const issue = { number: worker.number, title: worker.title ?? now?.issues.find(one => one.number === worker.number)?.title ?? '' }
   const pr = workerPrOf(worker.number, now?.prs ?? [], said ?? '')
   $.ui.log(endedLine(issue, status, said, pr))
+  if (worker.byClaude) return
   try {
     const sent = await $.prompt.submit({ text: handoffPrompt(issue, status, said, pr) })
     if (sent.drop !== undefined) throw new Error(sent.drop)
@@ -1566,7 +1570,7 @@ export const register: Register = on => {
       }
       const agentId = started.agentId ?? (await listed())
       if (!agentId) throw new Error('no agent id')
-      await workerStarted($, number, agentId)
+      await workerStarted($, number, agentId, startedByClaude(next.origin, e))
     } catch (cause) {
       $.ui.toast(`Started a background agent on #${number}, but the board couldn't follow it: ${messageOf(cause)}`)
     }

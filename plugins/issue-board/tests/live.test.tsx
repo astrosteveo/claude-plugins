@@ -1,7 +1,7 @@
 import type { AgentSpawnInput, On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { eventRepoOf, liveRunsOf, runProgressOf, workerBadge } from '../hooks/parse'
+import { eventRepoOf, liveRunsOf, runProgressOf, startedByClaude, workerBadge } from '../hooks/parse'
 import { graphPage, isIssuesQuery } from './graph'
 
 const issue = {
@@ -225,7 +225,15 @@ const agentCall = (args: { subagentType: string; name?: string; description: str
   ...args,
 })
 
-test('Start in background asks Claude to dispatch the board\'s agent, the row follows the agent Claude starts, and its end comes back to the conversation and Claude', async ($, on) => {
+test("only Claude's own Agent tool call in the main session counts as Claude starting an agent", () => {
+  // The model's call: Claude Code gives Claude the agent's result.
+  expect(startedByClaude({ plugin: 'engine' }, {})).toBe(true)
+  // A plugin's `$.agent.spawn`, or another agent's Agent tool call: Claude gets no result of its own.
+  expect(startedByClaude({ plugin: 'dispatcher' }, {})).toBe(false)
+  expect(startedByClaude({ plugin: 'engine' }, { parentAgentId: 'agent-0' })).toBe(false)
+})
+
+test('Start in background asks Claude to dispatch the board\'s agent, the row follows the agent Claude starts, and its end comes back to the conversation but not again to Claude', async ($, on) => {
   mock.store(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   world(on)
@@ -306,21 +314,19 @@ test('Start in background asks Claude to dispatch the board\'s agent, the row fo
   expect(await ui.find({ text: /^Opened PR #335\.\n\nBox 1 is ticked\.$/ })).toBeDefined()
   expect(await ui.find({ key: 'background-315' })).toBeDefined()
   // The conversation says it is done, naming the issue, with what it said and its pull request, after the board read
-  // GitHub again; then Claude gets the same, in the board's name, to follow up on.
+  // GitHub again. Claude started it with its own Agent tool, so Claude Code hands Claude its result: the board sends
+  // Claude nothing more.
   expect(lines).toEqual([
     'The background agent on #315 "Lay Kessik out for play" is done. Opened PR #335. Box 1 is ticked. Pull request #335: https://github.com/astrosteveo/void-sector/pull/335',
   ])
-  expect(handed.slice(1)).toEqual([{ text: expect.stringMatching(/^The background agent that Start in background set on #315 "Lay Kessik out for play" is done\./), origin: { kind: 'plugin', name: 'issue-board' } }])
-  expect(handed[1]?.text).toContain('Its pull request: #335 https://github.com/astrosteveo/void-sector/pull/335')
-  expect(handed[1]?.text).toContain('Its last answer:\nOpened PR #335.\n\nBox 1 is ticked.')
-  expect(handed[1]?.text).toMatch(/Tell the person in a few sentences what it did and what is left/)
+  expect(handed.length).toBe(1)
   expect(toasts).toContain('The background agent on #315 finished')
 
   // The list then says it ended too: nothing is told twice.
   status = 'completed'
   await clock.advance(20_000)
   expect(lines.length).toBe(1)
-  expect(handed.length).toBe(2)
+  expect(handed.length).toBe(1)
   await ui.unmount()
 })
 
@@ -409,7 +415,59 @@ test('A spawn of the board\'s agent that is refused or names no agent shows none
   await ui.unmount()
 })
 
-test('a background agent that fails or is stopped says so in the conversation and to Claude, once, with or without an answer', async ($, on) => {
+// The Agent tool's spawn of an agent as another agent's call makes it, in that agent's loop: that agent gets the result,
+// and Claude gets none of its own.
+const nestedCall = (args: { subagentType: string; name?: string; description: string; prompt: string }): AgentSpawnInput => ({ ...agentCall(args), parentAgentId: 'agent-0' })
+
+test('an agent that something other than Claude started tells Claude it ended, in the board\'s name, with its answer and pull request', async ($, on) => {
+  mock.store(on)
+  const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
+  world(on)
+  on('session.start', async (_$, e) => ({ cwd: e.cwd }))
+  on('command.register', async (_$, e) => ({ value: { command: e.name } }))
+  on('tool.register', async (_$, e) => ({ value: { tool: `mcp__issue-board__${e.name}` } }))
+  on('agent.register', async (_$, e) => ({ value: { agent: `issue-board:${e.name}` } }))
+  let spawns = 0
+  on('agent.spawn', async () => ({ model: 'claude-sonnet-5-5', agentId: `agent-${++spawns}` }))
+  on('agent.list', async () => ({ value: [] }))
+  on('turn.complete', async (_$, e) => ({ text: e.answer }))
+  const handed: { text: string; origin: unknown }[] = []
+  on('prompt.submit', async (_$, e) => {
+    handed.push({ text: e.text, origin: e.origin })
+    return { text: e.text }
+  })
+  const lines: string[] = []
+  on('ui.log', async (_$, e) => {
+    if (e.to !== 'debug') lines.push(e.text)
+    return { value: undefined }
+  })
+  const worker = { subagentType: 'issue-board:worker', description: '#315 Lay Kessik out for play', prompt: "Let's start on #315." }
+
+  await $.session.start({ cwd: REPO.root, surface: 'terminal', isInteractive: true })
+  await $.command.run(REFRESH)
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'filter-all' })
+  await ui.press({ key: 'issue-315' })
+
+  // Another agent starts it: when it ends, the line says so, and Claude gets the same in the board's name to follow up on.
+  await $.agent.spawn(nestedCall(worker))
+  await clock.settle()
+  expect(await ui.find({ text: /^⚙ working$/ })).toBeDefined()
+  await $.turn.complete({ answer: 'Opened PR #335.\n\nBox 1 is ticked.', durationMs: 1, isAborted: false, turnId: 't', agentId: 'agent-1', reason: 'answer' })
+  await clock.settle()
+  expect(await ui.find({ text: /^⚙ done$/ })).toBeDefined()
+  expect(lines).toEqual([
+    'The background agent on #315 "Lay Kessik out for play" is done. Opened PR #335. Box 1 is ticked. Pull request #335: https://github.com/astrosteveo/void-sector/pull/335',
+  ])
+  expect(handed).toEqual([{ text: expect.stringMatching(/^The background agent that Start in background set on #315 "Lay Kessik out for play" is done\./), origin: { kind: 'plugin', name: 'issue-board' } }])
+  expect(handed[0]?.text).toContain('Its pull request: #335 https://github.com/astrosteveo/void-sector/pull/335')
+  expect(handed[0]?.text).toContain('Its last answer:\nOpened PR #335.\n\nBox 1 is ticked.')
+  expect(handed[0]?.text).toMatch(/Tell the person in a few sentences what it did and what is left/)
+  await ui.unmount()
+})
+
+test('a background agent something other than Claude started that fails or is stopped says so in the conversation and to Claude, once, with or without an answer', async ($, on) => {
   mock.store(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   const gh = world(on)
@@ -433,7 +491,7 @@ test('a background agent that fails or is stopped says so in the conversation an
     if (e.to !== 'debug') lines.push(e.text)
     return { value: undefined }
   })
-  const worker = agentCall({ subagentType: 'issue-board:worker', name: 'issue-315', description: '#315 Lay Kessik out for play', prompt: "Let's start on #315." })
+  const worker = nestedCall({ subagentType: 'issue-board:worker', name: 'issue-315', description: '#315 Lay Kessik out for play', prompt: "Let's start on #315." })
 
   await $.session.start({ cwd: REPO.root, surface: 'terminal', isInteractive: true })
   await $.command.run(REFRESH)
