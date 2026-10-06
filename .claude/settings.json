@@ -1,0 +1,10 @@
+{
+  "pluginConfigs": {
+    "issue-board@astrosteveo-plugins": {
+      "options": { "moveToDone": true, "moveToVerification": true, "claimOnStart": true }
+    },
+    "issue-board": {
+      "options": { "moveToDone": true, "moveToVerification": true, "claimOnStart": true }
+    }
+  }
+}
