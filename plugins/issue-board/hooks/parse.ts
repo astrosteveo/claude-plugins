@@ -956,6 +956,8 @@ export type IssueChanges = {
   body?: string
   addBoxes?: string[]
   rewordBoxes?: { box: number; text: string }[]
+  // Close it as a duplicate of this issue, which GitHub then links.
+  duplicateOf?: number
 }
 
 const listed = (values: string[] | undefined): string => (values ?? []).filter(Boolean).join(',')
@@ -999,6 +1001,7 @@ export const changesText = (number: number, changes: IssueChanges): string => {
     changes.milestone === null ? 'taken off its milestone' : changes.milestone !== undefined ? `put on the milestone ${changes.milestone}` : '',
     changes.comment?.trim() ? 'commented on' : '',
     changes.close ? `closed as ${changes.close}` : '',
+    changes.duplicateOf ? `closed as a duplicate of #${changes.duplicateOf}` : '',
     changes.reopen && !changes.close ? 'reopened' : '',
   ].filter(Boolean)
   return said.length > 0 ? `#${number} ${said.join(', ')}.` : `Nothing to change on #${number}.`
@@ -1146,7 +1149,8 @@ export const statusOnly = (changes: IssueChanges): boolean =>
   !changes.title &&
   changes.body === undefined &&
   !changes.addBoxes?.length &&
-  !changes.rewordBoxes?.length
+  !changes.rewordBoxes?.length &&
+  !changes.duplicateOf
 
 // An issue's or pull request's page on GitHub: the URL gh gave, or one made from the repo for a board saved without it.
 export const pageOf = (repo: string, kind: 'issues' | 'pull', item: { number: number; url: string }): string =>
