@@ -11,7 +11,7 @@ element prop.
 ## Commands
 
 ```sh
-sh scripts/validate.sh                      # strict `claude plugin validate` on the marketplace and every plugin (what CI runs)
+sh scripts/validate.sh                      # strict `claude plugin validate` on the marketplace and every plugin, and every gating hook has a .catch (what CI runs)
 claude plugin test plugins/issue-board      # run a plugin's *.test.ts(x); there is no per-test filter
 claude plugin validate --json plugins/issue-board   # what the module hooks and calls, state keys, gating hooks and `.catch`
 npx -p typescript tsc -p plugins/issue-board        # type-check; needs .claude-plugin/types/, see below
@@ -26,6 +26,10 @@ After changing a plugin, or after merging and pulling `main`, the person runs `/
 
 - `hooks/hooks.json` names one module, `./register.tsx`, which exports `register: Register = (on, options) => …`.
   Every hook is `($, e, next)`; `next(e)` runs the plugins beneath and the engine's own behavior.
+- Every hook at a gating site (`tool.call`, `tool.check`, `prompt.submit`, `ui.close`…) ends in `.catch`, written as a
+  function literal that calls `fallBack` (the site's default, `next(e)`, plus a debug log line) or, for the board's own
+  tools, `toolFailed` (a deny that names the error). The engine only follows `$` into functions declared in
+  `register.tsx`, so helpers that take `$` live there, not in `parse.ts`.
 - Pure logic lives in sibling `.ts` files (`parse.ts`, and in issue-board `access.ts`, `project.ts`, `setup.ts`) and
   is imported by `register.tsx`. Tests call these directly. Put new layout or text logic there when it can be tested
   without mounting a pane.
