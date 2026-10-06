@@ -4,6 +4,7 @@
       "options": {
         "moveToDone": true,
         "moveToVerification": true,
+        "advanceEpics": true,
         "claimOnStart": true,
         "workingNote": true,
         "prRule": "closes-when-ticked",
@@ -16,6 +17,7 @@
       "options": {
         "moveToDone": true,
         "moveToVerification": true,
+        "advanceEpics": true,
         "claimOnStart": true,
         "workingNote": true,
         "prRule": "closes-when-ticked",

@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Caught, EngineInterface, HookFailure, ModelForkResult, Register, ThemeKey, Timer, UiCopyArgs } from 'claude-code'
 
-import type { Alert, Board, BoxTask, Check, Comment, Draft, DraftEdit, Filter, GroupBy, Issue, Known, Launch, Problem, Project, ProjectField, Role, StatusUpdate, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
+import type { Alert, Board, BoxTask, Check, Comment, Draft, DraftEdit, EpicNote, Filter, GroupBy, Issue, Known, Launch, Problem, Project, ProjectField, Role, StatusUpdate, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
 import type { Ended, IssueChanges, NewIssue, PrRule, Switches } from './parse'
 import { authOf, problemsOf, problemsText, repoOf } from './access'
 import { ADD_ITEM, ARCHIVE_ITEM, CLEAR_VALUE, ISSUE_ITEMS, ITEM_VALUES, POST_STATUS, SET_FIELD, SET_VALUE, ROLE_NAMES, ROLE_ORDER, issuesQuery, nowNames, optionOf, roleOf, rolesFor, startedOf } from './project'
@@ -152,6 +152,10 @@ import {
   offText,
   movedText,
   unmovedText,
+  epicChanges,
+  epicToStart,
+  subIssuesBoxOf,
+  withSubIssuesBox,
 } from './parse'
 
 const PANE = 'issue-board'
@@ -163,6 +167,7 @@ const PANE = 'issue-board'
 type Settings = {
   moveToDone: boolean
   moveToVerification: boolean
+  advanceEpics: boolean
   claimOnStart: boolean
   workingNote: boolean
   prRule: PrRule
@@ -177,6 +182,7 @@ type Settings = {
 const settingsOf = (options: Readonly<Record<string, unknown>> | undefined): Settings => ({
   moveToDone: options?.moveToDone === true,
   moveToVerification: options?.moveToVerification === true,
+  advanceEpics: options?.advanceEpics === true,
   claimOnStart: options?.claimOnStart !== false,
   workingNote: options?.workingNote !== false,
   prRule: PR_RULES.find(rule => rule === options?.prRule) ?? 'none',
@@ -315,6 +321,7 @@ const triage = atom({ plugin: 'issue-board', key: 'triage' } as const, { suggest
 const runs = atom({ plugin: 'issue-board', key: 'runs' } as const, [])
 const workers = atom({ plugin: 'issue-board', key: 'workers' } as const, [])
 const launching = atom({ plugin: 'issue-board', key: 'launching' } as const, [])
+const epicNotes = atom({ plugin: 'issue-board', key: 'epicNotes' } as const, [])
 
 // Whether a tool's calls may be allowed without asking: an organization can set a ceiling, the most permissive verdict
 // a call of the tool may reach. None set, they may.
@@ -335,6 +342,7 @@ const FILTERS: { id: Filter; label: string; planned: string; hotkey: string }[] 
 const switchesOf = (now: Settings): Switches => ({
   moveToDone: now.moveToDone,
   moveToVerification: now.moveToVerification,
+  advanceEpics: now.advanceEpics,
   claimOnStart: now.claimOnStart,
   workingNote: now.workingNote,
   prRule: now.prRule !== 'none',
@@ -848,6 +856,7 @@ const land = async ($: EngineInterface, before: Board | null, next: Board, seen:
   if ((await read($, filter)) === 'inbox' && !(await read($, triage)).failed) void suggestInbox($)
   void moveToDone($, before, next)
   void moveToVerification($, before, next)
+  void advanceEpics($, before, next)
 }
 
 // What the board moved on its own since the last prompt, which the next prompt notes for Claude.
@@ -905,6 +914,53 @@ const moveToDone = async ($: EngineInterface, before: Board | null, next: Board)
   // The person sees what the board did on its own, once a read, and what it couldn't.
   if (done$.length > 0) $.ui.toast(movedText(done.name, done$, 'it closed as completed', 'they closed as completed'))
   if (failed.length > 0) $.ui.toast(unmovedText(done.name, failed))
+}
+
+// An epic follows its sub-issues. When a read sees an epic's last open sub-issue close, its "Every sub-issue is closed"
+// box is ticked. With every box then ticked, it closes as completed and moves to Done here, since it leaves the board
+// now and moveToDone would never see it go. With other boxes open, it moves to Verification, where a person checks what
+// is left, and the band and the next prompt say why. A sub-issue open again under an epic is only noted: reopening an
+// epic or moving it back is a person's call.
+const advanceEpics = async ($: EngineInterface, before: Board | null, next: Board): Promise<void> => {
+  if (!settings.advanceEpics) return
+  const { finished, reopened, orphaned } = epicChanges(before, next)
+  const titleOf = (number: number) => next.issues.find(one => one.number === number)?.title ?? next.issues.find(one => one.parent?.number === number)?.parent?.title ?? ''
+  const notes: EpicNote[] = [
+    ...reopened.map(one => ({ key: `epic-reopened-${one.epic}-${one.number}`, epic: one.epic, title: titleOf(one.epic), text: `#${one.number} reopened under it` })),
+    ...orphaned.map(one => ({ key: `epic-orphaned-${one.epic}-${one.number}`, epic: one.epic, title: titleOf(one.epic), text: `#${one.number} is open under it, and it is closed` })),
+  ]
+  const project = next.project
+  for (const number of finished) {
+    const epic = next.issues.find(one => one.number === number)
+    if (!epic) continue
+    try {
+      // The body as GitHub has it now, so a box ticked meanwhile counts.
+      const raw = JSON.parse(await gh($, ['issue', 'view', String(number), '--json', 'body'])) as { body: string | null }
+      const box = subIssuesBoxOf(checksOf(raw.body))
+      if (box > 0 && !checksOf(raw.body)[box - 1]?.done) await tick($, number, [box], true)
+      const open = checksOf(raw.body).filter((check, index) => !check.done && index !== box - 1).length
+      if (open === 0) {
+        await gh($, ['issue', 'close', String(number), '--reason', 'completed'])
+        const done = roleOf(project, 'done')
+        if (project?.status && done && epic.status !== done.name) await setField($, epic, 'status', done.name)
+        moved.push(`#${number} closed as completed${done ? ` and moved to ${done.name}` : ''}: every sub-issue is closed and every box is ticked.`)
+        await update($, board, was => was && { ...was, issues: was.issues.filter(one => one.number !== number) })
+        await save($)
+        $.ui.toast(`Closed epic #${number}: every sub-issue is closed and every box is ticked.`)
+        continue
+      }
+      const verify = roleOf(project, 'verification')
+      const left = open === 1 ? '1 box is still open' : `${open} boxes are still open`
+      const further = !!epic.status && [verify?.name, roleOf(project, 'done')?.name].includes(epic.status)
+      if (project?.status && verify && !further) await setField($, epic, 'status', verify.name)
+      moved.push(`#${number} ${verify && !further ? `moved to ${verify.name}` : 'stays open'}: every sub-issue is closed, but ${left}.`)
+      notes.push({ key: `epic-verify-${number}`, epic: number, title: epic.title, text: `every sub-issue is closed, but ${left}` })
+    } catch (cause) {
+      $.ui.toast(`Couldn't move epic #${number} on: ${messageOf(cause)}. /issues check may say why.`)
+    }
+  }
+  // A note raised again replaces the old one, so it shows once.
+  if (notes.length > 0) await update($, epicNotes, list => [...list.filter(one => !notes.some(note => note.key === one.key)), ...notes].slice(-20))
 }
 
 // Puts an issue read straight from GitHub on the board. The change is the person's or Claude's own, so the issue
@@ -1024,7 +1080,7 @@ const fileDraft = async ($: EngineInterface): Promise<void> => {
   }
   await update($, creating, () => true)
   try {
-    const number = await createIssue($, made)
+    const number = await createIssue($, made.children?.length ? { ...made, body: withSubIssuesBox(made.body) } : made)
     // The parent exists now: should a sub-issue fail, Create mustn't make the parent again.
     await update($, draft, () => null)
     const children: number[] = []
@@ -1162,10 +1218,31 @@ const setField = async ($: EngineInterface, issue: Target, field: 'status' | 'pr
 }
 
 // Start, on GitHub too: the issue moves to In progress in the project and is assigned to the person, so the project
-// says who is on what. Then the issue is read again, so the band doesn't call these changes news.
+// says who is on what. Then the issue is read again, so the band doesn't call these changes news. Its epic follows, by
+// its own setting.
 const claim = async ($: EngineInterface, issue: Issue): Promise<void> => {
   // Turned off, Start leaves the issue's assignees and Status as they are.
-  if (!settings.claimOnStart) return
+  if (settings.claimOnStart) await claimIssue($, issue)
+  await startEpic($, issue)
+}
+
+// A sub-issue started: its epic, still waiting in the Inbox, Backlog or Ready, moves to In progress with it, so the
+// project shows the epic under way. An epic further along stays where it is.
+const startEpic = async ($: EngineInterface, issue: Issue): Promise<void> => {
+  if (!settings.advanceEpics) return
+  const now = await read($, board)
+  const epic = now ? epicToStart(now.issues, issue, now.project) : undefined
+  const started = startedOf(now?.project)
+  if (!epic || !started) return
+  try {
+    await setField($, epic, 'status', started.name)
+    moved.push(`#${epic.number} moved to ${started.name}: its sub-issue #${issue.number} was started.`)
+  } catch (cause) {
+    $.ui.toast(unmovedText(started.name, [{ number: epic.number, message: messageOf(cause) }]))
+  }
+}
+
+const claimIssue = async ($: EngineInterface, issue: Issue): Promise<void> => {
   const failures: string[] = []
   const started = startedOf((await read($, board))?.project)
   if (started && issue.status !== started.name) await setField($, issue, 'status', started.name).catch((cause: unknown) => void failures.push(messageOf(cause)))
@@ -1511,8 +1588,8 @@ const readRecent = async ($: EngineInterface): Promise<void> => {
 // the project needs GraphQL: adding the item and setting its Status and Priority. Once the issue exists, a later step
 // that fails is named in the answer, and nothing is undone. The issue goes on the board at once, without a read.
 const fileIssue = async ($: EngineInterface, spec: NewIssue): Promise<string> => {
-  const epic = await fileOne($, spec)
-  if (!spec.subIssues?.length) return epic.text
+  if (!spec.subIssues?.length) return (await fileOne($, spec)).text
+  const epic = await fileOne($, { ...spec, body: withSubIssuesBox(spec.body) })
   // An epic's parts, in order, each under it. One that fails leaves the others to be filed.
   const parts: string[] = []
   for (const [index, part] of spec.subIssues.entries()) {
@@ -4719,7 +4796,9 @@ export const register: Register = (on, options) => {
     })
     // Background agents still at work. One that ended drops out: the conversation line and Claude's handoff say so.
     const agents = (await read($, workers)).filter(one => ACTIVE.includes(one.status))
-    if (problems.length === 0 && alerts.length === 0 && offers.length === 0 && agents.length === 0) return next(e)
+    // What the board noticed about epics: why one moved to Verification, or a sub-issue open again under one.
+    const notes = now ? await read($, epicNotes) : []
+    if (problems.length === 0 && alerts.length === 0 && offers.length === 0 && agents.length === 0 && notes.length === 0) return next(e)
 
     const { Box, Text, Button, Link } = $.ui.resolve(e)
     const width = e.props.bodyColumns
@@ -4844,6 +4923,27 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
+    // An epic the board moved on, or that has a sub-issue open again: `◆ EPIC #35 <title> · <what happened>`.
+    const epicLine = (note: EpicNote) => {
+      const tail = ` · ${note.text}`
+      return (
+        <Box key={`epic-row-${note.key}`} flexDirection="row" gap={1}>
+          <Text color="warning" inverse bold>
+            {' ◆ EPIC '}
+          </Text>
+          <Text>
+            <Text color="claude" bold>{`#${note.epic} `}</Text>
+            <Text>{fit(note.title, Math.max(12, width - cells(tail) - 30))}</Text>
+            <Text dimColor>{tail}</Text>
+          </Text>
+          {link(pageOf(repo, 'issues', { number: note.epic, url: '' }))}
+          <Button key={`dismiss-${note.key}`} dimColor onPress={() => void update($, epicNotes, list => list.filter(one => one.key !== note.key))}>
+            ✕
+          </Button>
+        </Box>
+      )
+    }
+
     // Something missing: what it is, the command or page that fixes it, and a look again once it's done.
     const problemLine = (problem: Problem) => {
       const how = problem.command ? `run ${problem.command}` : problem.fix
@@ -4912,6 +5012,7 @@ export const register: Register = (on, options) => {
       <Box flexDirection="column">
         {problems.slice(0, 2).map(problemLine)}
         {alerts.slice(0, 3).map(line)}
+        {notes.slice(-2).map(epicLine)}
         {offers.slice(0, 3).map(offerLine)}
         {agents.slice(0, 3).map(agentLine)}
       </Box>
