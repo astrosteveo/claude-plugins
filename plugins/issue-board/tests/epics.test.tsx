@@ -2,7 +2,8 @@ import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { draftPrompt, nextOf, parseDraft, parseGraph, sortIssues } from '../hooks/parse'
+import type { Board, EpicNote } from '../types'
+import { draftPrompt, liveEpicNotes, nextOf, parseDraft, parseGraph, sortIssues } from '../hooks/parse'
 import { STATUSES, graphPage, isIssuesQuery } from './graph'
 
 const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 110, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } } as const
@@ -432,6 +433,143 @@ test('a reopened sub-issue, or a new one under a closed epic, shows in the band 
   expect(await band.find({ text: /#44 reopened under it/ })).toBeDefined()
   expect(await band.find({ text: /#47 is open under it, and it is closed/ })).toBeDefined()
   await band.unmount()
+})
+
+// The keys of the band's epic lines, read off a mounted band.
+const epicLines = async ($: Engine) => {
+  const band = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...BAND })
+  const keys = (await band.findAll({ type: 'Box' })).map(box => String(box.key ?? '')).filter(key => key.startsWith('epic-row-'))
+  await band.unmount()
+  return keys.map(key => key.slice('epic-row-'.length))
+}
+const refreshTwice = async ($: Engine) => {
+  await $.command.run({ ...RUN, args: 'refresh' })
+  await $.command.run({ ...RUN, args: 'refresh' })
+}
+
+// Epic #35 moved to Verification with one box open, and its line in the band.
+const verifying = async ($: Engine, on: On) => {
+  const gh = lifecycle(on, [epic('In progress', '## Acceptance\n- [ ] Every sub-issue is closed\n- [ ] Played it through'), sub(43, 'In progress')])
+  await $.command.run({ ...RUN, args: 'refresh' })
+  gh.issues = [epic('In progress', gh.bodies[35], { total: 2, completed: 2 })]
+  await refreshTwice($)
+  expect(await epicLines($)).toEqual(['epic-verify-35'])
+  return gh
+}
+
+test('a Verification line clears when its epic closes', ON, async ($, on) => {
+  mock.store(on)
+  const gh = await verifying($, on)
+  gh.issues = []
+  await refreshTwice($)
+  expect(await epicLines($)).toEqual([])
+})
+
+test('a Verification line clears when every box of its epic is ticked', ON, async ($, on) => {
+  mock.store(on)
+  const gh = await verifying($, on)
+  gh.bodies[35] = '## Acceptance\n- [x] Every sub-issue is closed\n- [x] Played it through'
+  await refreshTwice($)
+  expect(await epicLines($)).toEqual([])
+})
+
+// #44 reopened under open epic #35, and #47 opened under closed epic #38, each with its line in the band.
+const PARENT_35 = { ...EPIC, total: 2, completed: 0 }
+const PARENT_38 = { number: 38, title: 'Stations', total: 3, completed: 2 }
+const STATIONS: Raw = { number: 38, title: 'Stations', labels: [], body: '- [ ] Every sub-issue is closed', updatedAt: '2026-10-05T00:00:00Z', subIssues: { total: 3, completed: 2 }, status: 'In progress', priority: 'P1' }
+const reopening = async ($: Engine, on: On) => {
+  const gh = lifecycle(on, [epic('Verification', '- [x] Every sub-issue is closed\n- [ ] Played', { total: 2, completed: 1 }), sub(43, 'In progress')])
+  await $.command.run({ ...RUN, args: 'refresh' })
+  gh.issues = [epic('Verification', gh.bodies[35], { total: 2, completed: 0 }), sub(43, 'In progress', PARENT_35), sub(44, 'Done', PARENT_35), sub(47, 'Inbox', PARENT_38)]
+  await refreshTwice($)
+  expect((await epicLines($)).sort()).toEqual(['epic-orphaned-38-47', 'epic-reopened-35-44'])
+  return gh
+}
+
+// An issue taken out of its epic.
+const unparented = ({ parent: _parent, ...rest }: Raw): Raw => rest
+
+const REOPENED: [string, (issues: Raw[]) => Raw[]][] = [
+  ['the sub-issue closes', issues => issues.filter(one => one.number !== 44)],
+  ['the sub-issue leaves the epic', issues => issues.map(one => (one.number === 44 ? unparented(one) : one))],
+  ['the epic closes', issues => issues.filter(one => one.number !== 35)],
+]
+for (const [when, change] of REOPENED) {
+  test(`a reopened line clears when ${when}`, ON, async ($, on) => {
+    mock.store(on)
+    const gh = await reopening($, on)
+    gh.issues = change(gh.issues)
+    await refreshTwice($)
+    expect(await epicLines($)).toEqual(['epic-orphaned-38-47'])
+  })
+}
+
+const ORPHANED: [string, (issues: Raw[]) => Raw[]][] = [
+  ['the sub-issue closes', issues => issues.filter(one => one.number !== 47)],
+  ['the sub-issue leaves the epic', issues => issues.map(one => (one.number === 47 ? unparented(one) : one))],
+  ['the epic reopens', issues => [...issues, STATIONS]],
+]
+for (const [when, change] of ORPHANED) {
+  test(`an orphaned line clears when ${when}`, ON, async ($, on) => {
+    mock.store(on)
+    const gh = await reopening($, on)
+    gh.issues = change(gh.issues)
+    await refreshTwice($)
+    expect(await epicLines($)).toEqual(['epic-reopened-35-44'])
+  })
+}
+
+test('an epic line is dropped after 24 hours', ON, async ($, on) => {
+  mock.store(on)
+  const clock = mock.clock(on, { now: Date.parse('2026-10-05T10:00:00Z') })
+  await reopening($, on)
+  await clock.advance(23 * 60 * 60 * 1000)
+  expect(await epicLines($)).toHaveLength(2)
+  await clock.advance(60 * 60 * 1000)
+  expect(await epicLines($)).toEqual([])
+})
+
+test('epic lines draw after every other band line', ON, async ($, on) => {
+  mock.store(on)
+  on('tool.call', { tool: 'TaskCreate' }, async () => ({ result: { task: { id: '1', subject: 'Done' } } }))
+  on('tool.call', { tool: 'TaskUpdate' }, async (_$, e) => ({ result: { success: true, taskId: e.taskId, updatedFields: ['status'] } }))
+  on('prompt.submit', async (_$, e) => ({ text: e.text }))
+  await reopening($, on)
+  // Start #43, whose one box becomes a task; Claude completes it, so the band offers to tick the box.
+  const pane = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await pane.press({ key: 'filter-all' })
+  await pane.press({ key: 'issue-43' })
+  await pane.press({ key: 'start-43' })
+  await pane.unmount()
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '1', status: 'completed' })
+  const band = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...BAND })
+  const rows = (await band.findAll({ type: 'Box' })).map(box => String(box.key ?? '')).filter(key => /^(offer|epic-row)-/.test(key))
+  await band.unmount()
+  expect(rows[0]).toBe('offer-1')
+  expect(rows.slice(1).every(key => key.startsWith('epic-row-'))).toBe(true)
+  expect(rows).toHaveLength(3)
+})
+
+test('liveEpicNotes keeps a line only while what it reports holds, and for a day at most', () => {
+  const at = Date.parse('2026-10-05T10:00:00Z')
+  const parent = (number: number) => ({ number, title: '', total: 1, completed: 0 })
+  const issue = (number: number, extra: Partial<Raw> = {}): Raw => ({ number, title: `#${number}`, labels: [], body: '- [ ] Open', updatedAt: '2026-10-05T00:00:00Z', ...extra })
+  const verify: EpicNote = { key: 'v', kind: 'verify', epic: 35, title: '', text: '', at }
+  const reopened: EpicNote = { key: 'r', kind: 'reopened', epic: 35, number: 44, title: '', text: '', at }
+  const orphaned: EpicNote = { key: 'o', kind: 'orphaned', epic: 38, number: 47, title: '', text: '', at }
+  const live = (issues: Raw[], now = at) => liveEpicNotes([verify, reopened, orphaned], { ...parseGraph([graphPage(issues)]), repo: 'a/b', prs: [] } as unknown as Board, now).map(note => note.key)
+
+  expect(live([issue(35), issue(44, { parent: parent(35) }), issue(47, { parent: parent(38) })])).toEqual(['v', 'r', 'o'])
+  // The epic closes: its Verification and reopened lines go.
+  expect(live([issue(44, { parent: parent(35) }), issue(47, { parent: parent(38) })])).toEqual(['o'])
+  // Every box ticked: the Verification line goes.
+  expect(live([issue(35, { body: '- [x] Open' }), issue(44, { parent: parent(35) })])).toEqual(['r'])
+  // The sub-issues leave their epics.
+  expect(live([issue(35), issue(44), issue(47)])).toEqual(['v'])
+  // Epic #38 reopens.
+  expect(live([issue(35), issue(38), issue(44, { parent: parent(35) }), issue(47, { parent: parent(38) })])).toEqual(['v', 'r'])
+  // A day on, nothing.
+  expect(live([issue(35), issue(44, { parent: parent(35) }), issue(47, { parent: parent(38) })], at + 24 * 60 * 60 * 1000)).toEqual([])
 })
 
 test('issue_create files an epic with the "Every sub-issue is closed" box, and keeps one already there', async ($, on) => {

@@ -89,6 +89,12 @@ An epic can move along with its sub-issues. This is off by default; turn on
 - A sub-issue that reopens, or a new one under a closed epic, shows in the
   band. The board doesn't reopen or move anything for it.
 
+These epic lines come last in the band and clear themselves once they no
+longer apply. A Verification line goes when the epic closes or every box is
+ticked. A line about a sub-issue goes when the sub-issue closes or leaves the
+epic, or when the epic closes or reopens, whichever ends what it reports. Any
+epic line goes after 24 hours. Press **✕** to dismiss one sooner.
+
 Every new epic, from `/issues new epic` or `issue_create` with sub-issues, is
 filed with the "Every sub-issue is closed" box.
 
