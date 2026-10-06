@@ -4,7 +4,7 @@ import type { Caught, EngineInterface, HookFailure, ModelForkResult, Register, T
 import type { Alert, Board, BoxTask, Check, Comment, Draft, DraftEdit, Filter, GroupBy, Issue, Known, Launch, Problem, Project, ProjectField, StatusUpdate, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
 import type { Ended, IssueChanges, NewIssue } from './parse'
 import { authOf, problemsOf, problemsText, repoOf } from './access'
-import { ADD_ITEM, ARCHIVE_ITEM, CLEAR_VALUE, ITEM_VALUES, POST_STATUS, SET_FIELD, SET_VALUE, issuesQuery, optionOf, startedOf } from './project'
+import { ADD_ITEM, ARCHIVE_ITEM, CLEAR_VALUE, ISSUE_ITEMS, ITEM_VALUES, POST_STATUS, SET_FIELD, SET_VALUE, issuesQuery, optionOf, startedOf } from './project'
 import {
   CREATE_FIELD,
   CREATE_PROJECT,
@@ -210,6 +210,7 @@ const changesOf = (input: unknown): (IssueChanges & { number: number }) | null =
   else if (raw.lock === 'off_topic' || raw.lock === 'resolved' || raw.lock === 'spam' || raw.lock === 'too_heated') changes.lock = raw.lock
   const target = text(raw.transferTo)
   if (target) changes.transferTo = target
+  if (raw.confirmTransfer === true) changes.confirmTransfer = true
   if (typeof raw.moveBefore === 'number' && Number.isInteger(raw.moveBefore)) changes.moveBefore = raw.moveBefore
   else if (typeof raw.moveAfter === 'number' && Number.isInteger(raw.moveAfter)) changes.moveAfter = raw.moveAfter
   if (raw.type === null) changes.type = null
@@ -913,10 +914,7 @@ const fileDraft = async ($: EngineInterface): Promise<void> => {
     if (project) {
       for (const one of [number, ...children]) {
         const { id } = JSON.parse(await gh($, ['issue', 'view', String(one), '--json', 'id'])) as { id: string }
-        const added = JSON.parse(await gh($, ['api', 'graphql', '-f', `query=${ADD_ITEM}`, '-f', `project=${project.id}`, '-f', `content=${id}`])) as {
-          data?: { addProjectV2ItemById?: { item?: { id?: string } } }
-        }
-        const item = added.data?.addProjectV2ItemById?.item?.id
+        const item = await addItem($, project, id).catch(() => null)
         if (item && project.status && inbox) {
           await gh($, ['api', 'graphql', '-f', `query=${SET_FIELD}`, '-f', `project=${project.id}`, '-f', `item=${item}`, '-f', `field=${project.status.id}`, '-f', `option=${inbox.id}`])
         }
@@ -961,12 +959,26 @@ const OPEN = { id: PANE, title: 'Issues', focus: true, closeOnEscape: true } as 
 const itemFor = async ($: EngineInterface, issue: Issue, project: Project): Promise<string> => {
   if (issue.item) return issue.item
   if (!issue.id) throw new Error(`#${issue.number} hasn't been read with its project yet; refresh and try again`)
-  const added = JSON.parse(await gh($, ['api', 'graphql', '-f', `query=${ADD_ITEM}`, '-f', `project=${project.id}`, '-f', `content=${issue.id}`])) as {
-    data?: { addProjectV2ItemById?: { item?: { id?: string } | null } | null }
-  }
-  const item = added.data?.addProjectV2ItemById?.item?.id
-  if (!item) throw new Error(`couldn't add #${issue.number} to ${project.title}`)
+  const item = await addItem($, project, issue.id)
   await update($, board, was => was && { ...was, issues: was.issues.map(one => (one.number === issue.number ? { ...one, item } : one)) })
+  return item
+}
+
+// Adds an issue to the project and answers its item. A project with an auto-add workflow may have added a new issue
+// already, and GitHub then refuses the add: the item the project has is taken instead.
+const addItem = async ($: EngineInterface, project: Project, content: string): Promise<string> => {
+  try {
+    const added = JSON.parse(await gh($, ['api', 'graphql', '-f', `query=${ADD_ITEM}`, '-f', `project=${project.id}`, '-f', `content=${content}`])) as {
+      data?: { addProjectV2ItemById?: { item?: { id?: string } | null } | null }
+    }
+    const item = added.data?.addProjectV2ItemById?.item?.id
+    if (item) return item
+  } catch (cause) {
+    if (!/already exists/i.test(messageOf(cause))) throw cause
+  }
+  const found = (await graphql($, ISSUE_ITEMS, { issue: content })) as { node?: { projectItems?: { nodes?: { id: string; project: { id: string } }[] } } }
+  const item = found.node?.projectItems?.nodes?.find(one => one.project.id === project.id)?.id
+  if (!item) throw new Error(`couldn't add it to ${project.title}`)
   return item
 }
 
@@ -989,19 +1001,26 @@ const readValues = async ($: EngineInterface, issue: Issue): Promise<Record<stri
 const setFields = async ($: EngineInterface, issue: Issue, given: Record<string, string | number | null>): Promise<void> => {
   const project = (await read($, board))?.project
   if (!project) throw new Error("the board reads no project for this repo, so it can't set its fields")
+  // A field the board doesn't know may be new since its last read, which a field's change doesn't trigger: read again once.
+  const known = (one: Project | null | undefined) => Object.keys(given).every(name => /^(status|priority)$/i.test(name) || one?.fields?.some(field => field.name.toLowerCase() === name.toLowerCase()))
+  if (!known(project)) {
+    await settle($)
+    await refresh($)
+  }
+  const fresh = (await read($, board))?.project ?? project
   const plan = Object.entries(given).map(([name, value]) => {
     if (/^(status|priority)$/i.test(name)) throw new Error(`set ${name} with ${name.toLowerCase()}, not fields`)
-    const field = project.fields?.find(one => one.name.toLowerCase() === name.toLowerCase())
-    if (!field) throw new Error(`${project.title} has no field called ${name}${project.fields?.length ? `; it has ${project.fields.map(one => one.name).join(', ')}` : ''}`)
+    const field = fresh.fields?.find(one => one.name.toLowerCase() === name.toLowerCase())
+    if (!field) throw new Error(`${fresh.title} has no field called ${name}${fresh.fields?.length ? `; it has ${fresh.fields.map(one => one.name).join(', ')}` : ''}`)
     if (value === null) return { field, value: null }
     const fits = fieldValueOf(field, value)
     if (typeof fits === 'string') throw new Error(fits)
     return { field, value: fits.value }
   })
-  const item = await itemFor($, issue, project)
+  const item = await itemFor($, issue, fresh)
   for (const one of plan) {
-    if (one.value === null) await graphql($, CLEAR_VALUE, { project: project.id, item, field: one.field.id })
-    else await graphql($, SET_VALUE, { project: project.id, item, field: one.field.id, value: one.value })
+    if (one.value === null) await graphql($, CLEAR_VALUE, { project: fresh.id, item, field: one.field.id })
+    else await graphql($, SET_VALUE, { project: fresh.id, item, field: one.field.id, value: one.value })
   }
   await readValues($, { ...issue, item })
 }
@@ -1254,7 +1273,8 @@ const saveMilestone = async (
   const found = all.find(one => one.title.toLowerCase() === ask.title.toLowerCase())
   const fields = {
     ...(ask.newTitle ? { title: ask.newTitle } : {}),
-    ...(ask.due !== undefined ? { due_on: ask.due ? `${ask.due}T00:00:00Z` : null } : {}),
+    // GitHub keeps a due date in US Pacific time, so midnight UTC would fall on the day before: noon UTC is the same day.
+    ...(ask.due !== undefined ? { due_on: ask.due ? `${ask.due}T12:00:00Z` : null } : {}),
     ...(ask.description !== undefined ? { description: ask.description } : {}),
     ...(ask.close ? { state: 'closed' } : ask.reopen ? { state: 'open' } : {}),
   }
@@ -1303,7 +1323,7 @@ const archiveItems = async ($: EngineInterface, project: Project, ask: { number?
   const listed = chosen.map(one => `#${one.number} ${one.title}`).join('\n')
   const count = `${chosen.length} ${chosen.length === 1 ? 'item' : 'items'}`
   const partial = items.length >= 100 ? ' Only the first 100 items of the project were read.' : ''
-  if (!ask.confirm) return `Archiving ${what} takes ${count} out of ${project.title}'s views:\n${listed}\nThe issues stay as they are.${partial} Call again with confirm: true to archive.`
+  if (!ask.confirm) return `Archiving ${what} takes ${count} out of the views of ${project.title}:\n${listed}\nThe issues stay as they are.${partial} Call again with confirm: true to archive.`
   for (const one of chosen) await graphql($, ARCHIVE_ITEM, { project: project.id, item: one.node })
   return `Archived ${count} from ${project.title}:\n${listed}`
 }
@@ -1438,11 +1458,7 @@ const fileOne = async ($: EngineInterface, spec: NewIssue): Promise<{ number: nu
   const set: { status?: string; priority?: string } = {}
   if (project) {
     try {
-      const added = JSON.parse(await gh($, ['api', 'graphql', '-f', `query=${ADD_ITEM}`, '-f', `project=${project.id}`, '-f', `content=${raw.node_id}`])) as {
-        data?: { addProjectV2ItemById?: { item?: { id?: string } | null } | null }
-      }
-      item = added.data?.addProjectV2ItemById?.item?.id ?? null
-      if (!item) throw new Error('GitHub gave no item')
+      item = await addItem($, project, raw.node_id)
       for (const [field, wanted] of [['status', spec.status ?? (optionOf(project.status, 'Inbox') ? 'Inbox' : undefined)], ['priority', spec.priority]] as const) {
         if (!wanted) continue
         const target = field === 'status' ? project.status : project.priority
@@ -1993,7 +2009,14 @@ const applyChanges = async ($: EngineInterface, number: number, changes: IssueCh
   const repo = (await read($, board))?.repo
   if (repo && (changes.title || changes.body !== undefined || changes.addBoxes?.length || changes.rewordBoxes?.length)) await rewrite($, repo, number, changes)
   const made = repo && changes.addLabels?.length ? await ensureLabels($, repo, changes.addLabels) : []
-  if (repo && changes.transferTo) changes.transferTo = sameOwner(repo, changes.transferTo)
+  if (repo && changes.transferTo) {
+    changes.transferTo = sameOwner(repo, changes.transferTo)
+    // GitHub moves an issue from a public repo to a private one, but not back: that takes a second, confirmed call.
+    const [from, to] = await Promise.all([repo, changes.transferTo].map(async one => (await gh($, ['api', `repos/${one}`, '--jq', '.private'])).trim() === 'true'))
+    if (!from && to && !changes.confirmTransfer) {
+      throw new Error(`${changes.transferTo} is private and ${repo} is public, so GitHub won't move #${number} back once it's there. Call again with confirmTransfer: true to move it anyway`)
+    }
+  }
   for (const command of commandsOf(number, changes)) await gh($, command.argv, command.stdin)
   if (changes.transferTo) {
     await update($, board, was => was && { ...was, issues: was.issues.filter(one => one.number !== number) })
@@ -2219,6 +2242,7 @@ export const register: Register = on => {
             description: "true, or GitHub's reason, locks its conversation; false unlocks it.",
           },
           transferTo: { type: 'string', description: "Move it to another of the owner's repos, by name; it leaves this board." },
+          confirmTransfer: { type: 'boolean', description: "true moves it even from a public repo to a private one, where GitHub won't move it back." },
           fields: {
             type: 'object',
             additionalProperties: { type: ['string', 'number', 'null'] },

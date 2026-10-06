@@ -57,6 +57,9 @@ export const POST_STATUS =
   'mutation($project: ID!, $status: ProjectV2StatusUpdateStatus!, $body: String, $start: Date, $target: Date) { createProjectV2StatusUpdate(input: ' +
   '{projectId: $project, status: $status, body: $body, startDate: $start, targetDate: $target}) { statusUpdate { id createdAt } } }'
 
+// An issue's items in the projects it is in, to find the one a project's own auto-add made.
+export const ISSUE_ITEMS = 'query($issue: ID!) { node(id: $issue) { ... on Issue { projectItems(first: 20) { nodes { id project { id } } } } } }'
+
 // Archives an item: it leaves the project's views, and the issue stays as it is.
 export const ARCHIVE_ITEM = 'mutation($project: ID!, $item: ID!) { archiveProjectV2Item(input: {projectId: $project, itemId: $item}) { item { id } } }'
 

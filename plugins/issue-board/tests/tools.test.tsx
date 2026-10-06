@@ -109,6 +109,10 @@ const world = (on: On) => {
     filed: [] as Record<string, unknown>[],
     linked: [] as [number, string][],
     failLink: false,
+    // When set, the project's own auto-add has the new issue already, so GitHub refuses the board's add.
+    autoAdded: false,
+    // A field the project gained since the board's last read: its next read sees it.
+    newField: null as Record<string, unknown> | null,
     // The number the next filed issue gets, and the blocked-by links made, as `<issue> <blocker's id>`.
     next: 340,
     blocks: [] as string[],
@@ -146,13 +150,19 @@ const world = (on: On) => {
       state.issueReads += 1
       if (state.limited) return { value: { exitCode: 1, stdout: '', stderr: 'GraphQL: API rate limit already exceeded for user ID 1.', isStdoutTruncated: false, isStderrTruncated: false } }
       if (state.refuseProject && asksProject(argv)) return { value: { exitCode: 1, stdout: '', stderr: state.refuseProject, isStdoutTruncated: false, isStderrTruncated: false } }
-      return answer(
+      const page = JSON.parse(
         graphPage([{ ...issue(state.body), ...state.planned[315], ...(state.type315 ? { type: state.type315 } : {}) }, { ...other, ...state.planned[289] }], argv, state.project, state.types),
-      )
+      ) as { data: { repository: { projectsV2?: { nodes: { fields: { nodes: unknown[] } }[] } } } }
+      if (state.newField) page.data.repository.projectsV2?.nodes[0]?.fields.nodes.push(state.newField)
+      return answer(JSON.stringify(page))
     }
     if (argv[1] === 'api' && argv[2] === 'graphql' && argv[3] === '--input') {
       const asked = JSON.parse(e.init?.stdin ?? '{}') as { query: string; variables: Record<string, unknown> }
       const item = String(asked.variables.item)
+      if (asked.query.includes('projectItems')) {
+        const issue = String(asked.variables.issue)
+        return answer(JSON.stringify({ data: { node: { projectItems: { nodes: [{ id: `PVTI_auto_${issue.slice(2)}`, project: { id: 'PVT_8' } }] } } } }))
+      }
       if (asked.query.includes('createProjectV2StatusUpdate')) {
         state.statusPosts.push(asked.variables)
         return answer(JSON.stringify({ data: { createProjectV2StatusUpdate: { statusUpdate: { id: 'SU_1', createdAt: '2026-10-04T10:00:00Z' } } } }))
@@ -181,7 +191,10 @@ const world = (on: On) => {
       // The pull requests' review threads: a read, not a change.
       if (args.query?.includes('reviewThreads')) return answer(JSON.stringify({ data: { repository: { pullRequests: { nodes: [] } } } }))
       state.fields.push(args)
-      if (args.query?.includes('addProjectV2ItemById')) return answer(JSON.stringify({ data: { addProjectV2ItemById: { item: { id: `PVTI_${args.content?.slice(2)}` } } } }))
+      if (args.query?.includes('addProjectV2ItemById')) {
+        if (state.autoAdded) return { value: { exitCode: 1, stdout: '', stderr: 'gh: Content already exists in this project', isStdoutTruncated: false, isStderrTruncated: false } }
+        return answer(JSON.stringify({ data: { addProjectV2ItemById: { item: { id: `PVTI_${args.content?.slice(2)}` } } } }))
+      }
       const number = Number(args.item?.slice('PVTI_'.length))
       const name = [...STATUSES, ...PRIORITIES].find(one => optionId(one) === args.option) ?? ''
       state.planned[number] = { ...state.planned[number], ...(args.field === 'F_status' ? { status: name } : { priority: name }) }
@@ -725,6 +738,18 @@ test('issue_create files an issue with every option over REST, puts it in the pr
   await ui.unmount()
 })
 
+test("issue_create takes the item a project's own auto-add made, and goes on to set its fields", async ($, on) => {
+  mock.store(on)
+  const gh = world(on)
+  gh.project = true
+  gh.autoAdded = true
+  on('ui.toast', async () => ({ value: undefined }))
+  await $.command.run(REFRESH)
+  const filed = await $.tool.call({ tool: 'mcp__issue-board__issue_create', title: 'Added already', priority: 'P2' })
+  expect(String(filed.result)).toBe('Filed #340: “Added already”, in Void Sector, Inbox, P2.')
+  expect(gh.fields.filter(one => one.item === 'PVTI_auto_340').map(one => one.option)).toEqual([optionId('Inbox'), optionId('P2')])
+})
+
 test('issue_create with only a title files it to the Inbox, and a step that fails after filing is named with the number', async ($, on) => {
   mock.store(on)
   const gh = world(on)
@@ -876,7 +901,7 @@ test('the milestone tool makes and changes milestones over REST, and the pane an
 
   const made = await $.tool.call({ tool: 'mcp__issue-board__milestone', title: 'Beta', due: '2026-11-01', description: 'Playable start to end.' })
   expect(String(made.result)).toBe('Made the milestone Beta: due 2026-11-01, described.')
-  expect(gh.milestoneWrites.at(-1)).toBe('POST milestones {"title":"Beta","due_on":"2026-11-01T00:00:00Z","description":"Playable start to end."}')
+  expect(gh.milestoneWrites.at(-1)).toBe('POST milestones {"title":"Beta","due_on":"2026-11-01T12:00:00Z","description":"Playable start to end."}')
 
   const changed = await $.tool.call({ tool: 'mcp__issue-board__milestone', title: 'launch', due: '', close: true })
   expect(String(changed.result)).toBe('Changed the milestone Launch: no due date, closed.')
@@ -1021,7 +1046,7 @@ test('project_archive says how many items it would take first, without asking, a
   expect((await check({ doneBefore: '2026-10-01', confirm: true })).decision).toBe('ask')
 
   expect(String((await archive({ doneBefore: '2026-10-01' })).result)).toBe(
-    "Archiving the items at Done that closed before 2026-10-01 takes 1 item out of Void Sector's views:\n#250 Old work\nThe issues stay as they are. Call again with confirm: true to archive.",
+    "Archiving the items at Done that closed before 2026-10-01 takes 1 item out of the views of Void Sector:\n#250 Old work\nThe issues stay as they are. Call again with confirm: true to archive.",
   )
   expect(gh.archived).toEqual([])
   expect(String((await archive({ doneBefore: '2026-10-01', confirm: true })).result)).toBe('Archived 1 item from Void Sector:\n#250 Old work')
@@ -1061,6 +1086,21 @@ test("project_status reads the project's latest update without asking, posts one
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   expect(await ui.find({ text: /At risk · Docking slipped\./ })).toBeDefined()
   await ui.unmount()
+})
+
+test('a field the project gained since the last read is read before setting it, rather than refused', async ($, on) => {
+  mock.store(on)
+  const gh = world(on)
+  gh.project = true
+  gh.planned[315] = { status: 'Ready', priority: 'P1' }
+  on('ui.toast', async () => ({ value: undefined }))
+  await $.command.run(REFRESH)
+  const reads = gh.issueReads
+  gh.newField = { id: 'F_effort', name: 'Effort', dataType: 'NUMBER' }
+  const set = await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 315, fields: { Effort: 2 } })
+  expect(String(set.result)).toBe('#315 Effort set to 2.')
+  expect(gh.valueWrites.at(-1)).toBe('PVTI_315 F_effort {"number":2}')
+  expect(gh.issueReads).toBeGreaterThan(reads)
 })
 
 test('the pane draws on every surface, with search where the surface has a text field', async ($, on) => {

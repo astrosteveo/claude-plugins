@@ -121,6 +121,8 @@ const github = (on: On, prs: unknown[] = [], extra: Raw[] = []) => {
       state.closed = { ...state.closed, [number]: reason }
       return answer('{}')
     }
+    // Which repos are private: void-sector is, this one isn't.
+    if (argv[1] === 'api' && argv.includes('.private')) return answer(argv[2] === 'repos/astrosteveo/void-sector' ? 'true\n' : 'false\n')
     const pull = /\/pulls\/(\d+)$/.exec(argv[2] ?? '')
     if (argv[1] === 'api' && pull) return answer(state.merged[Number(pull[1])] ? '2026-10-05T12:00:00Z\n' : 'null\n')
     if (argv[1] === 'api' && argv[2]?.endsWith('/labels?per_page=100'))
@@ -491,7 +493,11 @@ test('an issue is pinned, locked and moved to another of the owner\'s repos, eac
   // Another owner's repo, or the same repo, is refused before anything runs.
   expect((await update({ transferTo: 'someone/else' })).deny).toBe("Couldn't change #43: an issue moves only to another of astrosteveo's repos, not to someone/else")
   expect((await update({ transferTo: 'claude-plugins' })).deny).toBe("Couldn't change #43: the issue is in astrosteveo/claude-plugins already")
-  expect(String((await update({ transferTo: 'void-sector' })).result)).toBe('#43 moved to astrosteveo/void-sector.')
+  // void-sector is private: GitHub won't move the issue back, so the move waits for a confirmed call.
+  expect((await update({ transferTo: 'void-sector' })).deny).toBe(
+    "Couldn't change #43: astrosteveo/void-sector is private and astrosteveo/claude-plugins is public, so GitHub won't move #43 back once it's there. Call again with confirmTransfer: true to move it anyway",
+  )
+  expect(String((await update({ transferTo: 'void-sector', confirmTransfer: true })).result)).toBe('#43 moved to astrosteveo/void-sector.')
   expect(ran()).toEqual(['issue pin 43', 'issue lock 43 --reason too_heated', 'issue unpin 43', 'issue unlock 43', 'issue transfer 43 astrosteveo/void-sector'])
 
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })

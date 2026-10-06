@@ -1016,6 +1016,8 @@ export type IssueChanges = {
   pin?: boolean
   lock?: boolean | 'off_topic' | 'resolved' | 'spam' | 'too_heated'
   transferTo?: string
+  // Moves it even where GitHub won't move it back, from a public repo to a private one.
+  confirmTransfer?: boolean
   // The project's other fields to set, by name; null clears one.
   fields?: Record<string, string | number | null>
 }
