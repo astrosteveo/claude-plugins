@@ -197,7 +197,9 @@ CLI, signed in, in the folder the session started in.
   has GitHub's Todo.
 - Claude closing an epic with `gh issue close` while some of its sub-issues
   are open asks you first, whatever your permission rules allow, and says
-  how many are open.
+  how many are open. A background agent or other subagent is refused
+  instead, since nobody may be watching for the prompt, and is told to deal
+  with the sub-issues first or leave the epic open.
 - A band above the prompt is for what needs you now, something to fix,
   merge, tick or look at, and for the background agents working out of
   sight. It shows nothing otherwise. The main session's progress is the
