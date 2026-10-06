@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { ago, bar, cells, checksOf, ciOf, fit, issuesOf, pad, proseOf, rowRoom, spark, summary, weekly } from '../hooks/parse'
+import { ago, bar, cells, checksOf, ciOf, fit, issuesOf, pad, peekPlace, proseOf, rowRoom, spark, summary, weekly, wrappedLines } from '../hooks/parse'
 import { graphPage, isIssuesQuery } from './graph'
 
 test("a card's text leaves out its boxes, and a pull request names the issues it is for", () => {
@@ -91,8 +91,10 @@ test("a preview line holding an emoji keeps the card's width, so nothing shows t
     body: '- [ ] A blocked row shows `⛔ #N`.\n- [ ] Ready ones come first.',
     updatedAt: '2026-10-03T20:00:00Z',
   }
+  // Rows enough that the card has room beside the row.
+  const others = [1, 2, 3, 4, 5, 6].map(number => ({ number, title: `Other ${number}`, labels: [], body: '', updatedAt: '2026-10-03T20:00:00Z' }))
   on('process.run', async (_$, e) => {
-    const stdout = isIssuesQuery(e.argv) ? graphPage([blocked]) : e.argv[1] === 'repo' ? JSON.stringify({ nameWithOwner: 'astrosteveo/claude-plugins', hasIssuesEnabled: true }) : '[]'
+    const stdout = isIssuesQuery(e.argv) ? graphPage([blocked, ...others]) : e.argv[1] === 'repo' ? JSON.stringify({ nameWithOwner: 'astrosteveo/claude-plugins', hasIssuesEnabled: true }) : '[]'
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   await $.command.run({ command: 'issues', args: 'refresh', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
@@ -103,6 +105,58 @@ test("a preview line holding an emoji keeps the card's width, so nothing shows t
   // Each line fills the card's inside exactly: its width less the two border cells.
   expect(lines.map(line => cells(line.text))).toEqual(lines.map(() => Number(preview?.props.width) - 2))
   await ui.unmount()
+})
+
+test('a hover card goes above its row when it fits, else below, else trimmed to the roomier side, else not at all', () => {
+  // Five boxes open: the title, how far along, four boxes, +1 more and the hint, in a border, take ten lines.
+  expect(peekPlace(10, 0, 5)).toEqual({ side: 'above', listed: 4, more: true, hint: true })
+  expect(peekPlace(6, 10, 5)).toEqual({ side: 'below', listed: 4, more: true, hint: true })
+  // Short of room on both sides: the roomier one, without the hint, with the boxes that fit and +N more.
+  expect(peekPlace(6, 1, 5)).toEqual({ side: 'above', listed: 1, more: true, hint: false })
+  expect(peekPlace(1, 6, 2)).toEqual({ side: 'below', listed: 2, more: false, hint: false })
+  expect(peekPlace(4, 1, 5)).toEqual({ side: 'above', listed: 0, more: false, hint: false })
+  // Not even the title and how far along fit.
+  expect(peekPlace(3, 3, 5)).toBeNull()
+})
+
+test('a wrapping row counts the lines its items take', () => {
+  expect(wrappedLines([6, 10, 10], 40)).toBe(1)
+  expect(wrappedLines([6, 10, 10], 28)).toBe(1)
+  expect(wrappedLines([6, 10, 10], 27)).toBe(2)
+  // An item wider than the row still takes a line of its own.
+  expect(wrappedLines([50, 4], 40)).toBe(2)
+})
+
+test('hovering a row near the top shows its card below the row, and a pane too short shows none', async ($, on) => {
+  const issues = [1, 2, 3, 4, 5, 6, 7].map(number => ({
+    number,
+    title: `Issue ${number}`,
+    labels: [],
+    body: '- [ ] One.\n- [ ] Two.',
+    updatedAt: '2026-10-03T20:00:00Z',
+  }))
+  on('process.run', async (_$, e) => {
+    const stdout = isIssuesQuery(e.argv) ? graphPage(issues) : e.argv[1] === 'repo' ? JSON.stringify({ nameWithOwner: 'astrosteveo/claude-plugins', hasIssuesEnabled: true }) : '[]'
+    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  await $.command.run({ command: 'issues', args: 'refresh', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
+  const tops = async (offset: number, bodyRows: number) => {
+    const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE, props: { ...PANE.props, scroll: { offset, bodyRows } } })
+    const found = (await ui.findAll({ type: 'Box' })).filter(box => box.props.position === 'absolute').map(box => Number(box.props.top))
+    await ui.unmount()
+    return found
+  }
+  // A whole card takes seven lines. Above the first row are four: the repo line, the trends, the Issues heading and the
+  // group's. So its card goes below, and the last row's above.
+  const roomy = await tops(0, 40)
+  expect(roomy).toHaveLength(7)
+  expect(roomy[0]).toBe(1)
+  expect(roomy[6]).toBe(-7)
+  // A pane of six rows: two lines below the first row, four above, so its card is the title and how far along, above.
+  expect((await tops(0, 6))[0]).toBe(-4)
+  // A window of four rows scrolled to the first row: no row in it has room for a card on either side, so none shows.
+  // The three rows past the window's end keep cards above them, out of sight.
+  expect(await tops(4, 4)).toEqual([-4, -5, -6])
 })
 
 test('a narrow row drops its chips, then its bar, then its age, and the title keeps the rest', () => {
