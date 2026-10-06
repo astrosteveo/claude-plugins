@@ -134,6 +134,7 @@ import {
   projectPathOf,
   fieldValueOf,
   itemValuesOf,
+  reordered,
 } from './parse'
 
 const PANE = 'issue-board'
@@ -198,6 +199,8 @@ const changesOf = (input: unknown): (IssueChanges & { number: number }) | null =
     )
     if (given.length > 0) changes.fields = Object.fromEntries(given)
   }
+  if (typeof raw.moveBefore === 'number' && Number.isInteger(raw.moveBefore)) changes.moveBefore = raw.moveBefore
+  else if (typeof raw.moveAfter === 'number' && Number.isInteger(raw.moveAfter)) changes.moveAfter = raw.moveAfter
   if (raw.type === null) changes.type = null
   else if (text(raw.type)) changes.type = text(raw.type)
   if (typeof raw.duplicateOf === 'number' && Number.isInteger(raw.duplicateOf) && raw.duplicateOf > 0 && raw.duplicateOf !== raw.number) changes.duplicateOf = raw.duplicateOf
@@ -651,10 +654,22 @@ const readGitHub = async ($: EngineInterface, seen: boolean): Promise<void> => {
         .then(out => milestonesOf(JSON.parse(out) as unknown[]))
         .catch(() => before?.milestones ?? []),
     ])
+    // Each open epic's sub-issues in GitHub's order, over REST; an epic whose order can't be read keeps the board's own.
+    const issues = await Promise.all(
+      graph.issues.map(async issue => {
+        if ((issue.subIssues?.total ?? 0) === 0) return issue
+        try {
+          const listed = JSON.parse(await gh($, ['api', `repos/${repo.nameWithOwner}/issues/${issue.number}/sub_issues?per_page=100`])) as { number: number }[]
+          return { ...issue, subOrder: listed.map(one => one.number) }
+        } catch {
+          return issue
+        }
+      }),
+    )
     const fetchedAt = await nowOf($)
     const next: Board = {
       repo: repo.nameWithOwner,
-      issues: graph.issues,
+      issues,
       prs: parsePrs(prs).map(pr => ({ ...pr, openThreads: threads.get(pr.number) ?? 0 })),
       velocity:
         kept && closed === null && merged === null
@@ -1011,6 +1026,23 @@ const claim = async ($: EngineInterface, issue: Issue): Promise<void> => {
   if (failures.length === 0) return
   $.ui.toast(`Started #${issue.number}, but couldn't update GitHub: ${failures[0]}`)
   if (failures.some(failure => ACCESS_ERROR.test(failure))) void checkAccess($, failures.join('\n'))
+}
+
+// Moves a sub-issue just before or just after a sibling in its epic, over REST, and the epic's order on the board with it.
+const reorder = async ($: EngineInterface, repo: string, number: number, beside: number, before: boolean): Promise<void> => {
+  const issues = (await read($, board))?.issues ?? []
+  const issue = issues.find(one => one.number === number)
+  const epic = issue?.parent?.number
+  if (!issue || !epic) throw new Error(`#${number} isn't a sub-issue of an open epic on the board`)
+  if (issues.find(one => one.number === beside)?.parent?.number !== epic) throw new Error(`#${beside} isn't a sub-issue of #${epic}, as #${number} is`)
+  const [id, other] = await Promise.all([number, beside].map(async one => (await gh($, ['api', `repos/${repo}/issues/${one}`, '--jq', '.id'])).trim()))
+  await gh($, ['api', '-X', 'PATCH', `repos/${repo}/issues/${epic}/sub_issues/priority`, '-F', `sub_issue_id=${id}`, '-F', `${before ? 'before_id' : 'after_id'}=${other}`])
+  await update($, board, was => {
+    if (!was) return was
+    const siblings = was.issues.filter(one => one.parent?.number === epic).map(one => one.number)
+    return { ...was, issues: was.issues.map(one => (one.number === epic ? { ...one, subOrder: reordered(one.subOrder ?? siblings, number, beside, before) } : one)) }
+  })
+  await save($)
 }
 
 // The repo's issue type a name stands for, ignoring case; or why it can't be one.
@@ -1897,6 +1929,7 @@ const applyChanges = async ($: EngineInterface, number: number, changes: IssueCh
   const made = repo && changes.addLabels?.length ? await ensureLabels($, repo, changes.addLabels) : []
   for (const command of commandsOf(number, changes)) await gh($, command.argv, command.stdin)
   if (repo && changes.type !== undefined) await setType($, repo, number, changes.type)
+  if (repo && (changes.moveBefore || changes.moveAfter)) await reorder($, repo, number, (changes.moveBefore ?? changes.moveAfter) as number, Boolean(changes.moveBefore))
   if (repo && changes.duplicateOf) await closeAsDuplicate($, repo, number, changes.duplicateOf)
   if (repo && changes.addBlockedBy?.length) await block($, repo, number, changes.addBlockedBy, true)
   if (repo && changes.removeBlockedBy?.length) await block($, repo, number, changes.removeBlockedBy, false)
@@ -2106,6 +2139,8 @@ export const register: Register = on => {
           close: { type: 'string', enum: ['completed', 'not planned'], description: 'Close it, saying why.' },
           duplicateOf: { type: 'integer', minimum: 1, description: 'Close it as a duplicate of this issue, by number; GitHub links the two.' },
           type: { type: ['string', 'null'], description: "Its issue type, such as Bug or Task, where the repo's organization has types; null takes it off." },
+          moveBefore: { type: 'integer', description: "Move this sub-issue just before this sibling, by number, in its epic's order, which ▶ Next follows." },
+          moveAfter: { type: 'integer', description: "Move this sub-issue just after this sibling, by number, in its epic's order." },
           fields: {
             type: 'object',
             additionalProperties: { type: ['string', 'number', 'null'] },
