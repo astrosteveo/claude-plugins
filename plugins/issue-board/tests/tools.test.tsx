@@ -36,6 +36,7 @@ const other = {
   assignees: [],
   body: null,
   updatedAt: '2026-10-02T20:00:00Z',
+  comments: 1,
 }
 
 const pr = (ci: 'pass' | 'pending' | 'fail', sha = 'abc123') => ({
@@ -110,8 +111,12 @@ const world = (on: On) => {
     // The number the next filed issue gets, and the blocked-by links made, as `<issue> <blocker's id>`.
     next: 340,
     blocks: [] as string[],
-    // GitHub's search terms asked for.
+    // GitHub's search terms asked for, and each issue's comments as REST gives them, oldest first.
     searched: [] as string[],
+    comments: {
+      290: Array.from({ length: 12 }, (_, index) => ({ user: { login: index % 2 ? 'alice' : 'astrosteveo' }, body: `Note ${index + 1}.`, created_at: '2026-10-04T09:00:00Z' })),
+    } as Record<number, unknown[]>,
+    commentReads: [] as string[],
   }
   on('process.run', async (_$, e) => {
     const argv = e.argv
@@ -164,12 +169,19 @@ const world = (on: On) => {
       state.linked.push([Number(/issues\/(\d+)\//.exec(argv[4] ?? '')?.[1]), argv[argv.length - 1]?.split('=')[1] ?? ''])
       return answer('{}')
     }
+    const thread = /^repos\/[^/]+\/[^/]+\/issues\/(\d+)\/comments\?per_page=100&page=(\d+)$/.exec(argv[2] ?? '')
+    if (argv[1] === 'api' && thread) {
+      state.commentReads.push(`${thread[1]} page ${thread[2]}`)
+      const all = state.comments[Number(thread[1])] ?? []
+      const page = Number(thread[2])
+      return answer(JSON.stringify(all.slice((page - 1) * 100, page * 100)))
+    }
     const one = /^repos\/[^/]+\/[^/]+\/issues\/(\d+)$/.exec(argv[2] ?? '')
     if (argv[1] === 'api' && one && argv.includes('.id')) return answer(`90${one[1]}\n`)
     // An issue the board doesn't hold: #290 closed as completed; nothing else exists.
     if (argv[1] === 'api' && one) {
       if (one[1] !== '290') return { value: { exitCode: 1, stdout: '', stderr: 'gh: Not Found (HTTP 404)', isStdoutTruncated: false, isStderrTruncated: false } }
-      return answer(JSON.stringify({ ...CLOSED, body: '- [x] Shipped\n- [ ] Follow up', assignees: [{ login: 'astrosteveo' }] }))
+      return answer(JSON.stringify({ ...CLOSED, body: '- [x] Shipped\n- [ ] Follow up', assignees: [{ login: 'astrosteveo' }], comments: 12 }))
     }
     if (argv[1] === 'api' && argv[2] === '-X' && argv[4] === 'search/issues') {
       state.searched.push(argv[argv.indexOf('-f') + 1]?.slice(2) ?? '')
@@ -735,8 +747,19 @@ test('the issues tool reads a closed issue from GitHub, searches every issue, an
       '1. [x] Shipped',
       '2. [ ] Follow up',
       'Read the whole issue with `gh issue view 290`.',
+      // A long thread: the latest ten, newest last, and how many earlier ones are left out.
+      'Comments (the latest 10 of 12; 2 earlier left out):',
+      ...Array.from({ length: 10 }, (_, index) => `— @${(index + 2) % 2 ? 'alice' : 'astrosteveo'}, 1h ago:\n  Note ${index + 3}.`),
     ].join('\n'),
   )
+  // One read of the thread, of the page that holds its latest comments.
+  expect(gh.commentReads).toEqual(['290 page 1'])
+
+  // An open issue in full carries its comments too. One the board counts none on says so without reading GitHub.
+  gh.comments[289] = [{ user: { login: 'alice' }, body: 'Seen it too.', created_at: '2026-10-04T09:30:00Z' }]
+  expect(String((await $.tool.call({ tool: 'mcp__issue-board__issues', number: 289 })).result)).toMatch(/\nComments \(1\):\n— @alice, 30m ago:\n  Seen it too\.$/)
+  expect(String((await $.tool.call({ tool: 'mcp__issue-board__issues', number: 315 })).result)).toMatch(/\nNo comments\.$/)
+  expect(gh.commentReads).toEqual(['290 page 1', '289 page 1'])
   expect(String((await $.tool.call({ tool: 'mcp__issue-board__issues', number: 999 })).result)).toBe("#999 doesn't exist in astrosteveo/void-sector.")
 
   // Closed issues are GitHub's search to answer, one line each, without pull requests, and how many more there are.

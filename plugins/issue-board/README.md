@@ -317,7 +317,9 @@ stays quiet there.
     one issue in full with its boxes numbered. It reads the board's copy, so
     it doesn't run `gh`, and it needs no permission prompt. A label,
     assignee or milestone narrows the list. For an issue the board doesn't
-    hold, such as a closed one, it reads GitHub and says how it closed. With
+    hold, such as a closed one, it reads GitHub and says how it closed. One
+    issue in full also carries its latest ten comments, newest last, and
+    says how many earlier ones are left out. With
     `state` closed or all, or words to `search`, it uses GitHub's search
     over every issue, and says how many more there are.
   - `tick` ticks or unticks boxes in an issue's body on GitHub, so the
