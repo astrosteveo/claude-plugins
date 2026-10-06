@@ -289,6 +289,59 @@ export const searched = (query: string, issue: Issue): boolean => {
   return words.every(word => haystack.includes(word))
 }
 
+// How many rows `#` offers in the prompt box at most: more would push the engine's own rows off the screen.
+export const HASH_ROWS = 8
+
+// One row of the prompt box's typeahead, as `prompt.autocomplete` takes it.
+export type HashRow = { text: string; label: string; description: string }
+
+const CI_WORDS: Record<Ci, string> = { pass: 'CI passing', fail: 'CI failing', pending: 'CI running', none: 'no CI' }
+
+// Where a row stands among the others: issues in progress first, then open pull requests, which are work under way
+// too, then Ready, Verification, Backlog and Inbox. An issue with no Status, or another one, comes last.
+const HASH_ORDER: Role[] = ['started', 'ready', 'verification', 'backlog', 'inbox']
+const hashRank = (project: Project | null | undefined, status: string | null | undefined): number => {
+  const at = HASH_ORDER.findIndex(role => isRole(project, status, role))
+  return at < 0 ? HASH_ORDER.length + 1 : at === 0 ? 0 : at + 1
+}
+
+// Whether a number or title matches what follows `#`: digits match the start of the number, anything else a part of
+// the title, ignoring case. A bare `#` matches everything.
+const hashMatches = (typed: string, number: number, title: string): boolean =>
+  /^\d+$/.test(typed) ? String(number).startsWith(typed) : title.toLowerCase().includes(typed.toLowerCase())
+
+// The rows `#` offers for the token at the cursor: the board's open issues and pull requests that match it, in order
+// of Status, then Priority, then newest, at most HASH_ROWS. An issue's dim line is its Status, Priority and labels; a
+// pull request's is its CI.
+export const hashRows = (board: Board, token: string): HashRow[] => {
+  const typed = token.replace(/^#/, '')
+  const project = board.project
+  const issues = board.issues
+    .filter(issue => hashMatches(typed, issue.number, issue.title))
+    .map(issue => ({
+      rank: hashRank(project, issue.status),
+      priority: priorityRank(project, issue.priority),
+      number: issue.number,
+      row: {
+        text: `#${issue.number}`,
+        label: `#${issue.number} ${issue.title}`,
+        description: [issue.status, issue.priority, issue.labels.map(label => label.name).join(', ')].filter(Boolean).join(' · '),
+      },
+    }))
+  const prs = board.prs
+    .filter(pr => hashMatches(typed, pr.number, pr.title))
+    .map(pr => ({
+      rank: 1,
+      priority: Number.POSITIVE_INFINITY,
+      number: pr.number,
+      row: { text: `#${pr.number}`, label: `#${pr.number} ${pr.title}`, description: ['pull request', pr.isDraft ? 'draft' : '', CI_WORDS[pr.ci]].filter(Boolean).join(' · ') },
+    }))
+  return [...issues, ...prs]
+    .sort((a, b) => a.rank - b.rank || (a.priority === b.priority ? 0 : a.priority < b.priority ? -1 : 1) || b.number - a.number)
+    .slice(0, HASH_ROWS)
+    .map(one => one.row)
+}
+
 // Bugs first, then issues under way (some boxes ticked), then the newest.
 const rank = (issue: Issue): number => {
   if (isBug(issue)) return 0
