@@ -1137,6 +1137,54 @@ export const leftForVerification = (before: Board | null, next: Board): { pr: nu
     )
 }
 
+// The box an epic's last sub-issue closing ticks. Every epic is filed with it, so its acceptance says the parts are done.
+export const SUB_ISSUES_BOX = 'Every sub-issue is closed'
+const SUB_ISSUES = /^every sub-issue is closed\b/i
+
+// The number of an epic's "Every sub-issue is closed" box, counted from 1 as the tick tool counts; 0 when it has none.
+export const subIssuesBoxOf = (checks: Check[]): number => checks.findIndex(check => SUB_ISSUES.test(check.text)) + 1
+
+// An epic's body with the "Every sub-issue is closed" box, added to its acceptance list when it hasn't one.
+export const withSubIssuesBox = (body: string): string => (subIssuesBoxOf(checksOf(body)) > 0 ? body : addBoxes(body, [SUB_ISSUES_BOX]))
+
+// Where Start leaves an issue's epic: the epic to move to In progress, when the issue is a sub-issue of an open epic on
+// the board that is still in the Inbox, Backlog or Ready, or has no Status yet. An epic further along stays.
+export const epicToStart = (issues: Issue[], issue: Issue, project: Project | null | undefined): Issue | undefined => {
+  const epic = issue.parent ? issues.find(one => one.number === issue.parent?.number) : undefined
+  if (!epic || !project?.status || !roleOf(project, 'started')) return undefined
+  const waiting = !epic.status || (['inbox', 'backlog', 'ready'] as const).some(role => isRole(project, epic.status, role))
+  return waiting ? epic : undefined
+}
+
+// What changed for epics between two reads. `finished`: open epics whose last open sub-issue closed. `reopened`: a
+// sub-issue back on the board under an open epic whose closed count dropped. `orphaned`: a sub-issue new to the board
+// whose epic is closed, reopened or filed under it.
+export type EpicChanges = { finished: number[]; reopened: { number: number; epic: number }[]; orphaned: { number: number; epic: number }[] }
+export const epicChanges = (before: Board | null, next: Board): EpicChanges => {
+  const changes: EpicChanges = { finished: [], reopened: [], orphaned: [] }
+  if (!before) return changes
+  const was = new Map(before.issues.map(one => [one.number, one]))
+  const open = new Set(next.issues.map(one => one.number))
+  for (const epic of next.issues) {
+    const now = epic.subIssues
+    const then = was.get(epic.number)?.subIssues
+    if (!now || !then || now.total === 0) continue
+    if (then.completed < then.total && now.completed === now.total) changes.finished.push(epic.number)
+  }
+  for (const issue of next.issues) {
+    const epic = issue.parent?.number
+    if (!epic || was.has(issue.number)) continue
+    if (!open.has(epic)) {
+      changes.orphaned.push({ number: issue.number, epic })
+      continue
+    }
+    const then = was.get(epic)?.subIssues
+    const now = next.issues.find(one => one.number === epic)?.subIssues
+    if (then && now && now.completed < then.completed) changes.reopened.push({ number: issue.number, epic })
+  }
+  return changes
+}
+
 // Where GitHub's REST API keeps a project, from the project's page: `users/<login>/projectsV2/<n>` or the `orgs/` one.
 export const projectPathOf = (url: string): string | null => {
   const found = /github\.com\/(users|orgs)\/([^/]+)\/projects\/(\d+)/.exec(url)
@@ -1326,7 +1374,7 @@ export const helpText = (filters: { hotkey: string; name: string }[], off: { fea
 // The settings that turn a feature off, by their key: true where the feature is on. `refresh` is false when the board
 // reads GitHub only when asked, and `prRule` when the working note has no pull request rule.
 export type Switches = Record<
-  'moveToDone' | 'moveToVerification' | 'claimOnStart' | 'workingNote' | 'prRule' | 'issueCopies' | 'suggestNextStep' | 'followBranch' | 'band' | 'hintSummary' | 'refresh',
+  'moveToDone' | 'moveToVerification' | 'advanceEpics' | 'claimOnStart' | 'workingNote' | 'prRule' | 'issueCopies' | 'suggestNextStep' | 'followBranch' | 'band' | 'hintSummary' | 'refresh',
   boolean
 >
 
@@ -1335,6 +1383,7 @@ export type Switches = Record<
 const FEATURES: { feature: string; setting?: [keyof Switches, string]; role?: Role }[] = [
   { feature: 'Moving closed issues to Done', setting: ['moveToDone', 'Move closed issues to Done'], role: 'done' },
   { feature: 'Moving an issue a Refs merge touched to Verification', setting: ['moveToVerification', 'Move to Verification on a Refs merge'], role: 'verification' },
+  { feature: 'Moving an epic along with its sub-issues', setting: ['advanceEpics', 'Move epics with their sub-issues'] },
   { feature: "Start moving the issue's Status", setting: ['claimOnStart', 'Start assigns and moves the issue'], role: 'started' },
   { feature: 'The Inbox filter, its triage, and new issues landing in the Inbox', role: 'inbox' },
   { feature: "Triage's Accept moving issues to Ready", role: 'ready' },

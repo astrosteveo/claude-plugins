@@ -70,6 +70,21 @@ heading has a bar of its sub-issues closed, such as `6/12 closed`, and
 **▶ Next**, which starts Claude on the first one nothing blocks. Sub-issues
 follow GitHub's order where priority and blockers don't decide.
 
+An epic can move along with its sub-issues. This is off by default; turn on
+**Move epics with their sub-issues** (`advanceEpics`) to have it:
+
+- Starting a sub-issue moves its epic to In progress, if the epic is still in
+  the Inbox, Backlog or Ready. An epic that is further along stays put.
+- When the last open sub-issue closes, the board ticks the epic's "Every
+  sub-issue is closed" box. If every box is then ticked, it closes the epic
+  as completed and moves it to Done. If other boxes are still open, it moves
+  the epic to Verification, and the band and the next prompt say how many.
+- A sub-issue that reopens, or a new one under a closed epic, shows in the
+  band. The board doesn't reopen or move anything for it.
+
+Every new epic, from `/issues new epic` or `issue_create` with sub-issues, is
+filed with the "Every sub-issue is closed" box.
+
 ## Work on an issue
 
 Press Enter on an issue, or click it, to open its card: its labels,
@@ -143,7 +158,8 @@ While CI runs on your branch, a `◷` row shows its progress, such as
   the top of the pane. **✎ Edit** (`e`) changes it, **Create issue** (`c`)
   files it into the project's Inbox, and **Discard** drops it.
 - `/issues new epic <what>` drafts a parent and the sub-issues that finish
-  it, and files them together.
+  it, and files them together. The parent gets an "Every sub-issue is
+  closed" box.
 
 **⚙ Change** on a card opens its editor. Each change is made on GitHub at
 once. Its rows go by what they're for:
@@ -177,6 +193,9 @@ by Start, or by Claude.
   stays where it was, so Done means shipped.
 - With its setting on, an issue a merged pull request names with `Refs #N`
   moves to Verification: merging didn't finish it. Claude's next prompt says so.
+- With its setting on, an epic moves along with its sub-issues, and closes
+  when the last one closes and its boxes are ticked. See
+  [See what's open](#see-whats-open).
 - Each time the board moves issues on its own, a toast says which and why,
   such as `Moved #43 to Done: it closed as completed.` A move GitHub refuses
   says so once.
@@ -265,6 +284,7 @@ On GitHub, by itself:
 |---|---|---|
 | An issue closed as completed moves to Done in the project. | Move closed issues to Done (`moveToDone`) | off |
 | An issue a merged pull request names with `Refs #N` moves to Verification. | Move to Verification on a Refs merge (`moveToVerification`) | off |
+| An epic moves with its sub-issues: to In progress when one starts, and closed and Done, or Verification, when the last one closes. | Move epics with their sub-issues (`advanceEpics`) | off |
 | Start, and Claude starting on an issue, assign it to you and move it to In progress. | Start assigns and moves the issue (`claimOnStart`) | on |
 
 In Claude's prompts and the prompt box:
@@ -299,12 +319,12 @@ count as Now** (`nowCount`, default 2) is how many of the project's first
 Priority options the Now filter shows, and triage sends to Ready. The rest
 are Later.
 
-The two moves change the shared project from your session, so they start off.
+The moves change the shared project from your session, so they start off.
 The PR rule is a repo's own convention, so it starts at none. A repo can set
 these for everyone who works in it, in its `.claude/settings.json`:
 
 ```json
-{ "pluginConfigs": { "issue-board@astrosteveo-plugins": { "options": { "moveToDone": true, "moveToVerification": true, "prRule": "closes-when-ticked" } } } }
+{ "pluginConfigs": { "issue-board@astrosteveo-plugins": { "options": { "moveToDone": true, "moveToVerification": true, "advanceEpics": true, "prRule": "closes-when-ticked" } } } }
 ```
 
 ## How it reads GitHub

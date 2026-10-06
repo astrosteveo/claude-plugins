@@ -178,6 +178,10 @@ export type Alert =
   | { kind: 'activity'; key: string; issue: Issue }
   | { kind: 'closed'; key: string; working: Working }
 
+// Something the board noticed about an epic, for the band: why it moved to Verification, or a sub-issue open again
+// under it. `key` names the event, so the same one isn't raised twice and a dismissed one stays gone.
+export type EpicNote = { key: string; epic: number; title: string; text: string }
+
 // `active` and `future` read Priority when there is a project (Now and Later), and the `future` label when not. `inbox`
 // is the project's issues with Status Inbox or none, to triage; without a project it holds nothing. `closed` lists the
 // issues closed lately, which the board's copy doesn't hold: they are read when the filter is chosen.
@@ -331,6 +335,8 @@ declare module 'claude-code' {
       typedFields: Record<string, string>
       sections: Record<string, boolean>
       editorMore: boolean
+      // What the band says about epics until it is dismissed.
+      epicNotes: EpicNote[]
     }
   }
 }

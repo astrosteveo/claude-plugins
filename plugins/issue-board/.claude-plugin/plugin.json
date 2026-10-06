@@ -2,7 +2,7 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "issue-board",
   "displayName": "Issue Board",
-  "version": "0.50.1",
+  "version": "0.51.0",
   "description": "The repository's open GitHub issues and pull requests in a pane and under the prompt, with acceptance progress and CI, and a button that hands an issue to Claude.",
   "author": {
     "name": "astrosteveo"
@@ -29,6 +29,12 @@
       "type": "boolean",
       "title": "Move to Verification on a Refs merge",
       "description": "When a pull request that refers to an issue with Refs merges, move the issue to Verification in the project. It changes the shared project from your session.",
+      "default": false
+    },
+    "advanceEpics": {
+      "type": "boolean",
+      "title": "Move epics with their sub-issues",
+      "description": "Starting a sub-issue moves its epic to In progress. When the last sub-issue closes, the epic's \"Every sub-issue is closed\" box is ticked, and the epic closes and moves to Done, or moves to Verification while other boxes are open. It changes the shared project from your session.",
       "default": false
     },
     "claimOnStart": {

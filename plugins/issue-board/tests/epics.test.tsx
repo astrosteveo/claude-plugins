@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { draftPrompt, nextOf, parseDraft, parseGraph, sortIssues } from '../hooks/parse'
-import { graphPage, isIssuesQuery } from './graph'
+import { STATUSES, graphPage, isIssuesQuery } from './graph'
 
 const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 110, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } } as const
 const RUN = { origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 }, command: 'issues' } as const
@@ -45,7 +45,7 @@ test('an epic draft asks for sub-issues and reads them back', () => {
 
 // GitHub with those issues, and the issues gh was asked to create.
 const github = (on: On) => {
-  const state = { created: [] as string[][], next: 50 }
+  const state = { created: [] as string[][], bodies: [] as string[], next: 50 }
   on('process.run', async (_$, e) => {
     const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
     const argv = e.argv
@@ -54,6 +54,7 @@ const github = (on: On) => {
     if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/claude-plugins', hasIssuesEnabled: true }))
     if (argv[1] === 'issue' && argv[2] === 'create') {
       state.created.push(argv.slice(3))
+      state.bodies.push(e.init?.stdin ?? '')
       return answer(`https://github.com/astrosteveo/claude-plugins/issues/${state.next++}\n`)
     }
     if (argv[1] === 'issue' && argv[2] === 'view') return answer(JSON.stringify({ number: 43, title: 'Edit issues from the board', labels: [], body: '- [ ] Edit', updatedAt: '2026-10-05T00:00:00Z' }))
@@ -133,6 +134,8 @@ test('/issues new epic drafts a parent and its sub-issues, and creates each one 
     ['Write saves atomically', '50'],
     ['Check saves on load', '50'],
   ])
+  // The epic is filed with the box its last sub-issue closing ticks; its sub-issues as drafted.
+  expect(gh.bodies).toEqual(['Why.\n\n## Acceptance\n- [ ] Every sub-issue is closed\n', '- [ ] Temp file then rename', '- [ ] Checksums\n- [ ] Fallback'])
   expect(await ui.find({ text: /^New epic · draft/ })).toBeUndefined()
   await ui.unmount()
 })
@@ -170,4 +173,208 @@ test('a rule that denies closing an epic still stands, in the main session and i
     const verdict = await $.tool.check({ tool: 'Bash', input: { command: 'gh issue close 35' }, ...(agentId ? { agentId } : {}) })
     expect(verdict).toMatchObject({ decision: 'deny', reason: 'Denied by a rule.' })
   }
+})
+
+// GitHub for the epic lifecycle: open issues with their project Status, each issue's body, and the writes the board
+// makes, one line each: `status #N <Status>`, `body #N`, `close #N <reason>` and `assign #N`. `created` holds what was
+// filed, title and body.
+type Raw = Parameters<typeof graphPage>[0][number]
+const lifecycle = (on: On, open: Raw[]) => {
+  const state = { issues: open, writes: [] as string[], bodies: {} as Record<number, string>, created: [] as { title: string; body: string }[] }
+  for (const raw of open) state.bodies[raw.number] = raw.body ?? ''
+  on('process.run', async (_$, e) => {
+    const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+    const argv = [...e.argv]
+    if (argv[0] === 'git') return answer('main\n')
+    if (isIssuesQuery(argv)) return answer(graphPage(state.issues.map(raw => ({ ...raw, body: state.bodies[raw.number] ?? raw.body })), argv, true))
+    if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/claude-plugins', hasIssuesEnabled: true }))
+    if (argv[1] === 'api' && argv[2] === 'graphql' && argv.some(arg => arg.includes('updateProjectV2ItemFieldValue'))) {
+      const item = argv.find(arg => arg.startsWith('item='))?.slice('item=PVTI_'.length) ?? ''
+      const status = STATUSES[Number(argv.find(arg => arg.startsWith('option='))?.slice('option=S'.length))]
+      state.writes.push(`status #${item} ${status}`)
+      state.issues = state.issues.map(raw => (String(raw.number) === item ? { ...raw, status } : raw))
+      return answer(JSON.stringify({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: item } } } }))
+    }
+    if (argv[1] === 'api' && argv[2] === 'graphql') return answer(JSON.stringify({ data: { addProjectV2ItemById: { item: { id: 'PVTI_new' } } } }))
+    if (argv[1] === 'issue' && argv[2] === 'edit' && argv.includes('--body-file')) {
+      state.writes.push(`body #${argv[3]}`)
+      state.bodies[Number(argv[3])] = e.init?.stdin ?? ''
+      return answer('')
+    }
+    if (argv[1] === 'issue' && argv[2] === 'edit' && argv.includes('--add-assignee')) {
+      state.writes.push(`assign #${argv[3]}`)
+      return answer('')
+    }
+    if (argv[1] === 'issue' && argv[2] === 'close') {
+      state.writes.push(`close #${argv[3]} ${argv[argv.indexOf('--reason') + 1]}`)
+      state.issues = state.issues.filter(raw => String(raw.number) !== argv[3])
+      return answer('')
+    }
+    if (argv[1] === 'issue' && argv[2] === 'view') {
+      const number = Number(argv[3])
+      const raw = state.issues.find(one => one.number === number)
+      return answer(JSON.stringify({ number, title: raw?.title ?? '', labels: [], assignees: [], body: state.bodies[number] ?? '', updatedAt: raw?.updatedAt ?? '2026-10-05T00:00:00Z', id: `I_${number}` }))
+    }
+    if (argv[1] === 'issue' && argv[2] === 'create') {
+      state.created.push({ title: argv[argv.indexOf('--title') + 1] ?? '', body: e.init?.stdin ?? '' })
+      return answer(`https://github.com/astrosteveo/claude-plugins/issues/${60 + state.created.length}\n`)
+    }
+    if (argv[1] === 'api' && argv[2] === '-X' && argv[3] === 'POST' && /\/issues$/.test(argv[4] ?? '')) {
+      const fields = JSON.parse(e.init?.stdin ?? '{}') as { title: string; body: string }
+      state.created.push({ title: fields.title, body: fields.body })
+      const number = 60 + state.created.length
+      return answer(JSON.stringify({ number, id: 9000 + number, node_id: `I_${number}`, html_url: '', updated_at: '2026-10-05T00:00:00Z', labels: [], assignees: [] }))
+    }
+    if (argv[1] === 'api' && argv[2] === 'user') return answer('astrosteveo\n')
+    return answer('[]')
+  })
+  on('session.id', async () => ({ value: 'session-1' }))
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('ui.toast', async () => ({ value: undefined }))
+  // What the engine draws in the band when no plugin has anything to say.
+  on('ui.render', { component: 'AbovePrompt' }, async ($$, e) => {
+    const { Box } = $$.ui.resolve(e)
+    return <Box key="engine" />
+  })
+  return state
+}
+
+const epic = (status: string, body = '## Acceptance\n- [ ] Every sub-issue is closed', subIssues = { total: 2, completed: 1 }): Raw => ({
+  number: 35,
+  title: EPIC.title,
+  labels: [],
+  body,
+  updatedAt: '2026-10-05T00:00:00Z',
+  subIssues,
+  status,
+  priority: 'P1',
+})
+const sub = (number: number, status: string, parent = { ...EPIC, total: 2, completed: 1 }): Raw => ({
+  number,
+  title: `Part ${number}`,
+  labels: [],
+  body: '- [ ] Done',
+  updatedAt: '2026-10-05T00:00:00Z',
+  parent,
+  status,
+  priority: 'P1',
+})
+const BAND = { component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120, scroll: { offset: 0, bodyRows: 10 }, view: {} } } as const
+const ON = { options: { advanceEpics: true } }
+
+for (const status of ['Inbox', 'Backlog', 'Ready']) {
+  test(`starting a sub-issue moves its epic from ${status} to In progress`, ON, async ($, on) => {
+    mock.store(on)
+    const gh = lifecycle(on, [epic(status), sub(43, 'Ready')])
+    await $.command.run({ ...RUN, args: 'refresh' })
+    await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, start: true })
+    expect(gh.writes.filter(line => line.startsWith('status'))).toEqual(['status #43 In progress', 'status #35 In progress'])
+  })
+}
+
+// Beside it, a second epic at Ready that does move, so the test sees the board moving epics at all.
+for (const status of ['In progress', 'Verification', 'Done']) {
+  test(`starting a sub-issue leaves an epic at ${status} where it is`, ON, async ($, on) => {
+    mock.store(on)
+    const other = { number: 36, title: 'Stations', total: 1, completed: 0 }
+    const gh = lifecycle(on, [epic(status), sub(43, 'Ready'), { ...epic('Ready'), number: 36, title: other.title, subIssues: { total: 1, completed: 0 } }, sub(45, 'Ready', other)])
+    await $.command.run({ ...RUN, args: 'refresh' })
+    await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, start: true })
+    await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 45, start: true })
+    expect(gh.writes.filter(line => line.startsWith('status'))).toEqual(['status #43 In progress', 'status #45 In progress', 'status #36 In progress'])
+  })
+}
+
+test("when the last sub-issue closes, the epic's box is ticked, and with every box ticked it closes and moves to Done", ON, async ($, on) => {
+  mock.store(on)
+  const gh = lifecycle(on, [epic('In progress', '## Acceptance\n- [x] Designed\n- [ ] Every sub-issue is closed'), sub(43, 'In progress')])
+  const prompts: (readonly string[])[] = []
+  on('prompt.submit', async (_$, e) => {
+    prompts.push(e.context ?? [])
+    return { text: e.text }
+  })
+  await $.command.run({ ...RUN, args: 'refresh' })
+  expect(gh.writes).toEqual([])
+
+  // #43 closes on GitHub: the epic's count reads 2/2.
+  gh.issues = [epic('In progress', gh.bodies[35], { total: 2, completed: 2 })]
+  await $.command.run({ ...RUN, args: 'refresh' })
+  await $.command.run({ ...RUN, args: 'refresh' })
+  expect(gh.writes).toEqual(['body #35', 'close #35 completed', 'status #35 Done'])
+  expect(gh.bodies[35]).toBe('## Acceptance\n- [x] Designed\n- [x] Every sub-issue is closed')
+
+  await $.prompt.submit({ text: 'What next?', wait: false, origin: { kind: 'composer' } })
+  expect(prompts.at(-1)).toContain('#35 closed as completed and moved to Done: every sub-issue is closed and every box is ticked.')
+})
+
+test('an epic with other open boxes moves to Verification instead, and the band and the next prompt say why', ON, async ($, on) => {
+  mock.store(on)
+  const gh = lifecycle(on, [epic('In progress', '## Acceptance\n- [ ] Every sub-issue is closed\n- [ ] Played it through'), sub(43, 'In progress')])
+  const prompts: (readonly string[])[] = []
+  on('prompt.submit', async (_$, e) => {
+    prompts.push(e.context ?? [])
+    return { text: e.text }
+  })
+  await $.command.run({ ...RUN, args: 'refresh' })
+  gh.issues = [epic('In progress', gh.bodies[35], { total: 2, completed: 2 })]
+  await $.command.run({ ...RUN, args: 'refresh' })
+  await $.command.run({ ...RUN, args: 'refresh' })
+  expect(gh.writes).toEqual(['body #35', 'status #35 Verification'])
+  expect(gh.bodies[35]).toBe('## Acceptance\n- [x] Every sub-issue is closed\n- [ ] Played it through')
+
+  await $.prompt.submit({ text: 'What next?', wait: false, origin: { kind: 'composer' } })
+  expect(prompts.at(-1)).toContain('#35 moved to Verification: every sub-issue is closed, but 1 box is still open.')
+  const band = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...BAND })
+  expect(await band.find({ text: /every sub-issue is closed, but 1 box is still open/ })).toBeDefined()
+  await band.press({ key: 'dismiss-epic-verify-35' })
+  expect(await band.find({ text: /every sub-issue is closed/ })).toBeUndefined()
+  await band.unmount()
+})
+
+test('a reopened sub-issue, or a new one under a closed epic, shows in the band and writes nothing', ON, async ($, on) => {
+  mock.store(on)
+  const gh = lifecycle(on, [epic('Verification', '- [x] Every sub-issue is closed\n- [ ] Played', { total: 2, completed: 1 }), sub(43, 'In progress')])
+  await $.command.run({ ...RUN, args: 'refresh' })
+
+  // #44 reopens under #35, whose count drops; #47 opens under #38, which is closed.
+  gh.issues = [
+    epic('Verification', gh.bodies[35], { total: 2, completed: 0 }),
+    sub(43, 'In progress', { ...EPIC, total: 2, completed: 0 }),
+    sub(44, 'Done', { ...EPIC, total: 2, completed: 0 }),
+    sub(47, 'Inbox', { number: 38, title: 'Stations', total: 3, completed: 2 }),
+  ]
+  await $.command.run({ ...RUN, args: 'refresh' })
+  await $.command.run({ ...RUN, args: 'refresh' })
+  expect(gh.writes).toEqual([])
+  const band = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...BAND })
+  expect(await band.find({ text: /#44 reopened under it/ })).toBeDefined()
+  expect(await band.find({ text: /#47 is open under it, and it is closed/ })).toBeDefined()
+  await band.unmount()
+})
+
+test('issue_create files an epic with the "Every sub-issue is closed" box, and keeps one already there', async ($, on) => {
+  mock.store(on)
+  const gh = lifecycle(on, [])
+  await $.command.run({ ...RUN, args: 'refresh' })
+  await $.tool.call({ tool: 'mcp__issue-board__issue_create', title: 'Stations', body: 'Docking and trade.', subIssues: [{ title: 'Dock', body: '- [ ] Docks' }] })
+  expect(gh.created.map(one => one.body)).toEqual(['Docking and trade.\n\n## Acceptance\n- [ ] Every sub-issue is closed\n', '- [ ] Docks'])
+  await $.tool.call({ tool: 'mcp__issue-board__issue_create', title: 'Trade', body: '## Acceptance\n- [ ] Every sub-issue is closed', subIssues: [{ title: 'Sell', body: '' }] })
+  expect(gh.created[2]?.body).toBe('## Acceptance\n- [ ] Every sub-issue is closed')
+  // A plain issue gets no such box.
+  await $.tool.call({ tool: 'mcp__issue-board__issue_create', title: 'Fuel', body: 'Refuel.' })
+  expect(gh.created.at(-1)?.body).toBe('Refuel.')
+})
+
+test('by default the board moves no epic, and /issues help says the feature is off', async ($, on) => {
+  mock.store(on)
+  const gh = lifecycle(on, [epic('Ready', '- [ ] Every sub-issue is closed'), sub(43, 'Ready')])
+  await $.command.run({ ...RUN, args: 'refresh' })
+  await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, start: true })
+  gh.issues = [epic('Ready', gh.bodies[35], { total: 2, completed: 2 })]
+  await $.command.run({ ...RUN, args: 'refresh' })
+  await $.command.run({ ...RUN, args: 'refresh' })
+  expect(gh.writes.filter(line => line.includes('#35'))).toEqual([])
+
+  const help = String((await $.command.run({ ...RUN, args: 'help' })).text)
+  expect(help).toContain('- Moving an epic along with its sub-issues: turned off in /config by Move epics with their sub-issues (advanceEpics).')
 })
