@@ -127,6 +127,7 @@ import {
   restCommentsOf,
   labelColorFor,
   missingLabels,
+  leftForVerification,
 } from './parse'
 
 const PANE = 'issue-board'
@@ -689,6 +690,31 @@ const land = async ($: EngineInterface, before: Board | null, next: Board, seen:
   // for Suggest again.
   if ((await read($, filter)) === 'inbox' && !(await read($, triage)).failed) void suggestInbox($)
   void moveToDone($, before, next)
+  void moveToVerification($, before, next)
+}
+
+// What the board moved on its own since the last prompt, which the next prompt notes for Claude.
+let moved: string[] = []
+
+// An issue a merged pull request refers to with `Refs #N`, not `Closes`, moves to Verification: merging didn't complete
+// its acceptance, so it waits on a check or sign-off. REST says whether the pull request merged; only the move spends
+// GraphQL. An issue already at Verification or Done, or a project without Verification, is left alone.
+const moveToVerification = async ($: EngineInterface, before: Board | null, next: Board): Promise<void> => {
+  const project = next.project
+  const verify = optionOf(project?.status, 'Verification')
+  if (!project?.status || !verify) return
+  const merged = new Map<number, boolean>()
+  for (const left of leftForVerification(before, next)) {
+    try {
+      if (!merged.has(left.pr)) merged.set(left.pr, !/^(null)?$/.test((await gh($, ['api', `repos/${next.repo}/pulls/${left.pr}`, '--jq', '.merged_at'])).trim()))
+      if (!merged.get(left.pr)) continue
+      await gh($, ['api', 'graphql', '-f', `query=${SET_FIELD}`, '-f', `project=${project.id}`, '-f', `item=${left.item}`, '-f', `field=${project.status.id}`, '-f', `option=${verify.id}`])
+      await update($, board, was => was && { ...was, issues: was.issues.map(one => (one.number === left.number ? { ...one, status: verify.name } : one)) })
+      moved.push(`#${left.number} moved to ${verify.name}: pull request #${left.pr}, which refers to it without closing it, merged.`)
+    } catch (cause) {
+      $.ui.log(`issue-board: couldn't move #${left.number} to ${verify.name}: ${messageOf(cause)}`, { to: 'debug' })
+    }
+  }
 }
 
 // An issue that closed as completed since the last read moves to Done in the project, wherever it was closed: by a
@@ -2131,6 +2157,11 @@ export const register: Register = on => {
     if (restarted) void begin($)
     const added: string[] = []
     try {
+      // What the board moved on its own since the last prompt.
+      if (moved.length > 0 && e.origin.kind !== 'task-notification') {
+        added.push(...moved)
+        moved = []
+      }
       const now = await read($, board)
       if (now) {
         const note = await newsFor($, now)

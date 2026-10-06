@@ -1013,6 +1013,23 @@ export const leftForDone = (before: Board | null, next: Board): { number: number
   return before.issues.flatMap(one => (one.item && !still.has(one.number) && one.status?.toLowerCase() !== 'done' ? [{ number: one.number, item: one.item }] : []))
 }
 
+// The issues that pull requests which left the board between two reads refer to, and that may need moving to
+// Verification: each still open (an issue a merge closed has left the board too), with an item in the project, and not
+// at Verification or Done yet. Whether the pull request merged is GitHub's to say.
+export const leftForVerification = (before: Board | null, next: Board): { pr: number; number: number; item: string }[] => {
+  const verify = next.project?.status?.options.find(option => option.name.toLowerCase() === 'verification')
+  if (!before || !verify) return []
+  const still = new Set(next.prs.map(pr => pr.number))
+  return before.prs
+    .filter(pr => !still.has(pr.number))
+    .flatMap(pr =>
+      (pr.issues ?? []).flatMap(number => {
+        const issue = next.issues.find(one => one.number === number)
+        return issue?.item && !['verification', 'done'].includes(issue.status?.toLowerCase() ?? '') ? [{ pr: pr.number, number, item: issue.item }] : []
+      }),
+    )
+}
+
 // The labels asked for that the repo hasn't got, by name, ignoring case, each once.
 export const missingLabels = (wanted: string[], existing: { name: string }[]): string[] => {
   const have = new Set(existing.map(one => one.name.toLowerCase()))
