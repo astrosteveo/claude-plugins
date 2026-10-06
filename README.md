@@ -40,8 +40,9 @@ directory: `claude --plugin-dir ./plugins/my-plugin`.
   marketplace.json            # Marketplace identity and ordered plugin catalog
 plugins/                      # One directory per plugin
 scripts/validate.sh           # Strict validation of the marketplace and every plugin
+scripts/test.sh               # Every plugin's tests
 .github/workflows/validate.yml
-docs/prompts/                 # Reusable prompts for maintaining this repository
+CLAUDE.md                     # Guidance for Claude Code in this repository (AGENTS.md links to it)
 ```
 
 Each plugin uses this layout:
