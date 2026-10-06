@@ -74,6 +74,7 @@ import {
   nextPageOf,
   pad,
   pageOf,
+  peekPlace,
   proseOf,
   matches,
   mergeNoteOf,
@@ -105,6 +106,7 @@ import {
   triagePrompt,
   weekly,
   wentGreen,
+  wrappedLines,
   workerBadge,
   workerIssueOf,
   workerPrOf,
@@ -2505,32 +2507,71 @@ export const register: Register = on => {
       )
     }
 
-    // What hovering a row shows above it: the title, how far along, and the boxes still open.
+    // What hovering a row shows above it, or below it near the pane's top: the title, how far along, and the boxes
+    // still open.
     // Every line is padded to the card's width, its margins spaces rather than paddingX, so it covers the rows it is
     // painted over: the surface paints a floating box's text and border but leaves its padding showing what is beneath.
     // It sits at the pane's right, leaving the rows above their mark, number and the start of their title, so the
     // pointer moving up the list reaches the row above rather than the card. A pane without that room shows none.
+    // A card above a row too near the pane's top would be pushed down over the row, so each row knows the lines free
+    // above and below it in the window. They are at least these: each line of the board above the list, each heading
+    // and row one line, an open card none. Counting short leaves a card smaller than its room, never bigger.
     const PEEK_CLEAR = 28
+    const groups = triaging ? [] : groupsOf(shown, grouping, project)
+    const listed$ = triaging
+      ? shown.map(issue => issue.number)
+      : groups.flatMap(group => [null, ...(group.folded && !opened.includes(group.key) ? [] : group.issues.map(issue => issue.number))])
+    // The Issues heading wraps its buttons, each its label and four cells of brackets; the search field, of no known
+    // width, isn't counted.
+    const heading$ = wrappedLines(
+      [
+        cells('Issues'),
+        ...FILTERS.filter(one => one.id !== 'inbox' || project).map(one => cells(`${project ? one.planned : one.label} ${now.issues.filter(issue => matches(one.id, issue, who, project)).length}`) + 4),
+        cells('by'),
+        ...groupings.map(one => cells(one.label) + 4),
+      ],
+      width,
+    )
+    const above$ =
+      1 +
+      heading$ +
+      (trends ? 1 : 0) +
+      (failure ? 1 : 0) +
+      (now.prs.length > 0 ? 1 + now.prs.length : 0) +
+      (arming && now.prs.length > 0 ? 1 : 0) +
+      watched.length +
+      (triaging ? 1 + (triaged.failed ? 1 : 0) : 0)
+    const { offset, bodyRows } = e.props.scroll
+    const roomOf = (number: number) => {
+      const at = listed$.indexOf(number)
+      const line = above$ + at
+      // The rows under it in the list, and the hint line.
+      const after = listed$.length - at
+      return { above: Math.max(0, line - offset), below: Math.max(0, Math.min(after, offset + bodyRows - line - 1)) }
+    }
     const peek = (issue: Issue) => {
       const step = progress(issue.checks)
       const cardWidth = Math.min(56, width - PEEK_CLEAR)
       if (cardWidth < 30) return null
       const inner = cardWidth - 4
       const todo = issue.checks.filter(check => !check.done)
-      const listed = todo.slice(0, 4)
+      const room = roomOf(issue.number)
+      const place = peekPlace(room.above, room.below, todo.length)
+      if (!place) return null
+      const listed = todo.slice(0, place.listed)
       const lines: { text: string; color?: string; dim?: boolean; bold?: boolean }[] = [
         { text: fit(issue.title, inner), bold: true },
         step.total === 0
           ? { text: 'No acceptance boxes.', dim: true }
           : { text: `${step.done}/${step.total} ticked · ${todo.length} to go`, color: tone(step) },
         ...listed.map(check => ({ text: fit(`☐ ${check.text}`, inner) })),
-        ...(todo.length > listed.length ? [{ text: `+${todo.length - listed.length} more`, dim: true }] : []),
-        { text: '⏎ open · ▶ Start inside', dim: true },
+        ...(place.more ? [{ text: `+${todo.length - listed.length} more`, dim: true }] : []),
+        ...(place.hint ? [{ text: '⏎ open · ▶ Start inside', dim: true }] : []),
       ]
       return (
         <Box
           position="absolute"
-          top={-(lines.length + 2)}
+          top={place.side === 'above' ? -(lines.length + 2) : 1}
           left={width - cardWidth}
           width={cardWidth}
           display="none"
@@ -2943,7 +2984,7 @@ export const register: Register = on => {
               {open.includes(issue.number) && issueCard(issue, single)}
             </Box>
           ))}
-        {!triaging && groupsOf(shown, grouping, project).map(group => {
+        {groups.map(group => {
           const count = String(group.issues.length)
           const shut = group.folded && !opened.includes(group.key)
           // A folded group, such as Backlog, is a heading the person opens; open, its heading folds it again.
