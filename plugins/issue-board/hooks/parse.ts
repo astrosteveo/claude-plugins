@@ -1093,6 +1093,27 @@ export const itemsAt = (items: unknown[], status: string, since?: string): Found
     .flatMap(item => foundOf([item.content]))
     .filter(found => !since || found.state === 'open' || (found.closedAt ?? '') >= since)
 
+// The project's items an archive takes, as REST lists them with the Status field: one issue's, by number, or every issue
+// at Done that closed before a date. Archived ones are left out.
+export const toArchive = (items: unknown[], ask: { number?: number; doneBefore?: string }): { number: number; title: string; node: string }[] =>
+  (
+    items as {
+      node_id?: string
+      archived_at?: string | null
+      content_type?: string
+      content?: { number?: number; title?: string; state?: string; closed_at?: string | null } | null
+      fields?: { name?: string; value?: { name?: { raw?: string } | string } | null }[]
+    }[]
+  )
+    .filter(item => item.content_type === 'Issue' && item.content && item.node_id && !item.archived_at)
+    .filter(item => {
+      if (ask.number !== undefined) return item.content?.number === ask.number
+      const value = item.fields?.find(field => field.name === 'Status')?.value?.name
+      const status = typeof value === 'string' ? value : value?.raw
+      return status?.toLowerCase() === 'done' && item.content?.state === 'closed' && (item.content.closed_at ?? '') < (ask.doneBefore ?? '')
+    })
+    .map(item => ({ number: item.content?.number ?? 0, title: item.content?.title ?? '', node: item.node_id ?? '' }))
+
 // Milestones as GitHub's REST answers them.
 export const milestonesOf = (items: unknown[]): Milestone[] =>
   (items as { number: number; title: string; due_on?: string | null; description?: string | null; open_issues?: number; closed_issues?: number }[]).map(raw => ({

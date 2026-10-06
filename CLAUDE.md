@@ -52,7 +52,7 @@ turns `gh issue list`-shaped fixtures into the GraphQL answer the board's query 
 
 The board reads issues, pull requests, CI and the linked GitHub Project through `gh`. It keeps the board in `$.state`
 and draws it in three places: the `/issues` pane, the `AbovePrompt` band, and the `PromptHint` tail. It also
-registers MCP tools (`issues`, `issue_update`, `issue_create`, `milestone`, `tick`) and an `issue-board:worker` agent type for "Start in
+registers MCP tools (`issues`, `issue_update`, `issue_create`, `milestone`, `project_archive`, `tick`) and an `issue-board:worker` agent type for "Start in
 background". Its `tool.check` hooks adjust permission verdicts for those tools and for `gh issue close` on epics.
 
 It is built around the GitHub Project workflow: Status (Inbox → Backlog → Ready → In Progress → Verification → Done)

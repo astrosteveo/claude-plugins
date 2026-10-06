@@ -51,6 +51,9 @@ export const SET_VALUE =
 export const CLEAR_VALUE =
   'mutation($project: ID!, $item: ID!, $field: ID!) { clearProjectV2ItemFieldValue(input: {projectId: $project, itemId: $item, fieldId: $field}) { projectV2Item { id } } }'
 
+// Archives an item: it leaves the project's views, and the issue stays as it is.
+export const ARCHIVE_ITEM = 'mutation($project: ID!, $item: ID!) { archiveProjectV2Item(input: {projectId: $project, itemId: $item}) { item { id } } }'
+
 // Sets a single-select field, such as Status, on an issue's item in a project.
 export const SET_FIELD =
   'mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) { updateProjectV2ItemFieldValue(input: ' +
