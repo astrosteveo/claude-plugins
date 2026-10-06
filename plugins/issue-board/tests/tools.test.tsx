@@ -95,6 +95,8 @@ const world = (on: On) => {
     created: [] as { argv: string[]; stdin?: string }[],
     prLists: 0,
     project: false,
+    // The project's own names for its Status options, S0 to S5, in place of the board's.
+    statusNames: null as string[] | null,
     planned: {} as Record<number, { status?: string; priority?: string }>,
     refuseProject: '',
     fields: [] as Record<string, string>[],
@@ -157,6 +159,8 @@ const world = (on: On) => {
         graphPage([{ ...issue(state.body), ...state.planned[315], ...(state.type315 ? { type: state.type315 } : {}) }, { ...other, ...state.planned[289] }], argv, state.project, state.types),
       ) as { data: { repository: { projectsV2?: { nodes: { fields: { nodes: unknown[] } }[] } } } }
       if (state.newField) page.data.repository.projectsV2?.nodes[0]?.fields.nodes.push(state.newField)
+      const statusField = page.data.repository.projectsV2?.nodes[0]?.fields.nodes[0] as { options?: { id: string; name: string }[] } | undefined
+      if (state.statusNames && statusField) statusField.options = state.statusNames.map((name, index) => ({ id: `S${index}`, name }))
       const linked = page.data.repository.projectsV2?.nodes[0] as Record<string, unknown> | undefined
       if (linked) linked.workflows = { nodes: [{ name: 'Item closed', enabled: state.itemClosed }] }
       return answer(JSON.stringify(page))
@@ -201,7 +205,7 @@ const world = (on: On) => {
         return answer(JSON.stringify({ data: { addProjectV2ItemById: { item: { id: `PVTI_${args.content?.slice(2)}` } } } }))
       }
       const number = Number(args.item?.slice('PVTI_'.length))
-      const name = [...STATUSES, ...PRIORITIES].find(one => optionId(one) === args.option) ?? ''
+      const name = (state.statusNames && args.field === 'F_status' ? state.statusNames[Number(args.option?.slice(1))] : [...STATUSES, ...PRIORITIES].find(one => optionId(one) === args.option)) ?? ''
       state.planned[number] = { ...state.planned[number], ...(args.field === 'F_status' ? { status: name } : { priority: name }) }
       return answer(JSON.stringify({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: args.item } } } }))
     }
@@ -1324,4 +1328,90 @@ test("Merge all's confirm goes when the pull requests it waited on have merged, 
   expect(await ui.find({ text: /^y merge every open PR/ })).toBeUndefined()
   expect(sent).toEqual([])
   await ui.unmount()
+})
+
+// What setup saved for the repo, with the roles given: which Status option, S0 to S5, is which.
+const savedRoles = (roles: Record<string, string>) => ({
+  [`repo:${REPO.root}`]: { setup: { project: { id: 'PVT_8', number: 8, title: 'Void Sector' }, status: { id: 'F_status', roles }, priority: { id: 'F_priority' }, at: 0 } },
+})
+
+test('a project with its own Status names goes by the roles setup saved: its Inbox, the one that folds, and where Start moves', async ($, on) => {
+  mock.store(on, savedRoles({ inbox: 'S0', ready: 'S1', backlog: 'S2', started: 'S3', verification: 'S4', done: 'S5' }))
+  const gh = world(on)
+  gh.project = true
+  gh.statusNames = ['Todo', 'Next', 'Someday', 'Doing', 'Review', 'Shipped']
+  gh.planned[315] = { status: 'Someday', priority: 'P2' }
+  gh.planned[289] = { status: 'Todo', priority: 'P1' }
+  on('ui.toast', async () => ({ value: undefined }))
+  await $.command.run(REFRESH)
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'filter-all' })
+
+  // Someday has the Backlog's role, so it folds.
+  expect(await ui.find({ key: 'fold-status:Someday' })).toMatchObject({ text: '▸ Someday' })
+  expect(await ui.find({ key: 'issue-315' })).toBeUndefined()
+  expect(await ui.find({ key: 'issue-289' })).toBeDefined()
+
+  // Todo is the Inbox: #289 waits there, #315 doesn't.
+  await ui.press({ key: 'filter-inbox' })
+  expect(await ui.find({ key: 'triage-289' })).toBeDefined()
+  expect(await ui.find({ key: 'triage-315' })).toBeUndefined()
+  expect(String((await $.tool.call({ tool: 'mcp__issue-board__issues', filter: 'inbox' })).result)).toMatch(/Issues \(inbox: Status Todo or none, 1\):\n#289 /)
+  await ui.unmount()
+
+  // Start moves #289 to Doing, the option for In progress.
+  const started = await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 289, start: true })
+  expect(String(started.result)).toBe('Started #289: it is the issue this session is on, Doing and assigned.')
+  expect(gh.planned[289]?.status).toBe('Doing')
+})
+
+test("a role setup left unset turns its part off, even where an option has the board's name, and /issues check says how to set it", async ($, on) => {
+  mock.store(on, savedRoles({ ready: 'S2', backlog: 'S1', started: 'S3', done: 'S5' }))
+  const gh = world(on)
+  gh.project = true
+  gh.planned[315] = { status: 'Inbox', priority: 'P1' }
+  on('ui.toast', async () => ({ value: undefined }))
+  await $.command.run(REFRESH)
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  // No Inbox: no filter for it, and #315 is an issue like any other.
+  expect(await ui.find({ key: 'filter-inbox' })).toBeUndefined()
+  expect(await ui.find({ key: 'filter-all' })).toBeDefined()
+  await ui.unmount()
+
+  const said = String((await $.command.run({ ...REFRESH, args: 'check' })).text)
+  expect(said).toContain('Void Sector has no Inbox Status set')
+  expect(said).toContain("New issues don't land in the Inbox, and the Inbox filter and its triage are gone")
+  expect(said).toContain('Void Sector has no Verification Status set')
+  expect(said).toContain('Run /issues setup and pick the option for Verification under "Which Status is which"')
+  expect(said).not.toContain('no Done Status set')
+
+  // Archiving what is done still works by the saved Done, and Start by the saved In progress.
+  const started = await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 315, start: true })
+  expect(String(started.result)).toMatch(/, In progress and assigned\.$/)
+})
+
+test('a board with no Done set archives one issue, but not by doneBefore', async ($, on) => {
+  mock.store(on, savedRoles({ inbox: 'S0', started: 'S3' }))
+  const gh = world(on)
+  gh.project = true
+  await $.command.run(REFRESH)
+  const by = await $.tool.call({ tool: 'mcp__issue-board__project_archive', doneBefore: '2026-10-01' })
+  expect(by.deny).toBe("Couldn't archive: Void Sector has no Done option set; pick one in /issues setup")
+  const one = await $.tool.call({ tool: 'mcp__issue-board__project_archive', number: 290 })
+  expect(String(one.result)).toMatch(/^Archiving #290 takes 1 item/)
+})
+
+test('how many priorities count as Now is a setting', { options: { nowCount: 1 } }, async ($, on) => {
+  mock.store(on)
+  const gh = world(on)
+  gh.project = true
+  gh.planned[315] = { status: 'Ready', priority: 'P1' }
+  gh.planned[289] = { status: 'Ready', priority: 'P0' }
+  await $.command.run(REFRESH)
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  expect(await ui.find({ key: 'filter-active' })).toMatchObject({ text: 'Now 1' })
+  expect(await ui.find({ key: 'filter-future' })).toMatchObject({ text: 'Later 1' })
+  await ui.unmount()
+  expect(String((await $.tool.call({ tool: 'mcp__issue-board__issues', filter: 'active' })).result)).toMatch(/Issues \(now: P0, 1\):\n#289 /)
+  expect(String((await $.tool.call({ tool: 'mcp__issue-board__issues', filter: 'future' })).result)).toMatch(/Issues \(later: P1 and P2, 1\):\n#315 /)
 })

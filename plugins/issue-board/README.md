@@ -36,8 +36,8 @@ nothing is open.
 - **Milestones**: each open milestone with a bar of its closed issues and
   its due date, red once it's past due with issues still open.
 - **Pull requests**: see [Pull requests and CI](#pull-requests-and-ci).
-- **Issues**, with their filters: `1` Now (Priority P0 and P1), `2` Later
-  (P2), `3` Bugs, `4` Mine, `5` All, `6` Inbox (with a project) and `7`
+- **Issues**, with their filters: `1` Now (the first two Priority options,
+  P0 and P1, unless set otherwise), `2` Later (the rest), `3` Bugs, `4` Mine, `5` All, `6` Inbox (with a project that has one) and `7`
   Closed. Closed lists the issues closed lately, each with how it closed,
   read from GitHub when you choose it. Without a project, `1` and `2` read
   Active and Future, from the `future` label.
@@ -49,7 +49,7 @@ remembers how you leave them.
 
 The search field after the filters keeps the issues whose title, number or
 labels hold every word you type. **by Status**, **Epic** or **Area** groups
-them. Backlog starts folded; press it to open it. `r` refreshes.
+them. The Backlog starts folded; press it to open it. `r` refreshes.
 
 Each issue is one row: its priority, number and title, then, at the right,
 its background agent, its pull request with CI (`⇄ #51 ✓`), its labels in
@@ -233,7 +233,15 @@ won't undo, needs a second, confirmed call.
   adds the board's Status options (Inbox, Backlog, Ready, In progress,
   Verification, Done) and a Priority field (P0, P1, P2), creates `bug` and
   `area:` labels, and puts open issues in the project at Inbox. It never
-  deletes or renames anything. GitHub's API can't change a project's
+  deletes or renames anything.
+- Under **Which Status is which**, setup asks which of the project's own
+  options plays each part: Inbox, Ready, Backlog (the one that folds), In
+  progress, Verification and Done. It suggests the board's names where the
+  project has them, and offers to add the ones it lacks. A project that says
+  `Todo`, `Doing` and `Shipped` picks those instead, and setup adds nothing.
+  Pick **none** to turn that part off: with no Inbox, there is no Inbox
+  filter or triage; with no Done, closed issues aren't moved. `/issues check`
+  lists each part with no option, and what is off. GitHub's API can't change a project's
   workflows, so it lists those to change by hand, with a link: the
   Auto-add workflows on, **Item closed** off, and **Item added to project**
   set to Inbox rather than GitHub's Todo, so new issues land in the Inbox.
@@ -253,6 +261,7 @@ Change these in Claude Code's `/config`, under the issue board:
 | Copies of issues a prompt names | on | A prompt that names `#123` carries the board's copy of it. |
 | Suggest the next step | off | After Claude's turn, the prompt box suggests the board's next step in place of Claude Code's own. |
 | Follow the branch | off | Checking out a branch named for an issue makes it the one Claude is on. |
+| Priorities that count as Now | 2 | How many of the project's first Priority options the Now filter shows, and triage sends to Ready. The rest are Later. |
 
 The two moves change the shared project from your session, so they start off.
 The PR rule is a repo's own convention, so it starts at none. A repo can set

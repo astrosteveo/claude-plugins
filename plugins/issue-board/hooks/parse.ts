@@ -1,6 +1,6 @@
 import type { ThemeKey } from 'claude-code'
 import type { Alert, Board, BoxTask, Check, Ci, Comment, Draft, Field, Filter, Found, GroupBy, Issue, Known, Label, Milestone, ProjectField, StatusUpdate, Project, PullRequest, RunWatch, Suggestion, Worker, Working } from '../types'
-import { isLater, isNow, priorityRank } from './project'
+import { isLater, isNow, isRole, nowCountOf, priorityRank, roleOf } from './project'
 
 type RawLabel = { name: string; color?: string }
 type RawUser = { login: string }
@@ -218,17 +218,19 @@ export const matches = (filter: Filter, issue: Issue, viewer: string | null = nu
     case 'all':
       return true
     case 'inbox':
-      return project !== null && isInbox(issue)
+      return isInbox(issue, project)
     case 'closed':
       return false
   }
 }
 
-// Whether an issue waits in the project's Inbox: its Status is Inbox, or it has none, as an issue not in the project.
-export const isInbox = (issue: Issue): boolean => !issue.status || issue.status.toLowerCase() === 'inbox'
+// Whether an issue waits in the project's Inbox: its Status is the Inbox option, or it has none, as an issue not in the
+// project. A project with no Inbox option has no Inbox.
+export const isInbox = (issue: Issue, project: Project | null | undefined): boolean =>
+  roleOf(project, 'inbox') !== undefined && (!issue.status || isRole(project, issue.status, 'inbox'))
 
 // The Status an issue moves to out of the Inbox when Claude didn't say: Ready for Now's priorities, Backlog otherwise.
-export const statusFor = (project: Project | null, priority: string | null): 'Ready' | 'Backlog' => (priorityRank(project, priority) < 2 ? 'Ready' : 'Backlog')
+export const statusFor = (project: Project | null, priority: string | null): 'Ready' | 'Backlog' => (priorityRank(project, priority) < nowCountOf(project) ? 'Ready' : 'Backlog')
 
 // How much of an issue's text Claude reads to triage it.
 const TRIAGE_TEXT = 1500
@@ -336,7 +338,8 @@ export const nextOf = (issues: Issue[], epic: number, project: Project | null = 
     issues.find(issue => issue.number === epic)?.subOrder,
   ).find(issue => !isBlocked(issue))
 
-// A heading of the issue list and the issues under it. `folded`: drawn shut until the person opens it, as Backlog is.
+// A heading of the issue list and the issues under it. `folded`: drawn shut until the person opens it, as the Backlog
+// option is.
 // `epic`: the parent the group is for, so its row isn't drawn again beneath it.
 export type Group = { key: string; title: string; issues: Issue[]; folded: boolean; epic?: { number: number; total: number; completed: number } }
 
@@ -348,7 +351,7 @@ export const groupsOf = (issues: Issue[], by: GroupBy, project: Project | null =
       key: `status:${option.name}`,
       title: option.name,
       issues: sortIssues(issues.filter(issue => issue.status === option.name), project),
-      folded: /^backlog$/i.test(option.name),
+      folded: isRole(project, option.name, 'backlog'),
     }))
     const known = new Set(named.map(group => group.title))
     const rest = sortIssues(issues.filter(issue => !issue.status || !known.has(issue.status)), project)
@@ -1109,19 +1112,19 @@ export const changesText = (number: number, changes: IssueChanges): string => {
 }
 
 // The issues that left the board between two reads and may need moving to Done: each had an item in the project and
-// wasn't at Done yet. Whether it closed as completed is GitHub's to say. None when the project has no Done.
+// wasn't at Done yet. Whether it closed as completed is GitHub's to say. None when the project has no Done option.
 export const leftForDone = (before: Board | null, next: Board): { number: number; item: string }[] => {
-  const done = next.project?.status?.options.find(option => option.name.toLowerCase() === 'done')
+  const done = roleOf(next.project, 'done')
   if (!before || !done) return []
   const still = new Set(next.issues.map(one => one.number))
-  return before.issues.flatMap(one => (one.item && !still.has(one.number) && one.status?.toLowerCase() !== 'done' ? [{ number: one.number, item: one.item }] : []))
+  return before.issues.flatMap(one => (one.item && !still.has(one.number) && one.status !== done.name ? [{ number: one.number, item: one.item }] : []))
 }
 
 // The issues that pull requests which left the board between two reads refer to, and that may need moving to
 // Verification: each still open (an issue a merge closed has left the board too), with an item in the project, and not
 // at Verification or Done yet. Whether the pull request merged is GitHub's to say.
 export const leftForVerification = (before: Board | null, next: Board): { pr: number; number: number; item: string }[] => {
-  const verify = next.project?.status?.options.find(option => option.name.toLowerCase() === 'verification')
+  const verify = roleOf(next.project, 'verification')
   if (!before || !verify) return []
   const still = new Set(next.prs.map(pr => pr.number))
   return before.prs
@@ -1129,7 +1132,7 @@ export const leftForVerification = (before: Board | null, next: Board): { pr: nu
     .flatMap(pr =>
       (pr.issues ?? []).flatMap(number => {
         const issue = next.issues.find(one => one.number === number)
-        return issue?.item && !['verification', 'done'].includes(issue.status?.toLowerCase() ?? '') ? [{ pr: pr.number, number, item: issue.item }] : []
+        return issue?.item && issue.status !== verify.name && !isRole(next.project, issue.status, 'done') ? [{ pr: pr.number, number, item: issue.item }] : []
       }),
     )
 }
@@ -1154,8 +1157,8 @@ export const itemsAt = (items: unknown[], status: string, since?: string): Found
     .filter(found => !since || found.state === 'open' || (found.closedAt ?? '') >= since)
 
 // The project's items an archive takes, as REST lists them with the Status field: one issue's, by number, or every issue
-// at Done that closed before a date. Archived ones are left out.
-export const toArchive = (items: unknown[], ask: { number?: number; doneBefore?: string }): { number: number; title: string; node: string }[] =>
+// at Done that closed before a date, `done` naming the project's Done option. Archived ones are left out.
+export const toArchive = (items: unknown[], ask: { number?: number; doneBefore?: string }, done?: string): { number: number; title: string; node: string }[] =>
   (
     items as {
       node_id?: string
@@ -1170,7 +1173,7 @@ export const toArchive = (items: unknown[], ask: { number?: number; doneBefore?:
       if (ask.number !== undefined) return item.content?.number === ask.number
       const value = item.fields?.find(field => field.name === 'Status')?.value?.name
       const status = typeof value === 'string' ? value : value?.raw
-      return status?.toLowerCase() === 'done' && item.content?.state === 'closed' && (item.content.closed_at ?? '') < (ask.doneBefore ?? '')
+      return done !== undefined && status === done && item.content?.state === 'closed' && (item.content.closed_at ?? '') < (ask.doneBefore ?? '')
     })
     .map(item => ({ number: item.content?.number ?? 0, title: item.content?.title ?? '', node: item.node_id ?? '' }))
 

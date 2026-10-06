@@ -1,8 +1,10 @@
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { areasOf, automationsOff, automationsOn, mergeStatuses, rolesOf, stepsOf, suggestAreas } from '../hooks/setup'
-import type { SetupFacts, SetupOption } from '../types'
+import { groupsOf, isInbox, leftForDone, leftForVerification, toArchive } from '../hooks/parse'
+import { isLater, isNow, roleOf, rolesFor } from '../hooks/project'
+import { addsAsTodo, areasOf, automationsOff, automationsOn, mergeStatuses, picksFor, rolesOf, stepsOf, suggestAreas, suggestRoles } from '../hooks/setup'
+import type { Board, Issue, Project, SetupFacts, SetupOption } from '../types'
 
 const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } } as const
 const SETUP = { command: 'issues', args: 'setup', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
@@ -277,5 +279,141 @@ test('with two projects linked, setup asks which, and Cancel changes nothing', a
   await ui.press({ key: 'setup-close' })
   expect(await ui.find({ key: 'setup-plan' })).toBeUndefined()
   expect(gh.writes).toEqual([])
+  await ui.unmount()
+})
+
+// A project that names its Status its own way: GitHub's Todo, then Doing and Shipped.
+const shipyard = {
+  ...complete,
+  id: 'PVT_10',
+  number: 10,
+  title: 'Shipyard',
+  url: 'https://github.com/users/astrosteveo/projects/10',
+  status: { id: 'F_status', options: [option('Todo', 'o0'), option('Doing', 'o1'), option('Shipped', 'o2')] },
+  workflows: [
+    { name: 'Auto-add to project', enabled: true },
+    { name: 'Auto-add sub-issues to project', enabled: true },
+  ],
+}
+const NONE = { inbox: null, ready: null, backlog: null, started: null, verification: null, done: null }
+
+test("setup suggests the board's names where the project has them, and adds only the ones picked", () => {
+  // The board's names, whatever their case, are suggested; a name the project lacks is suggested for adding.
+  expect(suggestRoles(complete.status.options)).toEqual({ inbox: 'Inbox', ready: 'Ready', backlog: 'Backlog', started: 'In progress', verification: 'Verification', done: 'Done' })
+  expect(suggestRoles(shipyard.status.options)).toEqual({ inbox: 'Inbox', ready: 'Ready', backlog: 'Backlog', started: 'In progress', verification: 'Verification', done: 'Done' })
+  expect(suggestRoles([option('IN PROGRESS', 'x')]).started).toBe('IN PROGRESS')
+
+  // Picked from the project's own, or none: nothing to add, and the roles are the options picked.
+  const picks = { ...NONE, inbox: 'Todo', started: 'Doing', done: 'Shipped' }
+  expect(mergeStatuses(shipyard.status.options, picks).added).toEqual([])
+  expect(rolesOf(shipyard.status.options, picks)).toEqual({ inbox: 'o0', started: 'o1', done: 'o2' })
+  // One left to add is added alone, where the board's order puts it.
+  expect(mergeStatuses(shipyard.status.options, { ...picks, verification: 'Verification' }).options.map(one => one.name)).toEqual(['Todo', 'Doing', 'Shipped', 'Verification'])
+
+  const there = facts({ projects: [shipyard], issues: [{ id: 'I_1', number: 1, items: [{ project: 'PVT_10', item: 'PVTI_1', status: null }] }] })
+  expect(stepsOf(there, 'PVT_10', '', picks).map(step => [step.id, step.title])).toEqual([
+    ['roles', 'Go by these Status options: Inbox: Todo, Ready: none, Backlog: none, In progress: Doing, Verification: none, Done: Shipped'],
+    ['inbox', 'Set Status to Todo on 1 issue that has none'],
+  ])
+  // With no Inbox, issues without a Status are left so.
+  expect(stepsOf(there, 'PVT_10', '', { ...picks, inbox: null }).map(step => step.id)).toEqual(['roles'])
+  // Todo picked as the Inbox: GitHub's automation setting Todo is what the board wants.
+  expect(addsAsTodo(shipyard, 'Todo')).toBe(false)
+  expect(addsAsTodo(shipyard, 'Inbox')).toBe(true)
+
+  // Saved: setup starts from the saved roles, and has nothing to change while the picks match them.
+  const saved = { ...there, issues: [], saved: { project: 'PVT_10', roles: { inbox: 'o0', started: 'o1', done: 'o2' } } }
+  expect(picksFor(saved, 'PVT_10')).toEqual(picks)
+  expect(stepsOf(saved, 'PVT_10', '', picks)).toEqual([])
+  // A project with the board's names, never set up, needs nothing either.
+  expect(stepsOf(facts({ projects: [complete] }), 'PVT_8', '')).toEqual([])
+})
+
+const issueAt = (number: number, status: string | null, priority: string | null = null): Issue =>
+  ({ number, title: `Issue ${number}`, url: '', labels: [], assignees: [], body: '', updatedAt: '2026-10-04T00:00:00Z', status, priority, item: `PVTI_${number}`, checks: [] }) as unknown as Issue
+const projectWith = (names: string[], roles?: Record<string, string>, nowCount?: number): Project => {
+  const status = { id: 'F_status', options: names.map((name, index) => ({ id: `o${index}`, name })) }
+  return {
+    id: 'PVT_10',
+    number: 10,
+    title: 'Shipyard',
+    url: '',
+    status,
+    priority: { id: 'F_priority', options: ['P0', 'P1', 'P2'].map((name, index) => ({ id: `p${index}`, name })) },
+    roles: rolesFor(status, roles),
+    ...(nowCount !== undefined ? { nowCount } : {}),
+  }
+}
+
+test("the board goes by the roles: the board's names without saved roles, the saved ones with, and none for a role unset", () => {
+  const named = projectWith(['Inbox', 'Backlog', 'In progress', 'Done'])
+  expect(roleOf(named, 'inbox')?.name).toBe('Inbox')
+  expect(roleOf(named, 'verification')).toBeUndefined()
+
+  const own = projectWith(['Todo', 'Doing', 'Review', 'Shipped', 'Someday'], { inbox: 'o0', started: 'o1', verification: 'o2', done: 'o3', backlog: 'o4', ready: 'gone' })
+  expect(roleOf(own, 'done')?.name).toBe('Shipped')
+  // A saved option the project no longer has is no role.
+  expect(own.roles?.ready).toBeUndefined()
+  expect(isInbox(issueAt(1, 'Todo'), own)).toBe(true)
+  expect(isInbox(issueAt(2, null), own)).toBe(true)
+  expect(isInbox(issueAt(3, 'Doing'), own)).toBe(false)
+  expect(groupsOf([issueAt(1, 'Someday'), issueAt(2, 'Todo')], 'status', own).map(group => [group.title, group.folded])).toEqual([
+    ['Todo', false],
+    ['Someday', true],
+  ])
+
+  // Leaving the board: moved to Shipped unless there already; a Refs merge moves to Review unless at Review or Shipped.
+  const before = { repo: 'a/b', issues: [issueAt(1, 'Doing'), issueAt(2, 'Shipped'), issueAt(3, 'Doing'), issueAt(4, 'Review')], prs: [{ number: 9, issues: [3, 4] }], project: own } as unknown as Board
+  const after = { ...before, issues: [issueAt(3, 'Doing'), issueAt(4, 'Review')], prs: [] } as unknown as Board
+  expect(leftForDone(before, after).map(one => one.number)).toEqual([1])
+  expect(leftForVerification(before, after).map(one => one.number)).toEqual([3])
+
+  // A role unset: its part is off.
+  const unset = projectWith(['Inbox', 'Doing', 'Done'], { started: 'o1', done: 'o2' })
+  expect(isInbox(issueAt(1, 'Inbox'), unset)).toBe(false)
+  expect(isInbox(issueAt(2, null), unset)).toBe(false)
+  expect(leftForVerification(before, { ...after, project: unset })).toEqual([])
+  const doneItem = { node_id: 'N1', content_type: 'Issue', content: { number: 1, title: 'x', state: 'closed', closed_at: '2026-09-01' }, fields: [{ name: 'Status', value: { name: 'Shipped' } }] }
+  expect(toArchive([doneItem], { doneBefore: '2026-10-01' }, 'Shipped').map(one => one.number)).toEqual([1])
+  expect(toArchive([doneItem], { doneBefore: '2026-10-01' }, undefined)).toEqual([])
+
+  // Now is the first two priorities, or as many as set.
+  expect(isNow(own, issueAt(1, null, 'P1'))).toBe(true)
+  const one = projectWith(['Todo'], undefined, 1)
+  expect(isNow(one, issueAt(1, null, 'P1'))).toBe(false)
+  expect(isLater(one, issueAt(1, null, 'P1'))).toBe(true)
+})
+
+test('setup on a project with its own names lets the person pick which is which, and saves only that', async ($, on) => {
+  const kept = new Map<string, unknown>()
+  on('store.get', async (_$, e) => ({ value: kept.get(e.key) }))
+  on('store.set', async (_$, e) => {
+    kept.set(e.key, e.value)
+    return { value: undefined }
+  })
+  const clock = mock.clock(on, { now: Date.parse('2026-10-05T03:00:00Z') })
+  const gh = github(on, { hasIssues: true, projects: [shipyard], labels: ['bug', 'area:sim'], issues: [{ number: 1, items: [{ project: 'PVT_10', item: 'PVTI_1', status: 'Todo' }] }] })
+  await $.command.run(SETUP)
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+
+  // Suggested: the board's names, to add, as none match; Todo still skips the Inbox.
+  expect(await ui.find({ key: 'setup-role-inbox-add' })).toMatchObject({ text: '＋ Inbox', props: { variant: 'primary' } })
+  expect(await ui.find({ text: /^Add Status options: Inbox, Backlog, Ready, In progress, Verification, Done$/ })).toBeDefined()
+  expect(await ui.find({ text: /new issues arrive with Status Todo/ })).toBeDefined()
+
+  for (const key of ['inbox-Todo', 'ready-none', 'backlog-none', 'started-Doing', 'verification-none', 'done-Shipped']) await ui.press({ key: `setup-role-${key}` })
+  expect(await ui.find({ key: 'setup-role-started-Doing' })).toMatchObject({ props: { variant: 'primary' } })
+  expect(await ui.find({ text: /^Add Status options/ })).toBeUndefined()
+  expect(await ui.find({ text: /^Go by these Status options: Inbox: Todo, Ready: none, Backlog: none, In progress: Doing, Verification: none, Done: Shipped$/ })).toBeDefined()
+  expect(await ui.find({ text: /new issues arrive with Status Todo/ })).toBeUndefined()
+
+  await ui.press({ key: 'setup-apply' })
+  await clock.settle()
+  // The project keeps its options; only the roles are saved.
+  expect(gh.writes).toEqual([])
+  const saved = kept.get('repo:/work/void-sector') as { setup?: { project: { id: string }; status: { roles: Record<string, string> } } }
+  expect(saved.setup?.project.id).toBe('PVT_10')
+  expect(saved.setup?.status.roles).toEqual({ inbox: 'o0', started: 'o1', done: 'o2' })
   await ui.unmount()
 })
