@@ -85,19 +85,34 @@ const world = (on: On) => {
     refuseProject: '',
     fields: [] as Record<string, string>[],
     assigned: [] as number[],
+    // What the cheap checks see: GitHub answers 304 while the ETag sent is this one.
+    etag: 'E1',
+    looks: 0,
+    issueReads: 0,
+    searches: 0,
+    // When set, GraphQL refuses for a rate limit that resets then.
+    limited: '',
   }
   on('process.run', async (_$, e) => {
     const argv = e.argv
     const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
     if (argv[0] === 'git') return answer(`${state.branch}\n`)
+    if (argv[1] === 'api' && argv[2] === '-i') {
+      state.looks += 1
+      if (argv.includes(`If-None-Match: ${state.etag}`)) return { value: { exitCode: 1, stdout: 'HTTP/2.0 304 Not Modified\n', stderr: 'gh: HTTP 304', isStdoutTruncated: false, isStderrTruncated: false } }
+      return answer(`HTTP/2.0 200 OK\nEtag: ${state.etag}\n\n[]`)
+    }
     if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true }))
     if (isIssuesQuery(argv)) {
+      state.issueReads += 1
+      if (state.limited) return { value: { exitCode: 1, stdout: '', stderr: 'GraphQL: API rate limit already exceeded for user ID 1.', isStdoutTruncated: false, isStderrTruncated: false } }
       if (state.refuseProject && asksProject(argv)) return { value: { exitCode: 1, stdout: '', stderr: state.refuseProject, isStdoutTruncated: false, isStderrTruncated: false } }
       return answer(graphPage([{ ...issue(state.body), ...state.planned[315] }, { ...other, ...state.planned[289] }], argv, state.project))
     }
     if (argv[1] === 'api' && argv[2] === 'graphql') {
       // A mutation: its `-f name=value` arguments, and the change it makes to the project.
       const args = Object.fromEntries(argv.flatMap((arg, index) => (argv[index - 1] === '-f' ? [arg.split(/=(.*)/s).slice(0, 2) as [string, string]] : [])))
+      if (args.query?.startsWith('{ rateLimit')) return answer(JSON.stringify({ data: { rateLimit: { resetAt: state.limited } } }))
       // The pull requests' review threads: a read, not a change.
       if (args.query?.includes('reviewThreads')) return answer(JSON.stringify({ data: { repository: { pullRequests: { nodes: [] } } } }))
       state.fields.push(args)
@@ -126,7 +141,10 @@ const world = (on: On) => {
       if (fields === 'id') return answer(JSON.stringify({ id: `I_${argv[3]}` }))
       return answer(JSON.stringify(fields === 'body' ? { body: state.body } : issue(state.body, '2026-10-04T09:00:00Z')))
     }
-    if (argv.includes('closed') || argv.includes('merged')) return answer('[]')
+    if (argv.includes('closed') || argv.includes('merged')) {
+      state.searches += 1
+      return answer('[]')
+    }
     if (argv[1] === 'pr') state.prLists += 1
     return answer(JSON.stringify(argv[1] === 'issue' ? [issue(state.body), other] : state.prs))
   })
@@ -390,7 +408,7 @@ test('a new session paints the saved board and keeps the issue Claude was on', a
   await pane.unmount()
 })
 
-test('the board looks again every 30 seconds while CI runs, and every 5 minutes otherwise', async ($, on) => {
+test('the board looks every 30 seconds while CI runs, and every 5 minutes otherwise, reading in full when something changed', async ($, on) => {
   mock.store(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   const gh = world(on)
@@ -398,16 +416,127 @@ test('the board looks again every 30 seconds while CI runs, and every 5 minutes 
   await $.command.run(REFRESH)
   expect(gh.prLists).toBe(1)
 
+  // While nothing changes, the look every 30 seconds is a cheap check that GitHub answers 304: nothing more is read.
+  await clock.advance(30_000)
+  expect(gh.prLists).toBe(1)
+
+  // CI finishes, so its check runs change: the next look reads in full, and then every 5 minutes.
+  gh.prs = [pr('pass')]
+  gh.etag = 'E2'
   await clock.advance(30_000)
   expect(gh.prLists).toBe(2)
-
-  gh.prs = [pr('pass')]
-  await clock.advance(30_000)
-  expect(gh.prLists).toBe(3)
+  gh.etag = 'E3'
   await clock.advance(4 * 60_000)
-  expect(gh.prLists).toBe(3)
+  expect(gh.prLists).toBe(2)
   await clock.advance(60_000)
-  expect(gh.prLists).toBe(4)
+  expect(gh.prLists).toBe(3)
+})
+
+test('the timer reads GitHub in full only when a cheap check sees a change, and at least every 15 minutes', async ($, on) => {
+  mock.store(on)
+  const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
+  const gh = world(on)
+  const logged: string[] = []
+  on('ui.log', async (_$, e) => {
+    logged.push(e.text)
+    return { value: undefined }
+  })
+  await $.command.run(REFRESH)
+  await clock.settle()
+  expect(gh.issueReads).toBe(1)
+  // Each full read logs what its GraphQL query cost.
+  expect(logged).toContain('issue-board: the issues query cost 1 GraphQL points over 1 page; 4999 left until 2026-10-04T11:00:00Z')
+
+  // Five minutes on, nothing changed: GitHub answers 304, which costs nothing, and the board reads no more.
+  await clock.advance(5 * 60_000)
+  expect(gh.issueReads).toBe(1)
+  expect(gh.looks).toBeGreaterThan(1)
+
+  // Something changed: the next look reads in full.
+  gh.etag = 'E2'
+  await clock.advance(5 * 60_000)
+  expect(gh.issueReads).toBe(2)
+
+  // Nothing changes again, but a project field's change shows in no cheap check: 15 minutes on, it reads anyway.
+  await clock.advance(10 * 60_000)
+  expect(gh.issueReads).toBe(2)
+  await clock.advance(5 * 60_000)
+  expect(gh.issueReads).toBe(3)
+})
+
+test('the weekly counts are read again only after an hour', async ($, on) => {
+  mock.store(on)
+  const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
+  const gh = world(on)
+  await $.command.run(REFRESH)
+  expect(gh.searches).toBe(2)
+  await $.command.run(REFRESH)
+  expect(gh.searches).toBe(2)
+  await clock.advance(61 * 60_000)
+  await $.command.run(REFRESH)
+  expect(gh.searches).toBe(4)
+})
+
+test("when GitHub's rate limit runs out, the board says when it resets, says so once, and reads nothing until then", async ($, on) => {
+  mock.store(on)
+  const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
+  const gh = world(on)
+  const toasts: string[] = []
+  on('ui.toast', async (_$, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  gh.limited = '2026-10-04T10:20:00Z'
+  const at = new Date(Date.parse(gh.limited)).toTimeString().slice(0, 5)
+  const said = await $.command.run(REFRESH)
+  expect(said.text).toBe(`Couldn't refresh: GitHub's rate limit for this account ran out. The board reads again at ${at}.`)
+  expect(toasts.filter(text => text.includes('rate limit'))).toEqual([`GitHub's rate limit ran out; the issue board waits until ${at}`])
+  const reads = gh.issueReads
+
+  // Until the reset, neither the timer nor a refresh asked for reads GitHub.
+  await clock.advance(15 * 60_000)
+  await $.command.run(REFRESH)
+  expect(gh.issueReads).toBe(reads)
+
+  // Once it resets, the board reads again by itself, and the error goes.
+  gh.limited = ''
+  await clock.advance(6 * 60_000)
+  expect(gh.issueReads).toBe(reads + 1)
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  expect(await ui.find({ text: /rate limit/ })).toBeUndefined()
+  expect(await ui.find({ key: 'issue-315' })).toBeDefined()
+  await ui.unmount()
+  expect(toasts.filter(text => text.includes('rate limit'))).toHaveLength(1)
+})
+
+test("another session's newer read of the same repo is taken rather than reading GitHub again", async ($, on) => {
+  // The store every session on the machine shares.
+  const stored = new Map<string, unknown>()
+  on('store.get', async (_$, e) => ({ value: stored.get(e.key) }))
+  on('store.set', async (_$, e) => {
+    stored.set(e.key, e.value)
+    return { value: undefined }
+  })
+  const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
+  const gh = world(on)
+  await $.command.run(REFRESH)
+  await clock.settle()
+  expect(gh.issueReads).toBe(1)
+
+  // Another session on the same repo reads GitHub a minute later and saves its board.
+  await clock.advance(60_000)
+  const [key = ''] = [...stored.keys()].filter(one => one.startsWith('repo:'))
+  const saved = stored.get(key) as { board: { fetchedAt: number; issues: { number: number; title: string }[] } }
+  const renamed = saved.board.issues.map(one => (one.number === 315 ? { ...one, title: 'Lay Kessik out for play, renamed' } : one))
+  stored.set(key, { ...saved, board: { ...saved.board, fetchedAt: Date.parse('2026-10-04T10:01:00Z'), issues: renamed } })
+
+  // This session's next look takes it: the new title shows, and GitHub isn't read.
+  await clock.advance(5 * 60_000)
+  expect(gh.issueReads).toBe(1)
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'filter-all' })
+  expect(await ui.find({ text: /renamed/ })).toBeDefined()
+  await ui.unmount()
 })
 
 test('the pane draws on every surface, with search where the surface has a text field', async ($, on) => {

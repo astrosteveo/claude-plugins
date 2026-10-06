@@ -118,6 +118,11 @@ const PANE = 'issue-board'
 const REFRESH_MS = 5 * 60 * 1000
 // While a pull request's CI runs, the board looks again this often, so its pass or failure shows soon after.
 const WATCH_MS = 30 * 1000
+// The longest the board goes without a full read, even when the cheap checks see nothing: a change to a project field
+// shows in none of them.
+const FULL_MS = 15 * 60 * 1000
+// How long the weekly counts of closed issues and merged pull requests are kept before they are read again.
+const VELOCITY_MS = 60 * 60 * 1000
 // `gh issue close 35`, the issue it closes.
 const CLOSE = /\bgh\s+issue\s+close\s+#?(\d+)\b/
 // Commands that may leave the folder on another branch.
@@ -214,6 +219,9 @@ const gh = async ($: EngineInterface, args: string[], stdin?: string, timeoutMs 
 }
 
 const messageOf = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause))
+
+// The time on the engine's clock, which a test can move; the system's where there is none.
+const nowOf = ($: EngineInterface): Promise<number> => $.clock.now().catch(() => Date.now())
 
 // Why a hook failed, as its `.catch` handler reads it.
 const failureOf = (error: HookFailure): string => (error.kind === 'timeout' ? `ran out of time${error.message ? ` (${error.message})` : ''}` : (error.message ?? 'threw'))
@@ -315,12 +323,110 @@ const followBranch = async ($: EngineInterface, name: string | null): Promise<vo
   $.ui.toast(`Working on #${issue.number} now: the branch ${name} is for it`)
 }
 
-// The next refresh: soon while a pull request's CI runs, every five minutes otherwise. Each refresh sets the next one.
+// The next look at GitHub: soon while a pull request's CI runs, every five minutes otherwise, and once the rate limit
+// resets after it ran out. Each look sets the next one.
 let timer: Timer | undefined
-const schedule = ($: EngineInterface, now: Board | null): void => {
+const schedule = async ($: EngineInterface, now: Board | null): Promise<void> => {
   timer?.cancel()
   const watching = now?.prs.some(pr => pr.ci === 'pending') ?? false
-  timer = $.clock.after(watching ? WATCH_MS : REFRESH_MS, () => void refresh($))
+  const clock = await nowOf($)
+  const wait = pausedUntil > clock ? pausedUntil - clock + 5_000 : watching ? WATCH_MS : REFRESH_MS
+  timer = $.clock.after(wait, () => void poll($))
+}
+
+// Until when GitHub's rate limit has run out for the account, if it has. Every session and agent shares the limit, so
+// the board reads nothing until then rather than spend what is left.
+let pausedUntil = 0
+const RATE_LIMITED = /rate limit/i
+
+// The ETag GitHub last answered each cheap check with, by path. A check sends it back, and an answer of 304, nothing
+// changed, doesn't count against the rate limit.
+const etags = new Map<string, string>()
+
+// What the cheap checks look at: the repo's issues and pull requests by their last change, which moves on a new one, an
+// edit, a comment, a label or a close, and the check runs of each pull request whose CI is running.
+const cheapChecksOf = (now: Board): string[] => [
+  `repos/${now.repo}/issues?state=all&sort=updated&direction=desc&per_page=10`,
+  ...now.prs.filter(pr => pr.ci === 'pending' && pr.sha).map(pr => `repos/${now.repo}/commits/${pr.sha}/check-runs?per_page=100`),
+]
+
+// Whether a REST read of `path` changed since the board last asked. True when it can't tell, so the board reads.
+const changed = async ($: EngineInterface, path: string): Promise<boolean> => {
+  const known = etags.get(path)
+  try {
+    const { stdout } = await $.process.run(['gh', 'api', '-i', ...(known ? ['-H', `If-None-Match: ${known}`] : []), path], { timeoutMs: 30_000 })
+    const status = /^HTTP\/[\d.]+ (\d{3})/m.exec(stdout)?.[1]
+    if (status === '304') return false
+    const tag = /^etag: *(.+)$/im.exec(stdout)?.[1]?.trim()
+    if (status === '200' && tag) etags.set(path, tag)
+    return true
+  } catch {
+    return true
+  }
+}
+
+// The timer's look at GitHub. A full read costs GraphQL points; the cheap checks cost none when nothing changed. So the
+// board reads in full when a check saw a change, or when its last full read is FULL_MS old. Another session's newer read
+// of the same repo is taken as it is.
+const poll = async ($: EngineInterface): Promise<void> => {
+  readTouches = touches
+  const now = await read($, board)
+  const clock = await nowOf($)
+  if (pausedUntil > clock) return schedule($, now)
+  if (!now || clock - now.fetchedAt >= FULL_MS) return refresh($)
+  const shared = await adopt($, now)
+  if (shared) return schedule($, shared)
+  const seen = await Promise.all(cheapChecksOf(now).map(path => changed($, path)))
+  if (seen.some(Boolean)) return refresh($)
+  schedule($, now)
+}
+
+// After a full read: the cheap checks learn GitHub's answer now, so the next look can tell whether it changed since.
+const prime = async ($: EngineInterface, now: Board): Promise<void> => {
+  await Promise.all(cheapChecksOf(now).map(path => changed($, path)))
+}
+
+// Another session's read of the same repo, saved since this one's: the board takes it rather than read GitHub again.
+// The saved copy has no bodies, so each issue keeps the body this board has for it while it is unchanged.
+const adopt = async ($: EngineInterface, now: Board): Promise<Board | null> => {
+  try {
+    const saved = ((await $.store.get(await keyOf($))) as Partial<Saved> | undefined)?.board
+    if (!saved || saved.repo !== now.repo || saved.fetchedAt <= now.fetchedAt) return null
+    const issues = saved.issues.map(issue => {
+      const mine = now.issues.find(one => one.number === issue.number)
+      return issue.body === '' && mine && mine.updatedAt === issue.updatedAt ? { ...issue, body: mine.body } : issue
+    })
+    const taken = { ...saved, issues }
+    await land($, now, taken, false)
+    return taken
+  } catch (cause) {
+    $.ui.log(`issue-board: couldn't read another session's board: ${messageOf(cause)}`, { to: 'debug' })
+    return null
+  }
+}
+
+// When the rate limit resets, as GraphQL itself says: it still answers this once the limit has run out. A minute from
+// now for a limit on how fast calls come, which resets sooner, or when GraphQL can't say.
+const resetOf = async ($: EngineInterface, message: string): Promise<number> => {
+  const soon = (await nowOf($)) + 60_000
+  if (/secondary/i.test(message)) return soon
+  try {
+    const answer = JSON.parse(await gh($, ['api', 'graphql', '-f', 'query={ rateLimit { resetAt } }'])) as { data?: { rateLimit?: { resetAt?: string } } }
+    const at = Date.parse(answer.data?.rateLimit?.resetAt ?? '')
+    return Number.isNaN(at) ? soon : at
+  } catch {
+    return soon
+  }
+}
+
+// What one page of the issues query says about the rate limit: what it cost, and what is left.
+const costOf = (page: string): { cost: number; remaining: number; resetAt: string } | null => {
+  try {
+    const limit = (JSON.parse(page) as { data?: { rateLimit?: { cost: number; remaining: number; resetAt: string } } }).data?.rateLimit
+    return limit ?? null
+  } catch {
+    return null
+  }
 }
 
 // What the board keeps between sessions, one entry per repository; `setup` is what `/issues setup` last saved.
@@ -394,6 +500,12 @@ const fetchIssues = async ($: EngineInterface, nameWithOwner: string): Promise<{
       pages.push(page)
       after = nextPageOf(page)
     } while (after && pages.length < PAGES)
+    const limits = pages.map(costOf).filter(limit => limit !== null)
+    const last = limits.at(-1)
+    if (last) {
+      const cost = limits.reduce((sum, limit) => sum + limit.cost, 0)
+      $.ui.log(`issue-board: the issues query cost ${cost} GraphQL points over ${pages.length} ${pages.length === 1 ? 'page' : 'pages'}; ${last.remaining} left until ${last.resetAt}`, { to: 'debug' })
+    }
     return parseGraph(pages, preferred)
   }
   const unread = projectRefusal !== undefined || ((await read($, access))?.problems.some(problem => problem.id === 'scope-project') ?? false)
@@ -442,7 +554,12 @@ const begin = async ($: EngineInterface): Promise<void> => {
   await refresh($)
 }
 
+// The repository the folder is, as gh names it: read once a session, since it doesn't change.
+let repoInfo: { nameWithOwner: string; hasIssuesEnabled: boolean } | undefined
+
 const readGitHub = async ($: EngineInterface, seen: boolean): Promise<void> => {
+  // The rate limit ran out: the timer set for its reset reads then.
+  if (pausedUntil > (await nowOf($))) return
   await update($, loading, () => true)
   readTouches = touches
   const before = await read($, board)
@@ -451,9 +568,12 @@ const readGitHub = async ($: EngineInterface, seen: boolean): Promise<void> => {
     const from = since(Date.now())
     const known = await read($, viewer)
     // First, so a folder that isn't a GitHub repo stops at one call, and a repo with issues turned off skips them.
-    const repo = JSON.parse(await gh($, ['repo', 'view', '--json', 'nameWithOwner,hasIssuesEnabled'])) as { nameWithOwner: string; hasIssuesEnabled: boolean }
+    repoInfo ??= JSON.parse(await gh($, ['repo', 'view', '--json', 'nameWithOwner,hasIssuesEnabled'])) as { nameWithOwner: string; hasIssuesEnabled: boolean }
+    const repo = repoInfo
     const listIssues = (args: string[]) => (repo.hasIssuesEnabled ? gh($, ['issue', 'list', ...args]) : Promise.resolve('[]'))
     const [owner = '', name = ''] = repo.nameWithOwner.split('/')
+    // The weekly counts change a little a day, and reading them takes up to ten GraphQL searches: kept for an hour.
+    const kept = before?.repo === repo.nameWithOwner && before.velocityAt !== undefined && (await nowOf($)) - before.velocityAt < VELOCITY_MS ? before : null
     const [graph, prs, threads, closed, merged, login, current] = await Promise.all([
       repo.hasIssuesEnabled ? fetchIssues($, repo.nameWithOwner) : Promise.resolve({ issues: [], project: null }),
       gh($, [
@@ -468,52 +588,72 @@ const readGitHub = async ($: EngineInterface, seen: boolean): Promise<void> => {
       ]),
       // Review threads still open on each pull request; without them, the rows just don't count threads.
       gh($, ['api', 'graphql', '-f', `owner=${owner}`, '-f', `name=${name}`, '-f', `query=${THREADS_QUERY}`]).then(threadsOf, () => new Map<number, number>()),
-      listIssues(['--state', 'closed', '--search', `closed:>=${from}`, '--limit', '500', '--json', 'closedAt']),
-      gh($, ['pr', 'list', '--state', 'merged', '--search', `merged:>=${from}`, '--limit', '500', '--json', 'mergedAt']),
+      kept ? null : listIssues(['--state', 'closed', '--search', `closed:>=${from}`, '--limit', '500', '--json', 'closedAt']),
+      kept ? null : gh($, ['pr', 'list', '--state', 'merged', '--search', `merged:>=${from}`, '--limit', '500', '--json', 'mergedAt']),
       // Who Mine means: asked once, then kept.
       known ?? gh($, ['api', 'user', '--jq', '.login']).then(out => out.trim() || null, () => null),
       currentBranch($),
     ])
-    const fetchedAt = Date.now()
+    const fetchedAt = await nowOf($)
     const next: Board = {
       repo: repo.nameWithOwner,
       issues: graph.issues,
       prs: parsePrs(prs).map(pr => ({ ...pr, openThreads: threads.get(pr.number) ?? 0 })),
-      velocity: { closed: weekly(timesOf(closed, 'closedAt'), fetchedAt), merged: weekly(timesOf(merged, 'mergedAt'), fetchedAt) },
+      velocity:
+        kept && closed === null && merged === null
+          ? kept.velocity
+          : { closed: weekly(timesOf(closed ?? '[]', 'closedAt'), fetchedAt), merged: weekly(timesOf(merged ?? '[]', 'mergedAt'), fetchedAt) },
+      velocityAt: kept?.velocityAt ?? fetchedAt,
       fetchedAt,
       project: graph.project,
     }
     after = next
-    await update($, board, () => next)
     if (login !== known) await update($, viewer, () => login)
+    await land($, before, next, seen)
     await followBranch($, current)
     // The branch's pull request has CI running: the board watches the run for its progress.
     if (current && next.prs.some(pr => pr.branch === current && pr.ci === 'pending')) void watchRuns($)
-    // Merge all's confirm waits on pull requests that are all gone now.
-    if (next.prs.length === 0) await update($, confirming, () => false)
-    const green = wentGreen(before, next)
-    if (green.length > 0) await update($, greened, list => [...list.slice(-50), ...green.map(greenKey)])
-    if (seen) {
-      await update($, working, was => {
-        const issue = was && next.issues.find(one => one.number === was.number)
-        return was && issue ? { ...was, updatedAt: issue.updatedAt } : was
-      })
-    }
-    await update($, error, () => null)
-    await save($)
-    // New issues in the Inbox while it shows: Claude suggests for them too, unless its last answer failed, which waits
-    // for Suggest again.
-    if ((await read($, filter)) === 'inbox' && !(await read($, triage)).failed) void suggestInbox($)
     // GitHub answers again: look again too, so a problem fixed since the last check goes.
     if (((await read($, access))?.problems.length ?? 0) > 0) void checkAccess($)
+    void prime($, next)
   } catch (cause) {
     const message = messageOf(cause)
-    await update($, error, () => message)
-    void checkAccess($, message)
+    repoInfo = undefined
+    if (RATE_LIMITED.test(message)) {
+      const was = pausedUntil
+      const clock = await nowOf($)
+      pausedUntil = await resetOf($, message)
+      const at = new Date(pausedUntil).toTimeString().slice(0, 5)
+      await update($, error, () => `GitHub's rate limit for this account ran out. The board reads again at ${at}.`)
+      if (was <= clock) $.ui.toast(`GitHub's rate limit ran out; the issue board waits until ${at}`)
+    } else {
+      await update($, error, () => message)
+      void checkAccess($, message)
+    }
   } finally {
     await update($, loading, () => false)
     schedule($, after)
   }
+}
+
+// A new read of the board, this session's or another's: it goes on the board, and what follows from the change does.
+const land = async ($: EngineInterface, before: Board | null, next: Board, seen: boolean): Promise<void> => {
+  await update($, board, () => next)
+  // Merge all's confirm waits on pull requests that are all gone now.
+  if (next.prs.length === 0) await update($, confirming, () => false)
+  const green = wentGreen(before, next)
+  if (green.length > 0) await update($, greened, list => [...list.slice(-50), ...green.map(greenKey)])
+  if (seen) {
+    await update($, working, was => {
+      const issue = was && next.issues.find(one => one.number === was.number)
+      return was && issue ? { ...was, updatedAt: issue.updatedAt } : was
+    })
+  }
+  await update($, error, () => null)
+  await save($)
+  // New issues in the Inbox while it shows: Claude suggests for them too, unless its last answer failed, which waits
+  // for Suggest again.
+  if ((await read($, filter)) === 'inbox' && !(await read($, triage)).failed) void suggestInbox($)
 }
 
 // Puts an issue read straight from GitHub on the board. The change is the person's or Claude's own, so the issue
@@ -994,11 +1134,12 @@ const makeTasks = async ($: EngineInterface, issue: Issue): Promise<number> => {
   return had.length + made.length
 }
 
-// After Claude's turn: the board reads GitHub again if Claude ran git or gh since it last did, then the prompt box
-// suggests the next step for the issue Claude is on, such as opening its pull request once every box is ticked.
+// After Claude's turn: the board looks at GitHub again if Claude ran git or gh since it last did, reading in full only
+// when the cheap checks see a change (a write to GitHub reads at once by itself). Then the prompt box suggests the next
+// step for the issue Claude is on, such as opening its pull request once every box is ticked.
 const afterTurn = async ($: EngineInterface): Promise<void> => {
   await settle($)
-  if (touches > readTouches) await refresh($)
+  if (touches > readTouches) await poll($)
   const now = await read($, board)
   const step = now ? nextStepOf(now, await doingHere($)) : null
   nextStep = step

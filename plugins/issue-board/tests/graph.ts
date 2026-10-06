@@ -83,6 +83,7 @@ export const graphPage = (issues: Raw[], argv: readonly string[] = [], project =
   const withProject = project && asksProject(argv)
   return JSON.stringify({
     data: {
+      rateLimit: { cost: 1, remaining: 4999, resetAt: '2026-10-04T11:00:00Z' },
       repository: {
         ...(withProject ? { projectsV2: { nodes: [PROJECT] } } : {}),
         issues: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: issues.map(raw => node(raw, withProject)) },

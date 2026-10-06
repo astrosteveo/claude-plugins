@@ -76,6 +76,8 @@ export type Board = {
   prs: PullRequest[]
   velocity: Velocity
   fetchedAt: number
+  // When the velocity was read: it changes a little a day, so it is read again only after an hour.
+  velocityAt?: number
   // The repo's project; null without one, or when gh may not read projects. The board then works from labels.
   project?: Project | null
 }
