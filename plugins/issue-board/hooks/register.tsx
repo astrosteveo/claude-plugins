@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { Caught, EngineInterface, HookFailure, ModelForkResult, Register, ThemeKey, Timer, UiCopyArgs } from 'claude-code'
+import type { AgentSpawnResult, Caught, EngineInterface, HookFailure, ModelForkResult, Register, ThemeKey, Timer, UiCopyArgs } from 'claude-code'
 
 import type { Adopted, Adoption, Alert, Board, BoxTask, Check, Comment, Draft, DraftEdit, EpicNote, Filter, GroupBy, Issue, Known, Launch, Problem, Project, ProjectField, Role, Roles, StatusPicks, StatusUpdate, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
 import type { Ended, IssueChanges, NewIssue, PrRule, StartMode, Switches } from './parse'
@@ -199,6 +199,8 @@ import {
 } from './parse'
 
 const PANE = 'issue-board'
+// This plugin's name, as `next.origin` gives it for a `$` call of its own.
+const PLUGIN = 'issue-board'
 
 // The person's settings, from the manifest's userConfig. What changes the shared project by itself is off for a new
 // install; Start's own changes are on, since the person pressed Start. Of what the board adds to Claude's prompts, the
@@ -2483,20 +2485,42 @@ const draftedStart = async ($: EngineInterface, e: { text: string; origin: { kin
   }
 }
 
-// How long Start in background waits for Claude to start the agent before its button comes back.
-const DISPATCH_MS = 5 * 60 * 1000
-
-// Start in background: Claude dispatches an agent of the board's own type on the issue, to work it in a git worktree
-// of its own, in the background, and leave a pull request. The button says it is starting until the agent starts, the
-// spawn is refused, or five minutes pass. The issue moves to In progress and is assigned, as Start does.
+// Start in background: the board starts an agent of its own type on the issue, to work it in a git worktree of its own,
+// in the background, and leave a pull request. Claude gets no message: the agent's prompt goes to the agent alone. The
+// button says it is starting until the agent starts or the spawn is refused or fails, which a toast explains. Once it
+// starts, the issue's row follows it, and the issue moves to In progress and is assigned, as Start does.
 const startInBackground = ($: EngineInterface, issue: Issue): Promise<void> =>
   launch($, issue, 'background', async () => {
-    await $.prompt.submit({ text: backgroundPrompt(issue), asUser: true })
-    $.ui.toast(`Asked Claude to start a background agent on #${issue.number}`)
-    $.clock.after(DISPATCH_MS, () => void landed($, issue.number, 'background'))
+    const description = `#${issue.number} ${issue.title}`
+    let started: AgentSpawnResult
+    try {
+      started = await $.agent.spawn({ subagentType: WORKER, description, prompt: startPrompt(issue) })
+    } catch (cause) {
+      $.ui.toast(`Couldn't start a background agent on #${issue.number}: ${messageOf(cause)}`)
+      return true
+    }
+    if (started.deny !== undefined) {
+      $.ui.toast(`Couldn't start a background agent on #${issue.number}: ${started.deny}`)
+      return true
+    }
+    try {
+      const agentId = started.agentId ?? (await workerIdOf($, description))
+      if (!agentId) throw new Error('no agent id')
+      await workerStarted($, issue.number, agentId, false)
+    } catch (cause) {
+      $.ui.toast(`Started a background agent on #${issue.number}, but the board couldn't follow it: ${messageOf(cause)}`)
+    }
     await claim($, issue)
-    return false
+    return true
   })
+
+// The id of a board agent that just started, when core didn't name it: the session's list does, by the name it was
+// given, or by its description when it has none. An earlier agent on the issue may match too, so one that hasn't ended
+// comes first.
+const workerIdOf = async ($: EngineInterface, description: string, name?: string): Promise<string | undefined> => {
+  const matching = (await $.agent.list()).filter(agent => agent.type === WORKER && (name ? agent.name === name : agent.description === description))
+  return (matching.findLast(agent => !['completed', 'failed', 'killed'].includes(agent.status)) ?? matching.at(-1))?.id
+}
 
 // A spawn of the board's agent, by Claude or anyone: once it starts, the issue's row follows it.
 const workerStarted = async ($: EngineInterface, number: number, agentId: string, byClaude: boolean): Promise<void> => {
@@ -3197,30 +3221,23 @@ export const register: Register = (on, options) => {
     return ended
   })
 
-  // Claude dispatches the board's agent, from Start in background: the issue's row follows the agent it started.
+  // Claude dispatches the board's agent, from the conversation or Edit first in background: the issue's row follows the
+  // agent it started, and the issue is claimed. Start in background spawns the agent itself and follows it from the
+  // spawn's result, so its own spawn is left to it here.
   on('agent.spawn', async ($, e, next) => {
     const started = await next(e)
-    if (e.subagentType !== WORKER) return started
+    if (e.subagentType !== WORKER || next.origin.plugin === PLUGIN) return started
     const number = workerIssueOf(e)
-    // Start in background claimed the issue when pressed; a dispatch from the conversation claims it here.
-    const fromPress = number !== undefined && pressed.has(`background-${number}`)
-    if (number !== undefined) await landed($, number, 'background')
     if (started.deny !== undefined) {
       $.ui.toast(`Couldn't start a background agent${number ? ` on #${number}` : ''}: ${started.deny}`)
       return started
     }
     if (number === undefined) return started
     try {
-      // Core names the agent it started; failing that, the session's list does, by the name it was given, or by its
-      // description when it has none. An earlier agent on the issue may match too, so one that hasn't ended comes first.
-      const listed = async () => {
-        const matching = (await $.agent.list()).filter(agent => agent.type === WORKER && (e.name ? agent.name === e.name : agent.description === e.description))
-        return (matching.findLast(agent => !['completed', 'failed', 'killed'].includes(agent.status)) ?? matching.at(-1))?.id
-      }
-      const agentId = started.agentId ?? (await listed())
+      const agentId = started.agentId ?? (await workerIdOf($, e.description, e.name))
       if (!agentId) throw new Error('no agent id')
       await workerStarted($, number, agentId, startedByClaude(next.origin, e))
-      const issue = fromPress ? undefined : (await read($, board))?.issues.find(one => one.number === number)
+      const issue = (await read($, board))?.issues.find(one => one.number === number)
       if (issue) await claim($, issue)
     } catch (cause) {
       $.ui.toast(`Started a background agent on #${number}, but the board couldn't follow it: ${messageOf(cause)}`)

@@ -112,12 +112,17 @@ GitHub. The card shows the latest three comments, a field to reply, and
 - **▶ Start** (`s`) sends Claude the issue with its open boxes, and makes a
   task for each box. The issue moves to In progress and is assigned to you.
   The button then says `▶ Started`, so it can't send the issue twice.
-- **⚙ Start in background** (`b`) asks Claude to hand the issue to the
-  board's agent, `issue-board:worker`. It works in its own git worktree,
-  ticks boxes, and opens a pull request, without merging or force-pushing.
-  The row shows the agent: `⚙ working`, `waiting`, `done`, `failed` or
-  `stopped`. When it ends, the conversation says so, with its last answer
-  and pull request. It asks for permission as any background agent does.
+- **⚙ Start in background** (`b`) starts the board's agent,
+  `issue-board:worker`, on the issue itself. Claude is sent no message, so
+  the issue's text stays out of the conversation. The issue moves to In
+  progress and is assigned to you once the agent starts. The agent works in
+  its own git worktree, ticks boxes, and opens a pull request, without
+  merging or force-pushing. The row shows the agent: `⚙ working`,
+  `waiting`, `done`, `failed` or `stopped`. When it ends, the conversation
+  says so, with its last answer and pull request, and Claude is handed the
+  same so it can follow up. It asks for permission as any background agent
+  does. When the start is refused or fails, a toast says why and the button
+  comes back.
 - On an epic's card, both Starts act on its first ready sub-issue, as
   **▶ Next** does, and the buttons name it, such as `▶ Start #185`. An epic
   is worked one sub-issue at a time. When every open sub-issue is blocked,
@@ -128,9 +133,10 @@ GitHub. The card shows the latest three comments, a field to reply, and
   it still names the issue, the board does what Start does: it tracks the
   issue, makes its tasks, moves it to In progress and assigns it. Rewritten
   so it no longer names the issue, it is sent as a plain prompt.
-- **✎ Edit first in background** puts Start in background's message in the
-  prompt box instead. Lines you add go in the agent's prompt, since the
-  agent can't ask you anything. Sending it asks Claude to dispatch the
+- **✎ Edit first in background** puts a message in the prompt box instead,
+  asking Claude to dispatch the agent with Start's message as its prompt.
+  Lines you add go in the agent's prompt, since the agent can't ask you
+  anything. Sending it asks Claude to dispatch the
   agent, and the row follows the agent as it does for Start in background.
 - On an epic's card, both Edit first buttons follow the same sub-issue as
   Start.

@@ -84,6 +84,11 @@ test('in main start mode, Start comes first on s and starts here, and the system
 })
 
 test('in background start mode, Start in background comes first on s, and the main-chat Start is on b', { options: { startMode: 'background' } }, async ($, on) => {
+  const spawned: string[] = []
+  on('agent.spawn', async (_$, e) => {
+    spawned.push(e.description ?? '')
+    return { model: 'claude-sonnet-5-5', agentId: 'agent-1' }
+  })
   const { ui, gh } = await card($, on)
   expect(await starts(ui)).toEqual([
     ['background-43', 's', 'primary'],
@@ -91,9 +96,10 @@ test('in background start mode, Start in background comes first on s, and the ma
     ['draft-background-43', 'e', null],
     ['draft-43', undefined, null],
   ])
+  // Start in background starts the worker itself and sends Claude nothing.
   await ui.press({ key: 'background-43' })
-  expect(gh.sent).toHaveLength(1)
-  expect(gh.sent[0]).toMatch(/^Dispatch a background agent to work on #43/)
+  expect(spawned).toEqual(['#43 Edit issues from the board'])
+  expect(gh.sent).toEqual([])
 
   // Edit first fills the background message.
   await ui.press({ key: 'draft-background-43' })
