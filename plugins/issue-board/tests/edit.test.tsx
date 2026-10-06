@@ -370,6 +370,7 @@ test("the card's editor renames an issue, adds a box, and hands a body edit to C
   await ui.press({ key: 'filter-all' })
   await ui.press({ key: 'issue-43' })
   await ui.press({ key: 'edit-43' })
+  await ui.press({ key: 'more-43' })
   await ui.input({ key: 'title-43', text: 'Edit issues in place' })
   await ui.input({ key: 'box-43', text: 'Undo a change' })
   expect(gh.patched).toEqual([{ title: 'Edit issues in place' }, { body: '- [ ] Edit\n- [ ] Undo a change' }])
@@ -448,6 +449,7 @@ test("the card closes an issue as a duplicate, as not planned where GitHub refus
   await ui.press({ key: 'filter-all' })
   await ui.press({ key: 'issue-43' })
   await ui.press({ key: 'edit-43' })
+  await ui.press({ key: 'more-43' })
   await ui.input({ key: 'duplicate-43', text: '#35' })
   expect(gh.posted).toEqual(['43 Duplicate of #35'])
   expect(gh.closes).toEqual(['43 not_planned'])
@@ -506,6 +508,30 @@ test('an issue is pinned, locked and moved to another of the owner\'s repos, eac
   await ui.unmount()
 })
 
+test("the card's editor shows its rows by what they're for, the common ones first, and the rest under More, in place", async ($, on) => {
+  mock.store(on)
+  github(on)
+  on('ui.toast', async () => ({ value: undefined }))
+  await $.command.run({ ...RUN, args: 'refresh' })
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'filter-all' })
+  await ui.press({ key: 'issue-43' })
+  await ui.press({ key: 'edit-43' })
+  // The editor's buttons in the order they show, without the labels' own.
+  const order = async () =>
+    (await ui.findAll({ type: 'Button' })).map(one => one.key ?? '').filter(key => /^(unparent|milestone|assign|close-completed|more)-43/.test(key)).map(key => key.replace(/-43.*$/, ''))
+  expect(await order()).toEqual(['unparent', 'assign', 'close-completed', 'more'])
+  expect(await ui.find({ key: 'duplicate-43' })).toBeUndefined()
+  expect(await ui.find({ text: '▾ More: milestone, fields, duplicate' })).toBeDefined()
+
+  // More opens the rare rows where they belong: the milestone with the epic, before who has it.
+  await ui.press({ key: 'more-43' })
+  expect(await order()).toEqual(['unparent', 'milestone', 'assign', 'close-completed', 'more'])
+  expect(await ui.find({ key: 'duplicate-43' })).toBeDefined()
+  expect(await ui.find({ text: '▴ Less' })).toBeDefined()
+  await ui.unmount()
+})
+
 test("a label the repo hasn't got is made first, an area one in the areas' color, and the answer says so", async ($, on) => {
   mock.store(on)
   const gh = github(on)
@@ -521,6 +547,7 @@ test("a label the repo hasn't got is made first, an area one in the areas' color
   await ui.press({ key: 'filter-all' })
   await ui.press({ key: 'issue-43' })
   await ui.press({ key: 'edit-43' })
+  await ui.press({ key: 'more-43' })
   await ui.input({ key: 'new-label-43', text: 'area:board' })
   expect(gh.madeLabels.at(-1)).toBe('area:board 1d76db')
   await ui.unmount()
@@ -608,6 +635,7 @@ test("the card's editor changes labels, assignee and milestone, comments, and as
   await ui.press({ key: 'filter-all' })
   await ui.press({ key: 'issue-43' })
   await ui.press({ key: 'edit-43' })
+  await ui.press({ key: 'more-43' })
 
   // The repo's labels, the one it has drawn as set; the repo's milestones.
   expect(await ui.find({ key: 'label-43-enhancement' })).toMatchObject({ props: { variant: 'primary' } })
@@ -639,6 +667,7 @@ test("the card's editor changes labels, assignee and milestone, comments, and as
   const count = writes(gh.calls).length
   await ui.press({ key: 'issue-35' })
   await ui.press({ key: 'edit-35' })
+  await ui.press({ key: 'more-35' })
   await ui.press({ key: 'close-completed-35' })
   expect(await ui.find({ text: /^#35 is an epic with 6 open sub-issues\. .*Press again to close it anyway\.$/ })).toBeDefined()
   expect(writes(gh.calls).length).toBe(count)

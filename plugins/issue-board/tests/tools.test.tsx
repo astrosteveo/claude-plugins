@@ -984,6 +984,7 @@ test("issue_update sets the project's other fields by name, checked against each
   await ui.press({ key: 'issue-315' })
   expect(await ui.find({ text: /Estimate 3 · Sprint Iteration 2 · Due 2026-10-20/ })).toBeDefined()
   await ui.press({ key: 'edit-315' })
+  await ui.press({ key: 'more-315' })
   await ui.press({ key: 'field-315-F_sprint-IT1' })
   expect(gh.valueWrites.at(-1)).toBe('PVTI_315 F_sprint {"iterationId":"IT1"}')
   await ui.input({ key: 'field-315-F_estimate', text: '5' })
@@ -1013,6 +1014,7 @@ test("an issue's type shows on its card and is set by name, where the repo has t
 
   // The card's editor offers the repo's types; filing takes one too.
   await ui.press({ key: 'edit-315' })
+  await ui.press({ key: 'more-315' })
   await ui.press({ key: 'type-315-Bug' })
   expect(gh.patches.at(-1)).toBe('315 {"type":"Bug"}')
   await ui.unmount()
@@ -1032,6 +1034,7 @@ test('a repo without issue types offers none, and setting one says why it cannot
   await ui.press({ key: 'filter-all' })
   await ui.press({ key: 'issue-315' })
   await ui.press({ key: 'edit-315' })
+  await ui.press({ key: 'more-315' })
   expect(await ui.find({ key: 'type-315-Bug' })).toBeUndefined()
   await ui.unmount()
 })

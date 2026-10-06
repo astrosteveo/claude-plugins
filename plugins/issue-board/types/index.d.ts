@@ -313,6 +313,7 @@ declare module 'claude-code' {
       values: Record<number, Record<string, string>>
       typedFields: Record<string, string>
       sections: Record<string, boolean>
+      editorMore: boolean
     }
   }
 }
