@@ -13,12 +13,13 @@ element prop.
 ```sh
 sh scripts/validate.sh                      # strict `claude plugin validate` on the marketplace and every plugin, and every gating hook has a .catch (what CI runs)
 sh scripts/test.sh                          # run every plugin's tests (what CI runs after validate.sh)
+sh scripts/typecheck.sh                     # type-check every plugin against the installed Claude Code (CI runs it last)
 claude plugin test plugins/issue-board      # run one plugin's *.test.ts(x); there is no per-test filter
 claude plugin validate --json plugins/issue-board   # what the module hooks and calls, state keys, gating hooks and `.catch`
 npx -p typescript tsc -p plugins/issue-board        # type-check; needs .claude-plugin/types/, see below
 ```
 
-CI (`.github/workflows/validate.yml`) runs `validate.sh`, then `test.sh`.
+CI (`.github/workflows/validate.yml`) runs `validate.sh`, then `test.sh`, then `typecheck.sh`.
 
 The marketplace is registered from this local checkout, so the installed plugins are whatever is checked out here.
 After changing a plugin, or after merging and pulling `main`, the person runs `/reload-plugins` to load it.
@@ -38,7 +39,8 @@ After changing a plugin, or after merging and pulling `main`, the person runs `/
   under the plugin's name, and `claude plugin validate` holds the module's keys to it. Add a key there when adding an
   atom. Shared value types (`Issue`, `Board`, `Worker`…) live there too.
 - `.claude-plugin/types/` is written by Claude Code each time the mod loads and is gitignored. The plugin's
-  `tsconfig.json` extends it, so `tsc` only works after the mod has loaded once in a session.
+  `tsconfig.json` extends it. `scripts/typecheck.sh` gets it written by a headless `claude --plugin-dir` run with an
+  empty config folder, which is signed out, so it loads the plugin and stops before sending a prompt.
 
 ## Tests
 

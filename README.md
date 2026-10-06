@@ -41,6 +41,7 @@ directory: `claude --plugin-dir ./plugins/my-plugin`.
 plugins/                      # One directory per plugin
 scripts/validate.sh           # Strict validation of the marketplace and every plugin
 scripts/test.sh               # Every plugin's tests
+scripts/typecheck.sh          # Type-check every plugin against the installed Claude Code
 .github/workflows/validate.yml
 CLAUDE.md                     # Guidance for Claude Code in this repository (AGENTS.md links to it)
 ```
@@ -133,8 +134,8 @@ checks the marketplace without `--strict`, because an empty marketplace always
 warns that it has no plugins. It also fails when a plugin has a hook at a gating
 site, such as `tool.check` or `prompt.submit`, without a `.catch`. The GitHub Actions workflow runs the same script,
 then `scripts/test.sh`, which runs `claude plugin test` on every plugin that
-has tests, on pushes to `main` and on pull requests. Run both locally before
-committing.
+has tests, then `scripts/typecheck.sh`, which type-checks every plugin, on
+pushes to `main` and on pull requests. Run them locally before committing.
 
 ## Conventions
 
