@@ -168,6 +168,9 @@ type Settings = {
   suggestNextStep: boolean
   followBranch: boolean
   nowCount: number
+  band: boolean
+  hintSummary: boolean
+  refreshMinutes: number | null
 }
 const settingsOf = (options: Readonly<Record<string, unknown>> | undefined): Settings => ({
   moveToDone: options?.moveToDone === true,
@@ -180,9 +183,12 @@ const settingsOf = (options: Readonly<Record<string, unknown>> | undefined): Set
   followBranch: options?.followBranch === true,
   // How many of the first Priority options count as Now.
   nowCount: typeof options?.nowCount === 'number' && options.nowCount >= 0 ? Math.floor(options.nowCount) : 2,
+  band: options?.band !== false,
+  hintSummary: options?.hintSummary !== false,
+  // How often the board looks at GitHub by itself, in minutes; null for only when asked.
+  refreshMinutes: options?.refresh === 'manual' ? null : options?.refresh === '15' ? 15 : options?.refresh === '60' ? 60 : 5,
 })
 let settings: Settings = settingsOf(undefined)
-const REFRESH_MS = 5 * 60 * 1000
 // While a pull request's CI runs, the board looks again this often, so its pass or failure shows soon after.
 const WATCH_MS = 30 * 1000
 // The longest the board goes without a full read, even when the cheap checks see nothing: a change to a project field
@@ -484,14 +490,16 @@ const followBranch = async ($: EngineInterface, name: string | null): Promise<vo
   $.ui.toast(`Working on #${issue.number} now: the branch ${name} is for it`)
 }
 
-// The next look at GitHub: soon while a pull request's CI runs, every five minutes otherwise, and once the rate limit
-// resets after it ran out. Each look sets the next one.
+// The next look at GitHub: soon while a pull request's CI runs, every five minutes otherwise (or as often as set), and
+// once the rate limit resets after it ran out. Each look sets the next one. Set to only when asked, there is none: the
+// board reads on /issues refresh, r, and after Claude's turns that ran git or gh.
 let timer: Timer | undefined
 const schedule = async ($: EngineInterface, now: Board | null): Promise<void> => {
   timer?.cancel()
+  if (settings.refreshMinutes === null) return
   const watching = now?.prs.some(pr => pr.ci === 'pending') ?? false
   const clock = await nowOf($)
-  const wait = pausedUntil > clock ? pausedUntil - clock + 5_000 : watching ? WATCH_MS : REFRESH_MS
+  const wait = pausedUntil > clock ? pausedUntil - clock + 5_000 : watching ? WATCH_MS : settings.refreshMinutes * 60 * 1000
   timer = $.clock.after(wait, () => void poll($))
 }
 
@@ -4658,7 +4666,8 @@ export const register: Register = (on, options) => {
     const gone = await read($, dismissed)
     const loud = ((await read($, access))?.problems ?? []).filter(problem => problem.blocks || !gone.includes(accessKey(problem)))
     const note = loud.length > 0 ? `issue board ${loud.some(problem => problem.blocks) ? 'needs setup' : 'is limited'} (/issues check)` : undefined
-    const text = [now && summary(now.issues, now.prs), note].filter(Boolean).join(' · ')
+    // Turned off, the summary goes, but a problem the check found still says so.
+    const text = [settings.hintSummary && now && summary(now.issues, now.prs), note].filter(Boolean).join(' · ')
     if (!text) return next(e)
 
     return next({ ...e, props: { ...e.props, tail: e.props.tail ? `${e.props.tail} · ${text}` : text } })
@@ -4668,7 +4677,8 @@ export const register: Register = (on, options) => {
   // going on out of sight, in background agents. It shows nothing otherwise. The main session's progress (the issue
   // Claude is on, CI running) is the pane's: the band doesn't repeat it. Every line is one row at any width.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (e.props.hasSurvey) return next(e)
+    // Turned off, the band draws nothing of the board's; the pane still shows what needs the person.
+    if (e.props.hasSurvey || !settings.band) return next(e)
     const now = await read($, board)
     const gone = await read($, dismissed)
     const problems = ((await read($, access))?.problems ?? []).filter(problem => !gone.includes(accessKey(problem)))

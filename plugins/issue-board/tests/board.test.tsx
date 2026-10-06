@@ -1,4 +1,5 @@
-import { expect, test } from 'claude-code/testing'
+import type { On } from 'claude-code'
+import { expect, mock, test } from 'claude-code/testing'
 
 import { ago, bar, cells, checksOf, ciOf, filterKeys, fit, hintFit, issuesOf, openedText, pad, peekPlace, proseOf, rowRoom, spark, summary, weekly, wrappedLines } from '../hooks/parse'
 import { graphPage, isIssuesQuery } from './graph'
@@ -425,4 +426,81 @@ test('the pane opens to close on Esc, and Collapse folds the card', async ($, on
   expect(await ui.find({ key: 'start-315' })).toBeUndefined()
   expect(await ui.find({ key: 'issue-315' })).toBeDefined()
   await ui.unmount()
+})
+
+// GitHub with the board's issues and pull requests, counting every call the board makes.
+const quiet = (on: On) => {
+  const state = { calls: 0 }
+  on('process.run', async (_$, e) => {
+    state.calls += 1
+    const kind = e.argv[1]
+    const stdout = isIssuesQuery(e.argv)
+      ? graphPage(ISSUES as never)
+      : kind === 'repo'
+        ? JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true })
+        : e.argv.includes('closed') || e.argv.includes('merged')
+          ? '[]'
+          : JSON.stringify(kind === 'issue' ? ISSUES : PRS)
+    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  return state
+}
+
+test('by default the board looks at GitHub again five minutes after a read', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-10-06T10:00:00Z') })
+  const gh = quiet(on)
+  await $.command.run(REFRESH)
+  await clock.settle()
+  const after = gh.calls
+  await clock.advance(4 * 60 * 1000)
+  expect(gh.calls).toBe(after)
+  await clock.advance(60 * 1000)
+  expect(gh.calls).toBeGreaterThan(after)
+})
+
+test('set to 15 minutes, the board waits that long before it looks again', { options: { refresh: '15' } }, async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-10-06T10:00:00Z') })
+  const gh = quiet(on)
+  await $.command.run(REFRESH)
+  await clock.settle()
+  const after = gh.calls
+  await clock.advance(14 * 60 * 1000)
+  expect(gh.calls).toBe(after)
+  await clock.advance(60 * 1000)
+  expect(gh.calls).toBeGreaterThan(after)
+})
+
+test('set to 60 minutes, the board waits an hour', { options: { refresh: '60' } }, async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-10-06T10:00:00Z') })
+  const gh = quiet(on)
+  await $.command.run(REFRESH)
+  await clock.settle()
+  const after = gh.calls
+  await clock.advance(59 * 60 * 1000)
+  expect(gh.calls).toBe(after)
+  await clock.advance(60 * 1000)
+  expect(gh.calls).toBeGreaterThan(after)
+})
+
+test('set to manual, the board looks at GitHub only when asked', { options: { refresh: 'manual' } }, async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-10-06T10:00:00Z') })
+  const gh = quiet(on)
+  await $.command.run(REFRESH)
+  await clock.settle()
+  const after = gh.calls
+  await clock.advance(3 * 60 * 60 * 1000)
+  expect(gh.calls).toBe(after)
+  await $.command.run(REFRESH)
+  expect(gh.calls).toBeGreaterThan(after)
+})
+
+test('with its summary turned off, the hint under the prompt keeps its own text', { options: { hintSummary: false } }, async ($, on) => {
+  quiet(on)
+  on('ui.render', { component: 'PromptHint' }, async ($$, e) => {
+    const { Text } = $$.ui.resolve(e)
+    return <Text>{e.props.tail ? `${e.props.hint} · ${e.props.tail}` : e.props.hint}</Text>
+  })
+  const hint = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...HINT })
+  await $.command.run(REFRESH)
+  expect(await hint.drawn()).toMatchObject({ type: 'Text', children: ['? for shortcuts'] })
 })

@@ -272,6 +272,14 @@ In Claude's prompts and the prompt box:
 | After Claude's turn, the prompt box suggests the board's next step in place of Claude Code's own. | Suggest the next step (`suggestNextStep`) | off |
 | Checking out a branch named for an issue makes it the one Claude is on. | Follow the branch (`followBranch`) | off |
 
+On screen, and how often it reads GitHub:
+
+| What | Setting | Default |
+|---|---|---|
+| The band above the prompt raises what needs you: CI, news on your issue, boxes to tick, background agents. | Band above the prompt (`band`) | on |
+| The line under the prompt ends with the board in a few words. A problem the check found shows either way. | Summary under the prompt (`hintSummary`) | on |
+| The board looks at GitHub every 5, 15 or 60 minutes, or `manual`: only on `/issues refresh`, `r`, and after Claude's turns that ran git or gh. While a pull request's CI runs it still looks every 30 seconds, unless set to `manual`. | How often the board reads GitHub (`refresh`) | `5` |
+
 Two more have no setting:
 
 - The next prompt notes what changed on GitHub to the issue Claude is on.
@@ -296,8 +304,8 @@ these for everyone who works in it, in its `.claude/settings.json`:
 
 ## How it reads GitHub
 
-The board looks at GitHub every 5 minutes, and every 30 seconds while CI
-runs. A look starts with a cheap check of whether anything changed, which
+The board looks at GitHub every 5 minutes, or as its setting says, and
+every 30 seconds while CI runs. A look starts with a cheap check of whether anything changed, which
 doesn't count against GitHub's rate limit. It reads in full only when
 something changed, and at least every 15 minutes. It also reads straight
 after Claude changes GitHub, after a turn that ran `git` or `gh`, and when a

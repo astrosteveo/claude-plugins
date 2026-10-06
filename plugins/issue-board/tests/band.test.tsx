@@ -132,3 +132,20 @@ test('the band shows nothing while nothing needs the person, even with an issue 
   await pane.unmount()
   await band.unmount()
 })
+
+test('with the band turned off, failing CI leaves the band to the engine', { options: { band: false } }, async ($, on) => {
+  on('process.run', async (_$, e) => {
+    const kind = e.argv[1]
+    const stdout = isIssuesQuery(e.argv) ? graphPage([issue('2026-10-03T20:00:00Z')] as never) : kind === 'repo' ? JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true }) : e.argv.includes('closed') || e.argv.includes('merged') ? '[]' : JSON.stringify(kind === 'issue' ? [] : [failing])
+    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('ui.render', { component: 'AbovePrompt' }, async ($$, e) => {
+    const { Box } = $$.ui.resolve(e)
+    return <Box key="engine" />
+  })
+  await $.command.run(REFRESH)
+  const band = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...BAND })
+  expect(await band.find({ key: 'engine' })).toBeDefined()
+  expect(await band.find({ text: / ✗ CI / })).toBeUndefined()
+  await band.unmount()
+})
