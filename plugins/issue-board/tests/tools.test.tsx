@@ -92,6 +92,10 @@ const world = (on: On) => {
     searches: 0,
     // When set, GraphQL refuses for a rate limit that resets then.
     limited: '',
+    // Issues filed over REST, and sub-issue links made, as [epic, the sub-issue's id]; `failLink` refuses the link.
+    filed: [] as Record<string, unknown>[],
+    linked: [] as [number, string][],
+    failLink: false,
   }
   on('process.run', async (_$, e) => {
     const argv = e.argv
@@ -122,6 +126,27 @@ const world = (on: On) => {
       state.planned[number] = { ...state.planned[number], ...(args.field === 'F_status' ? { status: name } : { priority: name }) }
       return answer(JSON.stringify({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: args.item } } } }))
     }
+    if (argv[1] === 'api' && argv[2] === '-X' && /\/issues$/.test(argv[4] ?? '')) {
+      const fields = JSON.parse(e.init?.stdin ?? '{}') as { labels: string[]; assignees: string[] }
+      state.filed.push(fields)
+      return answer(
+        JSON.stringify({
+          number: 340,
+          id: 9340,
+          node_id: 'I_340',
+          html_url: 'https://github.com/astrosteveo/void-sector/issues/340',
+          updated_at: '2026-10-04T10:00:00Z',
+          labels: fields.labels.map(name => ({ name, color: 'ededed' })),
+          assignees: fields.assignees.map(login => ({ login })),
+        }),
+      )
+    }
+    if (argv[1] === 'api' && argv[2] === '-X' && /\/sub_issues$/.test(argv[4] ?? '')) {
+      if (state.failLink) return { value: { exitCode: 1, stdout: '', stderr: 'gh: Sub issue may only have one parent (HTTP 422)', isStdoutTruncated: false, isStderrTruncated: false } }
+      state.linked.push([Number(/issues\/(\d+)\//.exec(argv[4] ?? '')?.[1]), argv[argv.length - 1]?.split('=')[1] ?? ''])
+      return answer('{}')
+    }
+    if (argv[1] === 'api' && argv[2]?.includes('/milestones')) return answer(JSON.stringify([{ number: 3, title: 'Launch' }]))
     if (argv[1] === 'api') return answer('astrosteveo\n')
     if (argv[1] === 'issue' && argv[2] === 'edit' && argv.includes('--add-assignee')) {
       state.assigned.push(Number(argv[3]))
@@ -537,6 +562,69 @@ test("another session's newer read of the same repo is taken rather than reading
   await ui.press({ key: 'filter-all' })
   expect(await ui.find({ text: /renamed/ })).toBeDefined()
   await ui.unmount()
+})
+
+test('issue_create files an issue with every option over REST, puts it in the project, and on the board at once', async ($, on) => {
+  mock.store(on)
+  const gh = world(on)
+  gh.project = true
+  on('tool.check', async () => ({ decision: 'ask' as const }))
+  on('ui.toast', async () => ({ value: undefined }))
+  await $.command.run(REFRESH)
+  const reads = gh.issueReads
+
+  // Filing changes something, so Claude Code asks first, as it does for any such tool.
+  expect((await $.tool.check({ tool: 'mcp__issue-board__issue_create', input: { title: 'x' } })).decision).toBe('ask')
+
+  const filed = await $.tool.call({
+    tool: 'mcp__issue-board__issue_create',
+    title: 'Dock at a station',
+    body: '## Acceptance\n- [ ] Docking works',
+    labels: ['enhancement'],
+    assign: ['@me'],
+    milestone: 'launch',
+    parent: 315,
+    status: 'Ready',
+    priority: 'P1',
+  })
+  expect(String(filed.result)).toBe('Filed #340: “Dock at a station”, labelled enhancement, assigned astrosteveo, on Launch, under #315, in Void Sector, Ready, P1.')
+  // One REST call made the issue with its labels, assignee and milestone; one more put it under the epic.
+  expect(gh.filed).toEqual([{ title: 'Dock at a station', body: '## Acceptance\n- [ ] Docking works', labels: ['enhancement'], assignees: ['astrosteveo'], milestone: 3 }])
+  expect(gh.linked).toEqual([[315, '9340']])
+  expect(gh.planned[340]).toEqual({ status: 'Ready', priority: 'P1' })
+
+  // It shows at once, with its box, without the board reading GitHub again.
+  expect(gh.issueReads).toBe(reads)
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'filter-all' })
+  await ui.press({ key: 'issue-340' })
+  expect(await ui.find({ text: /Docking works/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('issue_create with only a title files it to the Inbox, and a step that fails after filing is named with the number', async ($, on) => {
+  mock.store(on)
+  const gh = world(on)
+  gh.project = true
+  on('ui.toast', async () => ({ value: undefined }))
+  await $.command.run(REFRESH)
+
+  const bare = await $.tool.call({ tool: 'mcp__issue-board__issue_create', title: 'Look into lag' })
+  expect(String(bare.result)).toBe('Filed #340: “Look into lag”, in Void Sector, Inbox.')
+  expect(gh.filed.at(-1)).toEqual({ title: 'Look into lag', body: '', labels: [], assignees: [] })
+
+  // The link to the epic fails once the issue exists: the answer says so, and gives the issue's number.
+  gh.failLink = true
+  const partly = await $.tool.call({ tool: 'mcp__issue-board__issue_create', title: 'Look into lag again', parent: 315, priority: 'P9' })
+  expect(String(partly.result)).toBe(
+    "Filed #340: “Look into lag again”, in Void Sector, Inbox. The issue exists, but the board couldn't put it under #315 (gh: Sub issue may only have one parent (HTTP 422)); nor set its Priority: the project has no Priority called P9.",
+  )
+
+  // Without a title, or with a milestone the repo hasn't, nothing is filed.
+  const filed = gh.filed.length
+  expect((await $.tool.call({ tool: 'mcp__issue-board__issue_create', body: 'x' })).deny).toBe('Give the issue a title.')
+  expect((await $.tool.call({ tool: 'mcp__issue-board__issue_create', title: 'x', milestone: 'Someday' })).deny).toBe("Couldn't file the issue: the repo has no open milestone called Someday")
+  expect(gh.filed).toHaveLength(filed)
 })
 
 test('the pane draws on every surface, with search where the surface has a text field', async ($, on) => {

@@ -304,7 +304,7 @@ stays quiet there.
 
 ## What Claude gets
 
-- Three tools:
+- Four tools:
   - `issues` lists the board's issues and pull requests, one line each, or
     one issue in full with its boxes numbered. It reads the board's copy, so
     it doesn't run `gh`, and it needs no permission prompt.
@@ -316,6 +316,12 @@ stays quiet there.
     and Priority, and the board shows them at once. Moving the Status of the
     issue you pressed Start on doesn't ask for permission; any other change
     asks, unless you allow it.
+  - `issue_create` files a new issue: its title and body, labels,
+    assignees, milestone, the epic it goes under, and its Status and
+    Priority in the project. Without a Status it goes to the Inbox. It
+    shows on the board at once. Claude Code asks before it runs. If a step
+    after filing fails, such as putting it under an epic, Claude is told
+    which, with the new issue's number.
   - If your organization requires Claude Code to ask before `issues` or
     `issue_update` runs, the board doesn't skip that prompt.
   - When you ask Claude in the conversation to work on an issue, Claude
