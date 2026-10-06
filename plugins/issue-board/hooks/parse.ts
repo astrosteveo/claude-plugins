@@ -887,10 +887,13 @@ export type NewIssue = {
   parent?: number
   status?: string
   priority?: string
+  // Sub-issues to file under it, in order: an epic and its parts in one call. They have none of their own.
+  subIssues?: NewIssue[]
 }
 
-// The issue_create tool's input as a new issue, or why it can't be one.
-export const newIssueOf = (input: unknown): NewIssue | string => {
+// The issue_create tool's input as a new issue, or why it can't be one. `nested`: a sub-issue, which takes no
+// sub-issues of its own.
+export const newIssueOf = (input: unknown, nested = false): NewIssue | string => {
   const raw = (input ?? {}) as Record<string, unknown>
   const text = (value: unknown) => (typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined)
   const list = (value: unknown) => (Array.isArray(value) ? value.filter((one): one is string => typeof one === 'string' && one.trim() !== '').map(one => one.trim()) : [])
@@ -908,6 +911,13 @@ export const newIssueOf = (input: unknown): NewIssue | string => {
   const priority = text(raw.priority)
   if (status) made.status = status
   if (priority) made.priority = priority
+  if (Array.isArray(raw.subIssues) && raw.subIssues.length > 0) {
+    if (nested) return 'A sub-issue takes no sub-issues of its own.'
+    const parts = raw.subIssues.map(part => newIssueOf(part, true))
+    const wrong = parts.findIndex(part => typeof part === 'string')
+    if (wrong >= 0) return `Sub-issue ${wrong + 1}: ${parts[wrong]}`
+    made.subIssues = parts as NewIssue[]
+  }
   return made
 }
 

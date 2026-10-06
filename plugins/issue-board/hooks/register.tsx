@@ -876,6 +876,22 @@ const claim = async ($: EngineInterface, issue: Issue): Promise<void> => {
 // the project needs GraphQL: adding the item and setting its Status and Priority. Once the issue exists, a later step
 // that fails is named in the answer, and nothing is undone. The issue goes on the board at once, without a read.
 const fileIssue = async ($: EngineInterface, spec: NewIssue): Promise<string> => {
+  const epic = await fileOne($, spec)
+  if (!spec.subIssues?.length) return epic.text
+  // An epic's parts, in order, each under it. One that fails leaves the others to be filed.
+  const parts: string[] = []
+  for (const [index, part] of spec.subIssues.entries()) {
+    try {
+      parts.push((await fileOne($, { ...part, parent: epic.number })).text)
+    } catch (cause) {
+      parts.push(`Couldn't file sub-issue ${index + 1}, “${part.title}”: ${messageOf(cause)}`)
+    }
+  }
+  return [epic.text, `Its sub-issues:`, ...parts.map(text => `- ${text}`)].join('\n')
+}
+
+// Files one issue, as fileIssue says, and answers its number and what to tell Claude.
+const fileOne = async ($: EngineInterface, spec: NewIssue): Promise<{ number: number; text: string }> => {
   const now = await read($, board)
   if (!now) throw new Error("the board hasn't read GitHub yet; refresh it and try again")
   const repo = now.repo
@@ -907,8 +923,8 @@ const fileIssue = async ($: EngineInterface, spec: NewIssue): Promise<string> =>
   if (spec.parent) {
     try {
       await gh($, ['api', '-X', 'POST', `repos/${repo}/issues/${spec.parent}/sub_issues`, '-F', `sub_issue_id=${raw.id}`])
-      const epic = now.issues.find(one => one.number === spec.parent)
-      parent = { number: spec.parent, title: epic?.title ?? '', total: (epic?.subIssues?.total ?? 0) + 1, completed: epic?.subIssues?.completed ?? 0 }
+      const above = now.issues.find(one => one.number === spec.parent)
+      parent = { number: spec.parent, title: above?.title ?? '', total: (above?.subIssues?.total ?? 0) + 1, completed: above?.subIssues?.completed ?? 0 }
       did.push(`under #${spec.parent}`)
     } catch (cause) {
       failed.push(`put it under #${spec.parent} (${messageOf(cause)})`)
@@ -968,12 +984,21 @@ const fileIssue = async ($: EngineInterface, spec: NewIssue): Promise<string> =>
   }
   await update($, board, was => {
     if (!was) return was
-    const issues = was.issues.map(one => (parent && one.number === parent.number ? { ...one, subIssues: { total: parent.total, completed: parent.completed } } : one))
+    // The epic's count, on the epic and on each of its sub-issues, which carry it too.
+    const counted = (one: Issue): Issue =>
+      !parent
+        ? one
+        : one.number === parent.number
+          ? { ...one, subIssues: { total: parent.total, completed: parent.completed } }
+          : one.parent?.number === parent.number
+            ? { ...one, parent: { ...one.parent, total: parent.total, completed: parent.completed } }
+            : one
+    const issues = was.issues.map(counted)
     return { ...was, issues: [issue, ...issues.filter(one => one.number !== issue.number)] }
   })
   await save($)
   $.ui.toast(`Filed #${raw.number}`)
-  return filedText(raw.number, did, failed)
+  return { number: raw.number, text: filedText(raw.number, did, failed) }
 }
 
 // Claude starting on an issue in the conversation, by the issue_update tool's `start`: as Start does, the issue becomes
@@ -1661,7 +1686,8 @@ export const register: Register = on => {
       description:
         "Files a new GitHub issue in this repository and puts it on the issue board at once: its title and body, labels, assignees, milestone, the epic it is a sub-issue of, " +
         "and its Status and Priority in the repo's GitHub Project. Without a Status it goes to the project's Inbox. Write the body in Markdown, with an Acceptance list of " +
-        "`- [ ]` boxes. Filing asks for permission. If a step after filing fails, the answer says which, and gives the new issue's number.",
+        "`- [ ]` boxes. For an epic, give its sub-issues too: each is filed under it, in order, with the same fields. " +
+        "Filing asks for permission. If a step after filing fails, the answer says which, and gives the new issue's number.",
       inputSchema: {
         type: 'object',
         properties: {
@@ -1673,6 +1699,23 @@ export const register: Register = on => {
           parent: { type: 'integer', minimum: 1, description: 'The epic to file it under, as a sub-issue, by number.' },
           status: { type: 'string', description: "A Status option of the repo's project, such as Backlog or Ready." },
           priority: { type: 'string', description: "A Priority option of the repo's project, such as P0, P1 or P2." },
+          subIssues: {
+            type: 'array',
+            description: 'For an epic: its sub-issues, filed under it in this order. Each takes the fields above, but no sub-issues of its own.',
+            items: {
+              type: 'object',
+              properties: {
+                title: { type: 'string' },
+                body: { type: 'string' },
+                labels: { type: 'array', items: { type: 'string' } },
+                assign: { type: 'array', items: { type: 'string' } },
+                milestone: { type: 'string' },
+                status: { type: 'string' },
+                priority: { type: 'string' },
+              },
+              required: ['title'],
+            },
+          },
         },
         required: ['title'],
       },
