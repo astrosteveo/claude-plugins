@@ -1,6 +1,6 @@
 import type { ThemeKey } from 'claude-code'
-import type { Alert, Board, BoxTask, Check, Ci, Comment, Draft, Field, Filter, Found, GroupBy, Issue, Known, Label, Milestone, ProjectField, StatusUpdate, Project, PullRequest, RunWatch, Suggestion, Worker, Working } from '../types'
-import { isLater, isNow, isRole, nowCountOf, priorityRank, roleOf } from './project'
+import type { Alert, Board, BoxTask, Check, Ci, Comment, Draft, Field, Filter, Found, GroupBy, Issue, Known, Label, Milestone, ProjectField, StatusUpdate, Project, PullRequest, Role, RunWatch, Suggestion, Worker, Working } from '../types'
+import { ROLE_NAMES, isLater, isNow, isRole, nowCountOf, priorityRank, roleOf } from './project'
 
 type RawLabel = { name: string; color?: string }
 type RawUser = { login: string }
@@ -1296,7 +1296,7 @@ export const TOOLS: { name: string; what: string }[] = [
 ]
 
 // /issues help: the pane and its keys, the card, the band and hint, the subcommands, and Claude's tools.
-export const helpText = (filters: { hotkey: string; name: string }[]): string =>
+export const helpText = (filters: { hotkey: string; name: string }[], off: { feature: string; why: string }[] = []): string =>
   [
     'The issue board',
     '',
@@ -1312,15 +1312,57 @@ export const helpText = (filters: { hotkey: string; name: string }[]): string =>
     '- Change opens the editor: title, boxes, labels, assignee, epic, milestone, type, project fields, and closing.',
     '',
     'Under the prompt',
-    '- The band above the prompt shows what needs you: failing CI, news on your issue, pull requests to merge, background agents.',
-    '- The hint line sums up what is open.',
+    `- The band above the prompt shows what needs you: failing CI, news on your issue, pull requests to merge, background agents.${off.some(one => one.feature === 'The band above the prompt') ? ' (off)' : ''}`,
+    `- The hint line sums up what is open.${off.some(one => one.feature === 'The summary under the prompt') ? ' (off)' : ''}`,
     '',
     'Subcommands',
     ...SUBCOMMANDS.map(one => `- /issues ${one.name}: ${one.what}.`),
     '',
     "Claude's tools",
     ...TOOLS.map(one => `- ${one.name}: ${one.what}.`),
+    ...(off.length > 0 ? ['', ...offText(off)] : []),
   ].join('\n')
+
+// The settings that turn a feature off, by their key: true where the feature is on. `refresh` is false when the board
+// reads GitHub only when asked, and `prRule` when the working note has no pull request rule.
+export type Switches = Record<
+  'moveToDone' | 'moveToVerification' | 'claimOnStart' | 'workingNote' | 'prRule' | 'issueCopies' | 'suggestNextStep' | 'followBranch' | 'band' | 'hintSummary' | 'refresh',
+  boolean
+>
+
+// The board's features that a setting or a Status role can turn off: the setting's key and its name in /config, and
+// the role the feature needs.
+const FEATURES: { feature: string; setting?: [keyof Switches, string]; role?: Role }[] = [
+  { feature: 'Moving closed issues to Done', setting: ['moveToDone', 'Move closed issues to Done'], role: 'done' },
+  { feature: 'Moving an issue a Refs merge touched to Verification', setting: ['moveToVerification', 'Move to Verification on a Refs merge'], role: 'verification' },
+  { feature: "Start moving the issue's Status", setting: ['claimOnStart', 'Start assigns and moves the issue'], role: 'started' },
+  { feature: 'The Inbox filter, its triage, and new issues landing in the Inbox', role: 'inbox' },
+  { feature: "Triage's Accept moving issues to Ready", role: 'ready' },
+  { feature: "The Backlog folding, and triage's Accept moving issues to it", role: 'backlog' },
+  { feature: 'project_archive by doneBefore', role: 'done' },
+  { feature: 'The working note in the system prompt', setting: ['workingNote', 'Working note in the system prompt'] },
+  { feature: "The working note's pull request rule", setting: ['prRule', "Working note's pull request rule"] },
+  { feature: 'Copies of the issues a prompt names', setting: ['issueCopies', 'Copies of issues a prompt names'] },
+  { feature: 'The next step suggested in the prompt box', setting: ['suggestNextStep', 'Suggest the next step'] },
+  { feature: 'Following the branch to the issue Claude is on', setting: ['followBranch', 'Follow the branch'] },
+  { feature: 'The band above the prompt', setting: ['band', 'Band above the prompt'] },
+  { feature: 'The summary under the prompt', setting: ['hintSummary', 'Summary under the prompt'] },
+  { feature: 'Reading GitHub by itself', setting: ['refresh', 'How often the board reads GitHub'] },
+]
+
+// The features that are off, each with why: the setting that turned it off, or the Status role the project has no
+// option for. A role counts only with a project that has a Status field.
+export const featuresOff = (switches: Switches, project: Project | null | undefined): { feature: string; why: string }[] =>
+  FEATURES.flatMap(({ feature, setting, role }) => {
+    if (setting && !switches[setting[0]]) return [{ feature, why: `turned off in /config by ${setting[1]} (${setting[0]})` }]
+    if (role && project?.status && !roleOf(project, role)) {
+      return [{ feature, why: `${project.title} has no Status option as the ${ROLE_NAMES[role]}; pick one in /issues setup` }]
+    }
+    return []
+  })
+
+// The features that are off, as lines for /issues check and /issues help; none when all are on.
+export const offText = (off: { feature: string; why: string }[]): string[] => (off.length > 0 ? ['Off:', ...off.map(one => `- ${one.feature}: ${one.why}.`)] : [])
 
 // What the board did on its own in one read, in a line for a toast: the issues it moved to a Status and why, many at
 // once in one line. `why` reads for one issue; `whyMany` for several.

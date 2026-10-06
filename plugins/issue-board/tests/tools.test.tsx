@@ -1365,9 +1365,13 @@ test('a project with its own Status names goes by the roles setup saved: its Inb
   expect(gh.planned[289]?.status).toBe('Doing')
 })
 
-test("a role setup left unset turns its part off, even where an option has the board's name, and /issues check says how to set it", async ($, on) => {
+test("a role setup left unset turns its part off, even where an option has the board's name, and /issues check and help say how to set it", async ($, on) => {
   mock.store(on, savedRoles({ ready: 'S2', backlog: 'S1', started: 'S3', done: 'S5' }))
   const gh = world(on)
+  on('ui.render', { component: 'PromptHint' }, async ($$, e) => {
+    const { Text } = $$.ui.resolve(e)
+    return <Text>{e.props.tail ? `${e.props.hint} · ${e.props.tail}` : e.props.hint}</Text>
+  })
   gh.project = true
   gh.planned[315] = { status: 'Inbox', priority: 'P1' }
   on('ui.toast', async () => ({ value: undefined }))
@@ -1378,12 +1382,18 @@ test("a role setup left unset turns its part off, even where an option has the b
   expect(await ui.find({ key: 'filter-all' })).toBeDefined()
   await ui.unmount()
 
+  // Said once, in /issues check and /issues help, and not as a problem in the band or the hint.
   const said = String((await $.command.run({ ...REFRESH, args: 'check' })).text)
-  expect(said).toContain('Void Sector has no Inbox Status set')
-  expect(said).toContain("New issues don't land in the Inbox, and the Inbox filter and its triage are gone")
-  expect(said).toContain('Void Sector has no Verification Status set')
-  expect(said).toContain('Run /issues setup and pick the option for Verification under "Which Status is which"')
-  expect(said).not.toContain('no Done Status set')
+  expect(said).toContain('\nOff:\n')
+  expect(said).toContain('- The Inbox filter, its triage, and new issues landing in the Inbox: Void Sector has no Status option as the Inbox; pick one in /issues setup.')
+  // Verification is off by its setting too, which says why first.
+  expect(said).toContain('- Moving an issue a Refs merge touched to Verification: turned off in /config by Move to Verification on a Refs merge (moveToVerification).')
+  expect(said).not.toContain('Moving closed issues to Done: Void Sector')
+  expect(String((await $.command.run({ ...REFRESH, args: 'help' })).text)).toContain('- The Inbox filter, its triage, and new issues landing in the Inbox: Void Sector has no Status option as the Inbox')
+  // The hint under the prompt doesn't call the board limited for it.
+  const hint = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', component: 'PromptHint', props: { isDraft: false, isWorking: false, hint: '? for shortcuts' } })
+  expect(JSON.stringify(await hint.drawn())).not.toContain('limited')
+  await hint.unmount()
 
   // Archiving what is done still works by the saved Done, and Start by the saved In progress.
   const started = await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 315, start: true })
@@ -1414,4 +1424,29 @@ test('how many priorities count as Now is a setting', { options: { nowCount: 1 }
   await ui.unmount()
   expect(String((await $.tool.call({ tool: 'mcp__issue-board__issues', filter: 'active' })).result)).toMatch(/Issues \(now: P0, 1\):\n#289 /)
   expect(String((await $.tool.call({ tool: 'mcp__issue-board__issues', filter: 'future' })).result)).toMatch(/Issues \(later: P1 and P2, 1\):\n#315 /)
+})
+
+test('a feature a setting turned off is said in /issues check and /issues help, and nowhere else', { options: { band: false, refresh: 'manual' } }, async ($, on) => {
+  mock.store(on)
+  const gh = world(on)
+  gh.project = true
+  const toasts: string[] = []
+  on('ui.toast', async (_$, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  await $.command.run(REFRESH)
+  const said = String((await $.command.run({ ...REFRESH, args: 'check' })).text)
+  expect(said).toContain('- The band above the prompt: turned off in /config by Band above the prompt (band).')
+  expect(said).toContain('- Reading GitHub by itself: turned off in /config by How often the board reads GitHub (refresh).')
+  // The project has every Status, so nothing is off for want of one.
+  expect(said).not.toContain('has no Status option')
+
+  const help = String((await $.command.run({ ...REFRESH, args: 'help' })).text)
+  expect(help).toMatch(/- The band above the prompt shows what needs you: .*\(off\)$/m)
+  expect(help).toMatch(/- The hint line sums up what is open\.$/m)
+  expect(help).toContain('\nOff:\n- Moving closed issues to Done: turned off in /config')
+  expect(toasts.filter(text => /off|setting/i.test(text))).toEqual([])
+  // The check reads GitHub again once it finds nothing missing: wait for that read.
+  await $.command.run(REFRESH)
 })

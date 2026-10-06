@@ -221,7 +221,10 @@ test("offline in a GitHub repository, nothing is missing and the check says it c
   expect(reply.text).toBe("gh couldn't read this folder's GitHub repository. Check your connection, then run /issues check again.")
 })
 
-test('/issues check says who gh is and what access it has when nothing is missing', async ($, on) => {
+// Every setting on, so nothing the board does is off.
+const ALL_ON = { moveToDone: true, moveToVerification: true, prRule: 'closes-when-ticked', suggestNextStep: true, followBranch: true }
+
+test('/issues check says who gh is and what access it has when nothing is missing', { options: ALL_ON }, async ($, on) => {
   mock.store(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   const world = gh(on)

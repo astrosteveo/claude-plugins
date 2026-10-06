@@ -242,12 +242,15 @@ won't undo, needs a second, confirmed call.
   project has them, and offers to add the ones it lacks. A project that says
   `Todo`, `Doing` and `Shipped` picks those instead, and setup adds nothing.
   Pick **none** to turn that part off: with no Inbox, there is no Inbox
-  filter or triage; with no Done, closed issues aren't moved. `/issues check`
-  lists each part with no option, and what is off. GitHub's API can't change a project's
-  workflows, so it lists those to change by hand, with a link: the
-  Auto-add workflows on, **Item closed** off, and **Item added to project**
-  set to Inbox rather than GitHub's Todo, so new issues land in the Inbox.
+  filter or triage; with no Done, closed issues aren't moved.
+- GitHub's API can't change a project's workflows, so setup lists those to
+  change by hand, with a link: the Auto-add workflows on, **Item closed**
+  off, and **Item added to project** set to Inbox rather than GitHub's Todo,
+  so new issues land in the Inbox.
 - `/issues check` checks what the board needs; see [Permissions](#permissions).
+  It also lists each feature that is off, and why: the setting that turned it
+  off, or the Status the project has no option for. `/issues help` lists
+  them too. Nothing else nags about a feature that is off.
 
 ## What the board changes, and how to turn it off
 
