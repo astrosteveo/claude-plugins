@@ -96,6 +96,8 @@ const world = (on: On) => {
     filed: [] as Record<string, unknown>[],
     linked: [] as [number, string][],
     failLink: false,
+    // The number the next filed issue gets.
+    next: 340,
   }
   on('process.run', async (_$, e) => {
     const argv = e.argv
@@ -127,14 +129,16 @@ const world = (on: On) => {
       return answer(JSON.stringify({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: args.item } } } }))
     }
     if (argv[1] === 'api' && argv[2] === '-X' && /\/issues$/.test(argv[4] ?? '')) {
-      const fields = JSON.parse(e.init?.stdin ?? '{}') as { labels: string[]; assignees: string[] }
+      const fields = JSON.parse(e.init?.stdin ?? '{}') as { title: string; labels: string[]; assignees: string[] }
+      if (fields.title.includes('refused')) return { value: { exitCode: 1, stdout: '', stderr: 'gh: Validation Failed (HTTP 422)', isStdoutTruncated: false, isStderrTruncated: false } }
       state.filed.push(fields)
+      const number = state.next++
       return answer(
         JSON.stringify({
-          number: 340,
-          id: 9340,
-          node_id: 'I_340',
-          html_url: 'https://github.com/astrosteveo/void-sector/issues/340',
+          number,
+          id: 9000 + number,
+          node_id: `I_${number}`,
+          html_url: `https://github.com/astrosteveo/void-sector/issues/${number}`,
           updated_at: '2026-10-04T10:00:00Z',
           labels: fields.labels.map(name => ({ name, color: 'ededed' })),
           assignees: fields.assignees.map(login => ({ login })),
@@ -617,7 +621,7 @@ test('issue_create with only a title files it to the Inbox, and a step that fail
   gh.failLink = true
   const partly = await $.tool.call({ tool: 'mcp__issue-board__issue_create', title: 'Look into lag again', parent: 315, priority: 'P9' })
   expect(String(partly.result)).toBe(
-    "Filed #340: “Look into lag again”, in Void Sector, Inbox. The issue exists, but the board couldn't put it under #315 (gh: Sub issue may only have one parent (HTTP 422)); nor set its Priority: the project has no Priority called P9.",
+    "Filed #341: “Look into lag again”, in Void Sector, Inbox. The issue exists, but the board couldn't put it under #315 (gh: Sub issue may only have one parent (HTTP 422)); nor set its Priority: the project has no Priority called P9.",
   )
 
   // Without a title, or with a milestone the repo hasn't, nothing is filed.
@@ -625,6 +629,53 @@ test('issue_create with only a title files it to the Inbox, and a step that fail
   expect((await $.tool.call({ tool: 'mcp__issue-board__issue_create', body: 'x' })).deny).toBe('Give the issue a title.')
   expect((await $.tool.call({ tool: 'mcp__issue-board__issue_create', title: 'x', milestone: 'Someday' })).deny).toBe("Couldn't file the issue: the repo has no open milestone called Someday")
   expect(gh.filed).toHaveLength(filed)
+})
+
+test('issue_create files an epic and its sub-issues in order, each under it and in the project, and goes on past one that fails', async ($, on) => {
+  mock.store(on)
+  const gh = world(on)
+  gh.project = true
+  on('ui.toast', async () => ({ value: undefined }))
+  await $.command.run(REFRESH)
+  const reads = gh.issueReads
+
+  const filed = await $.tool.call({
+    tool: 'mcp__issue-board__issue_create',
+    title: 'Stations',
+    body: 'Docking and trade.',
+    status: 'Backlog',
+    subIssues: [
+      { title: 'Dock at a station', body: '- [ ] Docking works', priority: 'P1' },
+      { title: 'A sub-issue GitHub refused' },
+      { title: 'Trade at a station', labels: ['enhancement'] },
+    ],
+  })
+  expect(String(filed.result)).toBe(
+    [
+      'Filed #340: “Stations”, in Void Sector, Backlog.',
+      'Its sub-issues:',
+      '- Filed #341: “Dock at a station”, under #340, in Void Sector, Inbox, P1.',
+      "- Couldn't file sub-issue 2, “A sub-issue GitHub refused”: gh: Validation Failed (HTTP 422)",
+      '- Filed #342: “Trade at a station”, labelled enhancement, under #340, in Void Sector, Inbox.',
+    ].join('\n'),
+  )
+  expect(gh.linked).toEqual([
+    [340, '9341'],
+    [340, '9342'],
+  ])
+
+  // The epic and its parts show at once, grouped under it, without a read.
+  expect(gh.issueReads).toBe(reads)
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'filter-all' })
+  await ui.press({ key: 'group-epic' })
+  expect(await ui.find({ text: /^#340 Stations/ })).toBeDefined()
+  expect(await ui.find({ text: /0\/2 closed/ })).toBeDefined()
+  await ui.unmount()
+
+  // A sub-issue can't have sub-issues of its own.
+  const nested = await $.tool.call({ tool: 'mcp__issue-board__issue_create', title: 'x', subIssues: [{ title: 'y', subIssues: [{ title: 'z' }] }] })
+  expect(nested.deny).toBe('Sub-issue 1: A sub-issue takes no sub-issues of its own.')
 })
 
 test('the pane draws on every surface, with search where the surface has a text field', async ($, on) => {

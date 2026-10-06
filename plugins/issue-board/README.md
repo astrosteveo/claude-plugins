@@ -318,8 +318,10 @@ stays quiet there.
     asks, unless you allow it.
   - `issue_create` files a new issue: its title and body, labels,
     assignees, milestone, the epic it goes under, and its Status and
-    Priority in the project. Without a Status it goes to the Inbox. It
-    shows on the board at once. Claude Code asks before it runs. If a step
+    Priority in the project. Without a Status it goes to the Inbox. For an
+    epic, it also takes the sub-issues, and files each under the epic in
+    order; one that fails doesn't stop the rest. It all shows on the board
+    at once. Claude Code asks before it runs. If a step
     after filing fails, such as putting it under an epic, Claude is told
     which, with the new issue's number.
   - If your organization requires Claude Code to ask before `issues` or
