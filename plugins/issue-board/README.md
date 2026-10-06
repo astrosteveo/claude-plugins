@@ -134,6 +134,29 @@ GitHub. The card shows the latest three comments, a field to reply, and
 - **↗ GitHub** opens the issue. **Collapse** (`x` or Esc) folds the card.
   With nothing open, Esc closes the pane.
 
+### Start in the main chat or in the background
+
+The **Where Start works** setting (`startMode`) picks the card's first
+Start.
+
+- `main`, the default, is what the list above says. Claude works on the
+  issue in this chat.
+- `background` makes Claude an orchestrator. **⚙ Start in background**
+  comes first and takes `s`, and Enter in the note box starts the issue in
+  the background. **✎ Edit first in background** takes `e`. **▶ Start**
+  is still there, on `b`. The working note in the system prompt tells
+  Claude to hand each issue to `issue-board:worker` and to do only small
+  changes itself, such as a one-line fix or a typo in the docs. When a
+  worker ends, Claude reviews its pull request, runs the repository's
+  checks, watches CI, and then merges it or tells you what is left. It
+  merges only if your own rules let it.
+
+Workers that change the same files get in each other's way, and each
+pull request then conflicts with the one merged before it. In a repository
+where most changes touch one big file or a version field, as this one's
+plugins do, run one worker at a time, unless their issues touch separate
+areas.
+
 The issue this session is on has `▶` on its row and `✕` to stop tracking
 it. It's the one you pressed Start on, the one Claude started on when you
 asked in the conversation, or, with its setting on, the one whose branch is
@@ -315,11 +338,17 @@ On GitHub, by itself:
 | An epic moves with its sub-issues: to In progress when one starts, and closed and Done, or Verification, when the last one closes. | Move epics with their sub-issues (`advanceEpics`) | off |
 | Start, and Claude starting on an issue, assign it to you and move it to In progress. | Start assigns and moves the issue (`claimOnStart`) | on |
 
+How Start works:
+
+| What | Setting | Default |
+|---|---|---|
+| `main` starts an issue in this chat. `background` makes Start in background the card's first button, on `s` and Enter, and the working note tells Claude to hand issues to workers and see their pull requests through. See [Start in the main chat or in the background](#start-in-the-main-chat-or-in-the-background). | Where Start works (`startMode`) | `main` |
+
 In Claude's prompts and the prompt box:
 
 | What | Setting | Default |
 |---|---|---|
-| While Claude is on an issue you started, a note in the system prompt names it and says how to tick its boxes. | Working note in the system prompt (`workingNote`) | on |
+| While Claude is on an issue you started, a note in the system prompt names it and says how to tick its boxes. In `background` start mode it also tells Claude to work as an orchestrator. | Working note in the system prompt (`workingNote`) | on |
 | The note tells Claude how to name the issue in a pull request: `closes-when-ticked` (`Closes #N` only when every box is ticked, `Refs #N` otherwise), `always-closes`, or `none`. Start in background follows it too. | Working note's pull request rule (`prRule`) | `none` |
 | A prompt that names `#123` carries the board's copy of it, unseen. | Copies of issues a prompt names (`issueCopies`) | on |
 | After Claude's turn, the prompt box suggests the board's next step in place of Claude Code's own. | Suggest the next step (`suggestNextStep`) | off |

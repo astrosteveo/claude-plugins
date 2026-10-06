@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Caught, EngineInterface, HookFailure, ModelForkResult, Register, ThemeKey, Timer, UiCopyArgs } from 'claude-code'
 
 import type { Alert, Board, BoxTask, Check, Comment, Draft, DraftEdit, EpicNote, Filter, GroupBy, Issue, Known, Launch, Problem, Project, ProjectField, Role, StatusUpdate, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
-import type { Ended, IssueChanges, NewIssue, PrRule, Switches } from './parse'
+import type { Ended, IssueChanges, NewIssue, PrRule, StartMode, Switches } from './parse'
 import { authOf, problemsOf, problemsText, repoOf } from './access'
 import { ADD_ITEM, ARCHIVE_ITEM, CLEAR_VALUE, ISSUE_ITEMS, ITEM_VALUES, POST_STATUS, SET_FIELD, SET_VALUE, ROLE_NAMES, ROLE_ORDER, issuesQuery, nowNames, optionOf, roleOf, rolesFor, startedOf } from './project'
 import {
@@ -30,6 +30,7 @@ import {
 } from './setup'
 import {
   PR_RULES,
+  START_MODES,
   THREADS_QUERY,
   WEEKS,
   WORKER,
@@ -119,6 +120,7 @@ import {
   workerPrOf,
   workerPrompt,
   workingSection,
+  orchestratorSection,
   writesGitHub,
   filedText,
   newIssueOf,
@@ -167,12 +169,14 @@ const PANE = 'issue-board'
 // The person's settings, from the manifest's userConfig. What changes the shared project by itself is off for a new
 // install; Start's own changes are on, since the person pressed Start. Of what the board adds to Claude's prompts, the
 // working note and the copies of issues a prompt names are on, but the note's PR rule is this repo's own, so it is
-// none; the next-step suggestion and following the branch change how Claude Code behaves, so they are off.
+// none; the next-step suggestion and following the branch change how Claude Code behaves, so they are off. Start works
+// in the main chat unless the person asks for background workers.
 type Settings = {
   moveToDone: boolean
   moveToVerification: boolean
   advanceEpics: boolean
   claimOnStart: boolean
+  startMode: StartMode
   workingNote: boolean
   prRule: PrRule
   issueCopies: boolean
@@ -188,6 +192,7 @@ const settingsOf = (options: Readonly<Record<string, unknown>> | undefined): Set
   moveToVerification: options?.moveToVerification === true,
   advanceEpics: options?.advanceEpics === true,
   claimOnStart: options?.claimOnStart !== false,
+  startMode: START_MODES.find(mode => mode === options?.startMode) ?? 'main',
   workingNote: options?.workingNote !== false,
   prRule: PR_RULES.find(rule => rule === options?.prRule) ?? 'none',
   issueCopies: options?.issueCopies !== false,
@@ -2225,7 +2230,7 @@ const handOff = async ($: EngineInterface, agentId: string, status: Ended, answe
   $.ui.log(endedLine(issue, status, said, pr))
   if (worker.byClaude) return
   try {
-    const sent = await $.prompt.submit({ text: handoffPrompt(issue, status, said, pr) })
+    const sent = await $.prompt.submit({ text: handoffPrompt(issue, status, said, pr, settings.startMode) })
     if (sent.drop !== undefined) throw new Error(sent.drop)
   } catch (cause) {
     $.ui.log(`issue-board: couldn't tell Claude the background agent on #${worker.number} ended: ${messageOf(cause)}`, { to: 'debug' })
@@ -3158,13 +3163,19 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => fallBack($, e, next, 'tool.check on Bash'))
 
   // While Claude works on an issue the person started in this session, the system prompt names it, so compaction
-  // doesn't lose it. The section changes only when the person starts another, to keep the prompt cache.
+  // doesn't lose it. The section changes only when the person starts another, to keep the prompt cache. In background
+  // start mode, a fixed section before it tells Claude to hand issues to workers and see their pull requests through.
   on('prompt.compose', async ($, e, next) => {
     const composed = await next(e)
+    if (!settings.workingNote) return composed
+    const orchestrating =
+      settings.startMode === 'background' ? [{ id: 'issue-board:orchestrator', text: orchestratorSection(), scope: 'session' as const }] : []
     const now = await read($, working)
-    if (!settings.workingNote || !now?.sessionId || now.sessionId !== (await $.session.id().catch(() => undefined))) return composed
+    const mine = !!now?.sessionId && now.sessionId === (await $.session.id().catch(() => undefined))
+    const doing = now && mine ? [{ id: 'issue-board:working', text: workingSection(now, settings.prRule), scope: 'session' as const }] : []
+    if (orchestrating.length === 0 && doing.length === 0) return composed
 
-    return { sections: [...composed.sections, { id: 'issue-board:working', text: workingSection(now, settings.prRule), scope: 'session' as const }] }
+    return { sections: [...composed.sections, ...orchestrating, ...doing] }
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
@@ -4447,11 +4458,14 @@ export const register: Register = (on, options) => {
         await start(target, typed.trim())
         if (note) await clearNote()
       }
-      const backgroundIt = async () => {
+      const backgroundIt = async (typed = note) => {
         if (!target) return $.ui.toast(noReadyText(issue.number))
-        await startInBackground($, target, note)
+        await startInBackground($, target, typed.trim())
         if (note) await clearNote()
       }
+      // In background start mode the background start is the card's first and primary one: `s`, Enter in the note box,
+      // and `e` for its Edit first. The main-chat start moves to `b`, one key away.
+      const inBackground = settings.startMode === 'background'
       // Edit first puts the start message, note and all, in the prompt box; the note box clears as its text moves there.
       // Sending the foreground message starts the issue, by the prompt.submit hook; the background one asks Claude to
       // dispatch the worker, and the agent.spawn hook claims it and follows it.
@@ -4462,6 +4476,39 @@ export const register: Register = (on, options) => {
         await update($, drafted, () => (background ? null : target.number))
         if (note) await clearNote()
       }
+      const startButton = launches.some(one => one.number === goes.number && one.how === 'start') ? (
+        <Text key={`starting-${issue.number}`} color="claude">
+          ▶ Starting…
+        </Text>
+      ) : startedHere === goes.number ? (
+        <Text key={`started-${issue.number}`} color="claude">
+          ▶ Started
+        </Text>
+      ) : (
+        <Button key={`start-${issue.number}`} variant={inBackground ? undefined : 'primary'} hotkey={hotkeys ? (inBackground ? 'b' : 's') : undefined} onPress={() => void startIt()}>
+          {startLabel}
+        </Button>
+      )
+      const backgroundButton =
+        working$.some(one => one.number === goes.number && ACTIVE.includes(one.status)) || startedHere === goes.number ? null : launches.some(one => one.number === goes.number && one.how === 'background') ? (
+          <Text key={`starting-background-${issue.number}`} color="claude">
+            ⚙ Starting in background…
+          </Text>
+        ) : (
+          <Button key={`background-${issue.number}`} variant={inBackground ? 'primary' : undefined} hotkey={hotkeys ? (inBackground ? 's' : 'b') : undefined} onPress={() => void backgroundIt()}>
+            {isEpic && target && target.number !== issue.number ? `⚙ Start #${target.number} in background` : '⚙ Start in background'}
+          </Button>
+        )
+      const draftButton = (
+        <Button key={`draft-${issue.number}`} dimColor={inBackground} hotkey={hotkeys && !inBackground ? 'e' : undefined} onPress={() => void draftIt(false)}>
+          ✎ Edit first
+        </Button>
+      )
+      const draftBackgroundButton = (
+        <Button key={`draft-background-${issue.number}`} dimColor={!inBackground} hotkey={hotkeys && inBackground ? 'e' : undefined} onPress={() => void draftIt(true)}>
+          ✎ Edit first in background
+        </Button>
+      )
       return (
         <Box key={`card-${issue.number}`} flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1} marginLeft={2} marginBottom={1}>
           <Text bold wrap="wrap">
@@ -4564,43 +4611,16 @@ export const register: Register = (on, options) => {
               <Input
                 key={`note-${issue.number}`}
                 label="note "
-                placeholder="added to Start's message; Enter starts"
+                placeholder={inBackground ? "added to Start's message; Enter starts in background" : "added to Start's message; Enter starts"}
                 value={noted[issue.number] ?? ''}
                 submitLabel="start"
                 onInput={text => void update($, notes, was => ({ ...was, [issue.number]: text }))}
-                onSubmit={text => void startIt(text)}
+                onSubmit={text => void (inBackground ? backgroundIt(text) : startIt(text))}
               />
             </Box>
           )}
           <Box flexDirection="row" gap={1} marginTop={1} flexWrap="wrap">
-            {launches.some(one => one.number === goes.number && one.how === 'start') ? (
-              <Text key={`starting-${issue.number}`} color="claude">
-                ▶ Starting…
-              </Text>
-            ) : startedHere === goes.number ? (
-              <Text key={`started-${issue.number}`} color="claude">
-                ▶ Started
-              </Text>
-            ) : (
-              <Button key={`start-${issue.number}`} variant="primary" hotkey={hotkeys ? 's' : undefined} onPress={() => void startIt()}>
-                {startLabel}
-              </Button>
-            )}
-            {working$.some(one => one.number === goes.number && ACTIVE.includes(one.status)) || startedHere === goes.number ? null : launches.some(one => one.number === goes.number && one.how === 'background') ? (
-              <Text key={`starting-background-${issue.number}`} color="claude">
-                ⚙ Starting in background…
-              </Text>
-            ) : (
-              <Button key={`background-${issue.number}`} hotkey={hotkeys ? 'b' : undefined} onPress={() => void backgroundIt()}>
-                {isEpic && target && target.number !== issue.number ? `⚙ Start #${target.number} in background` : '⚙ Start in background'}
-              </Button>
-            )}
-            <Button key={`draft-${issue.number}`} hotkey={hotkeys ? 'e' : undefined} onPress={() => void draftIt(false)}>
-              ✎ Edit first
-            </Button>
-            <Button key={`draft-background-${issue.number}`} dimColor onPress={() => void draftIt(true)}>
-              ✎ Edit first in background
-            </Button>
+            {inBackground ? [backgroundButton, startButton, draftBackgroundButton, draftButton] : [startButton, backgroundButton, draftButton, draftBackgroundButton]}
             <Button key={`edit-${issue.number}`} variant={changing === issue.number ? 'primary' : undefined} dimColor={changing !== issue.number} onPress={openEditor(issue.number)}>
               ⚙ Change
             </Button>
