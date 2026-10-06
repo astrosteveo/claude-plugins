@@ -294,7 +294,7 @@ told to deal with the sub-issues first.
 
 ## What Claude can do
 
-The board gives Claude seven tools:
+The board gives Claude eight tools:
 
 - `issues` reads: the board's list, one issue in full with its boxes,
   fields and latest ten comments, any issue by number even closed, a search
@@ -321,6 +321,9 @@ The board gives Claude seven tools:
 - `project_archive` archives project items: one issue's, or every one at
   Done that closed before a date. It lists them first and archives on a
   second, confirmed call.
+- `project_adopt` lets the board write to a project, or releases it, only
+  when you ask. It always asks first; see
+  [Letting the board write to a project](#letting-the-board-write-to-a-project).
 
 Claude Code asks before any tool that changes something, as it does for any
 tool, except where the change is part of work you started: moving the
@@ -381,6 +384,13 @@ the pane.
   that project. `/issues setup` can still adopt it.
 - `/issues setup` shows which project the board may write to, with
   **Release** to make it read-only again.
+- Claude can adopt or release a project when you ask it to, with the
+  `project_adopt` tool, for example from Remote Control or the phone app.
+  It adopts the project the board reads, or another linked to the repo by
+  number, and refuses any other. It always shows a permission prompt with
+  the same warning as the pane, even if a rule allows the tool. Saying no
+  changes nothing. A background agent is refused, and so is a session in
+  auto mode, where a classifier would answer the prompt instead of you.
 - A repo whose saved setup already names a project counts as having adopted
   it, so a board set up before this keeps working.
 

@@ -1463,6 +1463,7 @@ export const TOOLS: { name: string; what: string }[] = [
   { name: 'milestone', what: 'makes or changes a milestone' },
   { name: 'project_status', what: "reads or posts the project's status update" },
   { name: 'project_archive', what: 'archives Done items in the project' },
+  { name: 'project_adopt', what: 'lets the board write to a project, or releases it, when you ask, after a permission prompt' },
 ]
 
 // /issues help: the pane and its keys, the card, the band and hint, the subcommands, and Claude's tools.
