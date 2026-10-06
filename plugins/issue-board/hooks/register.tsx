@@ -1701,7 +1701,8 @@ export const register: Register = on => {
   }).catch(($, e, next) => fallBack($, e, next, 'tool.check on issues'))
 
   // Closing an epic whose sub-issues are still open asks the person first, whatever their rules allow: the sub-issues
-  // would stay open under a closed parent. A rule that denies the command still stands.
+  // would stay open under a closed parent. A subagent's call is refused instead, since nobody may be watching for the
+  // prompt, and the reason tells the agent what to do. A rule that denies the command still stands.
   on('tool.check', { tool: 'Bash' }, async ($, e, next) => {
     const verdict = await next(e)
     const command = (e.input as { command?: unknown }).command
@@ -1713,7 +1714,9 @@ export const register: Register = on => {
       return issue && open > 0 ? [`#${issue.number} is an epic with ${open} open ${open === 1 ? 'sub-issue' : 'sub-issues'}`] : []
     })
     if (epics.length === 0) return verdict
-    return { decision: 'ask' as const, reason: `${epics.join('; ')}. Closing it leaves them open under a closed epic.` }
+    const why = `${epics.join('; ')}. Closing it leaves them open under a closed epic.`
+    if (e.agentId !== undefined) return { decision: 'deny' as const, reason: `${why} Close or move the sub-issues first, or leave the epic open and say so in your answer.` }
+    return { decision: 'ask' as const, reason: why }
   }).catch(($, e, next) => fallBack($, e, next, 'tool.check on Bash'))
 
   // While Claude works on an issue the person started in this session, the system prompt names it, so compaction

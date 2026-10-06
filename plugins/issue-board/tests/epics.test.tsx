@@ -150,4 +150,24 @@ test('closing an epic that has open sub-issues asks first, whatever the rules al
   expect(plain.decision).toBe('allow')
   const other = await $.tool.check({ tool: 'Bash', input: { command: 'git status' } })
   expect(other.decision).toBe('allow')
+
+  // A subagent, such as a background agent, may have nobody watching for the prompt: it is refused, and told why.
+  const agent = await $.tool.check({ tool: 'Bash', input: { command: 'gh issue close 35' }, agentId: 'a-1' })
+  expect(agent).toMatchObject({
+    decision: 'deny',
+    reason: '#35 is an epic with 6 open sub-issues. Closing it leaves them open under a closed epic. Close or move the sub-issues first, or leave the epic open and say so in your answer.',
+  })
+  expect((await $.tool.check({ tool: 'Bash', input: { command: 'gh issue close 44' }, agentId: 'a-1' })).decision).toBe('allow')
+})
+
+test('a rule that denies closing an epic still stands, in the main session and in a subagent', async ($, on) => {
+  mock.store(on)
+  github(on)
+  on('tool.check', async () => ({ decision: 'deny' as const, reason: 'Denied by a rule.' }))
+  await $.command.run({ ...RUN, args: 'refresh' })
+
+  for (const agentId of [undefined, 'a-1']) {
+    const verdict = await $.tool.check({ tool: 'Bash', input: { command: 'gh issue close 35' }, ...(agentId ? { agentId } : {}) })
+    expect(verdict).toMatchObject({ decision: 'deny', reason: 'Denied by a rule.' })
+  }
 })
