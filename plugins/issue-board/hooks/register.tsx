@@ -214,8 +214,10 @@ const changesOf = (input: unknown): (IssueChanges & { number: number }) | null =
     if (given.length > 0) changes.fields = Object.fromEntries(given)
   }
   if (typeof raw.pin === 'boolean') changes.pin = raw.pin
-  if (raw.lock === true || raw.lock === false) changes.lock = raw.lock
-  else if (raw.lock === 'off_topic' || raw.lock === 'resolved' || raw.lock === 'spam' || raw.lock === 'too_heated') changes.lock = raw.lock
+  // A tool's caller may send lock's true or false as a string, since the field also takes GitHub's reasons.
+  const lock = raw.lock === 'true' ? true : raw.lock === 'false' ? false : raw.lock
+  if (lock === true || lock === false) changes.lock = lock
+  else if (lock === 'off_topic' || lock === 'resolved' || lock === 'spam' || lock === 'too_heated') changes.lock = lock
   const target = text(raw.transferTo)
   if (target) changes.transferTo = target
   if (raw.confirmTransfer === true) changes.confirmTransfer = true
@@ -2742,6 +2744,10 @@ export const register: Register = on => {
   on('tool.call', { tool: UPDATE_TOOL }, async ($, e) => {
     const changes = changesOf(e)
     if (!changes) return { deny: 'Give the issue number, and what to change on it.' }
+    // A lock the board doesn't know is refused, not dropped without a word.
+    if ((e as { lock?: unknown }).lock !== undefined && changes.lock === undefined) {
+      return { deny: 'lock takes true, false, or one of GitHub\'s reasons: off_topic, resolved, spam, too_heated.' }
+    }
     const { number, ...rest } = changes
     const starting = (e as { start?: unknown }).start === true
     try {

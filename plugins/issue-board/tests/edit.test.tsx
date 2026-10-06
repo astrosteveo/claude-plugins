@@ -524,6 +524,9 @@ test('an issue is pinned, locked and moved to another of the owner\'s repos, eac
 
   expect(String((await update({ pin: true, lock: 'too_heated' })).result)).toBe('#43 pinned, locked as too heated.')
   expect(String((await update({ pin: false, lock: false })).result)).toBe('#43 unpinned, unlocked.')
+  // Sent as a string, as a caller may for a field that also takes GitHub's reasons, it reads the same.
+  expect(String((await update({ lock: 'false' })).result)).toBe('#43 unlocked.')
+  expect((await update({ lock: 'maybe' })).deny).toBe("lock takes true, false, or one of GitHub's reasons: off_topic, resolved, spam, too_heated.")
   expect((await $.tool.check({ tool: 'mcp__issue-board__issue_update', input: { number: 43, pin: true } })).decision).toBe('ask')
 
   // Another owner's repo, or the same repo, is refused before anything runs.
@@ -534,7 +537,7 @@ test('an issue is pinned, locked and moved to another of the owner\'s repos, eac
     "Couldn't change #43: astrosteveo/void-sector is private and astrosteveo/claude-plugins is public, so GitHub won't move #43 back once it's there. Call again with confirmTransfer: true to move it anyway",
   )
   expect(String((await update({ transferTo: 'void-sector', confirmTransfer: true })).result)).toBe('#43 moved to astrosteveo/void-sector.')
-  expect(ran()).toEqual(['issue pin 43', 'issue lock 43 --reason too_heated', 'issue unpin 43', 'issue unlock 43', 'issue transfer 43 astrosteveo/void-sector'])
+  expect(ran()).toEqual(['issue pin 43', 'issue lock 43 --reason too_heated', 'issue unpin 43', 'issue unlock 43', 'issue unlock 43', 'issue transfer 43 astrosteveo/void-sector'])
 
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   await ui.press({ key: 'filter-all' })
