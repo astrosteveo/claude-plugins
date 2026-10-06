@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { matches, parseIssues, parseTriage, triagePrompt } from '../hooks/parse'
-import { PRIORITIES, STATUSES, graphPage, isIssuesQuery, optionId } from './graph'
+import { PRIORITIES, STATUSES, graphPage, isIssuesQuery, optionId, adoptedStore } from './graph'
 
 const raw = (number: number, title: string, labels: string[] = []) => ({
   number,
@@ -21,6 +21,8 @@ const PROJECT = { id: 'PVT_8', number: 8, title: 'Void Sector', url: '', status:
 
 // The Void Sector project: #340 sits in the Inbox, #341 isn't in the project yet, and #315 is Ready.
 const world = (on: On, answer: string) => {
+  // These tests have the board write to the project, which the person let it do.
+  adoptedStore(on)
   const state = {
     planned: { 340: { status: 'Inbox' }, 315: { status: 'Ready', priority: 'P1' } } as Record<number, { status?: string; priority?: string }>,
     issues: [raw(340, 'Saves drop the hangar', ['area:simulation']), raw(341, 'The map key hides the legend'), raw(315, 'Lay Kessik out for play', ['area:simulation'])],
@@ -107,7 +109,7 @@ test("Claude's answer reads back as one suggestion an issue, with only the prior
 })
 
 test('Claude suggests for each Inbox issue; the person changes a pick, and Accept moves it on to Ready or Backlog', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = world(on, SUGGESTED)
   await $.command.run(REFRESH)
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
@@ -154,7 +156,7 @@ test('Claude suggests for each Inbox issue; the person changes a pick, and Accep
 })
 
 test('a changed area replaces the old one, and an answer that fails says so and can be asked again', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = world(on, 'Sorry, no JSON today.')
   await $.command.run(REFRESH)
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })

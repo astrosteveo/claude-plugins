@@ -4,7 +4,7 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import type { Board, EpicNote } from '../types'
 import { draftPrompt, liveEpicNotes, nextOf, parseDraft, parseGraph, sortIssues } from '../hooks/parse'
-import { STATUSES, graphPage, isIssuesQuery } from './graph'
+import { STATUSES, graphPage, isIssuesQuery, adoptedStore } from './graph'
 
 const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 110, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } } as const
 const RUN = { origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 }, command: 'issues' } as const
@@ -47,6 +47,9 @@ test('an epic draft asks for sub-issues and reads them back', () => {
 
 // GitHub with those issues, and the issues gh was asked to create.
 const github = (on: On, issues: Raw[] = ISSUES) => {
+  // These tests have the board write to the project, which the person let it do.
+  adoptedStore(on)
+  on('session.root', async () => ({ value: '/work/void-sector' }))
   const state = { created: [] as string[][], bodies: [] as string[], next: 50 }
   on('process.run', async (_$, e) => {
     const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
@@ -68,7 +71,7 @@ const github = (on: On, issues: Raw[] = ISSUES) => {
 }
 
 test("grouped by epic, the heading has the epic's progress and Next, and a blocked sub-issue says what it waits on", async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   github(on)
   const sent: string[] = []
   on('prompt.submit', async (_$, e) => {
@@ -101,7 +104,7 @@ test("grouped by epic, the heading has the epic's progress and Next, and a block
 
 // The board with epic #35's card open, the prompts sent to Claude and the toasts shown.
 const epicCard = async ($: Engine, on: On, issues: Raw[] = ISSUES) => {
-  mock.store(on)
+  adoptedStore(on)
   github(on, issues)
   const sent: string[] = []
   const toasts: string[] = []
@@ -165,7 +168,7 @@ test('an epic whose sub-issues are all closed starts itself, from the card and f
 })
 
 test('issue_update start on an epic starts its next ready sub-issue and says which one', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   github(on)
   await $.command.run({ ...RUN, args: 'refresh' })
   const answer = await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 35, start: true })
@@ -173,7 +176,7 @@ test('issue_update start on an epic starts its next ready sub-issue and says whi
 })
 
 test('issue_update start on an epic with no ready sub-issue refuses and says why', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   github(on, ISSUES.filter(issue => issue.number !== 43))
   await $.command.run({ ...RUN, args: 'refresh' })
   const answer = await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 35, start: true })
@@ -181,7 +184,7 @@ test('issue_update start on an epic with no ready sub-issue refuses and says why
 })
 
 test('/issues new epic drafts a parent and its sub-issues, and creates each one under the parent', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-05T03:00:00Z') })
   const gh = github(on)
   const asked: string[] = []
@@ -224,7 +227,7 @@ test('/issues new epic drafts a parent and its sub-issues, and creates each one 
 })
 
 test('closing an epic that has open sub-issues asks first, whatever the rules allow', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   github(on)
   // The engine's own verdict, beneath the board: the person's rules allow the command.
   on('tool.check', async () => ({ decision: 'allow' as const }))
@@ -247,7 +250,7 @@ test('closing an epic that has open sub-issues asks first, whatever the rules al
 })
 
 test('a rule that denies closing an epic still stands, in the main session and in a subagent', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   github(on)
   on('tool.check', async () => ({ decision: 'deny' as const, reason: 'Denied by a rule.' }))
   await $.command.run({ ...RUN, args: 'refresh' })
@@ -263,6 +266,9 @@ test('a rule that denies closing an epic still stands, in the main session and i
 // filed, title and body.
 type Raw = Parameters<typeof graphPage>[0][number]
 const lifecycle = (on: On, open: Raw[]) => {
+  // These tests have the board write to the project, which the person let it do.
+  adoptedStore(on)
+  on('session.root', async () => ({ value: '/work/void-sector' }))
   const state = { issues: open, writes: [] as string[], bodies: {} as Record<number, string>, created: [] as { title: string; body: string }[] }
   for (const raw of open) state.bodies[raw.number] = raw.body ?? ''
   on('process.run', async (_$, e) => {
@@ -347,7 +353,7 @@ const ON = { options: { advanceEpics: true } }
 
 for (const status of ['Inbox', 'Backlog', 'Ready']) {
   test(`starting a sub-issue moves its epic from ${status} to In progress`, ON, async ($, on) => {
-    mock.store(on)
+    adoptedStore(on)
     const gh = lifecycle(on, [epic(status), sub(43, 'Ready')])
     await $.command.run({ ...RUN, args: 'refresh' })
     await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, start: true })
@@ -358,7 +364,7 @@ for (const status of ['Inbox', 'Backlog', 'Ready']) {
 // Beside it, a second epic at Ready that does move, so the test sees the board moving epics at all.
 for (const status of ['In progress', 'Verification', 'Done']) {
   test(`starting a sub-issue leaves an epic at ${status} where it is`, ON, async ($, on) => {
-    mock.store(on)
+    adoptedStore(on)
     const other = { number: 36, title: 'Stations', total: 1, completed: 0 }
     const gh = lifecycle(on, [epic(status), sub(43, 'Ready'), { ...epic('Ready'), number: 36, title: other.title, subIssues: { total: 1, completed: 0 } }, sub(45, 'Ready', other)])
     await $.command.run({ ...RUN, args: 'refresh' })
@@ -369,7 +375,7 @@ for (const status of ['In progress', 'Verification', 'Done']) {
 }
 
 test("when the last sub-issue closes, the epic's box is ticked, and with every box ticked it closes and moves to Done", ON, async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = lifecycle(on, [epic('In progress', '## Acceptance\n- [x] Designed\n- [ ] Every sub-issue is closed'), sub(43, 'In progress')])
   const prompts: (readonly string[])[] = []
   on('prompt.submit', async (_$, e) => {
@@ -391,7 +397,7 @@ test("when the last sub-issue closes, the epic's box is ticked, and with every b
 })
 
 test('an epic with other open boxes moves to Verification instead, and the band and the next prompt say why', ON, async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = lifecycle(on, [epic('In progress', '## Acceptance\n- [ ] Every sub-issue is closed\n- [ ] Played it through'), sub(43, 'In progress')])
   const prompts: (readonly string[])[] = []
   on('prompt.submit', async (_$, e) => {
@@ -415,7 +421,7 @@ test('an epic with other open boxes moves to Verification instead, and the band 
 })
 
 test('a reopened sub-issue, or a new one under a closed epic, shows in the band and writes nothing', ON, async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = lifecycle(on, [epic('Verification', '- [x] Every sub-issue is closed\n- [ ] Played', { total: 2, completed: 1 }), sub(43, 'In progress')])
   await $.command.run({ ...RUN, args: 'refresh' })
 
@@ -458,7 +464,7 @@ const verifying = async ($: Engine, on: On) => {
 }
 
 test('a Verification line clears when its epic closes', ON, async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = await verifying($, on)
   gh.issues = []
   await refreshTwice($)
@@ -466,7 +472,7 @@ test('a Verification line clears when its epic closes', ON, async ($, on) => {
 })
 
 test('a Verification line clears when every box of its epic is ticked', ON, async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = await verifying($, on)
   gh.bodies[35] = '## Acceptance\n- [x] Every sub-issue is closed\n- [x] Played it through'
   await refreshTwice($)
@@ -496,7 +502,7 @@ const REOPENED: [string, (issues: Raw[]) => Raw[]][] = [
 ]
 for (const [when, change] of REOPENED) {
   test(`a reopened line clears when ${when}`, ON, async ($, on) => {
-    mock.store(on)
+    adoptedStore(on)
     const gh = await reopening($, on)
     gh.issues = change(gh.issues)
     await refreshTwice($)
@@ -511,7 +517,7 @@ const ORPHANED: [string, (issues: Raw[]) => Raw[]][] = [
 ]
 for (const [when, change] of ORPHANED) {
   test(`an orphaned line clears when ${when}`, ON, async ($, on) => {
-    mock.store(on)
+    adoptedStore(on)
     const gh = await reopening($, on)
     gh.issues = change(gh.issues)
     await refreshTwice($)
@@ -520,7 +526,7 @@ for (const [when, change] of ORPHANED) {
 }
 
 test('an epic line is dropped after 24 hours', ON, async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-05T10:00:00Z') })
   await reopening($, on)
   await clock.advance(23 * 60 * 60 * 1000)
@@ -530,7 +536,7 @@ test('an epic line is dropped after 24 hours', ON, async ($, on) => {
 })
 
 test('epic lines draw after every other band line', ON, async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   on('tool.call', { tool: 'TaskCreate' }, async () => ({ result: { task: { id: '1', subject: 'Done' } } }))
   on('tool.call', { tool: 'TaskUpdate' }, async (_$, e) => ({ result: { success: true, taskId: e.taskId, updatedFields: ['status'] } }))
   on('prompt.submit', async (_$, e) => ({ text: e.text }))
@@ -573,7 +579,7 @@ test('liveEpicNotes keeps a line only while what it reports holds, and for a day
 })
 
 test('issue_create files an epic with the "Every sub-issue is closed" box, and keeps one already there', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = lifecycle(on, [])
   await $.command.run({ ...RUN, args: 'refresh' })
   await $.tool.call({ tool: 'mcp__issue-board__issue_create', title: 'Stations', body: 'Docking and trade.', subIssues: [{ title: 'Dock', body: '- [ ] Docks' }] })
@@ -586,7 +592,7 @@ test('issue_create files an epic with the "Every sub-issue is closed" box, and k
 })
 
 test('by default the board moves no epic, and /issues help says the feature is off', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = lifecycle(on, [epic('Ready', '- [ ] Every sub-issue is closed'), sub(43, 'Ready')])
   await $.command.run({ ...RUN, args: 'refresh' })
   await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, start: true })

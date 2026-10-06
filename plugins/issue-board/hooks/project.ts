@@ -1,4 +1,4 @@
-import type { Field, Issue, Project, Role, Roles } from '../types'
+import type { Adopted, Field, Issue, Project, Role, Roles } from '../types'
 
 // The repo's projects with their fields, which needs gh to have the read:project permission. A field's kind and its
 // options or iterations are the project's, not each issue's, so reading them costs little.
@@ -135,4 +135,55 @@ export const isNow = (project: Project | null | undefined, issue: Issue): boolea
 export const isLater = (project: Project | null | undefined, issue: Issue): boolean => {
   const rank = priorityRank(project, issue.priority)
   return rank >= nowCountOf(project) && rank !== UNSET
+}
+
+// The login or organization a project belongs to, from its page: `github.com/users/<login>/projects/8` or the `orgs/` one.
+export const ownerOf = (url: string): string | null => /github\.com\/(?:users|orgs)\/([^/]+)\/projects\//.exec(url)?.[1] ?? null
+
+// The project the board may write to, from what it saved for the repo. A choice made through the prompt or setup counts,
+// a release included. A repo saved before adopting existed, whose setup names a project, has that project adopted: the
+// person picked it in setup and pressed Apply.
+export const adoptedOf = (saved: { adopted?: Adopted | null; setup?: { project: { id: string; title: string } } } | null | undefined): Adopted | null => {
+  if (saved?.adopted !== undefined) return saved.adopted
+  return saved?.setup ? { id: saved.setup.project.id, title: saved.setup.project.title, owner: null } : null
+}
+
+// How to let the board write to a project, for a refusal to say.
+const HOW_TO_ADOPT = 'press Let it write where the issues pane or the band asks, or run /issues setup, pick the project and press Apply'
+
+// Why the board won't write to a project, or null when it may: the one rule every project write is held to. The board
+// writes only to the project adopted for this repo. `new` is setup creating a project, which can't touch one the
+// person already has; setup adopts the new one straight after.
+export const writeRefusal = (adopted: Adopted | null, target: { id: string; title: string } | 'new'): string | null => {
+  if (target === 'new' || adopted?.id === target.id) return null
+  if (!adopted) return `The issue board only reads ${target.title}: nobody has let it write there. To let it, ${HOW_TO_ADOPT}.`
+  return `The issue board only reads ${target.title}: the project it may write to for this repo is ${adopted.title}. To switch, run /issues setup, pick ${target.title} and press Apply.`
+}
+
+// Whether a gh call is a GraphQL mutation: the query given as a field, or in the JSON sent on stdin. Every project write
+// is one, and the board sends none but through its project write check.
+export const isMutation = (args: readonly string[], stdin?: string): boolean => {
+  if (!args.includes('graphql')) return false
+  const mutation = (query: unknown) => typeof query === 'string' && /^\s*mutation\b/.test(query)
+  if (args.some(arg => arg.startsWith('query=') && mutation(arg.slice('query='.length)))) return true
+  if (stdin === undefined) return false
+  try {
+    return mutation((JSON.parse(stdin) as { query?: unknown }).query)
+  } catch {
+    return /\bmutation\b/.test(stdin)
+  }
+}
+
+// What the board asks before it writes to a project: the project and its owner, what it would write, and what that
+// costs. `refresh` is how often the board reads GitHub, in minutes; null when it reads only when asked.
+export const adoptText = (project: { title: string; url: string }, refresh: number | null): { title: string; lines: string[] } => {
+  const owner = ownerOf(project.url)
+  return {
+    title: `Let the board write to ${project.title}${owner ? `, owned by ${owner}` : ''}?`,
+    lines: [
+      'Until you say yes, the board only reads it.',
+      'Once you do, it sets Status and Priority, adds issues as items, archives items when asked, and posts status updates, as your settings and presses call for.',
+      `Each write is a GitHub API call made with your gh token. The board reads GitHub ${refresh === null ? 'only when you refresh' : `every ${refresh} minutes`} (the refresh setting).`,
+    ],
+  }
 }

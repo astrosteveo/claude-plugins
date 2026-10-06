@@ -5,6 +5,7 @@ import { groupsOf, isInbox, leftForDone, leftForVerification, toArchive } from '
 import { isLater, isNow, roleOf, rolesFor } from '../hooks/project'
 import { addsAsTodo, areasOf, automationsOff, automationsOn, mergeStatuses, picksFor, rolesOf, stepsOf, suggestAreas, suggestRoles } from '../hooks/setup'
 import type { Board, Issue, Project, SetupFacts, SetupOption } from '../types'
+import { adoptedStore } from './graph'
 
 const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } } as const
 const SETUP = { command: 'issues', args: 'setup', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
@@ -256,7 +257,8 @@ test('setup on a fresh repo shows its plan, changes nothing until Apply, then ma
 })
 
 test('with two projects linked, setup asks which, and Cancel changes nothing', async ($, on) => {
-  mock.store(on)
+  // The board may write to the first, Void Sector, already.
+  adoptedStore(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-05T03:00:00Z') })
   const other = { ...complete, id: 'PVT_9', number: 9, title: 'Roadmap', priority: null as never }
   const gh = github(on, { hasIssues: true, projects: [complete, other], labels: ['bug', 'area:sim'], issues: [{ number: 1, items: [{ project: 'PVT_8', item: 'PVTI_1', status: 'Ready' }] }] })
@@ -272,12 +274,46 @@ test('with two projects linked, setup asks which, and Cancel changes nothing', a
   expect(await ui.find({ key: 'setup-areas' })).toBeUndefined()
 
   await ui.press({ key: 'setup-project-9' })
+  // Picking the other makes Apply let the board write there instead.
+  expect(await ui.find({ text: /^Let the board write to Roadmap$/ })).toBeDefined()
   expect(await ui.find({ text: /^Create a Priority field: P0, P1, P2$/ })).toBeDefined()
   expect(await ui.find({ text: /^Add 1 open issue to the project$/ })).toBeDefined()
   expect(await ui.find({ key: 'setup-close' })).toMatchObject({ text: 'Cancel' })
 
   await ui.press({ key: 'setup-close' })
   expect(await ui.find({ key: 'setup-plan' })).toBeUndefined()
+  expect(gh.writes).toEqual([])
+  await ui.unmount()
+})
+
+test('setup says which project the board may write to; Release makes it read-only, and Apply adopts it again', async ($, on) => {
+  // Saved by an older board, before adopting: its setup names the project, which counts as adopted.
+  const kept = new Map<string, unknown>([['repo:/work/void-sector', { setup: { project: { id: 'PVT_8', number: 8, title: 'Void Sector' }, status: null, priority: null, at: 0 } }]])
+  on('store.get', async (_$, e) => ({ value: kept.get(e.key) }))
+  on('store.set', async (_$, e) => {
+    kept.set(e.key, e.value)
+    return { value: undefined }
+  })
+  on('ui.toast', async () => ({ value: undefined }))
+  const clock = mock.clock(on, { now: Date.parse('2026-10-05T03:00:00Z') })
+  const gh = github(on, { hasIssues: true, projects: [complete], labels: ['bug', 'area:sim'], issues: [{ number: 1, items: [{ project: 'PVT_8', item: 'PVTI_1', status: 'Ready' }] }] })
+  await $.command.run(SETUP)
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  expect(await ui.find({ text: /^the board may write to Void Sector$/ })).toBeDefined()
+  expect(await ui.find({ text: /^✓ Nothing to change/ })).toBeDefined()
+
+  await ui.press({ key: 'setup-release' })
+  expect((kept.get('repo:/work/void-sector') as { adopted?: unknown }).adopted).toBeNull()
+  expect(await ui.find({ text: /^none: the board only reads Void Sector until Apply$/ })).toBeDefined()
+  expect(await ui.find({ text: /^Let the board write to Void Sector$/ })).toBeDefined()
+  expect(await ui.find({ key: 'setup-release' })).toBeUndefined()
+
+  await ui.press({ key: 'setup-apply' })
+  await clock.settle()
+  expect((kept.get('repo:/work/void-sector') as { adopted?: unknown }).adopted).toEqual({ id: 'PVT_8', title: 'Void Sector', owner: 'astrosteveo' })
+  expect(await ui.find({ text: /^the board may write to Void Sector$/ })).toBeDefined()
+  // Adopting is the board's own note; GitHub isn't changed.
   expect(gh.writes).toEqual([])
   await ui.unmount()
 })

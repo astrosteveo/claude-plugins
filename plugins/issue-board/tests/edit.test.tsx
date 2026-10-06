@@ -3,7 +3,7 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import type { Board, Issue } from '../types'
 import { addBoxes, changesText, commandsOf, leftForDone, leftForVerification, movedText, rewordBoxes, statusOnly, unmovedText } from '../hooks/parse'
-import { asksProject, graphPage, isIssuesQuery, optionId } from './graph'
+import { asksProject, graphPage, isIssuesQuery, optionId, adoptedStore } from './graph'
 
 type Raw = Parameters<typeof graphPage>[0][number]
 
@@ -38,6 +38,9 @@ const EPIC = { number: 35, title: 'Make the issue board a full issue tracker', t
 
 // GitHub for claude-plugins with its project: every gh command asked for, its stdin, and how often the issues were read.
 const github = (on: On, prs: unknown[] = [], extra: Raw[] = []) => {
+  // These tests have the board write to the project, which the person let it do.
+  adoptedStore(on)
+  on('session.root', async () => ({ value: '/work/void-sector' }))
   // `blocked`: what #43 is blocked by on GitHub, as the links made leave it.
   // `closed`: how an issue closed on GitHub, which takes it off the board's next read.
   // `title` and `body`: #43's on GitHub, which a PATCH changes; `patched`, what each PATCH sent.
@@ -180,7 +183,7 @@ const writes = (calls: { argv: string[]; stdin?: string }[]) =>
   calls.filter(call => ['edit', 'comment', 'close', 'reopen'].includes(call.argv[1] ?? '') || (call.argv[0] === 'api' && call.argv.some(arg => arg.startsWith('query=mutation'))))
 
 test("Claude's issue_update tool makes the changes in order and the board reads GitHub straight after", async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = github(on)
   await $.command.run({ ...RUN, args: 'refresh' })
   const before = gh.reads
@@ -204,7 +207,7 @@ test("Claude's issue_update tool makes the changes in order and the board reads 
 })
 
 test('Claude starting on an issue in the conversation marks it as Start does, and a pull request starts the issue it is for', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const pr = {
     number: 50,
     title: 'Let the board edit issues',
@@ -255,7 +258,7 @@ test('Claude starting on an issue in the conversation marks it as Start does, an
 })
 
 test("issue_update links and unlinks blocked-by issues over REST, the row shows it at once, and an unknown blocker fails by number", async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = github(on)
   on('tool.check', async () => ({ decision: 'ask' as const }))
   await $.command.run({ ...RUN, args: 'refresh' })
@@ -284,7 +287,7 @@ test("issue_update links and unlinks blocked-by issues over REST, the row shows 
 })
 
 test('an issue that closes as completed moves to Done in the project; one closed as not planned stays', { options: { moveToDone: true } }, async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = github(on)
   const toasts: string[] = []
   on('ui.toast', async (_$, e) => {
@@ -305,7 +308,7 @@ test('an issue that closes as completed moves to Done in the project; one closed
 })
 
 test("a move the board makes on its own that GitHub refuses says so once, with where to look", { options: { moveToDone: true } }, async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = github(on)
   const toasts: string[] = []
   on('ui.toast', async (_$, e) => {
@@ -323,7 +326,7 @@ test("a move the board makes on its own that GitHub refuses says so once, with w
 })
 
 test('by default the board moves nothing on its own, and asks GitHub nothing for it', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = github(on, [
     {
       number: 50,
@@ -358,7 +361,7 @@ test('by default the board moves nothing on its own, and asks GitHub nothing for
 })
 
 test("with Start's own changes turned off, Claude starting on an issue leaves its assignees and Status alone", { options: { claimOnStart: false } }, async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = github(on)
   on('ui.toast', async () => ({ value: undefined }))
   await $.command.run({ ...RUN, args: 'refresh' })
@@ -408,7 +411,7 @@ test('boxes are added after the last one, or under a new Acceptance heading, and
 })
 
 test("issue_update changes the title and body over REST, adds and rewords boxes, and won't overwrite a body changed meanwhile", async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = github(on)
   on('ui.toast', async () => ({ value: undefined }))
   await $.command.run({ ...RUN, args: 'refresh' })
@@ -442,7 +445,7 @@ test("issue_update changes the title and body over REST, adds and rewords boxes,
 })
 
 test("the card's editor renames an issue, adds a box, and hands a body edit to Claude", async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = github(on)
   on('ui.toast', async () => ({ value: undefined }))
   const filled: string[] = []
@@ -465,7 +468,7 @@ test("the card's editor renames an issue, adds a box, and hands a body edit to C
 })
 
 test('an issue a merged pull request refers to with Refs moves to Verification, and the next prompt says so', { options: { moveToVerification: true } }, async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const pr = (number: number, body: string) => ({
     number,
     title: `Part of the work, ${number}`,
@@ -505,7 +508,7 @@ test('an issue a merged pull request refers to with Refs moves to Verification, 
 })
 
 test('an issue closes as a duplicate of another, from the tool or the card, and leaves the board', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = github(on)
   on('ui.toast', async () => ({ value: undefined }))
   await $.command.run({ ...RUN, args: 'refresh' })
@@ -525,7 +528,7 @@ test('an issue closes as a duplicate of another, from the tool or the card, and 
 })
 
 test("the card closes an issue as a duplicate, as not planned where GitHub refuses the duplicate reason", async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = github(on)
   gh.noDuplicate = true
   on('ui.toast', async () => ({ value: undefined }))
@@ -542,7 +545,7 @@ test("the card closes an issue as a duplicate, as not planned where GitHub refus
 })
 
 test("an epic's sub-issues follow GitHub's order where the board has no reason to change it, and move before or after a sibling", async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const sub = (number: number) => ({ number, title: `Part ${number}`, labels: [], body: '', updatedAt: '2026-10-05T00:00:00Z', parent: EPIC, status: 'Ready', priority: 'P1' })
   const gh = github(on, [], [sub(44), sub(45)])
   gh.order = [45, 43, 44]
@@ -565,7 +568,7 @@ test("an epic's sub-issues follow GitHub's order where the board has no reason t
 })
 
 test('an issue is pinned, locked and moved to another of the owner\'s repos, each as a gh command, and leaves the board when moved', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = github(on)
   on('tool.check', async () => ({ decision: 'ask' as const }))
   on('ui.toast', async () => ({ value: undefined }))
@@ -597,7 +600,7 @@ test('an issue is pinned, locked and moved to another of the owner\'s repos, eac
 })
 
 test("the card's editor shows its rows by what they're for, the common ones first, and the rest under More, in place", async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   github(on)
   on('ui.toast', async () => ({ value: undefined }))
   await $.command.run({ ...RUN, args: 'refresh' })
@@ -621,7 +624,7 @@ test("the card's editor shows its rows by what they're for, the common ones firs
 })
 
 test("a label the repo hasn't got is made first, an area one in the areas' color, and the answer says so", async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = github(on)
   on('ui.toast', async () => ({ value: undefined }))
   await $.command.run({ ...RUN, args: 'refresh' })
@@ -642,7 +645,7 @@ test("a label the repo hasn't got is made first, an area one in the areas' color
 })
 
 test("moving the Status of the issue Claude is on doesn't ask; any other change does", async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   github(on)
   // Beneath the board, Claude Code asks before a tool that changes something.
   on('tool.check', async () => ({ decision: 'ask' as const }))
@@ -662,7 +665,7 @@ test("moving the Status of the issue Claude is on doesn't ask; any other change 
 })
 
 test('a permission check that fails falls back to the verdict beneath, and says why in the debug log', async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   github(on)
   // Beneath the board, Claude Code would run the command.
   on('tool.check', async () => ({ decision: 'allow' as const }))
@@ -693,7 +696,7 @@ test('a permission check that fails falls back to the verdict beneath, and says 
 })
 
 test("an organization's ceiling of ask keeps both board tools asking; one of allow, or none, changes nothing", async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   github(on)
   on('tool.check', async () => ({ decision: 'ask' as const }))
   on('prompt.submit', async (_$, e) => ({ text: e.text }))
@@ -716,7 +719,7 @@ test("an organization's ceiling of ask keeps both board tools asking; one of all
 })
 
 test("the card's editor changes labels, assignee and milestone, comments, and asks twice to close an epic with open sub-issues", async ($, on) => {
-  mock.store(on)
+  adoptedStore(on)
   const gh = github(on)
   await $.command.run({ ...RUN, args: 'refresh' })
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })

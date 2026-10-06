@@ -245,11 +245,13 @@ export type SetupFacts = {
   hasTemplate: boolean
   // The roles setup saved last time, and for which project.
   saved?: { project: string; roles: Roles }
+  // The project the board may write to, by id; null when it may write to none.
+  adopted?: string | null
 }
 
 // One change setup makes. `state` is how it went once Apply ran.
 export type SetupStep = {
-  id: 'issues' | 'project' | 'status' | 'roles' | 'priority' | 'bug' | 'areas' | 'items' | 'inbox'
+  id: 'adopt' | 'issues' | 'project' | 'status' | 'roles' | 'priority' | 'bug' | 'areas' | 'items' | 'inbox'
   title: string
   state?: 'running' | 'done' | 'failed' | 'skipped'
   message?: string
@@ -265,6 +267,15 @@ export type Setup =
 // The Status option the person picked for each role in setup, by name: an option the project has, or the board's own
 // name for one setup adds. null: none, and the role's features are off.
 export type RolePicks = Record<Role, string | null>
+
+// A project the person let the board write to, for one repo, by its id: through the board's prompt, or Apply in
+// `/issues setup`. The board reads any linked project, but writes only to this one. `owner` is the login or
+// organization the project belongs to, when the board could tell.
+export type Adopted = { id: string; title: string; owner: string | null }
+
+// Which project the board may write to, and the projects whose prompt the person turned down, by id, so it isn't
+// asked again.
+export type Adoption = { adopted: Adopted | null; declined: string[] }
 
 // What setup saves for a repo: the project the board reads, its fields, and which Status option means what.
 export type SavedSetup = {
@@ -341,6 +352,8 @@ declare module 'claude-code' {
       epicNotes: EpicNote[]
       // The issue whose start message Edit first put in the prompt box, until the person next sends a prompt.
       drafted: number | null
+      // The project the board may write to, and the prompts the person turned down.
+      adoption: Adoption
     }
   }
 }

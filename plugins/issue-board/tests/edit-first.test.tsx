@@ -3,7 +3,7 @@ import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { backgroundPrompt, namesIssue, startPrompt } from '../hooks/parse'
-import { STATUSES, graphPage, isIssuesQuery } from './graph'
+import { STATUSES, graphPage, isIssuesQuery, adoptedStore } from './graph'
 
 const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 110, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } } as const
 const RUN = { origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 }, command: 'issues' } as const
@@ -30,6 +30,9 @@ const worker = (number: number): AgentSpawnInput => ({
 // GitHub with the project, the writes Start makes (`status #N <Status>`, `assign #N`), the prompts sent with what they
 // carried for Claude, what Edit first filled, and the tasks made.
 const world = (on: On) => {
+  // These tests have the board write to the project, which the person let it do.
+  adoptedStore(on)
+  on('session.root', async () => ({ value: '/work/void-sector' }))
   const state = { writes: [] as string[], sent: [] as { text: string; context: readonly string[] }[], filled: [] as string[], tasks: [] as string[] }
   on('process.run', async (_$, e) => {
     const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
@@ -76,7 +79,7 @@ const world = (on: On) => {
 
 // The board with epic #35's card open.
 const epicCard = async ($: Engine, on: On) => {
-  mock.store(on)
+  adoptedStore(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-05T10:00:00Z') })
   const gh = world(on)
   await $.command.run({ ...RUN, args: 'refresh' })
