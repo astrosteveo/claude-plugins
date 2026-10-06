@@ -1011,6 +1011,11 @@ export type IssueChanges = {
   // A place among its epic's sub-issues: just before or just after a sibling, by number.
   moveBefore?: number
   moveAfter?: number
+  // Pinned to the top of the repo's issues, or not; its conversation locked, with GitHub's reason or none, or unlocked;
+  // and the repo it moves to, `owner/name`, the same owner's.
+  pin?: boolean
+  lock?: boolean | 'off_topic' | 'resolved' | 'spam' | 'too_heated'
+  transferTo?: string
   // The project's other fields to set, by name; null clears one.
   fields?: Record<string, string | number | null>
 }
@@ -1034,6 +1039,14 @@ export const commandsOf = (number: number, changes: IssueChanges): { argv: strin
     ...(changes.comment?.trim() ? [{ argv: ['issue', 'comment', id, '--body-file', '-'], stdin: changes.comment.trim() }] : []),
     ...(changes.close ? [{ argv: ['issue', 'close', id, '--reason', changes.close] }] : []),
     ...(changes.reopen && !changes.close ? [{ argv: ['issue', 'reopen', id] }] : []),
+    ...(changes.pin === true ? [{ argv: ['issue', 'pin', id] }] : changes.pin === false ? [{ argv: ['issue', 'unpin', id] }] : []),
+    ...(changes.lock === false
+      ? [{ argv: ['issue', 'unlock', id] }]
+      : changes.lock
+        ? [{ argv: ['issue', 'lock', id, ...(typeof changes.lock === 'string' ? ['--reason', changes.lock] : [])] }]
+        : []),
+    // Last: once moved, the issue is no longer this repo's.
+    ...(changes.transferTo ? [{ argv: ['issue', 'transfer', id, changes.transferTo] }] : []),
   ]
 }
 
@@ -1059,6 +1072,9 @@ export const changesText = (number: number, changes: IssueChanges): string => {
     changes.duplicateOf ? `closed as a duplicate of #${changes.duplicateOf}` : '',
     changes.type === null ? 'its type taken off' : changes.type ? `typed ${changes.type}` : '',
     changes.moveBefore ? `moved before #${changes.moveBefore}` : changes.moveAfter ? `moved after #${changes.moveAfter}` : '',
+    changes.pin === true ? 'pinned' : changes.pin === false ? 'unpinned' : '',
+    changes.lock === false ? 'unlocked' : changes.lock ? `locked${typeof changes.lock === 'string' ? ` as ${changes.lock.replace('_', ' ')}` : ''}` : '',
+    changes.transferTo ? `moved to ${changes.transferTo}` : '',
     ...Object.entries(changes.fields ?? {}).map(([name, value]) => (value === null ? `${name} cleared` : `${name} set to ${value}`)),
     changes.reopen && !changes.close ? 'reopened' : '',
   ].filter(Boolean)

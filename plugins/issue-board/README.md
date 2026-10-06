@@ -361,7 +361,9 @@ stays quiet there.
     project's other fields by name, each value checked against its field,
     and `null` clears one. It sets the issue's type, as `issue_create` does,
     where the repo has types. It moves a sub-issue before or after a sibling in its epic's
-    order, which the Epic grouping and ▶ Next follow.
+    order, which the Epic grouping and ▶ Next follow. It pins or unpins an
+    issue, locks or unlocks its conversation, and moves it to another of
+    the owner's repos, by name; a moved issue leaves the board.
   - `issue_create` files a new issue: its title and body, labels,
     assignees, milestone, the epic it goes under, and its Status and
     Priority in the project. Without a Status it goes to the Inbox. For an

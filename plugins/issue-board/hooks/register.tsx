@@ -205,6 +205,11 @@ const changesOf = (input: unknown): (IssueChanges & { number: number }) | null =
     )
     if (given.length > 0) changes.fields = Object.fromEntries(given)
   }
+  if (typeof raw.pin === 'boolean') changes.pin = raw.pin
+  if (raw.lock === true || raw.lock === false) changes.lock = raw.lock
+  else if (raw.lock === 'off_topic' || raw.lock === 'resolved' || raw.lock === 'spam' || raw.lock === 'too_heated') changes.lock = raw.lock
+  const target = text(raw.transferTo)
+  if (target) changes.transferTo = target
   if (typeof raw.moveBefore === 'number' && Number.isInteger(raw.moveBefore)) changes.moveBefore = raw.moveBefore
   else if (typeof raw.moveAfter === 'number' && Number.isInteger(raw.moveAfter)) changes.moveAfter = raw.moveAfter
   if (raw.type === null) changes.type = null
@@ -1049,6 +1054,17 @@ const reorder = async ($: EngineInterface, repo: string, number: number, beside:
     return { ...was, issues: was.issues.map(one => (one.number === epic ? { ...one, subOrder: reordered(one.subOrder ?? siblings, number, beside, before) } : one)) }
   })
   await save($)
+}
+
+// The repo an issue moves to, as `owner/name`: a bare name is the same owner's, and another owner's is refused, so an
+// issue doesn't leave the owner's hands by a slip.
+const sameOwner = (repo: string, target: string): string => {
+  const owner = repo.split('/')[0] ?? ''
+  const [first = '', second] = target.split('/')
+  const full = second === undefined ? `${owner}/${first}` : target
+  if (full.split('/')[0]?.toLowerCase() !== owner.toLowerCase()) throw new Error(`an issue moves only to another of ${owner}'s repos, not to ${target}`)
+  if (full.toLowerCase() === repo.toLowerCase()) throw new Error(`the issue is in ${repo} already`)
+  return full
 }
 
 // The repo's issue type a name stands for, ignoring case; or why it can't be one.
@@ -1977,7 +1993,12 @@ const applyChanges = async ($: EngineInterface, number: number, changes: IssueCh
   const repo = (await read($, board))?.repo
   if (repo && (changes.title || changes.body !== undefined || changes.addBoxes?.length || changes.rewordBoxes?.length)) await rewrite($, repo, number, changes)
   const made = repo && changes.addLabels?.length ? await ensureLabels($, repo, changes.addLabels) : []
+  if (repo && changes.transferTo) changes.transferTo = sameOwner(repo, changes.transferTo)
   for (const command of commandsOf(number, changes)) await gh($, command.argv, command.stdin)
+  if (changes.transferTo) {
+    await update($, board, was => was && { ...was, issues: was.issues.filter(one => one.number !== number) })
+    await save($)
+  }
   if (repo && changes.type !== undefined) await setType($, repo, number, changes.type)
   if (repo && (changes.moveBefore || changes.moveAfter)) await reorder($, repo, number, (changes.moveBefore ?? changes.moveAfter) as number, Boolean(changes.moveBefore))
   if (repo && changes.duplicateOf) await closeAsDuplicate($, repo, number, changes.duplicateOf)
@@ -2191,6 +2212,13 @@ export const register: Register = on => {
           type: { type: ['string', 'null'], description: "Its issue type, such as Bug or Task, where the repo's organization has types; null takes it off." },
           moveBefore: { type: 'integer', description: "Move this sub-issue just before this sibling, by number, in its epic's order, which ▶ Next follows." },
           moveAfter: { type: 'integer', description: "Move this sub-issue just after this sibling, by number, in its epic's order." },
+          pin: { type: 'boolean', description: "true pins it to the top of the repo's issues; false unpins it." },
+          lock: {
+            type: ['boolean', 'string'],
+            enum: [true, false, 'off_topic', 'resolved', 'spam', 'too_heated'],
+            description: "true, or GitHub's reason, locks its conversation; false unlocks it.",
+          },
+          transferTo: { type: 'string', description: "Move it to another of the owner's repos, by name; it leaves this board." },
           fields: {
             type: 'object',
             additionalProperties: { type: ['string', 'number', 'null'] },
