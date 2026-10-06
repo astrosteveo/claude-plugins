@@ -250,7 +250,7 @@ test('the pane lists the issues by filter and opens one to its boxes', async ($,
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'issue-board', surface, ...PANE })
     expect(await ui.find({ text: /^Glide in to a planet$/ })).toBeDefined()
-    expect((await ui.findAll({ type: 'Button' })).filter(one => one.key?.startsWith('filter-')).map(one => one.props.hotkey)).toEqual(['1', '2', '3', '4', '5'])
+    expect((await ui.findAll({ type: 'Button' })).filter(one => one.key?.startsWith('filter-')).map(one => one.props.hotkey)).toEqual(['1', '2', '3', '4', '5', '7'])
     expect(await ui.find({ text: / ✓ PASS / })).toBeDefined()
     // A pull request is one row; its title opens its details, link included, beneath it.
     expect(await ui.find({ type: 'Link' })).toBeUndefined()

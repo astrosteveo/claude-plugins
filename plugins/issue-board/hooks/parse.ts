@@ -1,5 +1,5 @@
 import type { ThemeKey } from 'claude-code'
-import type { Alert, Board, BoxTask, Check, Ci, Comment, Draft, Field, Filter, GroupBy, Issue, Known, Label, Project, PullRequest, RunWatch, Suggestion, Worker, Working } from '../types'
+import type { Alert, Board, BoxTask, Check, Ci, Comment, Draft, Field, Filter, Found, GroupBy, Issue, Known, Label, Project, PullRequest, RunWatch, Suggestion, Worker, Working } from '../types'
 import { isLater, isNow, priorityRank } from './project'
 
 type RawLabel = { name: string; color?: string }
@@ -191,6 +191,8 @@ export const matches = (filter: Filter, issue: Issue, viewer: string | null = nu
       return true
     case 'inbox':
       return project !== null && isInbox(issue)
+    case 'closed':
+      return false
   }
 }
 
@@ -747,6 +749,56 @@ const issueLines = (issue: Issue): string[] => {
 // One issue as the issues tool answers it.
 export const issueText = (issue: Issue): string =>
   [...issueLines(issue), `This is the board's copy, without the body's other text. Read the whole issue with \`gh issue view ${issue.number}\`.`].join('\n')
+
+// Issues as GitHub's REST answers them, a list or search results; pull requests, which the same endpoints mix in, left out.
+export const foundOf = (items: unknown[]): Found[] =>
+  (items as {
+    number: number
+    title: string
+    html_url?: string
+    state: string
+    state_reason?: string | null
+    closed_at?: string | null
+    labels?: ({ name?: string } | string)[]
+    pull_request?: unknown
+  }[])
+    .filter(raw => !raw.pull_request)
+    .map(raw => ({
+      number: raw.number,
+      title: raw.title,
+      url: raw.html_url ?? '',
+      state: raw.state === 'closed' ? 'closed' : 'open',
+      reason: raw.state_reason ?? null,
+      closedAt: raw.closed_at ?? null,
+      labels: (raw.labels ?? []).map(label => (typeof label === 'string' ? label : (label.name ?? ''))).filter(Boolean),
+    }))
+
+// How an issue stands, in a few words: open, or closed, how and when.
+export const standing = (found: Found, now: number): string => {
+  if (found.state === 'open') return 'open'
+  const when = found.closedAt ? ago(found.closedAt, now) : ''
+  return `closed${found.reason ? ` as ${found.reason.replace('_', ' ')}` : ''}${when ? ` ${when === 'now' ? 'just now' : `${when} ago`}` : ''}`
+}
+
+// One line a found issue, as the issues tool lists it.
+export const foundLine = (found: Found, now: number): string =>
+  `#${found.number} ${found.title} · ${standing(found, now)}${found.labels.length > 0 ? ` · ${found.labels.join(', ')}` : ''}`
+
+// GitHub's search terms for the repo's issues: a state, words, and a label, assignee or milestone.
+export const searchTerms = (repo: string, ask: { state?: string; search?: string; label?: string; assignee?: string; milestone?: string }): string => {
+  const quoted = (value: string) => (/\s/.test(value) ? `"${value}"` : value)
+  return [
+    `repo:${repo}`,
+    'is:issue',
+    ask.state === 'open' || ask.state === 'closed' ? `state:${ask.state}` : '',
+    ask.label ? `label:${quoted(ask.label)}` : '',
+    ask.assignee ? `assignee:${ask.assignee}` : '',
+    ask.milestone ? `milestone:${quoted(ask.milestone)}` : '',
+    ask.search?.trim() ?? '',
+  ]
+    .filter(Boolean)
+    .join(' ')
+}
 
 // One pull request as the issues tool answers it.
 export const prText = (pr: PullRequest): string => {

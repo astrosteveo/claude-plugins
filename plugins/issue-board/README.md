@@ -34,7 +34,8 @@ CLI, signed in, in the folder the session started in.
     time, oldest first. It asks first: `y` to send and `n` to cancel.
   - The Issues heading, with its filters: `1` Now (Priority P0 and P1), `2`
     Later (P2), `3` Bugs, `4` Mine (assigned to you), `5` All and, with a
-    project, `6` Inbox. A search
+    project, `6` Inbox, and `7` Closed, which lists the issues closed
+    lately, each with how it closed, read from GitHub when you choose it. A search
     field after them keeps the issues whose title, number or labels hold every
     word you type. Tab to it or click it. The mobile app has no text field, so
     it has no search. `r` refreshes.
@@ -314,7 +315,11 @@ stays quiet there.
 - Four tools:
   - `issues` lists the board's issues and pull requests, one line each, or
     one issue in full with its boxes numbered. It reads the board's copy, so
-    it doesn't run `gh`, and it needs no permission prompt.
+    it doesn't run `gh`, and it needs no permission prompt. A label,
+    assignee or milestone narrows the list. For an issue the board doesn't
+    hold, such as a closed one, it reads GitHub and says how it closed. With
+    `state` closed or all, or words to `search`, it uses GitHub's search
+    over every issue, and says how many more there are.
   - `tick` ticks or unticks boxes in an issue's body on GitHub, so the
     progress bars fill in as Claude works. It reads the body fresh before it
     edits, so it doesn't overwrite other changes. Claude Code asks before it

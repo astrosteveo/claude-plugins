@@ -139,8 +139,12 @@ export type Alert =
   | { kind: 'closed'; key: string; working: Working }
 
 // `active` and `future` read Priority when there is a project (Now and Later), and the `future` label when not. `inbox`
-// is the project's issues with Status Inbox or none, to triage; without a project it holds nothing.
-export type Filter = 'active' | 'future' | 'bugs' | 'mine' | 'all' | 'inbox'
+// is the project's issues with Status Inbox or none, to triage; without a project it holds nothing. `closed` lists the
+// issues closed lately, which the board's copy doesn't hold: they are read when the filter is chosen.
+export type Filter = 'active' | 'future' | 'bugs' | 'mine' | 'all' | 'inbox' | 'closed'
+
+// An issue as GitHub's search or REST answers it, open or closed, for what the board's copy of open issues can't show.
+export type Found = { number: number; title: string; url: string; state: 'open' | 'closed'; reason: string | null; closedAt: string | null; labels: string[] }
 
 // Claude's suggestion for an issue in the Inbox: its Priority, its area (the label without `area:`; null for none), the
 // Status accepting moves it to, and why. `updatedAt` is the issue's as of then, so a changed issue is asked about again.
@@ -273,6 +277,7 @@ declare module 'claude-code' {
       workers: Worker[]
       // The Starts pressed that aren't under way yet: their buttons say so, and don't start the work again.
       launching: Launch[]
+      recent: { items: Found[]; at: number; failed?: string } | null
     }
   }
 }

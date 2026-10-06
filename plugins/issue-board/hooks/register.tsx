@@ -118,6 +118,10 @@ import {
   leftForDone,
   addBoxes,
   rewordBoxes,
+  foundLine,
+  foundOf,
+  searchTerms,
+  standing,
 } from './parse'
 
 const PANE = 'issue-board'
@@ -203,6 +207,7 @@ const editing = atom({ plugin: 'issue-board', key: 'editing' } as const, null)
 const palette = atom({ plugin: 'issue-board', key: 'palette' } as const, null)
 const closing = atom({ plugin: 'issue-board', key: 'closing' } as const, null)
 const typing = atom({ plugin: 'issue-board', key: 'typing' } as const, { comment: '', parent: '', title: '', box: '' })
+const recent = atom({ plugin: 'issue-board', key: 'recent' } as const, null)
 const talk = atom({ plugin: 'issue-board', key: 'talk' } as const, null)
 const openPr = atom({ plugin: 'issue-board', key: 'openPr' } as const, null)
 const access = atom({ plugin: 'issue-board', key: 'access' } as const, null)
@@ -227,6 +232,7 @@ const FILTERS: { id: Filter; label: string; planned: string; hotkey: string }[] 
   { id: 'mine', label: 'Mine', planned: 'Mine', hotkey: '4' },
   { id: 'all', label: 'All', planned: 'All', hotkey: '5' },
   { id: 'inbox', label: 'Inbox', planned: 'Inbox', hotkey: '6' },
+  { id: 'closed', label: 'Closed', planned: 'Closed', hotkey: '7' },
 ]
 
 const GROUPINGS: { id: GroupBy; label: string }[] = [
@@ -970,6 +976,51 @@ const block = async ($: EngineInterface, repo: string, number: number, blockers:
     return { ...was, issues }
   })
   await save($)
+}
+
+// GitHub's search over every issue of the repo, for the issues tool: one line each, and how many more there are. REST,
+// so it spends none of the GraphQL limit.
+const searchIssues = async ($: EngineInterface, repo: string, ask: { state?: string; search?: string; label?: string; assignee?: string; milestone?: string }): Promise<string> => {
+  const terms = searchTerms(repo, ask)
+  const answer = JSON.parse(await gh($, ['api', '-X', 'GET', 'search/issues', '-f', `q=${terms}`, '-f', 'per_page=30', '-f', 'sort=updated'])) as { total_count: number; items: unknown[] }
+  const found = foundOf(answer.items)
+  if (found.length === 0) return `No issues match \`${terms}\`.`
+  const clock = await nowOf($)
+  const more = answer.total_count > found.length ? `\nShowing ${found.length} of ${answer.total_count}; narrow the search to see the rest.` : ''
+  return `${found.map(one => foundLine(one, clock)).join('\n')}${more}`
+}
+
+// An issue the board doesn't hold, read from GitHub over REST: closed, most often, with how and when, and its boxes.
+const readClosed = async ($: EngineInterface, repo: string, number: number): Promise<string> => {
+  let raw: { title: string; html_url: string; body: string | null; state: string; state_reason: string | null; closed_at: string | null; labels: { name: string }[]; assignees: { login: string }[]; pull_request?: unknown }
+  try {
+    raw = JSON.parse(await gh($, ['api', `repos/${repo}/issues/${number}`]))
+  } catch (cause) {
+    return /HTTP 404|Not Found/i.test(messageOf(cause)) ? `#${number} doesn't exist in ${repo}.` : `Couldn't read #${number}: ${messageOf(cause)}`
+  }
+  if (raw.pull_request) return `#${number} is a pull request that isn't open. Read it with \`gh pr view ${number}\`.`
+  const [found] = foundOf([{ ...raw, number }])
+  const checks = checksOf(raw.body)
+  return [
+    `#${number} ${raw.title} (${found ? standing(found, await nowOf($)) : raw.state})`,
+    raw.html_url,
+    `Labels: ${raw.labels.map(label => label.name).join(', ') || 'none'}`,
+    `Assignees: ${raw.assignees.map(user => user.login).join(', ') || 'none'}`,
+    ...(checks.length > 0 ? [`Boxes (${checks.filter(check => check.done).length}/${checks.length} ticked):`, ...checks.map((check, index) => `${index + 1}. [${check.done ? 'x' : ' '}] ${check.text}`)] : []),
+    `Read the whole issue with \`gh issue view ${number}\`.`,
+  ].join('\n')
+}
+
+// The issues closed lately, for the pane's Closed filter: read when the filter is chosen, over REST.
+const readRecent = async ($: EngineInterface): Promise<void> => {
+  const repo = (await read($, board))?.repo
+  if (!repo) return
+  try {
+    const items = JSON.parse(await gh($, ['api', `repos/${repo}/issues?state=closed&sort=updated&direction=desc&per_page=30`])) as unknown[]
+    await update($, recent, () => ({ items: foundOf(items), at: Date.now() }))
+  } catch (cause) {
+    await update($, recent, was => ({ items: was?.items ?? [], at: Date.now(), failed: messageOf(cause) }))
+  }
 }
 
 // Files an issue for Claude's issue_create tool. REST does what it can, which spends nothing of the GraphQL limit the
@@ -1733,7 +1784,8 @@ export const register: Register = on => {
       description:
         "Lists this repository's open GitHub issues and pull requests from the issue board's copy, which refreshes every few minutes and after gh changes. " +
         'Without `number`, one line each: number, title, labels and how many task-list boxes are ticked; pull requests also give their branch, CI and review. ' +
-        'With `number`, that issue in full as the board has it: labels, assignees and its task-list boxes, numbered as the tick tool counts them. ' +
+        'With `number`, that issue in full as the board has it: labels, assignees and its task-list boxes, numbered as the tick tool counts them; a closed issue is read from GitHub, with how it closed. ' +
+        'With `state` closed or all, or `search`, it searches every issue with GitHub\'s own search instead, one line each with how it stands. ' +
         "Read an issue's whole text with `gh issue view`.",
       inputSchema: {
         type: 'object',
@@ -1747,6 +1799,11 @@ export const register: Register = on => {
           },
           area: { type: 'string', description: 'Only issues with this area: label, such as "simulation".' },
           query: { type: 'string', description: 'Only issues whose title, number or labels hold every word of this.' },
+          state: { type: 'string', enum: ['open', 'closed', 'all'], description: 'open (the default) lists the board\'s copy; closed or all search GitHub.' },
+          search: { type: 'string', description: "Words to find in any issue's title or body, open or closed, with GitHub's search." },
+          label: { type: 'string', description: 'Only issues with this label.' },
+          assignee: { type: 'string', description: 'Only issues assigned to this login.' },
+          milestone: { type: 'string', description: 'Only issues on this milestone, by title.' },
         },
       },
     })
@@ -2083,7 +2140,13 @@ export const register: Register = on => {
   on('prompt.suggest', async ($, e, next) => (e.origin.kind === 'suggestion' && nextStep ? next({ ...e, text: nextStep }) : next(e)))
 
   on('tool.call', { tool: ISSUES_TOOL }, async ($, e) => {
-    const input = e as unknown as { number?: number; filter?: Filter; area?: string; query?: string }
+    const input = e as unknown as { number?: number; filter?: Filter; area?: string; query?: string; state?: string; search?: string; label?: string; assignee?: string; milestone?: string }
+    // Closed issues, and words searched in every issue, are GitHub's search to answer: the board holds open issues only.
+    if (input.number === undefined && (input.state === 'closed' || input.state === 'all' || input.search?.trim())) {
+      const repo = (await read($, board))?.repo ?? repoInfo?.nameWithOwner
+      if (!repo) return { deny: "The issue board hasn't read GitHub yet; refresh it and try again." }
+      return { result: await searchIssues($, repo, input) }
+    }
     if ((await read($, board)) === null) await refresh($)
     const now = await read($, board)
     if (!now) {
@@ -2097,14 +2160,22 @@ export const register: Register = on => {
       if (issue) return { result: issueText(issue) }
       const pr = now.prs.find(one => one.number === input.number)
       if (pr) return { result: `${prText(pr)}\nRead it in full with \`gh pr view ${pr.number}\`.` }
-      return { result: `#${input.number} isn't open on the board. It may be closed: try \`gh issue view ${input.number}\`.` }
+      return { result: await readClosed($, now.repo, input.number) }
     }
     const chosen = input.filter ?? 'all'
     const who = await read($, viewer)
     const area = input.area?.replace(/^area:/, '')
     const project = now.project ?? null
     const kept = groupsOf(
-      now.issues.filter(issue => matches(chosen, issue, who, project) && (!area || areaOf(issue) === area) && (!input.query || searched(input.query, issue))),
+      now.issues.filter(
+        issue =>
+          matches(chosen, issue, who, project) &&
+          (!area || areaOf(issue) === area) &&
+          (!input.query || searched(input.query, issue)) &&
+          (!input.label || issue.labels.some(label => label.name.toLowerCase() === input.label?.toLowerCase())) &&
+          (!input.assignee || issue.assignees.includes(input.assignee.replace(/^@/, ''))) &&
+          (!input.milestone || issue.milestone?.toLowerCase() === input.milestone.toLowerCase()),
+      ),
       project ? 'status' : 'area',
       project,
     ).flatMap(group => group.issues)
@@ -2547,6 +2618,7 @@ export const register: Register = on => {
     // collapsed, so setting its Priority or Status doesn't take it away while it's being changed.
     const kept = (issue: Issue) => matches(chosen, issue, who, project) && searched(typed, issue)
     const shown = now.issues.filter(issue => open.includes(issue.number) || kept(issue))
+    const closedNow = chosen === 'closed' ? await read($, recent) : null
     // One card open: its letter keys work.
     const single = open.filter(number => shown.some(issue => issue.number === number)).length === 1
     const named = FILTERS.find(one => one.id === chosen)
@@ -2614,9 +2686,9 @@ export const register: Register = on => {
             hotkey={one.hotkey}
             variant={one.id === chosen ? 'primary' : undefined}
             dimColor={one.id !== chosen}
-            onPress={() => void update($, filter, () => one.id).then(() => (one.id === 'inbox' ? suggestInbox($) : undefined))}
+            onPress={() => void update($, filter, () => one.id).then(() => (one.id === 'inbox' ? suggestInbox($) : one.id === 'closed' ? readRecent($) : undefined))}
           >
-            {`${project ? one.planned : one.label} ${now.issues.filter(issue => matches(one.id, issue, who, project)).length}`}
+            {one.id === 'closed' ? one.label : `${project ? one.planned : one.label} ${now.issues.filter(issue => matches(one.id, issue, who, project)).length}`}
           </Button>
         ))}
         {Input && (
@@ -3044,7 +3116,9 @@ export const register: Register = on => {
     const heading$ = wrappedLines(
       [
         cells('Issues'),
-        ...FILTERS.filter(one => one.id !== 'inbox' || project).map(one => cells(`${project ? one.planned : one.label} ${now.issues.filter(issue => matches(one.id, issue, who, project)).length}`) + 4),
+        ...FILTERS.filter(one => one.id !== 'inbox' || project).map(
+          one => cells(one.id === 'closed' ? one.label : `${project ? one.planned : one.label} ${now.issues.filter(issue => matches(one.id, issue, who, project)).length}`) + 4,
+        ),
         cells('by'),
         ...groupings.map(one => cells(one.label) + 4),
       ],
@@ -3506,7 +3580,25 @@ export const register: Register = on => {
 
         {issuesHeading}
 
-        {shown.length === 0 && (
+        {chosen === 'closed' && (
+          // The issues closed lately, newest change first, each with how it closed: GitHub's, not the board's copy.
+          <Box key="closed-list" flexDirection="column">
+            {!closedNow && <Text dimColor>◌ Reading the issues closed lately…</Text>}
+            {closedNow?.failed && <Text color="error" wrap="wrap">{`Couldn't read closed issues: ${closedNow.failed}`}</Text>}
+            {closedNow && !closedNow.failed && closedNow.items.length === 0 && <Text dimColor>Nothing closed yet.</Text>}
+            {(closedNow?.items ?? []).map(one => (
+              <Box key={`closed-${one.number}`} flexDirection="row" justifyContent="space-between">
+                <Text>
+                  <Text color={one.reason === 'not_planned' ? 'inactive' : 'success'}>{one.reason === 'not_planned' ? '⊘ ' : '✓ '}</Text>
+                  <Text dimColor>{`#${one.number} `}</Text>
+                  {fit(one.title, Math.max(12, width - 30))}
+                </Text>
+                <Text dimColor>{standing(one, clock).replace(/^closed /, '')}</Text>
+              </Box>
+            ))}
+          </Box>
+        )}
+        {chosen !== 'closed' && shown.length === 0 && (
           <Box flexDirection="column" alignItems="center">
             <Text color="success">✓</Text>
             <Text dimColor>{typed.trim() ? `Nothing under ${filterName} matches “${typed.trim()}”.` : `Nothing open under ${filterName}.`}</Text>
@@ -3600,7 +3692,7 @@ export const register: Register = on => {
                 ? 'tab next field · ⏎ in the body adds a line · esc cancel the edit'
                 : single
                   ? 's start · e edit first · x or esc collapse · press a box to tick it · r refresh'
-                  : `${project ? '1 now · 2 later' : '1 active · 2 future'} · 3 bugs · 4 mine · 5 all${project ? ' · 6 inbox' : ''} · r refresh · ⏎ open an issue${now.prs.length > 0 ? ' · m merge all PRs' : ''}${made ? ' · c create the issue · e edit it' : ''}`}
+                  : `${project ? '1 now · 2 later' : '1 active · 2 future'} · 3 bugs · 4 mine · 5 all${project ? ' · 6 inbox' : ''} · 7 closed · r refresh · ⏎ open an issue${now.prs.length > 0 ? ' · m merge all PRs' : ''}${made ? ' · c create the issue · e edit it' : ''}`}
           </Text>
         </Box>
       </Box>
