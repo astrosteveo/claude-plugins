@@ -190,6 +190,7 @@ const changesOf = (input: unknown): (IssueChanges & { number: number }) | null =
       })
     : []
   if (rewords.length > 0) changes.rewordBoxes = rewords
+  if (typeof raw.duplicateOf === 'number' && Number.isInteger(raw.duplicateOf) && raw.duplicateOf > 0 && raw.duplicateOf !== raw.number) changes.duplicateOf = raw.duplicateOf
   const blocking = numbersOf(raw.addBlockedBy)
   const unblocking = numbersOf(raw.removeBlockedBy)
   if (blocking.length > 0) changes.addBlockedBy = blocking
@@ -217,7 +218,7 @@ const creating = atom({ plugin: 'issue-board', key: 'creating' } as const, false
 const editing = atom({ plugin: 'issue-board', key: 'editing' } as const, null)
 const palette = atom({ plugin: 'issue-board', key: 'palette' } as const, null)
 const closing = atom({ plugin: 'issue-board', key: 'closing' } as const, null)
-const typing = atom({ plugin: 'issue-board', key: 'typing' } as const, { comment: '', parent: '', title: '', box: '', label: '' })
+const typing = atom({ plugin: 'issue-board', key: 'typing' } as const, { comment: '', parent: '', title: '', box: '', label: '', duplicate: '' })
 const recent = atom({ plugin: 'issue-board', key: 'recent' } as const, null)
 const talk = atom({ plugin: 'issue-board', key: 'talk' } as const, null)
 const openPr = atom({ plugin: 'issue-board', key: 'openPr' } as const, null)
@@ -956,6 +957,22 @@ const claim = async ($: EngineInterface, issue: Issue): Promise<void> => {
   if (failures.length === 0) return
   $.ui.toast(`Started #${issue.number}, but couldn't update GitHub: ${failures[0]}`)
   if (failures.some(failure => ACCESS_ERROR.test(failure))) void checkAccess($, failures.join('\n'))
+}
+
+// Closes an issue as a duplicate of another, over REST: a `Duplicate of #N` comment, which GitHub turns into the link
+// between them, then the close with GitHub's duplicate reason, or not planned where GitHub refuses it. The issue leaves
+// the board at once. The other issue must exist.
+const closeAsDuplicate = async ($: EngineInterface, repo: string, number: number, of: number): Promise<void> => {
+  try {
+    await gh($, ['api', `repos/${repo}/issues/${of}`, '--jq', '.number'])
+  } catch (cause) {
+    throw new Error(/HTTP 404|Not Found/i.test(messageOf(cause)) ? `#${of} doesn't exist in ${repo}` : `couldn't read #${of}: ${messageOf(cause)}`)
+  }
+  await gh($, ['api', '-X', 'POST', `repos/${repo}/issues/${number}/comments`, '-f', `body=Duplicate of #${of}`])
+  const close = (reason: string) => gh($, ['api', '-X', 'PATCH', `repos/${repo}/issues/${number}`, '-f', 'state=closed', '-f', `state_reason=${reason}`])
+  await close('duplicate').catch(() => close('not_planned'))
+  await update($, board, was => was && { ...was, issues: was.issues.filter(one => one.number !== number) })
+  await save($)
 }
 
 // Makes the labels a change asks for that the repo hasn't got yet, over REST: an `area:` one takes the color the repo's
@@ -1801,6 +1818,7 @@ const applyChanges = async ($: EngineInterface, number: number, changes: IssueCh
   if (repo && (changes.title || changes.body !== undefined || changes.addBoxes?.length || changes.rewordBoxes?.length)) await rewrite($, repo, number, changes)
   const made = repo && changes.addLabels?.length ? await ensureLabels($, repo, changes.addLabels) : []
   for (const command of commandsOf(number, changes)) await gh($, command.argv, command.stdin)
+  if (repo && changes.duplicateOf) await closeAsDuplicate($, repo, number, changes.duplicateOf)
   if (repo && changes.addBlockedBy?.length) await block($, repo, number, changes.addBlockedBy, true)
   if (repo && changes.removeBlockedBy?.length) await block($, repo, number, changes.removeBlockedBy, false)
   await refreshAfter($)
@@ -2007,6 +2025,7 @@ export const register: Register = on => {
           milestone: { type: 'string', description: 'The milestone to put it on, by title; an empty string takes it off its milestone.' },
           comment: { type: 'string', description: 'A comment to add, in Markdown.' },
           close: { type: 'string', enum: ['completed', 'not planned'], description: 'Close it, saying why.' },
+          duplicateOf: { type: 'integer', minimum: 1, description: 'Close it as a duplicate of this issue, by number; GitHub links the two.' },
           reopen: { type: 'boolean', description: 'true reopens a closed issue.' },
           title: { type: 'string', description: 'A new title.' },
           body: {
@@ -3570,6 +3589,23 @@ export const register: Register = on => {
             <Button key={`close-not-planned-${n}`} dimColor onPress={() => void closeAs('not planned')()}>
               as not planned
             </Button>
+            {Input && (
+              <Input
+                key={`duplicate-${n}`}
+                label="as duplicate of #"
+                placeholder="issue number"
+                value={fields.duplicate}
+                submitLabel="close"
+                onInput={text => void update($, typing, was => ({ ...was, duplicate: text }))}
+                onSubmit={text => {
+                  const of = Number(text.replace(/^#/, '').trim())
+                  if (!Number.isInteger(of) || of < 1 || of === n) return
+                  void update($, typing, was => ({ ...was, duplicate: '' }))
+                    .then(() => update($, editing, () => null))
+                    .then(() => change($, n, { duplicateOf: of }))
+                }}
+              />
+            )}
           </Box>
           {armedClose === n && (
             <Text color="warning" wrap="wrap">{`#${n} is an epic with ${open} open ${open === 1 ? 'sub-issue' : 'sub-issues'}. Closing it leaves them open under a closed epic. Press again to close it anyway.`}</Text>

@@ -141,7 +141,9 @@ CLI, signed in, in the folder the session started in.
       out of its epic.
     - **Milestone**: the repo's open milestones; press one to put the issue
       on it, or the highlighted one to take it off.
-    - **Close**: as completed or as not planned. Closing an epic with open
+    - **Close**: as completed or as not planned, or type a number in **as
+      duplicate of #** to close it as a duplicate of that issue, which
+      GitHub then links. Closing an epic with open
       sub-issues takes a second press, and says how many are open.
   - **Edit first** (`e`) puts the same message in the prompt box to edit
     first.

@@ -53,6 +53,10 @@ const github = (on: On, prs: unknown[] = []) => {
     // Labels made, as `name color`; and which pull requests merged, by number.
     madeLabels: [] as string[],
     merged: {} as Record<number, boolean>,
+    // Comments posted and closes made over REST; `noDuplicate` has GitHub refuse the duplicate reason.
+    posted: [] as string[],
+    closes: [] as string[],
+    noDuplicate: false,
   }
   on('process.run', async (_$, e) => {
     const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
@@ -87,6 +91,18 @@ const github = (on: On, prs: unknown[] = []) => {
     state.calls.push({ argv: argv.slice(1), ...(e.init?.stdin !== undefined ? { stdin: e.init.stdin } : {}) })
     if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/claude-plugins', hasIssuesEnabled: true }))
     if (argv[1] === 'label' && argv[2] === 'list') return answer(JSON.stringify([{ name: 'bug' }, { name: 'enhancement' }, { name: 'area:issue-board' }]))
+    if (argv[1] === 'api' && argv[3] === 'POST' && argv[4]?.endsWith('/comments')) {
+      state.posted.push(`${/issues\/(\d+)\//.exec(argv[4])?.[1]} ${argv[6]?.slice(5)}`)
+      return answer('{}')
+    }
+    if (argv[1] === 'api' && argv[3] === 'PATCH' && argv.includes('state=closed')) {
+      const reason = argv.find(arg => arg.startsWith('state_reason='))?.slice(13) ?? ''
+      if (reason === 'duplicate' && state.noDuplicate) return { value: { exitCode: 1, stdout: '', stderr: 'gh: Validation Failed (HTTP 422)', isStdoutTruncated: false, isStderrTruncated: false } }
+      const number = Number(/issues\/(\d+)$/.exec(argv[4] ?? '')?.[1])
+      state.closes.push(`${number} ${reason}`)
+      state.closed = { ...state.closed, [number]: reason }
+      return answer('{}')
+    }
     const pull = /\/pulls\/(\d+)$/.exec(argv[2] ?? '')
     if (argv[1] === 'api' && pull) return answer(state.merged[Number(pull[1])] ? '2026-10-05T12:00:00Z\n' : 'null\n')
     if (argv[1] === 'api' && argv[2]?.endsWith('/labels?per_page=100'))
@@ -380,6 +396,42 @@ test('an issue a merged pull request refers to with Refs moves to Verification, 
   expect(prompts.at(-1)).toContain('#43 moved to Verification: pull request #50, which refers to it without closing it, merged.')
   await $.prompt.submit({ text: 'And then?', wait: false, origin: { kind: 'composer' } })
   expect(prompts.at(-1)?.join('\n') ?? '').not.toMatch(/Verification/)
+})
+
+test('an issue closes as a duplicate of another, from the tool or the card, and leaves the board', async ($, on) => {
+  mock.store(on)
+  const gh = github(on)
+  on('ui.toast', async () => ({ value: undefined }))
+  await $.command.run({ ...RUN, args: 'refresh' })
+
+  // An issue that doesn't exist can't be the original: nothing is posted or closed.
+  expect((await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, duplicateOf: 999 })).deny).toBe("Couldn't change #43: #999 doesn't exist in astrosteveo/claude-plugins")
+  expect([gh.posted, gh.closes]).toEqual([[], []])
+
+  const closed = await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, duplicateOf: 35 })
+  expect(String(closed.result)).toBe('#43 closed as a duplicate of #35.')
+  expect(gh.posted).toEqual(['43 Duplicate of #35'])
+  expect(gh.closes).toEqual(['43 duplicate'])
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'filter-all' })
+  expect(await ui.find({ key: 'issue-43' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test("the card closes an issue as a duplicate, as not planned where GitHub refuses the duplicate reason", async ($, on) => {
+  mock.store(on)
+  const gh = github(on)
+  gh.noDuplicate = true
+  on('ui.toast', async () => ({ value: undefined }))
+  await $.command.run({ ...RUN, args: 'refresh' })
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'filter-all' })
+  await ui.press({ key: 'issue-43' })
+  await ui.press({ key: 'edit-43' })
+  await ui.input({ key: 'duplicate-43', text: '#35' })
+  expect(gh.posted).toEqual(['43 Duplicate of #35'])
+  expect(gh.closes).toEqual(['43 not_planned'])
+  await ui.unmount()
 })
 
 test("a label the repo hasn't got is made first, an area one in the areas' color, and the answer says so", async ($, on) => {
