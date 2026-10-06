@@ -1,3 +1,4 @@
+import type { ThemeKey } from 'claude-code'
 import type { Alert, Board, BoxTask, Check, Ci, Comment, Draft, Field, Filter, GroupBy, Issue, Known, Label, Project, PullRequest, RunWatch, Suggestion, Worker, Working } from '../types'
 import { isLater, isNow, priorityRank } from './project'
 
@@ -132,7 +133,7 @@ export const threadsOf = (json: string): Map<number, number> => {
 }
 
 // Why a pull request can't merge as it stands, from GitHub's merge state: conflicts with its base, or behind it.
-export const mergeNoteOf = (pr: PullRequest): { text: string; color: string } | null =>
+export const mergeNoteOf = (pr: PullRequest): { text: string; color: ThemeKey } | null =>
   pr.mergeState === 'DIRTY' ? { text: '⚠ conflicts', color: 'error' } : pr.mergeState === 'BEHIND' ? { text: '↓ behind', color: 'warning' } : null
 
 type RawComment = { author?: { login?: string } | null; body?: string | null; createdAt?: string }
@@ -476,18 +477,18 @@ export const bar = ({ done, total }: Progress, width: number): [string, string] 
 }
 
 // How far along, as the color the bar is drawn in.
-export const tone = ({ done, total }: Progress): string => (total > 0 && done === total ? 'success' : done > 0 ? 'warning' : 'inactive')
+export const tone = ({ done, total }: Progress): ThemeKey => (total > 0 && done === total ? 'success' : done > 0 ? 'warning' : 'inactive')
 
 export const ciMark: Record<Ci, string> = { pass: '✓', fail: '✗', pending: '…', none: '·' }
 
-export const ciBadge: Record<Ci, { text: string; color: string }> = {
+export const ciBadge: Record<Ci, { text: string; color: ThemeKey }> = {
   pass: { text: ' ✓ PASS ', color: 'success' },
   fail: { text: ' ✗ FAIL ', color: 'error' },
   pending: { text: ' ◷ CI ', color: 'warning' },
   none: { text: ' · NO CI ', color: 'inactive' },
 }
 
-export const reviewBadge = (pr: PullRequest): { text: string; color: string } | undefined => {
+export const reviewBadge = (pr: PullRequest): { text: string; color: ThemeKey } | undefined => {
   if (pr.isDraft) return { text: 'draft', color: 'inactive' }
   switch (pr.review) {
     case 'APPROVED':
@@ -1117,7 +1118,7 @@ export const workerIssueOf = (spawn: { name?: string; description: string; promp
 export const startedByClaude = (origin: { plugin: string }, spawn: { parentAgentId?: string }): boolean => origin.plugin === 'engine' && spawn.parentAgentId === undefined
 
 // A background agent's status on an issue's row.
-export const workerBadge = (status: Worker['status']): { text: string; color: string } =>
+export const workerBadge = (status: Worker['status']): { text: string; color: ThemeKey } =>
   status === 'completed'
     ? { text: '⚙ done', color: 'success' }
     : status === 'failed'
