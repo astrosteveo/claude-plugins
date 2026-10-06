@@ -93,6 +93,8 @@ const github = (on: On, prs: unknown[] = [], extra: Raw[] = []) => {
     }
     if (argv[1] === 'pr' && argv[2] === 'list' && !argv.includes('merged')) return answer(JSON.stringify(prs))
     state.calls.push({ argv: argv.slice(1), ...(e.init?.stdin !== undefined ? { stdin: e.init.stdin } : {}) })
+    // A moved issue is no longer this repo's.
+    if (argv[1] === 'issue' && argv[2] === 'transfer') state.closed = { ...state.closed, [Number(argv[3])]: 'transferred' }
     if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/claude-plugins', hasIssuesEnabled: true }))
     if (argv[1] === 'label' && argv[2] === 'list') return answer(JSON.stringify([{ name: 'bug' }, { name: 'enhancement' }, { name: 'area:issue-board' }]))
     if (argv[1] === 'api' && argv[2]?.endsWith('/issues/35/sub_issues?per_page=100')) return answer(JSON.stringify(state.order.map(number => ({ number }))))
@@ -471,6 +473,31 @@ test("an epic's sub-issues follow GitHub's order where the board has no reason t
 
   // A sibling outside the epic can't be the place.
   expect((await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, moveAfter: 35 })).deny).toBe("Couldn't change #43: #35 isn't a sub-issue of #35, as #43 is")
+})
+
+test('an issue is pinned, locked and moved to another of the owner\'s repos, each as a gh command, and leaves the board when moved', async ($, on) => {
+  mock.store(on)
+  const gh = github(on)
+  on('tool.check', async () => ({ decision: 'ask' as const }))
+  on('ui.toast', async () => ({ value: undefined }))
+  await $.command.run({ ...RUN, args: 'refresh' })
+  const update = (fields: Record<string, unknown>) => $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, ...fields })
+  const ran = () => gh.calls.filter(call => ['pin', 'unpin', 'lock', 'unlock', 'transfer'].includes(call.argv[1] ?? '')).map(call => call.argv.join(' '))
+
+  expect(String((await update({ pin: true, lock: 'too_heated' })).result)).toBe('#43 pinned, locked as too heated.')
+  expect(String((await update({ pin: false, lock: false })).result)).toBe('#43 unpinned, unlocked.')
+  expect((await $.tool.check({ tool: 'mcp__issue-board__issue_update', input: { number: 43, pin: true } })).decision).toBe('ask')
+
+  // Another owner's repo, or the same repo, is refused before anything runs.
+  expect((await update({ transferTo: 'someone/else' })).deny).toBe("Couldn't change #43: an issue moves only to another of astrosteveo's repos, not to someone/else")
+  expect((await update({ transferTo: 'claude-plugins' })).deny).toBe("Couldn't change #43: the issue is in astrosteveo/claude-plugins already")
+  expect(String((await update({ transferTo: 'void-sector' })).result)).toBe('#43 moved to astrosteveo/void-sector.')
+  expect(ran()).toEqual(['issue pin 43', 'issue lock 43 --reason too_heated', 'issue unpin 43', 'issue unlock 43', 'issue transfer 43 astrosteveo/void-sector'])
+
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'filter-all' })
+  expect(await ui.find({ key: 'issue-43' })).toBeUndefined()
+  await ui.unmount()
 })
 
 test("a label the repo hasn't got is made first, an area one in the areas' color, and the answer says so", async ($, on) => {
