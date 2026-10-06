@@ -240,6 +240,10 @@ CLI, signed in, in the folder the session started in.
 - When a pull request that refers to an issue with `Refs #N`, not
   `Closes`, merges, the board moves the issue to Verification: merging
   didn't complete its acceptance. The next prompt tells Claude so.
+- Each time the board moves issues on its own, a toast says which and why,
+  such as `Moved #43 to Done: it closed as completed.`; several at once
+  read as one line. If GitHub refuses a move, a toast says so once, with
+  where to look.
 - Claude closing an epic with `gh issue close` while some of its sub-issues
   are open asks you first, whatever your permission rules allow, and says
   how many are open. A background agent or other subagent is refused
