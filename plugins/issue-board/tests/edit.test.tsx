@@ -50,6 +50,8 @@ const github = (on: On, prs: unknown[] = []) => {
     title: 'Edit issues from the board',
     body: '- [ ] Edit',
     patched: [] as Record<string, string>[],
+    // Labels made, as `name color`.
+    madeLabels: [] as string[],
   }
   on('process.run', async (_$, e) => {
     const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
@@ -84,6 +86,12 @@ const github = (on: On, prs: unknown[] = []) => {
     state.calls.push({ argv: argv.slice(1), ...(e.init?.stdin !== undefined ? { stdin: e.init.stdin } : {}) })
     if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/claude-plugins', hasIssuesEnabled: true }))
     if (argv[1] === 'label' && argv[2] === 'list') return answer(JSON.stringify([{ name: 'bug' }, { name: 'enhancement' }, { name: 'area:issue-board' }]))
+    if (argv[1] === 'api' && argv[2]?.endsWith('/labels?per_page=100'))
+      return answer(JSON.stringify([{ name: 'bug', color: 'd73a4a' }, { name: 'enhancement', color: 'a2eeef' }, { name: 'area:issue-board', color: '1d76db' }]))
+    if (argv[1] === 'api' && argv[3] === 'POST' && argv[4]?.endsWith('/labels')) {
+      state.madeLabels.push(`${argv[6]?.slice(5)} ${argv[8]?.slice(6)}`)
+      return answer('{}')
+    }
     if (argv[1] === 'api' && argv.includes('{body, updated_at}')) return answer(JSON.stringify({ body: state.body, updated_at: '2026-10-05T00:00:00Z' }))
     if (argv[1] === 'api' && argv[2] === '-X' && argv[3] === 'PATCH') {
       const fields = JSON.parse(e.init?.stdin ?? '{}') as Record<string, string>
@@ -321,6 +329,26 @@ test("the card's editor renames an issue, adds a box, and hands a body edit to C
   expect(gh.patched).toEqual([{ title: 'Edit issues in place' }, { body: '- [ ] Edit\n- [ ] Undo a change' }])
   await ui.press({ key: 'body-43' })
   expect(filled).toEqual(['Edit the body of #43: '])
+  await ui.unmount()
+})
+
+test("a label the repo hasn't got is made first, an area one in the areas' color, and the answer says so", async ($, on) => {
+  mock.store(on)
+  const gh = github(on)
+  on('ui.toast', async () => ({ value: undefined }))
+  await $.command.run({ ...RUN, args: 'refresh' })
+
+  const added = await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, addLabels: ['area:ask', 'Bug', 'needs design'] })
+  expect(String(added.result)).toBe('#43 labelled area:ask, Bug, needs design. Created the labels area:ask, needs design, new to the repo.')
+  expect(gh.madeLabels).toEqual(['area:ask 1d76db', 'needs design ededed'])
+
+  // The card makes one from what is typed.
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'filter-all' })
+  await ui.press({ key: 'issue-43' })
+  await ui.press({ key: 'edit-43' })
+  await ui.input({ key: 'new-label-43', text: 'area:board' })
+  expect(gh.madeLabels.at(-1)).toBe('area:board 1d76db')
   await ui.unmount()
 })
 

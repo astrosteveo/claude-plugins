@@ -192,6 +192,7 @@ const world = (on: On) => {
       state.blocks.push(`${/issues\/(\d+)\//.exec(argv[4])?.[1]} ${argv[6]?.split('=')[1]}`)
       return answer('{}')
     }
+    if (argv[1] === 'api' && argv[2]?.endsWith('/labels?per_page=100')) return answer(JSON.stringify([{ name: 'bug' }, { name: 'enhancement' }, { name: 'area:simulation' }]))
     if (argv[1] === 'api' && argv[2]?.includes('/milestones')) return answer(JSON.stringify([{ number: 3, title: 'Launch' }]))
     if (argv[1] === 'api') return answer('astrosteveo\n')
     if (argv[1] === 'issue' && argv[2] === 'edit' && argv.includes('--add-assignee')) {
