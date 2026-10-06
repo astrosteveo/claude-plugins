@@ -116,6 +116,8 @@ import {
   newIssueOf,
   numbersOf,
   leftForDone,
+  addBoxes,
+  rewordBoxes,
 } from './parse'
 
 const PANE = 'issue-board'
@@ -161,6 +163,18 @@ const changesOf = (input: unknown): (IssueChanges & { number: number }) | null =
   if (comment) changes.comment = comment
   if (raw.close === 'completed' || raw.close === 'not planned') changes.close = raw.close
   if (raw.reopen === true) changes.reopen = true
+  const title = text(raw.title)
+  if (title) changes.title = title
+  if (typeof raw.body === 'string') changes.body = raw.body
+  const boxes = strings(raw.addBoxes)
+  if (boxes?.length) changes.addBoxes = boxes
+  const rewords = Array.isArray(raw.rewordBoxes)
+    ? raw.rewordBoxes.flatMap(one => {
+        const edit = one as { box?: unknown; text?: unknown }
+        return typeof edit.box === 'number' && Number.isInteger(edit.box) && typeof edit.text === 'string' && edit.text.trim() ? [{ box: edit.box, text: edit.text.trim() }] : []
+      })
+    : []
+  if (rewords.length > 0) changes.rewordBoxes = rewords
   const blocking = numbersOf(raw.addBlockedBy)
   const unblocking = numbersOf(raw.removeBlockedBy)
   if (blocking.length > 0) changes.addBlockedBy = blocking
@@ -188,7 +202,7 @@ const creating = atom({ plugin: 'issue-board', key: 'creating' } as const, false
 const editing = atom({ plugin: 'issue-board', key: 'editing' } as const, null)
 const palette = atom({ plugin: 'issue-board', key: 'palette' } as const, null)
 const closing = atom({ plugin: 'issue-board', key: 'closing' } as const, null)
-const typing = atom({ plugin: 'issue-board', key: 'typing' } as const, { comment: '', parent: '' })
+const typing = atom({ plugin: 'issue-board', key: 'typing' } as const, { comment: '', parent: '', title: '', box: '' })
 const talk = atom({ plugin: 'issue-board', key: 'talk' } as const, null)
 const openPr = atom({ plugin: 'issue-board', key: 'openPr' } as const, null)
 const access = atom({ plugin: 'issue-board', key: 'access' } as const, null)
@@ -897,6 +911,39 @@ const claim = async ($: EngineInterface, issue: Issue): Promise<void> => {
   if (failures.some(failure => ACCESS_ERROR.test(failure))) void checkAccess($, failures.join('\n'))
 }
 
+// A new title or body, over REST. Boxes added or reworded go into the body as GitHub has it now, so nothing else in it is
+// lost. A whole new body goes in only while GitHub's body is still the one the board read: one changed meanwhile isn't
+// overwritten. The board shows the new title and boxes at once.
+const rewrite = async ($: EngineInterface, repo: string, number: number, changes: IssueChanges): Promise<void> => {
+  let body: string | undefined
+  if (changes.body !== undefined || changes.addBoxes?.length || changes.rewordBoxes?.length) {
+    const fresh = JSON.parse(await gh($, ['api', `repos/${repo}/issues/${number}`, '--jq', '{body, updated_at}'])) as { body: string | null; updated_at: string }
+    body = fresh.body ?? ''
+    if (changes.body !== undefined) {
+      const known = (await read($, board))?.issues.find(one => one.number === number)
+      if (!known) throw new Error(`the board doesn't hold #${number}, so it can't tell whether its body changed meanwhile; add or reword its boxes instead`)
+      // A board saved between sessions has no bodies: then the time of the last change tells.
+      const same = known.body ? known.body === body : known.updatedAt === fresh.updated_at
+      if (!same) throw new Error(`#${number}'s body changed on GitHub since the board read it, so it wasn't overwritten. Read it again with the issues tool, then change it`)
+      body = changes.body
+    }
+    if (changes.rewordBoxes?.length) {
+      const reworded = rewordBoxes(body, changes.rewordBoxes)
+      if (reworded.missing.length > 0) throw new Error(`#${number} has ${checksOf(body).length} boxes, so there is no box ${reworded.missing.join(', ')}`)
+      body = reworded.body
+    }
+    if (changes.addBoxes?.length) body = addBoxes(body, changes.addBoxes)
+  }
+  const fields = { ...(changes.title ? { title: changes.title } : {}), ...(body !== undefined ? { body } : {}) }
+  const raw = JSON.parse(await gh($, ['api', '-X', 'PATCH', `repos/${repo}/issues/${number}`, '--input', '-'], JSON.stringify(fields))) as {
+    title: string
+    body: string | null
+    updated_at: string
+  }
+  await update($, board, was => was && { ...was, issues: was.issues.map(one => (one.number === number ? { ...one, title: raw.title, body: raw.body ?? '', checks: checksOf(raw.body), updatedAt: raw.updated_at } : one)) })
+  await save($)
+}
+
 // Makes or takes away an issue's blocked-by links, over REST, which spends none of the GraphQL limit, and shows them on
 // the board at once. A blocker that doesn't exist fails, by its number, before any link is made.
 const block = async ($: EngineInterface, repo: string, number: number, blockers: number[], on: boolean): Promise<void> => {
@@ -1548,8 +1595,9 @@ const applyChanges = async ($: EngineInterface, number: number, changes: IssueCh
     if (!issue) throw new Error(`#${number} isn't open on the board, so its ${field === 'status' ? 'Status' : 'Priority'} can't be set`)
     await setField($, issue, field, value)
   }
-  for (const command of commandsOf(number, changes)) await gh($, command.argv, command.stdin)
   const repo = (await read($, board))?.repo
+  if (repo && (changes.title || changes.body !== undefined || changes.addBoxes?.length || changes.rewordBoxes?.length)) await rewrite($, repo, number, changes)
+  for (const command of commandsOf(number, changes)) await gh($, command.argv, command.stdin)
   if (repo && changes.addBlockedBy?.length) await block($, repo, number, changes.addBlockedBy, true)
   if (repo && changes.removeBlockedBy?.length) await block($, repo, number, changes.removeBlockedBy, false)
   await refreshAfter($)
@@ -1721,7 +1769,7 @@ export const register: Register = on => {
     await $.tool.register({
       name: 'issue_update',
       description:
-        "Changes a GitHub issue of this repository and updates the issue board at once: its Status and Priority in the repo's GitHub Project, labels, assignees, " +
+        "Changes a GitHub issue of this repository and updates the issue board at once: its title and body, its acceptance boxes, its Status and Priority in the repo's GitHub Project, labels, assignees, " +
         'parent (the epic it is a sub-issue of), milestone, a comment, closing it as completed or not planned, or reopening it. Give only what changes. ' +
         'Moving the Status of the issue the person started needs no permission; any other change asks. ' +
         'When you start work on an issue or pull request in this conversation, without the board\'s Start, call this with start: true, so the board shows it under way. ' +
@@ -1745,6 +1793,17 @@ export const register: Register = on => {
           comment: { type: 'string', description: 'A comment to add, in Markdown.' },
           close: { type: 'string', enum: ['completed', 'not planned'], description: 'Close it, saying why.' },
           reopen: { type: 'boolean', description: 'true reopens a closed issue.' },
+          title: { type: 'string', description: 'A new title.' },
+          body: {
+            type: 'string',
+            description: 'A whole new body, in Markdown. Refused if the body changed on GitHub since the board read it. To add or reword boxes, use addBoxes or rewordBoxes.',
+          },
+          addBoxes: { type: 'array', items: { type: 'string' }, description: 'Acceptance boxes to add, after the last box, or under a new Acceptance heading.' },
+          rewordBoxes: {
+            type: 'array',
+            items: { type: 'object', properties: { box: { type: 'integer', minimum: 1 }, text: { type: 'string' } }, required: ['box', 'text'] },
+            description: 'Boxes to reword, by number as the issues tool counts them; ticked ones stay ticked.',
+          },
           addBlockedBy: { type: 'array', items: { type: 'integer' }, description: 'Issues it is blocked by, by number, to link.' },
           removeBlockedBy: { type: 'array', items: { type: 'integer' }, description: 'Issues it is no longer blocked by, by number.' },
         },
@@ -3089,6 +3148,43 @@ export const register: Register = on => {
       const row = (label: string) => <Text dimColor>{label.padEnd(9)}</Text>
       return (
         <Box key={`editor-${n}`} flexDirection="column" marginTop={1}>
+          {Input && (
+            <Box flexDirection="row" gap={1} flexWrap="wrap">
+              {row('Title')}
+              <Input
+                key={`title-${n}`}
+                label=""
+                placeholder={fit(issue.title, 50)}
+                value={fields.title}
+                submitLabel="rename"
+                onInput={text => void update($, typing, was => ({ ...was, title: text }))}
+                onSubmit={text => {
+                  if (!text.trim() || text.trim() === issue.title) return
+                  void update($, typing, was => ({ ...was, title: '' })).then(() => change($, n, { title: text.trim() }))
+                }}
+              />
+            </Box>
+          )}
+          <Box flexDirection="row" gap={1} flexWrap="wrap">
+            {row('Boxes')}
+            {Input && (
+              <Input
+                key={`box-${n}`}
+                label="+ "
+                placeholder="add an acceptance box"
+                value={fields.box}
+                submitLabel="add"
+                onInput={text => void update($, typing, was => ({ ...was, box: text }))}
+                onSubmit={text => {
+                  if (!text.trim()) return
+                  void update($, typing, was => ({ ...was, box: '' })).then(() => change($, n, { addBoxes: [text.trim()] }))
+                }}
+              />
+            )}
+            <Button key={`body-${n}`} dimColor onPress={() => void $.prompt.fill({ text: `Edit the body of #${n}: ` })}>
+              ✎ Edit the body with Claude
+            </Button>
+          </Box>
           <Box flexDirection="row" gap={1} flexWrap="wrap">
             {row('Labels')}
             {labels.map(name => {

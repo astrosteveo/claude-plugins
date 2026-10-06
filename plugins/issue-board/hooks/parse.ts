@@ -692,6 +692,39 @@ export const tickBody = (body: string, boxes: number[], done: boolean): { body: 
   return { body: lines.join('\n'), changed, missing: boxes.filter(box => box < 1 || box > seen) }
 }
 
+// Adds boxes to a body's acceptance list, after its last box, or under a new `## Acceptance` heading at the end when it
+// has none. The rest stays as written, \r\n endings included.
+export const addBoxes = (body: string, texts: string[]): string => {
+  const crlf = body.includes('\r\n')
+  const eol = crlf ? '\r\n' : '\n'
+  const lines = body.split('\n')
+  const last = lines.findLastIndex(line => BOX.test(line.endsWith('\r') ? line.slice(0, -1) : line))
+  const boxes = texts.map(text => `- [ ] ${text.trim()}`)
+  if (last >= 0) {
+    // Each new box takes the line ending of the box before it.
+    const ending = lines[last]?.endsWith('\r') ? '\r' : ''
+    lines.splice(last + 1, 0, ...boxes.map(box => `${box}${ending}`))
+    return lines.join('\n')
+  }
+  const kept = body.replace(/\s+$/, '')
+  return `${kept}${kept ? `${eol}${eol}` : ''}## Acceptance${eol}${boxes.join(eol)}${eol}`
+}
+
+// Rewords boxes by number, counted as the tick tool counts them, keeping whether each is ticked. Answers the body and
+// the numbers it has no box for.
+export const rewordBoxes = (body: string, edits: { box: number; text: string }[]): { body: string; missing: number[] } => {
+  let seen = 0
+  const lines = body.split('\n').map(line => {
+    const end = line.endsWith('\r') ? '\r' : ''
+    const bare = end ? line.slice(0, -1) : line
+    if (!BOX.test(bare)) return line
+    seen += 1
+    const edit = edits.find(one => one.box === seen)
+    return edit ? `${bare.replace(/(\[[ xX]\]\s+).*$/, `$1${edit.text.trim()}`)}${end}` : line
+  })
+  return { body: lines.join('\n'), missing: edits.map(one => one.box).filter(box => box < 1 || box > seen) }
+}
+
 // What the board knows of one issue, a fact a line, its boxes numbered as the tick tool counts them.
 const issueLines = (issue: Issue): string[] => {
   const step = progress(issue.checks)
@@ -838,6 +871,11 @@ export type IssueChanges = {
   // Blocked-by links to make and to take away, by the blocking issue's number.
   addBlockedBy?: number[]
   removeBlockedBy?: number[]
+  // A new title; a whole new body; boxes to add to the acceptance list; boxes to reword, by number.
+  title?: string
+  body?: string
+  addBoxes?: string[]
+  rewordBoxes?: { box: number; text: string }[]
 }
 
 const listed = (values: string[] | undefined): string => (values ?? []).filter(Boolean).join(',')
@@ -872,6 +910,10 @@ export const changesText = (number: number, changes: IssueChanges): string => {
     listed(changes.assign) ? `assigned ${listed(changes.assign).replace(/,/g, ', ')}` : '',
     listed(changes.unassign) ? `unassigned ${listed(changes.unassign).replace(/,/g, ', ')}` : '',
     changes.parent === null ? 'taken out of its epic' : changes.parent !== undefined ? `put under #${changes.parent}` : '',
+    changes.title ? `retitled “${changes.title}”` : '',
+    changes.body !== undefined ? 'its body rewritten' : '',
+    changes.rewordBoxes?.length ? `${changes.rewordBoxes.length === 1 ? 'box' : 'boxes'} ${changes.rewordBoxes.map(one => one.box).join(', ')} reworded` : '',
+    changes.addBoxes?.length ? `${changes.addBoxes.length} ${changes.addBoxes.length === 1 ? 'box' : 'boxes'} added` : '',
     changes.addBlockedBy?.length ? `blocked by ${changes.addBlockedBy.map(one => `#${one}`).join(', ')}` : '',
     changes.removeBlockedBy?.length ? `no longer blocked by ${changes.removeBlockedBy.map(one => `#${one}`).join(', ')}` : '',
     changes.milestone === null ? 'taken off its milestone' : changes.milestone !== undefined ? `put on the milestone ${changes.milestone}` : '',
@@ -952,7 +994,15 @@ export const filedText = (number: number, did: string[], failed: string[]): stri
 
 // Whether a change only moves an issue's Status, which the issue Claude is on may do without asking.
 export const statusOnly = (changes: IssueChanges): boolean =>
-  Boolean(changes.status) && commandsOf(0, changes).length === 0 && !changes.priority && !changes.addBlockedBy?.length && !changes.removeBlockedBy?.length
+  Boolean(changes.status) &&
+  commandsOf(0, changes).length === 0 &&
+  !changes.priority &&
+  !changes.addBlockedBy?.length &&
+  !changes.removeBlockedBy?.length &&
+  !changes.title &&
+  changes.body === undefined &&
+  !changes.addBoxes?.length &&
+  !changes.rewordBoxes?.length
 
 // An issue's or pull request's page on GitHub: the URL gh gave, or one made from the repo for a board saved without it.
 export const pageOf = (repo: string, kind: 'issues' | 'pull', item: { number: number; url: string }): string =>
