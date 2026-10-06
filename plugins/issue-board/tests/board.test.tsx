@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { ago, bar, cells, checksOf, ciOf, fit, issuesOf, pad, proseOf, spark, summary, weekly } from '../hooks/parse'
+import { ago, bar, cells, checksOf, ciOf, fit, issuesOf, pad, proseOf, rowRoom, spark, summary, weekly } from '../hooks/parse'
 import { graphPage, isIssuesQuery } from './graph'
 
 test("a card's text leaves out its boxes, and a pull request names the issues it is for", () => {
@@ -105,6 +105,63 @@ test("a preview line holding an emoji keeps the card's width, so nothing shows t
   await ui.unmount()
 })
 
+test('a narrow row drops its chips, then its bar, then its age, and the title keeps the rest', () => {
+  const parts = { chips: 14, bar: 10, age: 4, rest: 0 }
+  expect(rowRoom(100, 6, parts)).toEqual({ chips: true, bar: true, age: true, title: 66 })
+  expect(rowRoom(56, 6, parts)).toEqual({ chips: false, bar: true, age: true, title: 36 })
+  expect(rowRoom(40, 6, parts)).toEqual({ chips: false, bar: false, age: true, title: 30 })
+  expect(rowRoom(30, 6, parts)).toEqual({ chips: false, bar: false, age: false, title: 24 })
+  // What always stays, such as the agent badge, still leaves the title a cell rather than wrapping the row.
+  expect(rowRoom(30, 6, { ...parts, rest: 40 })).toEqual({ chips: false, bar: false, age: false, title: 1 })
+  // A part the row hasn't is never shown.
+  expect(rowRoom(100, 6, { chips: 0, bar: 0, age: 4, rest: 0 })).toEqual({ chips: false, bar: false, age: true, title: 90 })
+})
+
+test('the pane has no blank lines between sections, short group headers and the progress at the right', async ($, on) => {
+  on('process.run', async (_$, e) => {
+    const stdout = isIssuesQuery(e.argv) ? graphPage(ISSUES) : e.argv[1] === 'repo' ? JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true }) : '[]'
+    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  await $.command.run({ command: 'issues', args: 'refresh', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
+  // A row as drawn, without the hidden preview card that hovering it shows.
+  type Drawn = string | { type?: string; props?: { position?: string; label?: string }; children?: Drawn[] }
+  const textOf = (node: Drawn): string =>
+    typeof node === 'string' ? node : node.props?.position === 'absolute' ? '' : node.type === 'Button' ? (node.props?.label ?? '') : (node.children ?? []).map(textOf).join('')
+  const rowOf = async (ui: { find: (match: { key: string }) => Promise<{ children: unknown[] } | undefined> }, number: number) =>
+    ((await ui.find({ key: `row-${number}` }))?.children ?? []).map(child => textOf(child as Drawn)).join('|')
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'filter-all' })
+  // No pull requests are open, so there is no section for them.
+  expect(await ui.find({ text: /Pull requests/ })).toBeUndefined()
+  // A group header is its name and its count: no rule, no percentage.
+  const groups = (await ui.findAll({ type: 'Box' })).filter(box => String(box.props.key ?? '').startsWith('group-'))
+  expect(groups.length).toBe(2)
+  expect(groups.some(box => /─|%/.test(box.text))).toBe(false)
+  const header = (await ui.findAll({ type: 'Box' })).find(box => box.text === 'simulation1')
+  expect(header).toBeDefined()
+  expect((await ui.findAll({ type: 'Text' })).find(text => text.text === 'simulation')?.props).toMatchObject({ bold: true, color: 'claude' })
+  // The number and title start the row; the bar and count sit before the age at its right. No boxes, no bar.
+  expect(await rowOf(ui, 315)).toMatch(/^\|  #315 Lay Kessik out for play\|.*━━━ 2\/3 +\S+$/)
+  expect(await rowOf(ui, 289)).toMatch(/^\|▲ #289 Asteroids didn't draw\| +\S+$/)
+  // Nothing puts a blank line above it while no card is open.
+  expect((await ui.findAll({ type: 'Box' })).filter(box => box.props.marginTop)).toEqual([])
+  // An open card keeps the space below it.
+  await ui.press({ key: 'issue-315' })
+  expect((await ui.find({ key: 'card-315' }))?.props.marginBottom).toBe(1)
+  await ui.unmount()
+
+  // A narrow pane gives up the bar, then the age, and keeps the title on one line.
+  for (const [columns, bar, age] of [[60, true, true], [44, false, true]] as const) {
+    const narrow = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE, props: { ...PANE.props, bodyColumns: columns } })
+    await narrow.press({ key: 'filter-all' })
+    const row = await rowOf(narrow, 315)
+    expect(/━━━ 2\/3/.test(row)).toBe(bar)
+    expect(/\d[mhdwy]$|now$/.test(row)).toBe(age)
+    expect(cells(row)).toBeLessThan(columns)
+    await narrow.unmount()
+  }
+})
+
 test('velocity counts each week and draws it as a sparkline', () => {
   const at = Date.parse('2026-10-03T12:00:00Z')
   expect(weekly(['2026-10-03T00:00:00Z', '2026-10-01T00:00:00Z', '2026-09-24T00:00:00Z', '2025-01-01T00:00:00Z'], at, 3)).toEqual([0, 1, 2])
@@ -159,7 +216,7 @@ test('the pane lists the issues by filter and opens one to its boxes', async ($,
     expect(await ui.find({ text: /^closed / })).toBeDefined()
     expect((await ui.find({ text: /^ 2$/ }))?.props.bold).toBe(true)
     // The hover preview is drawn hidden beside the row, shown by the surface on hover. It sits at the pane's right, so
-    // the rows above keep their bar, number and the start of their title clear for the pointer moving up.
+    // the rows above keep their mark, number and the start of their title clear for the pointer moving up.
     expect(await ui.find({ text: /^ No acceptance boxes\. +$/ })).toBeDefined()
     const previews = (await ui.findAll({ type: 'Box' })).filter(box => box.props.position === 'absolute')
     expect(previews.length).toBeGreaterThan(0)

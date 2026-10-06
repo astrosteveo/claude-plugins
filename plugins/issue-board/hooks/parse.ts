@@ -513,6 +513,25 @@ export const fit = (text: string, width: number): string => {
   return `${kept}…`
 }
 
+// What an issue's row has room for. `left` is the cells before the title; each right-hand part is its width in cells,
+// 0 when the row has none, and `rest` the parts that always stay. A narrow pane drops the label chips first, then the
+// progress bar, then the age, until the title has `floor` cells. The title gets whatever is left, so the row stays on
+// one line.
+export const rowRoom = (
+  width: number,
+  left: number,
+  parts: { chips: number; bar: number; age: number; rest: number },
+  floor = 24,
+): { chips: boolean; bar: boolean; age: boolean; title: number } => {
+  const shown = { chips: parts.chips > 0, bar: parts.bar > 0, age: parts.age > 0 }
+  const room = () => width - left - parts.rest - (shown.chips ? parts.chips : 0) - (shown.bar ? parts.bar : 0) - (shown.age ? parts.age : 0)
+  for (const part of ['chips', 'bar', 'age'] as const) {
+    if (room() >= floor) break
+    shown[part] = false
+  }
+  return { ...shown, title: Math.max(1, room()) }
+}
+
 // `text` padded with spaces to `width` cells.
 export const pad = (text: string, width: number): string => `${text}${' '.repeat(Math.max(0, width - cells(text)))}`
 
