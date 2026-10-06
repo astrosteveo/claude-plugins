@@ -1219,6 +1219,33 @@ export const missingLabels = (wanted: string[], existing: { name: string }[]): s
 export const labelColorFor = (name: string, existing: { name: string; color?: string }[]): string =>
   (name.startsWith('area:') ? existing.find(one => one.name.startsWith('area:') && one.color)?.color : undefined) ?? 'ededed'
 
+// A hint line that fits `width`: its parts in order of use. All of them in their long form when that fits; otherwise
+// the short forms, such as `1-7 filter` for every filter key, and the last parts dropped until it fits, never wrapped.
+export const hintFit = (parts: (string | [string, string])[], width: number, gap = ' · '): string => {
+  const long = parts.map(part => (Array.isArray(part) ? part[0] : part))
+  if (cells(long.join(gap)) <= width) return long.join(gap)
+  const kept: string[] = []
+  for (const part of parts.map(one => (Array.isArray(one) ? one[1] : one))) {
+    if (cells([...kept, part].join(gap)) <= width) kept.push(part)
+  }
+  return kept.join(gap)
+}
+
+// The filter keys, all of them, such as `1 now · 2 later`, and in short, `1-7 filter`.
+export const filterKeys = (filters: { hotkey: string; name: string }[]): [string, string] => {
+  const keys = filters.map(one => one.hotkey)
+  return [filters.map(one => `${one.hotkey} ${one.name.toLowerCase()}`).join(' · '), `${keys[0]}-${keys.at(-1)} filter`]
+}
+
+// What opening the pane says: the keys that matter most, from the board's own lists, and the subcommands.
+export const openedText = (filters: { hotkey: string; name: string }[]): string =>
+  [
+    'Issues pane opened.',
+    `Filters: ${filters.map(one => `${one.hotkey} ${one.name}`).join(', ')}.`,
+    'Enter opens an issue: Start hands it to Claude, Change edits it, and Esc folds it. r refreshes.',
+    'Also: /issues new [epic] drafts an issue, /issues setup links a project, /issues check says what is missing.',
+  ].join(' ')
+
 // Issue numbers from a tool's input: whole and positive, each once.
 export const numbersOf = (value: unknown): number[] =>
   Array.isArray(value) ? [...new Set(value.filter((one): one is number => typeof one === 'number' && Number.isInteger(one) && one > 0))] : []

@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { ago, bar, cells, checksOf, ciOf, fit, issuesOf, pad, peekPlace, proseOf, rowRoom, spark, summary, weekly, wrappedLines } from '../hooks/parse'
+import { ago, bar, cells, checksOf, ciOf, filterKeys, fit, hintFit, issuesOf, openedText, pad, peekPlace, proseOf, rowRoom, spark, summary, weekly, wrappedLines } from '../hooks/parse'
 import { graphPage, isIssuesQuery } from './graph'
 
 test("a card's text leaves out its boxes, and a pull request names the issues it is for", () => {
@@ -117,6 +117,27 @@ test('a hover card goes above its row, whole when it fits, trimmed when short of
   expect(peekPlace(4, 5)).toEqual({ listed: 0, more: false, hint: false })
   // Not even the title and how far along fit.
   expect(peekPlace(3, 5)).toBeNull()
+})
+
+test('the hint line keeps the most useful keys that fit, shortens the filters before dropping them, and never wraps', () => {
+  const filters = [
+    { hotkey: '1', name: 'Now' },
+    { hotkey: '2', name: 'Later' },
+    { hotkey: '7', name: 'Closed' },
+  ]
+  const parts = ['⏎ open an issue', filterKeys(filters), 'r refresh', 'm merge all PRs']
+  expect(hintFit(parts, 120)).toBe('⏎ open an issue · 1 now · 2 later · 7 closed · r refresh · m merge all PRs')
+  // Narrower: the filters fold to their short form, then the last parts go.
+  expect(hintFit(parts, 50)).toBe('⏎ open an issue · 1-7 filter · r refresh')
+  expect(hintFit(parts, 30)).toBe('⏎ open an issue · 1-7 filter')
+  for (const width of [120, 50, 30, 10]) expect(cells(hintFit(parts, width))).toBeLessThanOrEqual(width)
+})
+
+test('opening the pane names every filter it has, from the same list the pane draws', () => {
+  expect(openedText([{ hotkey: '1', name: 'Now' }, { hotkey: '7', name: 'Closed' }])).toBe(
+    'Issues pane opened. Filters: 1 Now, 7 Closed. Enter opens an issue: Start hands it to Claude, Change edits it, and Esc folds it. r refreshes. ' +
+      'Also: /issues new [epic] drafts an issue, /issues setup links a project, /issues check says what is missing.',
+  )
 })
 
 test('a wrapping row counts the lines its items take', () => {
@@ -309,7 +330,8 @@ test('the pane lists the issues by filter and opens one to its boxes', async ($,
     expect(await ui.find({ text: /^s start/ })).toBeDefined()
 
     await ui.press({ key: 'issue-289' })
-    expect(await ui.find({ text: /^1 active/ })).toBeDefined()
+    // At 100 columns every key in full doesn't fit, so the filters show in short; their names are on the buttons above.
+    expect(await ui.find({ text: /^⏎ open an issue · 1-7 filter · r refresh · m merge all PRs$/ })).toBeDefined()
     await ui.press({ key: 'filter-active' })
     await ui.unmount()
   }

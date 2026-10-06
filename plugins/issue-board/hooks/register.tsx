@@ -139,6 +139,9 @@ import {
   statusEnumOf,
   updateLine,
   updateWords,
+  filterKeys,
+  hintFit,
+  openedText,
 } from './parse'
 
 const PANE = 'issue-board'
@@ -273,6 +276,10 @@ const FILTERS: { id: Filter; label: string; planned: string; hotkey: string }[] 
   { id: 'inbox', label: 'Inbox', planned: 'Inbox', hotkey: '6' },
   { id: 'closed', label: 'Closed', planned: 'Closed', hotkey: '7' },
 ]
+
+// The filters as the pane offers them, with the names it shows: Inbox only with a project.
+const filtersFor = (project: boolean): { hotkey: string; name: string }[] =>
+  FILTERS.filter(one => one.id !== 'inbox' || project).map(one => ({ hotkey: one.hotkey, name: project ? one.planned : one.label }))
 
 const GROUPINGS: { id: GroupBy; label: string }[] = [
   { id: 'status', label: 'Status' },
@@ -2441,7 +2448,7 @@ export const register: Register = on => {
     if ((await read($, board)) === null) void refresh($)
 
     return {
-      text: 'Issues pane opened. 1-5 filter, r refreshes, Enter on an issue opens it, then Start sends it to Claude, and Esc collapses it. /issues new drafts an issue from the conversation.',
+      text: openedText(filtersFor(Boolean((await read($, board))?.project))),
     }
   })
 
@@ -4389,13 +4396,25 @@ export const register: Register = on => {
 
         <Box>
           <Text dimColor>
-            {confirm
-              ? 'y merge every open PR · n cancel'
-              : revised
-                ? 'tab next field · ⏎ in the body adds a line · esc cancel the edit'
-                : single
-                  ? 's start · e edit first · x or esc collapse · press a box to tick it · r refresh'
-                  : `${project ? '1 now · 2 later' : '1 active · 2 future'} · 3 bugs · 4 mine · 5 all${project ? ' · 6 inbox' : ''} · 7 closed · r refresh · ⏎ open an issue${now.prs.length > 0 ? ' · m merge all PRs' : ''}${made ? ' · c create the issue · e edit it' : ''}`}
+            {
+              // The keys for what shows, most useful first, cut to the pane's width rather than wrapped.
+              hintFit(
+                confirm
+                  ? ['y merge every open PR', 'n cancel']
+                  : revised
+                    ? ['tab next field', '⏎ in the body adds a line', 'esc cancel the edit']
+                    : single
+                      ? ['s start', 'e edit first', 'x or esc collapse', 'press a box to tick it', 'r refresh']
+                      : [
+                          ...(made ? ['c create the issue', 'e edit it'] : []),
+                          '⏎ open an issue',
+                          filterKeys(filtersFor(Boolean(project))),
+                          'r refresh',
+                          ...(now.prs.length > 0 ? ['m merge all PRs'] : []),
+                        ],
+                width,
+              )
+            }
           </Text>
         </Box>
       </Box>
