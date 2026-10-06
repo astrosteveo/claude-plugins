@@ -835,6 +835,9 @@ export type IssueChanges = {
   comment?: string
   close?: 'completed' | 'not planned'
   reopen?: boolean
+  // Blocked-by links to make and to take away, by the blocking issue's number.
+  addBlockedBy?: number[]
+  removeBlockedBy?: number[]
 }
 
 const listed = (values: string[] | undefined): string => (values ?? []).filter(Boolean).join(',')
@@ -869,6 +872,8 @@ export const changesText = (number: number, changes: IssueChanges): string => {
     listed(changes.assign) ? `assigned ${listed(changes.assign).replace(/,/g, ', ')}` : '',
     listed(changes.unassign) ? `unassigned ${listed(changes.unassign).replace(/,/g, ', ')}` : '',
     changes.parent === null ? 'taken out of its epic' : changes.parent !== undefined ? `put under #${changes.parent}` : '',
+    changes.addBlockedBy?.length ? `blocked by ${changes.addBlockedBy.map(one => `#${one}`).join(', ')}` : '',
+    changes.removeBlockedBy?.length ? `no longer blocked by ${changes.removeBlockedBy.map(one => `#${one}`).join(', ')}` : '',
     changes.milestone === null ? 'taken off its milestone' : changes.milestone !== undefined ? `put on the milestone ${changes.milestone}` : '',
     changes.comment?.trim() ? 'commented on' : '',
     changes.close ? `closed as ${changes.close}` : '',
@@ -876,6 +881,10 @@ export const changesText = (number: number, changes: IssueChanges): string => {
   ].filter(Boolean)
   return said.length > 0 ? `#${number} ${said.join(', ')}.` : `Nothing to change on #${number}.`
 }
+
+// Issue numbers from a tool's input: whole and positive, each once.
+export const numbersOf = (value: unknown): number[] =>
+  Array.isArray(value) ? [...new Set(value.filter((one): one is number => typeof one === 'number' && Number.isInteger(one) && one > 0))] : []
 
 // An issue for Claude's issue_create tool to file: its title and body, and what it starts with.
 export type NewIssue = {
@@ -887,6 +896,8 @@ export type NewIssue = {
   parent?: number
   status?: string
   priority?: string
+  // The issues it is blocked by, by number.
+  blockedBy?: number[]
   // Sub-issues to file under it, in order: an epic and its parts in one call. They have none of their own.
   subIssues?: NewIssue[]
 }
@@ -911,6 +922,8 @@ export const newIssueOf = (input: unknown, nested = false): NewIssue | string =>
   const priority = text(raw.priority)
   if (status) made.status = status
   if (priority) made.priority = priority
+  const blockers = numbersOf(raw.blockedBy)
+  if (blockers.length > 0) made.blockedBy = blockers
   if (Array.isArray(raw.subIssues) && raw.subIssues.length > 0) {
     if (nested) return 'A sub-issue takes no sub-issues of its own.'
     const parts = raw.subIssues.map(part => newIssueOf(part, true))
@@ -930,7 +943,7 @@ export const filedText = (number: number, did: string[], failed: string[]): stri
 
 // Whether a change only moves an issue's Status, which the issue Claude is on may do without asking.
 export const statusOnly = (changes: IssueChanges): boolean =>
-  Boolean(changes.status) && commandsOf(0, changes).length === 0 && !changes.priority
+  Boolean(changes.status) && commandsOf(0, changes).length === 0 && !changes.priority && !changes.addBlockedBy?.length && !changes.removeBlockedBy?.length
 
 // An issue's or pull request's page on GitHub: the URL gh gave, or one made from the repo for a board saved without it.
 export const pageOf = (repo: string, kind: 'issues' | 'pull', item: { number: number; url: string }): string =>
