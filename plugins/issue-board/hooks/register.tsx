@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, ModelForkResult, Register, Timer, UiCopyArgs } from 'claude-code'
+import type { Caught, EngineInterface, HookFailure, ModelForkResult, Register, Timer, UiCopyArgs } from 'claude-code'
 
 import type { Alert, Board, BoxTask, Check, Comment, Draft, DraftEdit, Filter, GroupBy, Issue, Known, Launch, Problem, Project, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
 import type { Ended, IssueChanges } from './parse'
@@ -214,6 +214,25 @@ const gh = async ($: EngineInterface, args: string[], stdin?: string, timeoutMs 
 }
 
 const messageOf = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause))
+
+// Why a hook failed, as its `.catch` handler reads it.
+const failureOf = (error: HookFailure): string => (error.kind === 'timeout' ? `ran out of time${error.message ? ` (${error.message})` : ''}` : (error.message ?? 'threw'))
+
+// What a hook that failed falls back to: the site's own behavior, as though the board had no hook there, with why it
+// failed in the debug log. In a `.catch` handler `next(e)` replays what the hook's own call settled to, so nothing
+// beneath runs twice. A guard falls back the same way: a fault in the board never refuses what Claude Code would let
+// run. The engine reads each handler from a function literal, so each `.catch` is one that calls this.
+const fallBack = <E, R>($: EngineInterface, e: E, next: ((e: E) => R) & Caught, site: string): R => {
+  $.ui.log(`issue-board: ${site} failed and was left to the default: ${failureOf(next.error)}`, { to: 'debug' })
+  return next(e)
+}
+
+// What one of the board's own tools answers when its hook fails: there is nothing beneath to fall back to, so Claude
+// reads why.
+const toolFailed = ($: EngineInterface, next: Caught, tool: string) => {
+  $.ui.log(`issue-board: the ${tool} tool failed: ${failureOf(next.error)}`, { to: 'debug' })
+  return { deny: `The issue board's ${tool} tool failed: ${failureOf(next.error)}` }
+}
 
 // How a command that couldn't start says so, as against one that ran too long.
 const MISSING = /ENOENT|not found|no such file/i
@@ -1400,7 +1419,7 @@ export const register: Register = on => {
   on('classic.SessionStart', async ($, e, next) => {
     if (restarted) void begin($)
     return next(e)
-  })
+  }).catch(($, e, next) => fallBack($, e, next, 'classic.SessionStart'))
 
   on('command.run', { command: 'issues' }, async ($, e) => {
     const asked = /^new\b\s*(epic\b)?\s*([\s\S]*)$/.exec(e.args.trim())
@@ -1461,7 +1480,7 @@ export const register: Register = on => {
     const key = (await read($, revising)) ? (e.element ?? null) : null
     if ((await read($, ring)) !== key) await update($, ring, () => key)
     return moved
-  })
+  }).catch(($, e, next) => fallBack($, e, next, 'ui.focus'))
 
   // Esc, or the pane's close mark: with an issue's card or a pull request's details open it folds them and keeps the
   // pane; with nothing open the pane closes. The engine stamps both as the person's close, so they step back alike.
@@ -1484,7 +1503,7 @@ export const register: Register = on => {
     await update($, editing, () => null)
     await update($, openPr, () => null)
     return { value: undefined }
-  })
+  }).catch(($, e, next) => fallBack($, e, next, 'ui.close'))
 
   // Claude changing GitHub through gh or a push: show the change straight away, and a change Claude made through gh to
   // the issue it is on isn't news to it. A checkout moves the branch marker, and to a branch named for an issue, the
@@ -1504,7 +1523,7 @@ export const register: Register = on => {
     } else if (GIT_MOVE.test(command) && e.agentId === undefined) void currentBranch($).then(now => followBranch($, now))
 
     return ran
-  })
+  }).catch(($, e, next) => fallBack($, e, next, 'tool.call on Bash'))
 
   // A worktree is a checkout too: Claude Code names its branch after the worktree, such as `worktree-fix+315-glide`.
   // Only the main session's checkouts count: a subagent's, such as a background agent's in its own worktree, make its
@@ -1513,7 +1532,7 @@ export const register: Register = on => {
     const ran = await next(e)
     if (e.agentId === undefined) void currentBranch($).then(now => followBranch($, now))
     return ran
-  })
+  }).catch(($, e, next) => fallBack($, e, next, 'tool.call on a worktree'))
 
   // Claude completing or deleting a task Start made for a box: a completed one has the band ask whether to tick it.
   on('tool.call', { tool: 'TaskUpdate' }, async ($, e, next) => {
@@ -1523,7 +1542,7 @@ export const register: Register = on => {
     if (failed || typeof taskId !== 'string' || typeof status !== 'string' || !(await read($, tasks)).some(one => one.id === taskId)) return ran
     await update($, tasks, list => (status === 'deleted' ? list.filter(one => one.id !== taskId) : list.map(one => (one.id === taskId ? { ...one, done: status === 'completed' } : one))))
     return ran
-  })
+  }).catch(($, e, next) => fallBack($, e, next, 'tool.call on TaskUpdate'))
 
   // A prompt carries, unseen by the person, the board's copy of each issue or pull request it names as `#123`, and a
   // note of what changed on GitHub to the issue Claude is on since the last prompt. The system prompt stays as it is.
@@ -1547,7 +1566,7 @@ export const register: Register = on => {
       $.ui.log(`issue-board: couldn't add the board to the prompt: ${messageOf(cause)}`, { to: 'debug' })
     }
     return next(added.length > 0 ? { ...e, context: [...(e.context ?? []), ...added] } : e)
-  })
+  }).catch(($, e, next) => fallBack($, e, next, 'prompt.submit'))
 
   on('turn.complete', async ($, e, next) => {
     const ended = await next(e)
@@ -1581,14 +1600,14 @@ export const register: Register = on => {
       $.ui.toast(`Started a background agent on #${number}, but the board couldn't follow it: ${messageOf(cause)}`)
     }
     return started
-  })
+  }).catch(($, e, next) => fallBack($, e, next, 'agent.spawn'))
 
   // A GitHub event for a subscribed pull request reaches Claude as it would, and the board reads GitHub at once.
   on('session.receive', async ($, e, next) => {
     const received = await next(e)
     if (e.event?.source === 'github' && e.agentId === undefined) void eventArrived($, e.event.data)
     return received
-  })
+  }).catch(($, e, next) => fallBack($, e, next, 'session.receive'))
 
   // The engine's guess at the next prompt gives way to the board's next step for the issue Claude is on.
   on('prompt.suggest', async ($, e, next) => (e.origin.kind === 'suggestion' && nextStep ? next({ ...e, text: nextStep }) : next(e)))
@@ -1622,7 +1641,7 @@ export const register: Register = on => {
     const label =
       project && (chosen === 'active' || chosen === 'future') ? (chosen === 'active' ? 'now: P0 and P1' : 'later: P2') : chosen === 'inbox' ? 'inbox: Status Inbox or none' : chosen
     return { result: boardText(now, kept, label, Date.now()) }
-  })
+  }).catch(($, _e, next) => toolFailed($, next, 'issues'))
 
   on('tool.call', { tool: TICK_TOOL }, async ($, e) => {
     const input = e as unknown as { number?: unknown; boxes?: unknown; done?: unknown }
@@ -1641,7 +1660,7 @@ export const register: Register = on => {
       const problems = ACCESS_ERROR.test(message) ? await checkAccess($, message) : []
       return { deny: `Couldn't tick boxes on #${number}: ${message}${problems.length > 0 ? `\n${problemsText(problems)}` : ''}` }
     }
-  })
+  }).catch(($, _e, next) => toolFailed($, next, 'tick'))
 
   on('tool.call', { tool: UPDATE_TOOL }, async ($, e) => {
     const changes = changesOf(e)
@@ -1661,7 +1680,7 @@ export const register: Register = on => {
       const problems = ACCESS_ERROR.test(message) ? await checkAccess($, message) : []
       return { deny: `Couldn't change #${number}: ${message}${problems.length > 0 ? `\n${problemsText(problems)}` : ''}` }
     }
-  })
+  }).catch(($, _e, next) => toolFailed($, next, 'issue_update'))
 
   // Moving the Status of the issue the person started is part of working on it, so it doesn't ask. Any other change
   // asks, as a tool that changes something does; a rule that allows or denies still stands, and so does an
@@ -1672,14 +1691,14 @@ export const register: Register = on => {
     const changes = changesOf(e.input)
     const doing = await read($, working)
     return changes && doing && changes.number === doing.number && statusOnly(changes) ? { decision: 'allow' as const } : verdict
-  })
+  }).catch(($, e, next) => fallBack($, e, next, 'tool.check on issue_update'))
 
   // Reading the board changes nothing, so it needs no permission prompt; a rule that denies it still stands, and so
   // does an organization's ceiling that keeps the tool at asking.
   on('tool.check', { tool: ISSUES_TOOL }, async ($, e, next) => {
     const verdict = await next(e)
     return verdict.decision === 'ask' && mayAllow(e.ceiling) ? { decision: 'allow' as const } : verdict
-  })
+  }).catch(($, e, next) => fallBack($, e, next, 'tool.check on issues'))
 
   // Closing an epic whose sub-issues are still open asks the person first, whatever their rules allow: the sub-issues
   // would stay open under a closed parent. A rule that denies the command still stands.
@@ -1695,7 +1714,7 @@ export const register: Register = on => {
     })
     if (epics.length === 0) return verdict
     return { decision: 'ask' as const, reason: `${epics.join('; ')}. Closing it leaves them open under a closed epic.` }
-  })
+  }).catch(($, e, next) => fallBack($, e, next, 'tool.check on Bash'))
 
   // While Claude works on an issue the person started in this session, the system prompt names it, so compaction
   // doesn't lose it. The section changes only when the person starts another, to keep the prompt cache.
