@@ -1,10 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { Caught, EngineInterface, HookFailure, ModelForkResult, Register, ThemeKey, Timer, UiCopyArgs } from 'claude-code'
 
-import type { Alert, Board, BoxTask, Check, Comment, Draft, DraftEdit, Filter, GroupBy, Issue, Known, Launch, Problem, Project, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
+import type { Alert, Board, BoxTask, Check, Comment, Draft, DraftEdit, Filter, GroupBy, Issue, Known, Launch, Problem, Project, ProjectField, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
 import type { Ended, IssueChanges, NewIssue } from './parse'
 import { authOf, problemsOf, problemsText, repoOf } from './access'
-import { ADD_ITEM, SET_FIELD, issuesQuery, optionOf, startedOf } from './project'
+import { ADD_ITEM, CLEAR_VALUE, ITEM_VALUES, SET_FIELD, SET_VALUE, issuesQuery, optionOf, startedOf } from './project'
 import {
   CREATE_FIELD,
   CREATE_PROJECT,
@@ -132,6 +132,8 @@ import {
   milestonesOf,
   itemsAt,
   projectPathOf,
+  fieldValueOf,
+  itemValuesOf,
 } from './parse'
 
 const PANE = 'issue-board'
@@ -190,6 +192,12 @@ const changesOf = (input: unknown): (IssueChanges & { number: number }) | null =
       })
     : []
   if (rewords.length > 0) changes.rewordBoxes = rewords
+  if (raw.fields && typeof raw.fields === 'object' && !Array.isArray(raw.fields)) {
+    const given = Object.entries(raw.fields as Record<string, unknown>).flatMap(([name, value]) =>
+      name.trim() && (value === null || typeof value === 'string' || typeof value === 'number') ? [[name.trim(), value as string | number | null]] : [],
+    )
+    if (given.length > 0) changes.fields = Object.fromEntries(given)
+  }
   if (typeof raw.duplicateOf === 'number' && Number.isInteger(raw.duplicateOf) && raw.duplicateOf > 0 && raw.duplicateOf !== raw.number) changes.duplicateOf = raw.duplicateOf
   const blocking = numbersOf(raw.addBlockedBy)
   const unblocking = numbersOf(raw.removeBlockedBy)
@@ -220,6 +228,8 @@ const palette = atom({ plugin: 'issue-board', key: 'palette' } as const, null)
 const closing = atom({ plugin: 'issue-board', key: 'closing' } as const, null)
 const typing = atom({ plugin: 'issue-board', key: 'typing' } as const, { comment: '', parent: '', title: '', box: '', label: '', duplicate: '' })
 const recent = atom({ plugin: 'issue-board', key: 'recent' } as const, null)
+const values = atom({ plugin: 'issue-board', key: 'values' } as const, {})
+const typedFields = atom({ plugin: 'issue-board', key: 'typedFields' } as const, {})
 const talk = atom({ plugin: 'issue-board', key: 'talk' } as const, null)
 const openPr = atom({ plugin: 'issue-board', key: 'openPr' } as const, null)
 const access = atom({ plugin: 'issue-board', key: 'access' } as const, null)
@@ -918,20 +928,61 @@ const dismissProblem = async ($: EngineInterface, problem: Problem): Promise<voi
 const OPEN = { id: PANE, title: 'Issues', focus: true, closeOnEscape: true } as const
 
 // Sets Status or Priority on an issue in the repo's project, adding the issue to the project first when it isn't in it.
+// An issue's item in the project, added to the project first when it has none.
+const itemFor = async ($: EngineInterface, issue: Issue, project: Project): Promise<string> => {
+  if (issue.item) return issue.item
+  if (!issue.id) throw new Error(`#${issue.number} hasn't been read with its project yet; refresh and try again`)
+  const added = JSON.parse(await gh($, ['api', 'graphql', '-f', `query=${ADD_ITEM}`, '-f', `project=${project.id}`, '-f', `content=${issue.id}`])) as {
+    data?: { addProjectV2ItemById?: { item?: { id?: string } | null } | null }
+  }
+  const item = added.data?.addProjectV2ItemById?.item?.id
+  if (!item) throw new Error(`couldn't add #${issue.number} to ${project.title}`)
+  await update($, board, was => was && { ...was, issues: was.issues.map(one => (one.number === issue.number ? { ...one, item } : one)) })
+  return item
+}
+
+// An issue's values for the project's fields, by name, read from GitHub: one item at a time, when its card opens or a
+// tool asks, so the board's main read stays cheap.
+const readValues = async ($: EngineInterface, issue: Issue): Promise<Record<string, string>> => {
+  if (!issue.item) return {}
+  try {
+    const read$ = itemValuesOf(await graphql($, ITEM_VALUES, { item: issue.item }))
+    await update($, values, was => ({ ...was, [issue.number]: read$ }))
+    return read$
+  } catch (cause) {
+    $.ui.log(`issue-board: couldn't read #${issue.number}'s fields: ${messageOf(cause)}`, { to: 'debug' })
+    return {}
+  }
+}
+
+// Sets the project's other fields on an issue, by name, each value checked against the field's kind first; null clears
+// one. Status and Priority have their own options.
+const setFields = async ($: EngineInterface, issue: Issue, given: Record<string, string | number | null>): Promise<void> => {
+  const project = (await read($, board))?.project
+  if (!project) throw new Error("the board reads no project for this repo, so it can't set its fields")
+  const plan = Object.entries(given).map(([name, value]) => {
+    if (/^(status|priority)$/i.test(name)) throw new Error(`set ${name} with ${name.toLowerCase()}, not fields`)
+    const field = project.fields?.find(one => one.name.toLowerCase() === name.toLowerCase())
+    if (!field) throw new Error(`${project.title} has no field called ${name}${project.fields?.length ? `; it has ${project.fields.map(one => one.name).join(', ')}` : ''}`)
+    if (value === null) return { field, value: null }
+    const fits = fieldValueOf(field, value)
+    if (typeof fits === 'string') throw new Error(fits)
+    return { field, value: fits.value }
+  })
+  const item = await itemFor($, issue, project)
+  for (const one of plan) {
+    if (one.value === null) await graphql($, CLEAR_VALUE, { project: project.id, item, field: one.field.id })
+    else await graphql($, SET_VALUE, { project: project.id, item, field: one.field.id, value: one.value })
+  }
+  await readValues($, { ...issue, item })
+}
+
 const setField = async ($: EngineInterface, issue: Issue, field: 'status' | 'priority', name: string): Promise<void> => {
   const project = (await read($, board))?.project
   const target = field === 'status' ? project?.status : project?.priority
   const option = optionOf(target, name)
   if (!project || !target || !option) throw new Error(`the project has no ${field === 'status' ? 'Status' : 'Priority'} called ${name}`)
-  let item = issue.item ?? null
-  if (!item) {
-    if (!issue.id) throw new Error(`#${issue.number} hasn't been read with its project yet; refresh and try again`)
-    const added = JSON.parse(await gh($, ['api', 'graphql', '-f', `query=${ADD_ITEM}`, '-f', `project=${project.id}`, '-f', `content=${issue.id}`])) as {
-      data?: { addProjectV2ItemById?: { item?: { id?: string } | null } | null }
-    }
-    item = added.data?.addProjectV2ItemById?.item?.id ?? null
-    if (!item) throw new Error(`couldn't add #${issue.number} to ${project.title}`)
-  }
+  const item = await itemFor($, issue, project)
   await gh($, ['api', 'graphql', '-f', `query=${SET_FIELD}`, '-f', `project=${project.id}`, '-f', `item=${item}`, '-f', `field=${target.id}`, '-f', `option=${option.id}`])
   const placed = item
   await update($, board, now => now && { ...now, issues: now.issues.map(one => (one.number === issue.number ? { ...one, item: placed, [field]: option.name } : one)) })
@@ -1814,6 +1865,10 @@ const applyChanges = async ($: EngineInterface, number: number, changes: IssueCh
     if (!issue) throw new Error(`#${number} isn't open on the board, so its ${field === 'status' ? 'Status' : 'Priority'} can't be set`)
     await setField($, issue, field, value)
   }
+  if (changes.fields && Object.keys(changes.fields).length > 0) {
+    if (!issue) throw new Error(`#${number} isn't open on the board, so its fields can't be set`)
+    await setFields($, issue, changes.fields)
+  }
   const repo = (await read($, board))?.repo
   if (repo && (changes.title || changes.body !== undefined || changes.addBoxes?.length || changes.rewordBoxes?.length)) await rewrite($, repo, number, changes)
   const made = repo && changes.addLabels?.length ? await ensureLabels($, repo, changes.addLabels) : []
@@ -2026,6 +2081,12 @@ export const register: Register = on => {
           comment: { type: 'string', description: 'A comment to add, in Markdown.' },
           close: { type: 'string', enum: ['completed', 'not planned'], description: 'Close it, saying why.' },
           duplicateOf: { type: 'integer', minimum: 1, description: 'Close it as a duplicate of this issue, by number; GitHub links the two.' },
+          fields: {
+            type: 'object',
+            additionalProperties: { type: ['string', 'number', 'null'] },
+            description:
+              "The project's other fields to set, by name, such as {\"Estimate\": 3, \"Sprint\": \"Iteration 2\", \"Due\": \"2026-10-20\"}: a number, a date (YYYY-MM-DD), text, an iteration's title or an option's name; null clears one.",
+          },
           reopen: { type: 'boolean', description: 'true reopens a closed issue.' },
           title: { type: 'string', description: 'A new title.' },
           body: {
@@ -2381,7 +2442,11 @@ export const register: Register = on => {
 
     if (typeof input.number === 'number') {
       const issue = now.issues.find(one => one.number === input.number)
-      if (issue) return { result: `${issueText(issue)}\n${await latestComments($, now.repo, issue.number, issue.comments)}` }
+      if (issue) {
+        const set = Object.entries(await readValues($, issue)).filter(([name]) => !/^(status|priority)$/i.test(name))
+        const fields = set.length > 0 ? `\nFields: ${set.map(([name, value]) => `${name} ${value}`).join(', ')}` : ''
+        return { result: `${issueText(issue)}${fields}\n${await latestComments($, now.repo, issue.number, issue.comments)}` }
+      }
       const pr = now.prs.find(one => one.number === input.number)
       if (pr) return { result: `${prText(pr)}\nRead it in full with \`gh pr view ${pr.number}\`.` }
       return { result: await readClosed($, now.repo, input.number) }
@@ -2637,6 +2702,8 @@ export const register: Register = on => {
       await update($, editing, () => null)
       if (opening) await $.ui.scroll({ to: { key: `card-${number}` }, in: PANE }).catch(() => undefined)
       if (opening) await loadComments($, number)
+      const issue = opening ? now?.issues.find(one => one.number === number) : undefined
+      if (issue && (project?.fields ?? []).some(field => !/^(status|priority)$/i.test(field.name))) await readValues($, issue)
     }
     const togglePr = (number: number) => () => void update($, openPr, was => (was === number ? null : number))
 
@@ -2868,6 +2935,10 @@ export const register: Register = on => {
     const kept = (issue: Issue) => matches(chosen, issue, who, project) && searched(typed, issue)
     const shown = now.issues.filter(issue => open.includes(issue.number) || kept(issue))
     const closedNow = chosen === 'closed' ? await read($, recent) : null
+    // The project's fields beyond Status and Priority, and what the open card's issue has in them.
+    const otherFields = (project?.fields ?? []).filter(field => !/^(status|priority)$/i.test(field.name))
+    const fieldValues = await read($, values)
+    const typedField = await read($, typedFields)
     // One card open: its letter keys work.
     const single = open.filter(number => shown.some(issue => issue.number === number)).length === 1
     const named = FILTERS.find(one => one.id === chosen)
@@ -3581,6 +3652,45 @@ export const register: Register = on => {
               )
             })}
           </Box>
+          {otherFields.map(field => {
+            const now$ = fieldValues[n]?.[field.name]
+            const key = `${n}-${field.id}`
+            return (
+              <Box key={`field-row-${key}`} flexDirection="row" gap={1} flexWrap="wrap">
+                {row(fit(field.name, 9))}
+                {field.kind === 'select' || field.kind === 'iteration'
+                  ? (field.options ?? []).map(option => (
+                      <Button
+                        key={`field-${key}-${option.id}`}
+                        variant={option.name === now$ ? 'primary' : undefined}
+                        dimColor={option.name !== now$}
+                        onPress={() => void change($, n, { fields: { [field.name]: option.name === now$ ? null : option.name } })}
+                      >
+                        {option.name}
+                      </Button>
+                    ))
+                  : Input && (
+                      <Input
+                        key={`field-${key}`}
+                        label=""
+                        placeholder={now$ ?? (field.kind === 'date' ? 'YYYY-MM-DD' : field.kind === 'number' ? 'a number' : 'text')}
+                        value={typedField[key] ?? ''}
+                        submitLabel="set"
+                        onInput={text => void update($, typedFields, was => ({ ...was, [key]: text }))}
+                        onSubmit={text => {
+                          if (!text.trim()) return
+                          void update($, typedFields, was => ({ ...was, [key]: '' })).then(() => change($, n, { fields: { [field.name]: text.trim() } }))
+                        }}
+                      />
+                    )}
+                {now$ !== undefined && (
+                  <Button key={`field-clear-${key}`} dimColor onPress={() => void change($, n, { fields: { [field.name]: null } })}>
+                    clear
+                  </Button>
+                )}
+              </Box>
+            )
+          })}
           <Box flexDirection="row" gap={1} flexWrap="wrap">
             {row('Close')}
             <Button key={`close-completed-${n}`} dimColor onPress={() => void closeAs('completed')()}>
@@ -3746,6 +3856,15 @@ export const register: Register = on => {
               </Text>
             </Box>
           )}
+          {(() => {
+            const set = Object.entries(fieldValues[issue.number] ?? {}).filter(([name]) => otherFields.some(field => field.name === name))
+            return set.length > 0 ? (
+              <Text wrap="wrap">
+                <Text dimColor>Fields </Text>
+                {set.map(([name, value]) => `${name} ${value}`).join(' · ')}
+              </Text>
+            ) : null
+          })()}
           {conversation(issue)}
           {worker && (
             <Box flexDirection="column" marginTop={1}>

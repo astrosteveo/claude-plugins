@@ -34,8 +34,14 @@ export const PROJECT = {
   closed: false,
   fields: {
     nodes: [
-      { id: 'F_status', name: 'Status', options: STATUSES.map(option('S')) },
-      { id: 'F_priority', name: 'Priority', options: PRIORITIES.map(option('P')) },
+      { id: 'F_status', name: 'Status', dataType: 'SINGLE_SELECT', options: STATUSES.map(option('S')) },
+      { id: 'F_priority', name: 'Priority', dataType: 'SINGLE_SELECT', options: PRIORITIES.map(option('P')) },
+      // The fields beyond Status and Priority, one of each kind the board sets, and one it leaves to the issue.
+      { id: 'F_estimate', name: 'Estimate', dataType: 'NUMBER' },
+      { id: 'F_sprint', name: 'Sprint', dataType: 'ITERATION', configuration: { iterations: [{ id: 'IT1', title: 'Iteration 1' }, { id: 'IT2', title: 'Iteration 2' }] } },
+      { id: 'F_due', name: 'Due', dataType: 'DATE' },
+      { id: 'F_notes', name: 'Notes', dataType: 'TEXT' },
+      { id: 'F_labels', name: 'Labels', dataType: 'LABELS' },
       {},
     ],
   },

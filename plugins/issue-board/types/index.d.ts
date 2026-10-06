@@ -33,8 +33,13 @@ export type Issue = {
 // A single-select field of a project, such as Status, with its options in the project's order.
 export type Field = { id: string; options: { id: string; name: string }[] }
 
-// The GitHub Project linked to the repository, as far as the board uses it.
-export type Project = { id: string; number: number; title: string; url: string; status: Field | null; priority: Field | null }
+// A field of the project beyond Status and Priority, by its kind. `options` are a single-select field's options, or an
+// iteration field's iterations, by title.
+export type ProjectField = { id: string; name: string; kind: 'text' | 'number' | 'date' | 'iteration' | 'select'; options?: { id: string; name: string }[] }
+
+// The GitHub Project linked to the repository, as far as the board uses it. `fields`: every field the board can read and
+// set, Status and Priority among them; absent on an older board.
+export type Project = { id: string; number: number; title: string; url: string; status: Field | null; priority: Field | null; fields?: ProjectField[] }
 
 export type Ci = 'pass' | 'fail' | 'pending' | 'none'
 
@@ -283,6 +288,8 @@ declare module 'claude-code' {
       // The Starts pressed that aren't under way yet: their buttons say so, and don't start the work again.
       launching: Launch[]
       recent: { items: Found[]; at: number; failed?: string } | null
+      values: Record<number, Record<string, string>>
+      typedFields: Record<string, string>
     }
   }
 }

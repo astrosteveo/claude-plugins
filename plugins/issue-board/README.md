@@ -141,6 +141,10 @@ CLI, signed in, in the folder the session started in.
       out of its epic.
     - **Milestone**: the repo's open milestones; press one to put the issue
       on it, or the highlighted one to take it off.
+    - **The project's other fields**, such as an estimate, a sprint or a
+      due date: an iteration or option is a button; a number, date or text
+      is a field to type in. **clear** takes a value off. The card itself
+      lists the ones that have a value.
     - **Close**: as completed or as not planned, or type a number in **as
       duplicate of #** to close it as a duplicate of that issue, which
       GitHub then links. Closing an epic with open
@@ -347,7 +351,9 @@ stays quiet there.
     made first, by either tool, and Claude is told so. It also changes the title and the
     body, adds boxes and rewords them by number. Boxes go into the body as
     GitHub has it, so nothing else is lost. A whole new body is refused if
-    the body changed on GitHub since the board read it.
+    the body changed on GitHub since the board read it. It sets the
+    project's other fields by name, each value checked against its field,
+    and `null` clears one.
   - `issue_create` files a new issue: its title and body, labels,
     assignees, milestone, the epic it goes under, and its Status and
     Priority in the project. Without a Status it goes to the Inbox. For an
