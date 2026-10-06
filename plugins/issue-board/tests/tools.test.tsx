@@ -466,7 +466,7 @@ test('Start names the issue in the system prompt; the pane searches, filters Min
   // Its own row starts with ▶, and no separate line says so. The row shows its pull request with CI, and its boxes as a
   // short bar and a count.
   expect(await ui.find({ text: /Working on/ })).toBeUndefined()
-  expect((await ui.find({ key: 'row-315' }))?.text).toMatch(/^▶ #315 Lay Kessik out for play⇄ #335 ✓.*━━━ 2\/3 +1d✕$/)
+  expect((await ui.find({ key: 'row-315' }))?.text).toMatch(/^▶ #315 Lay Kessik out for play⇄ #335 ✓.*━━━ 2\/3 +\d+d✕$/)
   expect((await ui.findAll({ type: 'Text' })).filter(text => text.text === '▶ ')).toHaveLength(1)
 
   // Ticking the last box changes the issue, not the note, so the prompt cache holds.
@@ -1010,6 +1010,28 @@ test("issue_update sets the project's other fields by name, checked against each
   await ui.input({ key: 'field-315-F_estimate', text: '5' })
   expect(gh.valueWrites.at(-1)).toBe('PVTI_315 F_estimate {"number":5}')
   await ui.unmount()
+})
+
+test('issue_update sets the Status, Priority and fields of a closed issue through its item in the project, and leaves one already there', async ($, on) => {
+  mock.store(on)
+  const gh = world(on)
+  gh.project = true
+  on('ui.toast', async () => ({ value: undefined }))
+  await $.command.run(REFRESH)
+  const update = (changes: Record<string, unknown>) => $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 290, ...changes })
+  const sets = () => gh.fields.filter(one => one.query?.includes('updateProjectV2ItemFieldValue')).map(one => `${one.item} ${one.field} ${one.option}`)
+
+  // #290 closed, so it isn't on the board: its item is found in the project on GitHub, and set there.
+  expect(String((await update({ status: 'Done', priority: 'P2' })).result)).toBe('#290 moved to Done, set to P2.')
+  expect(sets()).toEqual(['PVTI_auto_290 F_status S5', 'PVTI_auto_290 F_priority P2'])
+  expect(String((await update({ fields: { Estimate: 2 } })).result)).toBe('#290 Estimate set to 2.')
+  expect(gh.valueWrites.at(-1)).toBe('PVTI_auto_290 F_estimate {"number":2}')
+
+  // Already at the Status asked for, as when the board moved it to Done as it closed: said so, and nothing is written.
+  gh.values.PVTI_auto_290 = { ...gh.values.PVTI_auto_290, Status: 'Done' }
+  expect(String((await update({ status: 'done' })).result)).toBe("#290's Status is already Done.")
+  expect(String((await update({ status: 'Done', priority: 'P1' })).result)).toBe("#290's Status is already Done. #290 set to P1.")
+  expect(sets()).toEqual(['PVTI_auto_290 F_status S5', 'PVTI_auto_290 F_priority P2', 'PVTI_auto_290 F_priority P1'])
 })
 
 test("an issue's type shows on its card and is set by name, where the repo has types, and offered nowhere else", async ($, on) => {

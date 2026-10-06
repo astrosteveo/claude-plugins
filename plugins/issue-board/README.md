@@ -205,7 +205,9 @@ The board gives Claude seven tools:
   siblings (`moveBefore`, `moveAfter`), milestone, type, the project's
   fields (`fields`), blocked-by links, pin, lock, transfer to another of the
   owner's repos, a comment, and closing, as a duplicate too. `start` marks
-  that Claude started on it here, as Start does.
+  that Claude started on it here, as Start does. It sets the Status,
+  Priority and fields of a closed issue too, such as one a merge just
+  closed, and says when one is already at the Status asked for.
 - `issue_create` files an issue, or an epic with its sub-issues, with
   labels, assignees, milestone, epic, type, blocked-by links, Status and
   Priority. A label the repo hasn't got is made first.

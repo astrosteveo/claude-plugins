@@ -161,6 +161,9 @@ const github = (on: On, prs: unknown[] = [], extra: Raw[] = []) => {
       return answer('{}')
     }
     if (argv[1] === 'api' && argv[2]?.startsWith('repos/')) return answer(JSON.stringify([{ title: 'Launch' }]))
+    if (argv[1] === 'issue' && argv[2] === 'view' && argv[3] !== '43') {
+      return { value: { exitCode: 1, stdout: '', stderr: `GraphQL: Could not resolve to an issue or pull request with the number of ${argv[3]}. (repository.issue)`, isStdoutTruncated: false, isStderrTruncated: false } }
+    }
     if (argv[1] === 'issue' && argv[2] === 'view') return answer(JSON.stringify({ number: 43, title: 'Edit issues from the board', labels: [], body: '- [ ] Edit', updatedAt: '2026-10-05T00:00:00Z' }))
     if (argv[1] === 'api' && argv[2] === 'graphql' && state.refuseFields && argv.some(arg => arg.includes('updateProjectV2ItemFieldValue')))
       return { value: { exitCode: 1, stdout: '', stderr: 'gh: Resource not accessible by integration', isStdoutTruncated: false, isStderrTruncated: false } }
@@ -193,9 +196,9 @@ test("Claude's issue_update tool makes the changes in order and the board reads 
   expect(writes(gh.calls)[2]?.stdin).toBe('Built; checking it live.')
   expect(gh.reads).toBeGreaterThan(before)
 
-  // An issue the board doesn't hold can't have its Status set, and says why.
+  // An issue the board doesn't hold is looked up on GitHub; one GitHub hasn't got says so, in GitHub's words.
   const missing = await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 99, status: 'Done' })
-  expect(missing.deny).toMatch(/^Couldn't change #99: #99 isn't open on the board/)
+  expect(missing.deny).toMatch(/^Couldn't change #99: GraphQL: Could not resolve to an issue or pull request with the number of 99/)
   const empty = await $.tool.call({ tool: 'mcp__issue-board__issue_update', status: 'Done' })
   expect(empty.deny).toBe('Give the issue number, and what to change on it.')
 })
