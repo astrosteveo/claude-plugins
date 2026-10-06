@@ -27,7 +27,7 @@ test('a change becomes gh commands in order: the edit, then the comment, then th
 const EPIC = { number: 35, title: 'Make the issue board a full issue tracker', total: 12, completed: 6 }
 
 // GitHub for claude-plugins with its project: every gh command asked for, its stdin, and how often the issues were read.
-const github = (on: On) => {
+const github = (on: On, prs: unknown[] = []) => {
   const state = { calls: [] as { argv: string[]; stdin?: string }[], reads: 0 }
   on('process.run', async (_$, e) => {
     const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
@@ -46,6 +46,7 @@ const github = (on: On) => {
         ),
       )
     }
+    if (argv[1] === 'pr' && argv[2] === 'list' && !argv.includes('merged')) return answer(JSON.stringify(prs))
     state.calls.push({ argv: argv.slice(1), ...(e.init?.stdin !== undefined ? { stdin: e.init.stdin } : {}) })
     if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/claude-plugins', hasIssuesEnabled: true }))
     if (argv[1] === 'label' && argv[2] === 'list') return answer(JSON.stringify([{ name: 'bug' }, { name: 'enhancement' }, { name: 'area:issue-board' }]))
@@ -85,6 +86,57 @@ test("Claude's issue_update tool makes the changes in order and the board reads 
   expect(missing.deny).toMatch(/^Couldn't change #99: #99 isn't open on the board/)
   const empty = await $.tool.call({ tool: 'mcp__issue-board__issue_update', status: 'Done' })
   expect(empty.deny).toBe('Give the issue number, and what to change on it.')
+})
+
+test('Claude starting on an issue in the conversation marks it as Start does, and a pull request starts the issue it is for', async ($, on) => {
+  mock.store(on)
+  const pr = {
+    number: 50,
+    title: 'Let the board edit issues',
+    url: 'https://github.com/astrosteveo/claude-plugins/pull/50',
+    headRefName: 'feat/edit',
+    isDraft: false,
+    body: 'Refs #43',
+    statusCheckRollup: [],
+    reviewDecision: null,
+    additions: 1,
+    deletions: 1,
+    author: { login: 'astrosteveo' },
+    updatedAt: '2026-10-05T00:00:00Z',
+  }
+  const gh = github(on, [pr])
+  // Beneath the board, Claude Code asks before a tool that changes something.
+  on('tool.check', async () => ({ decision: 'ask' as const }))
+  on('ui.toast', async () => ({ value: undefined }))
+  await $.command.run({ ...RUN, args: 'refresh' })
+
+  // Starting, alone, needs no permission, as pressing Start doesn't; with another change it asks as before.
+  const check = (input: Record<string, unknown>) => $.tool.check({ tool: 'mcp__issue-board__issue_update', input })
+  expect((await check({ number: 43, start: true })).decision).toBe('allow')
+  expect((await check({ number: 43, start: true, comment: 'On it.' })).decision).toBe('ask')
+
+  const started = await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, start: true })
+  expect(String(started.result)).toBe('Started #43: it is the issue this session is on, In progress and assigned.')
+  expect(writes(gh.calls).map(call => (call.argv[0] === 'api' ? `project ${call.argv.find(arg => arg.startsWith('option='))}` : call.argv.join(' ')))).toEqual([
+    `project option=${optionId('In progress')}`,
+    'issue edit 43 --add-assignee @me',
+  ])
+
+  // The row has the ▶ of the issue this session is on, and the card says Started, with no Start in background.
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'filter-all' })
+  await ui.press({ key: 'issue-43' })
+  expect(await ui.find({ text: /^▶ $/ })).toBeDefined()
+  expect(await ui.find({ text: /^▶ Started$/ })).toBeDefined()
+  expect(await ui.find({ key: 'start-43' })).toBeUndefined()
+  expect(await ui.find({ key: 'background-43' })).toBeUndefined()
+  await ui.unmount()
+
+  // A pull request's number starts the issue it is for; one that names no open issue says so.
+  const viaPr = await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 50, start: true })
+  expect(String(viaPr.result)).toBe('Started #43, the issue pull request #50 is for: it is the issue this session is on, In progress and assigned.')
+  const missing = await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 77, start: true })
+  expect(missing.deny).toMatch(/^Couldn't change #77: #77 isn't open on the board/)
 })
 
 test("moving the Status of the issue Claude is on doesn't ask; any other change does", async ($, on) => {

@@ -304,6 +304,14 @@ stays quiet there.
     asks, unless you allow it.
   - If your organization requires Claude Code to ask before `issues` or
     `issue_update` runs, the board doesn't skip that prompt.
+  - When you ask Claude in the conversation to work on an issue, Claude
+    calls `issue_update` with `start`, without asking. The board then treats
+    it as if you had pressed Start: `▶` on its row, In progress, assigned to
+    you, and `▶ Started` on its card with no Start in background. Giving a
+    pull request's number starts the issue it is for.
+  - When Claude dispatches the board's agent from the conversation, the
+    issue moves to In progress and is assigned to you, as with Start in
+    background, and its row follows the agent.
 - After you press Start, a short note in the system prompt names the issue.
   It tells Claude to tick boxes as it finishes them. In the pull request,
   Claude writes `Closes #<number>` only if every box is ticked by then, and
