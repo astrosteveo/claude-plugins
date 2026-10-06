@@ -1013,6 +1013,16 @@ export const leftForDone = (before: Board | null, next: Board): { number: number
   return before.issues.flatMap(one => (one.item && !still.has(one.number) && one.status?.toLowerCase() !== 'done' ? [{ number: one.number, item: one.item }] : []))
 }
 
+// The labels asked for that the repo hasn't got, by name, ignoring case, each once.
+export const missingLabels = (wanted: string[], existing: { name: string }[]): string[] => {
+  const have = new Set(existing.map(one => one.name.toLowerCase()))
+  return [...new Map(wanted.filter(name => !have.has(name.toLowerCase())).map(name => [name.toLowerCase(), name])).values()]
+}
+
+// The color a new label gets: an `area:` label takes the color the repo's other areas have, so they read as one set.
+export const labelColorFor = (name: string, existing: { name: string; color?: string }[]): string =>
+  (name.startsWith('area:') ? existing.find(one => one.name.startsWith('area:') && one.color)?.color : undefined) ?? 'ededed'
+
 // Issue numbers from a tool's input: whole and positive, each once.
 export const numbersOf = (value: unknown): number[] =>
   Array.isArray(value) ? [...new Set(value.filter((one): one is number => typeof one === 'number' && Number.isInteger(one) && one > 0))] : []

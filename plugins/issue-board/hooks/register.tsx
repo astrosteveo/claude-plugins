@@ -125,6 +125,8 @@ import {
   TOOL_COMMENTS,
   commentsText,
   restCommentsOf,
+  labelColorFor,
+  missingLabels,
 } from './parse'
 
 const PANE = 'issue-board'
@@ -209,7 +211,7 @@ const creating = atom({ plugin: 'issue-board', key: 'creating' } as const, false
 const editing = atom({ plugin: 'issue-board', key: 'editing' } as const, null)
 const palette = atom({ plugin: 'issue-board', key: 'palette' } as const, null)
 const closing = atom({ plugin: 'issue-board', key: 'closing' } as const, null)
-const typing = atom({ plugin: 'issue-board', key: 'typing' } as const, { comment: '', parent: '', title: '', box: '' })
+const typing = atom({ plugin: 'issue-board', key: 'typing' } as const, { comment: '', parent: '', title: '', box: '', label: '' })
 const recent = atom({ plugin: 'issue-board', key: 'recent' } as const, null)
 const talk = atom({ plugin: 'issue-board', key: 'talk' } as const, null)
 const openPr = atom({ plugin: 'issue-board', key: 'openPr' } as const, null)
@@ -920,6 +922,26 @@ const claim = async ($: EngineInterface, issue: Issue): Promise<void> => {
   if (failures.some(failure => ACCESS_ERROR.test(failure))) void checkAccess($, failures.join('\n'))
 }
 
+// Makes the labels a change asks for that the repo hasn't got yet, over REST: an `area:` one takes the color the repo's
+// other areas have. Answers the names it made, so the answer says so; the card's label picker offers them from then.
+const ensureLabels = async ($: EngineInterface, repo: string, names: string[]): Promise<string[]> => {
+  let existing: { name: string; color?: string }[]
+  try {
+    existing = JSON.parse(await gh($, ['api', `repos/${repo}/labels?per_page=100`])) as { name: string; color?: string }[]
+  } catch (cause) {
+    // Without the list, nothing is made: the change goes on, and GitHub names a label it hasn't got.
+    $.ui.log(`issue-board: couldn't read the repo's labels: ${messageOf(cause)}`, { to: 'debug' })
+    return []
+  }
+  const made: string[] = []
+  for (const name of missingLabels(names, existing)) {
+    await gh($, ['api', '-X', 'POST', `repos/${repo}/labels`, '-f', `name=${name}`, '-f', `color=${labelColorFor(name, existing)}`])
+    made.push(name)
+  }
+  if (made.length > 0) await update($, palette, was => was && { ...was, labels: [...new Set([...was.labels, ...made])].sort() })
+  return made
+}
+
 // A new title or body, over REST. Boxes added or reworded go into the body as GitHub has it now, so nothing else in it is
 // lost. A whole new body goes in only while GitHub's body is still the one the board read: one changed meanwhile isn't
 // overwritten. The board shows the new title and boxes at once.
@@ -1086,6 +1108,7 @@ const fileOne = async ($: EngineInterface, spec: NewIssue): Promise<{ number: nu
     if (!milestone) throw new Error(`the repo has no open milestone called ${spec.milestone}`)
   }
   const assignees = (spec.assign ?? []).flatMap(login => (login === '@me' ? (me ? [me] : []) : [login]))
+  const made = spec.labels?.length ? await ensureLabels($, repo, spec.labels) : []
   const fields = { title: spec.title, body: spec.body, labels: spec.labels ?? [], assignees, ...(milestone ? { milestone: milestone.number } : {}) }
   const raw = JSON.parse(await gh($, ['api', '-X', 'POST', `repos/${repo}/issues`, '--input', '-'], JSON.stringify(fields))) as {
     number: number
@@ -1101,6 +1124,7 @@ const fileOne = async ($: EngineInterface, spec: NewIssue): Promise<{ number: nu
   if (raw.labels.length > 0) did.push(`labelled ${raw.labels.map(label => label.name).join(', ')}`)
   if (raw.assignees.length > 0) did.push(`assigned ${raw.assignees.map(user => user.login).join(', ')}`)
   if (milestone) did.push(`on ${milestone.title}`)
+  if (made.length > 0) did.push(`with the new ${made.length === 1 ? 'label' : 'labels'} ${made.join(', ')}`)
 
   let parent: Issue['parent'] = null
   if (spec.parent) {
@@ -1679,11 +1703,12 @@ const applyChanges = async ($: EngineInterface, number: number, changes: IssueCh
   }
   const repo = (await read($, board))?.repo
   if (repo && (changes.title || changes.body !== undefined || changes.addBoxes?.length || changes.rewordBoxes?.length)) await rewrite($, repo, number, changes)
+  const made = repo && changes.addLabels?.length ? await ensureLabels($, repo, changes.addLabels) : []
   for (const command of commandsOf(number, changes)) await gh($, command.argv, command.stdin)
   if (repo && changes.addBlockedBy?.length) await block($, repo, number, changes.addBlockedBy, true)
   if (repo && changes.removeBlockedBy?.length) await block($, repo, number, changes.removeBlockedBy, false)
   await refreshAfter($)
-  return changesText(number, changes)
+  return `${changesText(number, changes)}${made.length > 0 ? ` Created the ${made.length === 1 ? 'label' : 'labels'} ${made.join(', ')}, new to the repo.` : ''}`
 }
 
 // A change made on a card: said in a toast, and an error that may be a missing permission checked.
@@ -1872,7 +1897,7 @@ export const register: Register = on => {
           },
           status: { type: 'string', description: "A Status option of the repo's project, such as In progress, Verification or Done." },
           priority: { type: 'string', description: "A Priority option of the repo's project, such as P0, P1 or P2." },
-          addLabels: { type: 'array', items: { type: 'string' }, description: 'Labels to add.' },
+          addLabels: { type: 'array', items: { type: 'string' }, description: "Labels to add. One the repo hasn't got yet is created first, and the answer says so." },
           removeLabels: { type: 'array', items: { type: 'string' }, description: 'Labels to take off.' },
           assign: { type: 'array', items: { type: 'string' }, description: 'GitHub logins to assign; @me for the signed-in user.' },
           unassign: { type: 'array', items: { type: 'string' }, description: 'GitHub logins to unassign; @me for the signed-in user.' },
@@ -1910,7 +1935,7 @@ export const register: Register = on => {
         properties: {
           title: { type: 'string', description: 'The title.' },
           body: { type: 'string', description: 'The body, in Markdown.' },
-          labels: { type: 'array', items: { type: 'string' }, description: 'Labels to put on it.' },
+          labels: { type: 'array', items: { type: 'string' }, description: "Labels to put on it. One the repo hasn't got yet is created first, and the answer says so." },
           assign: { type: 'array', items: { type: 'string' }, description: 'GitHub logins to assign; @me for the signed-in user.' },
           milestone: { type: 'string', description: 'An open milestone to put it on, by title.' },
           parent: { type: 'integer', minimum: 1, description: 'The epic to file it under, as a sub-issue, by number.' },
@@ -3300,6 +3325,21 @@ export const register: Register = on => {
                 </Button>
               )
             })}
+            {Input && (
+              // A label the repo hasn't got yet is made, then put on the issue; Claude Code doesn't ask, as the person typed it.
+              <Input
+                key={`new-label-${n}`}
+                label="+ "
+                placeholder="new label"
+                value={fields.label}
+                submitLabel="add"
+                onInput={text => void update($, typing, was => ({ ...was, label: text }))}
+                onSubmit={text => {
+                  if (!text.trim()) return
+                  void update($, typing, was => ({ ...was, label: '' })).then(() => change($, n, { addLabels: [text.trim()] }))
+                }}
+              />
+            )}
           </Box>
           <Box flexDirection="row" gap={1} flexWrap="wrap">
             {row('Assignee')}
