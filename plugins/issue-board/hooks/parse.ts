@@ -400,8 +400,9 @@ type RawGraphIssue = {
   closedByPullRequestsReferences?: RawNodes<{ number: number }>
   projectItems?: RawNodes<RawItem>
   comments?: { totalCount?: number } | null
+  issueType?: { name: string } | null
 }
-type RawPage = { data?: { repository?: { projectsV2?: RawNodes<RawProject>; issues?: { pageInfo?: { hasNextPage: boolean; endCursor: string | null }; nodes?: (RawGraphIssue | null)[] } } } }
+type RawPage = { data?: { repository?: { issueTypes?: RawNodes<{ name: string }>; projectsV2?: RawNodes<RawProject>; issues?: { pageInfo?: { hasNextPage: boolean; endCursor: string | null }; nodes?: (RawGraphIssue | null)[] } } } }
 
 const nodesOf = <T>(list: RawNodes<T>): T[] => (list?.nodes ?? []).filter((one): one is T => one !== null && one !== undefined)
 
@@ -418,7 +419,7 @@ export const nextPageOf = (json: string): string | null => {
 
 // The issues of every page, and the repo's project, read from the first page: the one `/issues setup` saved when it's
 // still linked and open, else the first open one linked to the repo.
-export const parseGraph = (pages: string[], preferred?: string): { issues: Issue[]; project: Project | null } => {
+export const parseGraph = (pages: string[], preferred?: string): { issues: Issue[]; project: Project | null; types: string[] } => {
   const parsed = pages.map(page => JSON.parse(page) as RawPage)
   const open = nodesOf(parsed[0]?.data?.repository?.projectsV2).filter(one => !one.closed)
   const linked = open.find(one => one.id === preferred) ?? open[0]
@@ -435,6 +436,7 @@ export const parseGraph = (pages: string[], preferred?: string): { issues: Issue
     : null
   const issues = parsed.flatMap(page => (page.data?.repository?.issues?.nodes ?? []).filter((one): one is RawGraphIssue => one !== null))
   return {
+    types: nodesOf(parsed[0]?.data?.repository?.issueTypes).map(one => one.name),
     project,
     issues: issues.map(raw => {
       const item = project ? nodesOf(raw.projectItems).find(one => one.project?.id === project.id) : undefined
@@ -458,6 +460,7 @@ export const parseGraph = (pages: string[], preferred?: string): { issues: Issue
         blockedBy: nodesOf(raw.blockedBy).filter(one => one.state === 'OPEN').map(one => one.number),
         prs: nodesOf(raw.closedByPullRequestsReferences).map(one => one.number),
         ...(typeof raw.comments?.totalCount === 'number' ? { comments: raw.comments.totalCount } : {}),
+        ...(raw.issueType ? { type: raw.issueType.name } : {}),
       }
     }),
   }
@@ -783,6 +786,7 @@ const issueLines = (issue: Issue): string[] => {
     `Assignees: ${issue.assignees.join(', ') || 'none'}`,
     issue.status || issue.priority ? `Status: ${issue.status ?? 'none'}. Priority: ${issue.priority ?? 'none'}.` : '',
     issue.milestone ? `Milestone: ${issue.milestone}` : '',
+    issue.type ? `Type: ${issue.type}` : '',
     issue.parent ? `Sub-issue of #${issue.parent.number}: ${issue.parent.title}` : '',
     (issue.subIssues?.total ?? 0) > 0 ? `Sub-issues: ${issue.subIssues?.completed}/${issue.subIssues?.total} closed` : '',
     (issue.blockedBy ?? []).length > 0 ? `Blocked by: ${issue.blockedBy?.map(number => `#${number}`).join(', ')}` : '',
@@ -976,6 +980,8 @@ export type IssueChanges = {
   rewordBoxes?: { box: number; text: string }[]
   // Close it as a duplicate of this issue, which GitHub then links.
   duplicateOf?: number
+  // Its issue type, by name; null takes it off.
+  type?: string | null
   // The project's other fields to set, by name; null clears one.
   fields?: Record<string, string | number | null>
 }
@@ -1022,6 +1028,7 @@ export const changesText = (number: number, changes: IssueChanges): string => {
     changes.comment?.trim() ? 'commented on' : '',
     changes.close ? `closed as ${changes.close}` : '',
     changes.duplicateOf ? `closed as a duplicate of #${changes.duplicateOf}` : '',
+    changes.type === null ? 'its type taken off' : changes.type ? `typed ${changes.type}` : '',
     ...Object.entries(changes.fields ?? {}).map(([name, value]) => (value === null ? `${name} cleared` : `${name} set to ${value}`)),
     changes.reopen && !changes.close ? 'reopened' : '',
   ].filter(Boolean)
@@ -1149,6 +1156,7 @@ export type NewIssue = {
   parent?: number
   status?: string
   priority?: string
+  type?: string
   // The issues it is blocked by, by number.
   blockedBy?: number[]
   // Sub-issues to file under it, in order: an epic and its parts in one call. They have none of their own.
@@ -1175,6 +1183,8 @@ export const newIssueOf = (input: unknown, nested = false): NewIssue | string =>
   const priority = text(raw.priority)
   if (status) made.status = status
   if (priority) made.priority = priority
+  const type = text(raw.type)
+  if (type) made.type = type
   const blockers = numbersOf(raw.blockedBy)
   if (blockers.length > 0) made.blockedBy = blockers
   if (Array.isArray(raw.subIssues) && raw.subIssues.length > 0) {
@@ -1206,6 +1216,7 @@ export const statusOnly = (changes: IssueChanges): boolean =>
   !changes.addBoxes?.length &&
   !changes.rewordBoxes?.length &&
   !changes.duplicateOf &&
+  changes.type === undefined &&
   Object.keys(changes.fields ?? {}).length === 0
 
 // An issue's or pull request's page on GitHub: the URL gh gave, or one made from the repo for a board saved without it.

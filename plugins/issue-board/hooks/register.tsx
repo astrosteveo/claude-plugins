@@ -198,6 +198,8 @@ const changesOf = (input: unknown): (IssueChanges & { number: number }) | null =
     )
     if (given.length > 0) changes.fields = Object.fromEntries(given)
   }
+  if (raw.type === null) changes.type = null
+  else if (text(raw.type)) changes.type = text(raw.type)
   if (typeof raw.duplicateOf === 'number' && Number.isInteger(raw.duplicateOf) && raw.duplicateOf > 0 && raw.duplicateOf !== raw.number) changes.duplicateOf = raw.duplicateOf
   const blocking = numbersOf(raw.addBlockedBy)
   const unblocking = numbersOf(raw.removeBlockedBy)
@@ -539,7 +541,7 @@ const PAGES = 3
 let projectRefusal: string | undefined
 
 // The open issues over GraphQL, up to 300, with the repo's project when gh may read it.
-const fetchIssues = async ($: EngineInterface, nameWithOwner: string): Promise<{ issues: Issue[]; project: Project | null }> => {
+const fetchIssues = async ($: EngineInterface, nameWithOwner: string): Promise<{ issues: Issue[]; project: Project | null; types: string[] }> => {
   const [owner = '', name = ''] = nameWithOwner.split('/')
   const saved = await savedSetup($)
   const preferred = saved?.project.id
@@ -626,7 +628,7 @@ const readGitHub = async ($: EngineInterface, seen: boolean): Promise<void> => {
     // The weekly counts change a little a day, and reading them takes up to ten GraphQL searches: kept for an hour.
     const kept = before?.repo === repo.nameWithOwner && before.velocityAt !== undefined && (await nowOf($)) - before.velocityAt < VELOCITY_MS ? before : null
     const [graph, prs, threads, closed, merged, login, current, milestones] = await Promise.all([
-      repo.hasIssuesEnabled ? fetchIssues($, repo.nameWithOwner) : Promise.resolve({ issues: [], project: null }),
+      repo.hasIssuesEnabled ? fetchIssues($, repo.nameWithOwner) : Promise.resolve({ issues: [], project: null, types: [] }),
       gh($, [
         'pr',
         'list',
@@ -660,6 +662,7 @@ const readGitHub = async ($: EngineInterface, seen: boolean): Promise<void> => {
           : { closed: weekly(timesOf(closed ?? '[]', 'closedAt'), fetchedAt), merged: weekly(timesOf(merged ?? '[]', 'mergedAt'), fetchedAt) },
       velocityAt: kept?.velocityAt ?? fetchedAt,
       milestones,
+      issueTypes: graph.types,
       fetchedAt,
       project: graph.project,
     }
@@ -1010,6 +1013,23 @@ const claim = async ($: EngineInterface, issue: Issue): Promise<void> => {
   if (failures.some(failure => ACCESS_ERROR.test(failure))) void checkAccess($, failures.join('\n'))
 }
 
+// The repo's issue type a name stands for, ignoring case; or why it can't be one.
+const typeOf = async ($: EngineInterface, name: string): Promise<string> => {
+  const types = (await read($, board))?.issueTypes ?? []
+  if (types.length === 0) throw new Error("the repo has no issue types; they come with an organization's settings")
+  const found = types.find(one => one.toLowerCase() === name.toLowerCase())
+  if (!found) throw new Error(`the repo has no issue type called ${name}; it has ${types.join(', ')}`)
+  return found
+}
+
+// Sets or takes off an issue's type, over REST, and shows it on the board at once.
+const setType = async ($: EngineInterface, repo: string, number: number, name: string | null): Promise<void> => {
+  const type = name === null ? null : await typeOf($, name)
+  await gh($, ['api', '-X', 'PATCH', `repos/${repo}/issues/${number}`, '--input', '-'], JSON.stringify({ type }))
+  await update($, board, was => was && { ...was, issues: was.issues.map(one => (one.number === number ? { ...one, type } : one)) })
+  await save($)
+}
+
 // Closes an issue as a duplicate of another, over REST: a `Duplicate of #N` comment, which GitHub turns into the link
 // between them, then the close with GitHub's duplicate reason, or not planned where GitHub refuses it. The issue leaves
 // the board at once. The other issue must exist.
@@ -1272,8 +1292,9 @@ const fileOne = async ($: EngineInterface, spec: NewIssue): Promise<{ number: nu
     if (!milestone) throw new Error(`the repo has no open milestone called ${spec.milestone}`)
   }
   const assignees = (spec.assign ?? []).flatMap(login => (login === '@me' ? (me ? [me] : []) : [login]))
+  const type = spec.type ? await typeOf($, spec.type) : undefined
   const made = spec.labels?.length ? await ensureLabels($, repo, spec.labels) : []
-  const fields = { title: spec.title, body: spec.body, labels: spec.labels ?? [], assignees, ...(milestone ? { milestone: milestone.number } : {}) }
+  const fields = { title: spec.title, body: spec.body, labels: spec.labels ?? [], assignees, ...(milestone ? { milestone: milestone.number } : {}), ...(type ? { type } : {}) }
   const raw = JSON.parse(await gh($, ['api', '-X', 'POST', `repos/${repo}/issues`, '--input', '-'], JSON.stringify(fields))) as {
     number: number
     id: number
@@ -1288,6 +1309,7 @@ const fileOne = async ($: EngineInterface, spec: NewIssue): Promise<{ number: nu
   if (raw.labels.length > 0) did.push(`labelled ${raw.labels.map(label => label.name).join(', ')}`)
   if (raw.assignees.length > 0) did.push(`assigned ${raw.assignees.map(user => user.login).join(', ')}`)
   if (milestone) did.push(`on ${milestone.title}`)
+  if (type) did.push(`typed ${type}`)
   if (made.length > 0) did.push(`with the new ${made.length === 1 ? 'label' : 'labels'} ${made.join(', ')}`)
 
   let parent: Issue['parent'] = null
@@ -1361,6 +1383,7 @@ const fileOne = async ($: EngineInterface, spec: NewIssue): Promise<{ number: nu
     status: set.status ?? null,
     priority: set.priority ?? null,
     milestone: milestone?.title ?? null,
+    ...(type ? { type } : {}),
     parent,
     blockedBy: did.some(said => said.startsWith('blocked by')) ? (spec.blockedBy ?? []).filter(one => now.issues.some(issue => issue.number === one)) : [],
   }
@@ -1873,6 +1896,7 @@ const applyChanges = async ($: EngineInterface, number: number, changes: IssueCh
   if (repo && (changes.title || changes.body !== undefined || changes.addBoxes?.length || changes.rewordBoxes?.length)) await rewrite($, repo, number, changes)
   const made = repo && changes.addLabels?.length ? await ensureLabels($, repo, changes.addLabels) : []
   for (const command of commandsOf(number, changes)) await gh($, command.argv, command.stdin)
+  if (repo && changes.type !== undefined) await setType($, repo, number, changes.type)
   if (repo && changes.duplicateOf) await closeAsDuplicate($, repo, number, changes.duplicateOf)
   if (repo && changes.addBlockedBy?.length) await block($, repo, number, changes.addBlockedBy, true)
   if (repo && changes.removeBlockedBy?.length) await block($, repo, number, changes.removeBlockedBy, false)
@@ -2081,6 +2105,7 @@ export const register: Register = on => {
           comment: { type: 'string', description: 'A comment to add, in Markdown.' },
           close: { type: 'string', enum: ['completed', 'not planned'], description: 'Close it, saying why.' },
           duplicateOf: { type: 'integer', minimum: 1, description: 'Close it as a duplicate of this issue, by number; GitHub links the two.' },
+          type: { type: ['string', 'null'], description: "Its issue type, such as Bug or Task, where the repo's organization has types; null takes it off." },
           fields: {
             type: 'object',
             additionalProperties: { type: ['string', 'number', 'null'] },
@@ -2141,6 +2166,7 @@ export const register: Register = on => {
           milestone: { type: 'string', description: 'An open milestone to put it on, by title.' },
           parent: { type: 'integer', minimum: 1, description: 'The epic to file it under, as a sub-issue, by number.' },
           blockedBy: { type: 'array', items: { type: 'integer' }, description: 'Issues it is blocked by, by number.' },
+          type: { type: 'string', description: "Its issue type, such as Bug or Task, where the repo's organization has types." },
           status: { type: 'string', description: "A Status option of the repo's project, such as Backlog or Ready." },
           priority: { type: 'string', description: "A Priority option of the repo's project, such as P0, P1 or P2." },
           subIssues: {
@@ -3652,6 +3678,21 @@ export const register: Register = on => {
               )
             })}
           </Box>
+          {(now.issueTypes ?? []).length > 0 && (
+            <Box key={`type-row-${n}`} flexDirection="row" gap={1} flexWrap="wrap">
+              {row('Type')}
+              {(now.issueTypes ?? []).map(name => (
+                <Button
+                  key={`type-${n}-${name}`}
+                  variant={name === issue.type ? 'primary' : undefined}
+                  dimColor={name !== issue.type}
+                  onPress={() => void change($, n, { type: name === issue.type ? null : name })}
+                >
+                  {name}
+                </Button>
+              ))}
+            </Box>
+          )}
           {otherFields.map(field => {
             const now$ = fieldValues[n]?.[field.name]
             const key = `${n}-${field.id}`
@@ -3855,6 +3896,12 @@ export const register: Register = on => {
                 No acceptance boxes in this issue.
               </Text>
             </Box>
+          )}
+          {issue.type && (
+            <Text>
+              <Text dimColor>Type </Text>
+              {issue.type}
+            </Text>
           )}
           {(() => {
             const set = Object.entries(fieldValues[issue.number] ?? {}).filter(([name]) => otherFields.some(field => field.name === name))
