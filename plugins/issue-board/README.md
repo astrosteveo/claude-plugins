@@ -163,6 +163,8 @@ CLI, signed in, in the folder the session started in.
 
   The letter keys work while the card is open.
 - `/issues refresh` refreshes and replies with the summary.
+- `/issues help` lists everything the board does: the pane's keys, the
+  card, the band, the subcommands and Claude's tools.
 - `/issues check` checks that `gh` has what the board needs, and says how to
   fix anything missing. See [Permissions](#permissions).
 - `/issues setup` prepares the repo and its GitHub Project for the board. It

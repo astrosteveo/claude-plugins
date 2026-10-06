@@ -1243,8 +1243,56 @@ export const openedText = (filters: { hotkey: string; name: string }[]): string 
     'Issues pane opened.',
     `Filters: ${filters.map(one => `${one.hotkey} ${one.name}`).join(', ')}.`,
     'Enter opens an issue: Start hands it to Claude, Change edits it, and Esc folds it. r refreshes.',
-    'Also: /issues new [epic] drafts an issue, /issues setup links a project, /issues check says what is missing.',
+    'Also: /issues new [epic] drafts an issue, /issues setup links a project, /issues check says what is missing. /issues help lists everything.',
   ].join(' ')
+
+// The subcommands of /issues, what each does: the argument hint and /issues help both come from here.
+export const SUBCOMMANDS: { name: string; what: string }[] = [
+  { name: 'refresh', what: 'reads GitHub again and answers with the summary' },
+  { name: 'new <what>', what: 'drafts an issue from the conversation, to check before it is filed' },
+  { name: 'new epic <what>', what: 'drafts an epic and its sub-issues' },
+  { name: 'setup', what: 'links or makes a project with Status and Priority, and says what it would change first' },
+  { name: 'check', what: 'says what the board is missing, such as a gh permission, and how to fix it' },
+  { name: 'help', what: 'this list' },
+]
+
+// The board's tools for Claude, each in a line: /issues help lists them. A test holds it to the tools registered.
+export const TOOLS: { name: string; what: string }[] = [
+  { name: 'issues', what: 'lists the board, one issue in full with its comments and fields, searches every issue, and lists by Status or milestones' },
+  { name: 'tick', what: 'ticks or unticks acceptance boxes' },
+  { name: 'issue_update', what: 'changes an issue: Status, Priority, title, body, boxes, labels, epic, fields, type, links, closing, and starting work on it' },
+  { name: 'issue_create', what: 'files an issue, or an epic with its sub-issues, into the project' },
+  { name: 'milestone', what: 'makes or changes a milestone' },
+  { name: 'project_status', what: "reads or posts the project's status update" },
+  { name: 'project_archive', what: 'archives Done items in the project' },
+]
+
+// /issues help: the pane and its keys, the card, the band and hint, the subcommands, and Claude's tools.
+export const helpText = (filters: { hotkey: string; name: string }[]): string =>
+  [
+    'The issue board',
+    '',
+    'The pane (/issues)',
+    `- Filters: ${filters.map(one => `${one.hotkey} ${one.name}`).join(', ')}. Type in the search field to narrow the list.`,
+    '- Group by Status, Epic or Area with the buttons after the search.',
+    '- r refreshes. m merges every open pull request, after asking. Hover a row to preview its boxes.',
+    '- Enter, or a click, opens an issue.',
+    '',
+    'An open issue',
+    '- s Start hands it to Claude here; b Start in background hands it to an agent in its own worktree.',
+    '- e Edit first puts the message in the prompt box. x or Esc folds it. Press a box to tick it.',
+    '- Change opens the editor: title, boxes, labels, assignee, epic, milestone, type, project fields, and closing.',
+    '',
+    'Under the prompt',
+    '- The band above the prompt shows what needs you: failing CI, news on your issue, pull requests to merge, background agents.',
+    '- The hint line sums up what is open.',
+    '',
+    'Subcommands',
+    ...SUBCOMMANDS.map(one => `- /issues ${one.name}: ${one.what}.`),
+    '',
+    "Claude's tools",
+    ...TOOLS.map(one => `- ${one.name}: ${one.what}.`),
+  ].join('\n')
 
 // Issue numbers from a tool's input: whole and positive, each once.
 export const numbersOf = (value: unknown): number[] =>
