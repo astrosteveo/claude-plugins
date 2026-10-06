@@ -2,7 +2,7 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "issue-board",
   "displayName": "Issue Board",
-  "version": "0.31.0",
+  "version": "0.32.0",
   "description": "The repository's open GitHub issues and pull requests in a pane and under the prompt, with acceptance progress and CI, and a button that hands an issue to Claude.",
   "author": {
     "name": "astrosteveo"

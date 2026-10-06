@@ -130,6 +130,8 @@ import {
   leftForVerification,
   milestoneLine,
   milestonesOf,
+  itemsAt,
+  projectPathOf,
 } from './parse'
 
 const PANE = 'issue-board'
@@ -1137,6 +1139,27 @@ const saveMilestone = async (
   return text
 }
 
+// The project's issues at a Status, open and closed, for the issues tool: the board's copy holds open issues only, so
+// the project is read over REST, with its Status field's values. One page of 100 items.
+const readProject = async ($: EngineInterface, project: Project, status: string, since?: string): Promise<string> => {
+  const path = projectPathOf(project.url)
+  if (!path) return `Couldn't tell where ${project.title} lives on GitHub.`
+  if (since && !/^\d{4}-\d{2}-\d{2}$/.test(since)) return 'Give since as a date, YYYY-MM-DD.'
+  try {
+    const fields = JSON.parse(await gh($, ['api', `${path}/fields?per_page=50`])) as { id: number; name: string }[]
+    const field = fields.find(one => one.name === 'Status')
+    if (!field) return `${project.title} has no Status field.`
+    const items = JSON.parse(await gh($, ['api', `${path}/items?per_page=100&fields=${field.id}`])) as unknown[]
+    const found = itemsAt(items, status, since)
+    const clock = await nowOf($)
+    const scope = `${project.title} at ${status}${since ? `, closed since ${since}` : ''}`
+    const more = items.length >= 100 ? '\nRead the first 100 items of the project; there may be more.' : ''
+    return found.length > 0 ? `${scope} (${found.length}):\n${found.map(one => foundLine(one, clock)).join('\n')}${more}` : `Nothing in ${scope}.${more}`
+  } catch (cause) {
+    return `Couldn't read ${project.title}: ${messageOf(cause)}`
+  }
+}
+
 // The issues closed lately, for the pane's Closed filter: read when the filter is chosen, over REST.
 const readRecent = async ($: EngineInterface): Promise<void> => {
   const repo = (await read($, board))?.repo
@@ -1934,6 +1957,11 @@ export const register: Register = on => {
           assignee: { type: 'string', description: 'Only issues assigned to this login.' },
           milestone: { type: 'string', description: 'Only issues on this milestone, by title.' },
           milestones: { type: 'boolean', description: 'true lists the open milestones instead: how many of their issues are closed, and when each is due.' },
+          status: {
+            type: 'string',
+            description: "Lists the project's issues at this Status instead, open or closed, read from GitHub: such as Done, to see what shipped, or Verification.",
+          },
+          since: { type: 'string', description: 'With status: only issues closed on or after this date, YYYY-MM-DD.' },
         },
       },
     })
@@ -2305,6 +2333,13 @@ export const register: Register = on => {
       assignee?: string
       milestone?: string
       milestones?: boolean
+      status?: string
+      since?: string
+    }
+    if (input.status?.trim()) {
+      const now = await read($, board)
+      if (!now?.project) return { result: "The board reads no project for this repo, so it can't list issues by Status." }
+      return { result: await readProject($, now.project, input.status.trim(), input.since?.trim()) }
     }
     if (input.milestones) {
       const listed = (await read($, board))?.milestones ?? []

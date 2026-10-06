@@ -13,6 +13,7 @@ import {
   tickBody,
   wentGreen,
   workingSection,
+  projectPathOf,
 } from '../hooks/parse'
 import { PRIORITIES, STATUSES, asksProject, graphPage, isIssuesQuery, optionId } from './graph'
 
@@ -194,6 +195,19 @@ const world = (on: On) => {
     if (argv[1] === 'api' && argv[2] === '-X' && argv[4]?.includes('/dependencies/blocked_by')) {
       state.blocks.push(`${/issues\/(\d+)\//.exec(argv[4])?.[1]} ${argv[6]?.split('=')[1]}`)
       return answer('{}')
+    }
+    // The project over REST: its fields, and its items with the Status field's values.
+    if (argv[1] === 'api' && argv[2] === 'users/astrosteveo/projectsV2/8/fields?per_page=50') return answer(JSON.stringify([{ id: 111, name: 'Status' }]))
+    if (argv[1] === 'api' && argv[2] === 'users/astrosteveo/projectsV2/8/items?per_page=100&fields=111') {
+      const item = (status: string, content: Record<string, unknown>, type = 'Issue') => ({ content_type: type, content, fields: [{ name: 'Status', value: { name: { raw: status } } }] })
+      return answer(
+        JSON.stringify([
+          item('Done', { number: 290, title: 'Dock the shuttle', state: 'closed', state_reason: 'completed', closed_at: '2026-10-03T10:00:00Z' }),
+          item('Done', { number: 250, title: 'Old work', state: 'closed', state_reason: 'completed', closed_at: '2026-09-01T10:00:00Z' }),
+          item('Verification', { number: 315, title: 'Lay Kessik out for play', state: 'open' }),
+          item('Done', { number: 335, title: 'Glide in to a planet', state: 'closed' }, 'PullRequest'),
+        ]),
+      )
     }
     if (argv[1] === 'api' && argv[2]?.endsWith('/labels?per_page=100')) return answer(JSON.stringify([{ name: 'bug' }, { name: 'enhancement' }, { name: 'area:simulation' }]))
     if (argv[1] === 'api' && argv[2] === '-X' && argv[4]?.includes('/milestones')) {
@@ -833,6 +847,27 @@ test('the milestone tool makes and changes milestones over REST, and the pane an
   expect(await ui.find({ text: /^Launch$/ })).toBeUndefined()
   expect(await ui.find({ text: 'due 2026-11-01' })).toBeDefined()
   await ui.unmount()
+})
+
+test("the issues tool lists the project's issues at a Status, closed ones included, read over REST", async ($, on) => {
+  mock.store(on)
+  mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
+  const gh = world(on)
+  gh.project = true
+  await $.command.run(REFRESH)
+  const list = async (fields: Record<string, unknown>) => String((await $.tool.call({ tool: 'mcp__issue-board__issues', ...fields })).result)
+
+  // What shipped since a date: Done, closed on or after it, without pull requests.
+  expect(await list({ status: 'Done', since: '2026-10-01' })).toBe('Void Sector at Done, closed since 2026-10-01 (1):\n#290 Dock the shuttle · closed as completed 1d ago')
+  expect(await list({ status: 'verification' })).toBe('Void Sector at verification (1):\n#315 Lay Kessik out for play · open')
+  expect(await list({ status: 'Ready' })).toBe('Nothing in Void Sector at Ready.')
+  expect(await list({ status: 'Done', since: 'last week' })).toBe('Give since as a date, YYYY-MM-DD.')
+})
+
+test("a project's REST path comes from its page, for a user's project or an organization's", () => {
+  expect(projectPathOf('https://github.com/users/astrosteveo/projects/9')).toBe('users/astrosteveo/projectsV2/9')
+  expect(projectPathOf('https://github.com/orgs/anthropics/projects/12')).toBe('orgs/anthropics/projectsV2/12')
+  expect(projectPathOf('https://example.com/elsewhere')).toBeNull()
 })
 
 test('the pane draws on every surface, with search where the surface has a text field', async ($, on) => {

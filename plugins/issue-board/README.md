@@ -329,7 +329,10 @@ stays quiet there.
     issue in full also carries its latest ten comments, newest last, and
     says how many earlier ones are left out. With
     `state` closed or all, or words to `search`, it uses GitHub's search
-    over every issue, and says how many more there are.
+    over every issue, and says how many more there are. With a project
+    `status`, such as Done or Verification, it lists the project's issues
+    there, closed ones included, and `since` a date narrows Done to what
+    shipped lately.
   - `tick` ticks or unticks boxes in an issue's body on GitHub, so the
     progress bars fill in as Claude works. It reads the body fresh before it
     edits, so it doesn't overwrite other changes. Claude Code asks before it

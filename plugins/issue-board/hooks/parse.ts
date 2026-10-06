@@ -1030,6 +1030,25 @@ export const leftForVerification = (before: Board | null, next: Board): { pr: nu
     )
 }
 
+// Where GitHub's REST API keeps a project, from the project's page: `users/<login>/projectsV2/<n>` or the `orgs/` one.
+export const projectPathOf = (url: string): string | null => {
+  const found = /github\.com\/(users|orgs)\/([^/]+)\/projects\/(\d+)/.exec(url)
+  return found ? `${found[1]}/${found[2]}/projectsV2/${found[3]}` : null
+}
+
+// The project's issues at a Status, open or closed, from its items as REST answers them with the Status field; a closed
+// one only when it closed on or after `since`, a date.
+export const itemsAt = (items: unknown[], status: string, since?: string): Found[] =>
+  (items as { content_type?: string; content?: Record<string, unknown> | null; fields?: { name?: string; value?: { name?: { raw?: string } | string } | null }[] }[])
+    .filter(item => item.content_type === 'Issue' && item.content)
+    .filter(item => {
+      const value = item.fields?.find(field => field.name === 'Status')?.value?.name
+      const name = typeof value === 'string' ? value : value?.raw
+      return name?.toLowerCase() === status.toLowerCase()
+    })
+    .flatMap(item => foundOf([item.content]))
+    .filter(found => !since || found.state === 'open' || (found.closedAt ?? '') >= since)
+
 // Milestones as GitHub's REST answers them.
 export const milestonesOf = (items: unknown[]): Milestone[] =>
   (items as { number: number; title: string; due_on?: string | null; description?: string | null; open_issues?: number; closed_issues?: number }[]).map(raw => ({
