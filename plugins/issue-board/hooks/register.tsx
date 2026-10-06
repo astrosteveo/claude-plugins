@@ -256,6 +256,8 @@ const typedFields = atom({ plugin: 'issue-board', key: 'typedFields' } as const,
 // Which of the pane's sections above the issues the person opened (true) or folded (false); one not set yet follows the
 // pane's height. Saved with the board.
 const sections = atom({ plugin: 'issue-board', key: 'sections' } as const, {})
+// Whether the card's editor shows its rarer rows: type, milestone, the project's fields and closing as a duplicate.
+const editorMore = atom({ plugin: 'issue-board', key: 'editorMore' } as const, false)
 // Below this many rows, the sections above the issues start folded, so the issues show without scrolling.
 const SHORT_ROWS = 24
 const talk = atom({ plugin: 'issue-board', key: 'talk' } as const, null)
@@ -3227,6 +3229,7 @@ export const register: Register = on => {
     const otherFields = (project?.fields ?? []).filter(field => !/^(status|priority)$/i.test(field.name))
     const fieldValues = await read($, values)
     const typedField = await read($, typedFields)
+    const more = await read($, editorMore)
     // The sections above the issues: open or folded as the person left them, else folded on a short pane.
     const opened$ = await read($, sections)
     const sectionOpen = (key: string) => opened$[key] ?? e.props.scroll.bodyRows >= SHORT_ROWS
@@ -3843,6 +3846,7 @@ export const register: Register = on => {
       const row = (label: string) => <Text dimColor>{label.padEnd(9)}</Text>
       return (
         <Box key={`editor-${n}`} flexDirection="column" marginTop={1}>
+          {/* What it is. */}
           {Input && (
             <Box flexDirection="row" gap={1} flexWrap="wrap">
               {row('Title')}
@@ -3906,15 +3910,22 @@ export const register: Register = on => {
               />
             )}
           </Box>
-          <Box flexDirection="row" gap={1} flexWrap="wrap">
-            {row('Assignee')}
-            {issue.assignees.filter(login => login !== me).map(login => (
-              <Text color="suggestion">{`@${login}`}</Text>
-            ))}
-            <Button key={`assign-${n}`} dimColor={mine} onPress={() => void change($, n, mine ? { unassign: ['@me'] } : { assign: ['@me'] })}>
-              {mine ? `Unassign me (@${me})` : 'Assign me'}
-            </Button>
-          </Box>
+          {more && ((now.issueTypes ?? []).length > 0 && (
+            <Box key={`type-row-${n}`} flexDirection="row" gap={1} flexWrap="wrap">
+              {row('Type')}
+              {(now.issueTypes ?? []).map(name => (
+                <Button
+                  key={`type-${n}-${name}`}
+                  variant={name === issue.type ? 'primary' : undefined}
+                  dimColor={name !== issue.type}
+                  onPress={() => void change($, n, { type: name === issue.type ? null : name })}
+                >
+                  {name}
+                </Button>
+              ))}
+            </Box>
+          ))}
+          {/* Where it sits. */}
           <Box flexDirection="row" gap={1} flexWrap="wrap">
             {row('Epic')}
             <Text>{issue.parent ? `#${issue.parent.number} ${fit(issue.parent.title, 30)}` : 'none'}</Text>
@@ -3939,35 +3950,22 @@ export const register: Register = on => {
               />
             )}
           </Box>
-          <Box flexDirection="row" gap={1} flexWrap="wrap">
-            {row('Milestone')}
-            {!offered && <Text dimColor>reading…</Text>}
-            {offered && offered.milestones.length === 0 && <Text dimColor>none in this repo</Text>}
-            {(offered?.milestones ?? []).map(title => {
-              const has = issue.milestone === title
-              return (
-                <Button key={`milestone-${n}-${title}`} variant={has ? 'primary' : undefined} dimColor={!has} onPress={() => void change($, n, { milestone: has ? null : title })}>
-                  {title}
-                </Button>
-              )
-            })}
-          </Box>
-          {(now.issueTypes ?? []).length > 0 && (
-            <Box key={`type-row-${n}`} flexDirection="row" gap={1} flexWrap="wrap">
-              {row('Type')}
-              {(now.issueTypes ?? []).map(name => (
-                <Button
-                  key={`type-${n}-${name}`}
-                  variant={name === issue.type ? 'primary' : undefined}
-                  dimColor={name !== issue.type}
-                  onPress={() => void change($, n, { type: name === issue.type ? null : name })}
-                >
-                  {name}
-                </Button>
-              ))}
+          {more && (
+            <Box flexDirection="row" gap={1} flexWrap="wrap">
+              {row('Milestone')}
+              {!offered && <Text dimColor>reading…</Text>}
+              {offered && offered.milestones.length === 0 && <Text dimColor>none in this repo</Text>}
+              {(offered?.milestones ?? []).map(title => {
+                const has = issue.milestone === title
+                return (
+                  <Button key={`milestone-${n}-${title}`} variant={has ? 'primary' : undefined} dimColor={!has} onPress={() => void change($, n, { milestone: has ? null : title })}>
+                    {title}
+                  </Button>
+                )
+              })}
             </Box>
           )}
-          {otherFields.map(field => {
+          {more && (otherFields.map(field => {
             const now$ = fieldValues[n]?.[field.name]
             const key = `${n}-${field.id}`
             return (
@@ -4005,7 +4003,18 @@ export const register: Register = on => {
                 )}
               </Box>
             )
-          })}
+          }))}
+          {/* Who has it. */}
+          <Box flexDirection="row" gap={1} flexWrap="wrap">
+            {row('Assignee')}
+            {issue.assignees.filter(login => login !== me).map(login => (
+              <Text color="suggestion">{`@${login}`}</Text>
+            ))}
+            <Button key={`assign-${n}`} dimColor={mine} onPress={() => void change($, n, mine ? { unassign: ['@me'] } : { assign: ['@me'] })}>
+              {mine ? `Unassign me (@${me})` : 'Assign me'}
+            </Button>
+          </Box>
+          {/* Ending it. */}
           <Box flexDirection="row" gap={1} flexWrap="wrap">
             {row('Close')}
             <Button key={`close-completed-${n}`} dimColor onPress={() => void closeAs('completed')()}>
@@ -4014,7 +4023,7 @@ export const register: Register = on => {
             <Button key={`close-not-planned-${n}`} dimColor onPress={() => void closeAs('not planned')()}>
               as not planned
             </Button>
-            {Input && (
+            {more && Input && (
               <Input
                 key={`duplicate-${n}`}
                 label="as duplicate of #"
@@ -4035,6 +4044,11 @@ export const register: Register = on => {
           {armedClose === n && (
             <Text color="warning" wrap="wrap">{`#${n} is an epic with ${open} open ${open === 1 ? 'sub-issue' : 'sub-issues'}. Closing it leaves them open under a closed epic. Press again to close it anyway.`}</Text>
           )}
+          <Box key={`more-row-${n}`} flexDirection="row">
+            <Button key={`more-${n}`} dimColor onPress={() => void update($, editorMore, was => !was)}>
+              {more ? '▴ Less' : `▾ More: ${[(now.issueTypes ?? []).length > 0 ? 'type' : '', 'milestone', otherFields.length > 0 ? 'fields' : '', 'duplicate'].filter(Boolean).join(', ')}`}
+            </Button>
+          </Box>
         </Box>
       )
     }

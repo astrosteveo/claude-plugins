@@ -135,8 +135,12 @@ CLI, signed in, in the folder the session started in.
     same news as a message from the board instead.
     The agent asks for permission as any background agent does, so allow
     what it needs, or it stops to wait.
-  - **⚙ Change** opens the card's editor. Each change is made on GitHub as
-    soon as you press it, and the board reads GitHub again straight after:
+  - **⚙ Change** opens the card's editor. Its rows go by what they're for:
+    what the issue is (title, boxes, labels), where it sits (epic), who has
+    it, and ending it (close). The rarer ones, type, milestone, the
+    project's fields and closing as a duplicate, are under **▾ More**, which
+    opens them in place. Each change is made on GitHub as soon as you press
+    it, and the board reads GitHub again straight after:
     - **Labels**: the repo's labels, the ones the issue has highlighted;
       press one to add or take it off. Type a new one in **+ new label** to make it
       and add it; an `area:` label takes the color the other areas have.
