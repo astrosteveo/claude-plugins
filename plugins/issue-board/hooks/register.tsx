@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Caught, EngineInterface, HookFailure, ModelForkResult, Register, ThemeKey, Timer, UiCopyArgs } from 'claude-code'
 
 import type { Alert, Board, BoxTask, Check, Comment, Draft, DraftEdit, Filter, GroupBy, Issue, Known, Launch, Problem, Project, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
-import type { Ended, IssueChanges } from './parse'
+import type { Ended, IssueChanges, NewIssue } from './parse'
 import { authOf, problemsOf, problemsText, repoOf } from './access'
 import { ADD_ITEM, SET_FIELD, issuesQuery, optionOf, startedOf } from './project'
 import {
@@ -112,6 +112,8 @@ import {
   workerPrOf,
   workingSection,
   writesGitHub,
+  filedText,
+  newIssueOf,
 } from './parse'
 
 const PANE = 'issue-board'
@@ -131,6 +133,7 @@ const ISSUE_FIELDS = 'number,title,url,labels,assignees,body,updatedAt'
 const ISSUES_TOOL = 'mcp__issue-board__issues'
 const TICK_TOOL = 'mcp__issue-board__tick'
 const UPDATE_TOOL = 'mcp__issue-board__issue_update'
+const CREATE_TOOL = 'mcp__issue-board__issue_create'
 
 const strings = (value: unknown): string[] | undefined =>
   Array.isArray(value) ? value.filter((one): one is string => typeof one === 'string' && one.trim() !== '').map(one => one.trim()) : undefined
@@ -868,6 +871,111 @@ const claim = async ($: EngineInterface, issue: Issue): Promise<void> => {
   if (failures.some(failure => ACCESS_ERROR.test(failure))) void checkAccess($, failures.join('\n'))
 }
 
+// Files an issue for Claude's issue_create tool. REST does what it can, which spends nothing of the GraphQL limit the
+// board reads with: the issue with its labels, assignees and milestone in one call, then its place under an epic. Only
+// the project needs GraphQL: adding the item and setting its Status and Priority. Once the issue exists, a later step
+// that fails is named in the answer, and nothing is undone. The issue goes on the board at once, without a read.
+const fileIssue = async ($: EngineInterface, spec: NewIssue): Promise<string> => {
+  const now = await read($, board)
+  if (!now) throw new Error("the board hasn't read GitHub yet; refresh it and try again")
+  const repo = now.repo
+  const me = await read($, viewer)
+  let milestone: { number: number; title: string } | undefined
+  if (spec.milestone) {
+    const open = JSON.parse(await gh($, ['api', `repos/${repo}/milestones?state=open&per_page=100`])) as { number: number; title: string }[]
+    milestone = open.find(one => one.title.toLowerCase() === spec.milestone?.toLowerCase())
+    if (!milestone) throw new Error(`the repo has no open milestone called ${spec.milestone}`)
+  }
+  const assignees = (spec.assign ?? []).flatMap(login => (login === '@me' ? (me ? [me] : []) : [login]))
+  const fields = { title: spec.title, body: spec.body, labels: spec.labels ?? [], assignees, ...(milestone ? { milestone: milestone.number } : {}) }
+  const raw = JSON.parse(await gh($, ['api', '-X', 'POST', `repos/${repo}/issues`, '--input', '-'], JSON.stringify(fields))) as {
+    number: number
+    id: number
+    node_id: string
+    html_url: string
+    updated_at: string
+    labels: { name: string; color?: string }[]
+    assignees: { login: string }[]
+  }
+  const did = [`“${spec.title}”`]
+  const failed: string[] = []
+  if (raw.labels.length > 0) did.push(`labelled ${raw.labels.map(label => label.name).join(', ')}`)
+  if (raw.assignees.length > 0) did.push(`assigned ${raw.assignees.map(user => user.login).join(', ')}`)
+  if (milestone) did.push(`on ${milestone.title}`)
+
+  let parent: Issue['parent'] = null
+  if (spec.parent) {
+    try {
+      await gh($, ['api', '-X', 'POST', `repos/${repo}/issues/${spec.parent}/sub_issues`, '-F', `sub_issue_id=${raw.id}`])
+      const epic = now.issues.find(one => one.number === spec.parent)
+      parent = { number: spec.parent, title: epic?.title ?? '', total: (epic?.subIssues?.total ?? 0) + 1, completed: epic?.subIssues?.completed ?? 0 }
+      did.push(`under #${spec.parent}`)
+    } catch (cause) {
+      failed.push(`put it under #${spec.parent} (${messageOf(cause)})`)
+    }
+  }
+
+  // Into the project, at the Status asked for, or Inbox where the project has one, to be triaged.
+  const project = now.project
+  let item: string | null = null
+  const set: { status?: string; priority?: string } = {}
+  if (project) {
+    try {
+      const added = JSON.parse(await gh($, ['api', 'graphql', '-f', `query=${ADD_ITEM}`, '-f', `project=${project.id}`, '-f', `content=${raw.node_id}`])) as {
+        data?: { addProjectV2ItemById?: { item?: { id?: string } | null } | null }
+      }
+      item = added.data?.addProjectV2ItemById?.item?.id ?? null
+      if (!item) throw new Error('GitHub gave no item')
+      for (const [field, wanted] of [['status', spec.status ?? (optionOf(project.status, 'Inbox') ? 'Inbox' : undefined)], ['priority', spec.priority]] as const) {
+        if (!wanted) continue
+        const target = field === 'status' ? project.status : project.priority
+        const option = optionOf(target, wanted)
+        const name = field === 'status' ? 'Status' : 'Priority'
+        if (!target || !option) {
+          failed.push(`set its ${name}: the project has no ${name} called ${wanted}`)
+          continue
+        }
+        try {
+          await gh($, ['api', 'graphql', '-f', `query=${SET_FIELD}`, '-f', `project=${project.id}`, '-f', `item=${item}`, '-f', `field=${target.id}`, '-f', `option=${option.id}`])
+          set[field] = option.name
+        } catch (cause) {
+          failed.push(`set its ${name} (${messageOf(cause)})`)
+        }
+      }
+      did.push([`in ${project.title}`, set.status, set.priority].filter(Boolean).join(', '))
+    } catch (cause) {
+      failed.push(`add it to ${project.title} (${messageOf(cause)})`)
+    }
+  } else if (spec.status || spec.priority) {
+    failed.push('set its Status or Priority: the board reads no project for this repo')
+  }
+
+  const issue: Issue = {
+    number: raw.number,
+    title: spec.title,
+    url: raw.html_url,
+    labels: raw.labels.map(label => ({ name: label.name, color: label.color ?? '' })),
+    assignees: raw.assignees.map(user => user.login),
+    checks: checksOf(spec.body),
+    updatedAt: raw.updated_at,
+    body: spec.body,
+    id: raw.node_id,
+    item,
+    status: set.status ?? null,
+    priority: set.priority ?? null,
+    milestone: milestone?.title ?? null,
+    parent,
+  }
+  await update($, board, was => {
+    if (!was) return was
+    const issues = was.issues.map(one => (parent && one.number === parent.number ? { ...one, subIssues: { total: parent.total, completed: parent.completed } } : one))
+    return { ...was, issues: [issue, ...issues.filter(one => one.number !== issue.number)] }
+  })
+  await save($)
+  $.ui.toast(`Filed #${raw.number}`)
+  return filedText(raw.number, did, failed)
+}
+
 // Claude starting on an issue in the conversation, by the issue_update tool's `start`: as Start does, the issue becomes
 // the one this session is on, moves to In progress and is assigned to the person. A pull request's number starts the
 // issue it is for.
@@ -1548,6 +1656,27 @@ export const register: Register = on => {
         required: ['number'],
       },
     })
+    await $.tool.register({
+      name: 'issue_create',
+      description:
+        "Files a new GitHub issue in this repository and puts it on the issue board at once: its title and body, labels, assignees, milestone, the epic it is a sub-issue of, " +
+        "and its Status and Priority in the repo's GitHub Project. Without a Status it goes to the project's Inbox. Write the body in Markdown, with an Acceptance list of " +
+        "`- [ ]` boxes. Filing asks for permission. If a step after filing fails, the answer says which, and gives the new issue's number.",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'The title.' },
+          body: { type: 'string', description: 'The body, in Markdown.' },
+          labels: { type: 'array', items: { type: 'string' }, description: 'Labels to put on it.' },
+          assign: { type: 'array', items: { type: 'string' }, description: 'GitHub logins to assign; @me for the signed-in user.' },
+          milestone: { type: 'string', description: 'An open milestone to put it on, by title.' },
+          parent: { type: 'integer', minimum: 1, description: 'The epic to file it under, as a sub-issue, by number.' },
+          status: { type: 'string', description: "A Status option of the repo's project, such as Backlog or Ready." },
+          priority: { type: 'string', description: "A Priority option of the repo's project, such as P0, P1 or P2." },
+        },
+        required: ['title'],
+      },
+    })
     // The agent Start in background runs: in its own worktree, in the background.
     await $.agent
       .register({
@@ -1851,6 +1980,19 @@ export const register: Register = on => {
       return { deny: `Couldn't change #${number}: ${message}${problems.length > 0 ? `\n${problemsText(problems)}` : ''}` }
     }
   }).catch(($, _e, next) => toolFailed($, next, 'issue_update'))
+
+  // Claude filing an issue. Claude Code asks first, as for any tool that changes something.
+  on('tool.call', { tool: CREATE_TOOL }, async ($, e) => {
+    const spec = newIssueOf(e)
+    if (typeof spec === 'string') return { deny: spec }
+    try {
+      return { result: await fileIssue($, spec) }
+    } catch (cause) {
+      const message = messageOf(cause)
+      const problems = ACCESS_ERROR.test(message) ? await checkAccess($, message) : []
+      return { deny: `Couldn't file the issue: ${message}${problems.length > 0 ? `\n${problemsText(problems)}` : ''}` }
+    }
+  }).catch(($, _e, next) => toolFailed($, next, 'issue_create'))
 
   // Moving the Status of the issue the person started is part of working on it, so it doesn't ask, and nor does starting
   // on an issue. Any other change

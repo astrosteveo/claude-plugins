@@ -877,6 +877,47 @@ export const changesText = (number: number, changes: IssueChanges): string => {
   return said.length > 0 ? `#${number} ${said.join(', ')}.` : `Nothing to change on #${number}.`
 }
 
+// An issue for Claude's issue_create tool to file: its title and body, and what it starts with.
+export type NewIssue = {
+  title: string
+  body: string
+  labels?: string[]
+  assign?: string[]
+  milestone?: string
+  parent?: number
+  status?: string
+  priority?: string
+}
+
+// The issue_create tool's input as a new issue, or why it can't be one.
+export const newIssueOf = (input: unknown): NewIssue | string => {
+  const raw = (input ?? {}) as Record<string, unknown>
+  const text = (value: unknown) => (typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined)
+  const list = (value: unknown) => (Array.isArray(value) ? value.filter((one): one is string => typeof one === 'string' && one.trim() !== '').map(one => one.trim()) : [])
+  const title = text(raw.title)
+  if (!title) return 'Give the issue a title.'
+  const made: NewIssue = { title, body: typeof raw.body === 'string' ? raw.body : '' }
+  const labels = list(raw.labels)
+  const assign = list(raw.assign)
+  if (labels.length > 0) made.labels = labels
+  if (assign.length > 0) made.assign = assign
+  const milestone = text(raw.milestone)
+  if (milestone) made.milestone = milestone
+  if (typeof raw.parent === 'number' && Number.isInteger(raw.parent) && raw.parent > 0) made.parent = raw.parent
+  const status = text(raw.status)
+  const priority = text(raw.priority)
+  if (status) made.status = status
+  if (priority) made.priority = priority
+  return made
+}
+
+// What filing an issue did, for Claude: what it was filed with, and each later step that failed, by what it was for.
+export const filedText = (number: number, did: string[], failed: string[]): string =>
+  [
+    `Filed #${number}${did.length > 0 ? `: ${did.join(', ')}` : ''}.`,
+    ...(failed.length > 0 ? [`The issue exists, but the board couldn't ${failed.join('; nor ')}.`] : []),
+  ].join(' ')
+
 // Whether a change only moves an issue's Status, which the issue Claude is on may do without asking.
 export const statusOnly = (changes: IssueChanges): boolean =>
   Boolean(changes.status) && commandsOf(0, changes).length === 0 && !changes.priority
