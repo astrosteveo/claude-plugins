@@ -3172,7 +3172,9 @@ export const register: Register = on => {
                 )}
                 {addsAsTodo(chosenProject) && (
                   <Text color="warning" wrap="wrap">
-                    {"  · set Item added to project to Inbox: it sets GitHub's Todo on new issues"}
+                    {
+                      "  · new issues arrive with Status Todo, GitHub's default, so they skip the Inbox: open Item added to project and set its Status to Inbox. Once it's set, delete the Todo option, which this note looks for."
+                    }
                   </Text>
                 )}
                 {chosenProject && <Link href={`${chosenProject.url}/workflows`} label="↗ Workflows" />}

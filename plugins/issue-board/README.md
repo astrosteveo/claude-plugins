@@ -233,7 +233,9 @@ won't undo, needs a second, confirmed call.
   Verification, Done) and a Priority field (P0, P1, P2), creates `bug` and
   `area:` labels, and puts open issues in the project at Inbox. It never
   deletes or renames anything. GitHub's API can't change a project's
-  workflows, so it lists those to change by hand, with a link.
+  workflows, so it lists those to change by hand, with a link: the
+  Auto-add workflows on, **Item closed** off, and **Item added to project**
+  set to Inbox rather than GitHub's Todo, so new issues land in the Inbox.
 - `/issues check` checks what the board needs; see [Permissions](#permissions).
 
 ## How it reads GitHub

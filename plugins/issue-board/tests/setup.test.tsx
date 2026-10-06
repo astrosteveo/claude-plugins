@@ -212,7 +212,7 @@ test('setup on a fresh repo shows its plan, changes nothing until Apply, then ma
   // A fresh project has none of its workflows read: the board wants the auto-adds on, and Item closed off.
   expect(await ui.find({ text: /^ {2}· turn on Auto-add to project, Auto-add sub-issues to project$/ })).toBeDefined()
   // A new project's Status keeps GitHub's Todo, which its automation sets on new issues unless told Inbox.
-  expect(await ui.find({ text: /^ {2}· set Item added to project to Inbox/ })).toBeDefined()
+  expect(await ui.find({ text: /^ {2}· new issues arrive with Status Todo, GitHub's default, so they skip the Inbox: open Item added to project and set its Status to Inbox\./ })).toBeDefined()
   expect(gh.writes).toEqual([])
 
   // The area labels are the person's to change.
