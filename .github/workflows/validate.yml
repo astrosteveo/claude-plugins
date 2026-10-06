@@ -19,3 +19,5 @@ jobs:
         run: sh scripts/validate.sh
       - name: Test plugins
         run: sh scripts/test.sh
+      - name: Type-check plugins
+        run: sh scripts/typecheck.sh
