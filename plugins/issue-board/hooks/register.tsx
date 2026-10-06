@@ -1074,9 +1074,13 @@ const dismissProblem = async ($: EngineInterface, problem: Problem): Promise<voi
 // How the pane opens: Esc steps back through it, a card first, then the pane (the ui.close hook).
 const OPEN = { id: PANE, title: 'Issues', focus: true, closeOnEscape: true } as const
 
+// What setting an issue's fields in the project needs of it: its number, its node, and its item there if it has one. An
+// issue on the board has them; one that isn't, such as one already closed, is read from GitHub.
+type Target = Pick<Issue, 'number' | 'id' | 'item'>
+
 // Sets Status or Priority on an issue in the repo's project, adding the issue to the project first when it isn't in it.
 // An issue's item in the project, added to the project first when it has none.
-const itemFor = async ($: EngineInterface, issue: Issue, project: Project): Promise<string> => {
+const itemFor = async ($: EngineInterface, issue: Target, project: Project): Promise<string> => {
   if (issue.item) return issue.item
   if (!issue.id) throw new Error(`#${issue.number} hasn't been read with its project yet; refresh and try again`)
   const item = await addItem($, project, issue.id)
@@ -1104,7 +1108,7 @@ const addItem = async ($: EngineInterface, project: Project, content: string): P
 
 // An issue's values for the project's fields, by name, read from GitHub: one item at a time, when its card opens or a
 // tool asks, so the board's main read stays cheap.
-const readValues = async ($: EngineInterface, issue: Issue): Promise<Record<string, string>> => {
+const readValues = async ($: EngineInterface, issue: Target): Promise<Record<string, string>> => {
   if (!issue.item) return {}
   try {
     const read$ = itemValuesOf(await graphql($, ITEM_VALUES, { item: issue.item }))
@@ -1118,7 +1122,7 @@ const readValues = async ($: EngineInterface, issue: Issue): Promise<Record<stri
 
 // Sets the project's other fields on an issue, by name, each value checked against the field's kind first; null clears
 // one. Status and Priority have their own options.
-const setFields = async ($: EngineInterface, issue: Issue, given: Record<string, string | number | null>): Promise<void> => {
+const setFields = async ($: EngineInterface, issue: Target, given: Record<string, string | number | null>): Promise<void> => {
   const project = (await read($, board))?.project
   if (!project) throw new Error("the board reads no project for this repo, so it can't set its fields")
   // A field the board doesn't know may be new since its last read, which a field's change doesn't trigger: read again once.
@@ -1145,7 +1149,7 @@ const setFields = async ($: EngineInterface, issue: Issue, given: Record<string,
   await readValues($, { ...issue, item })
 }
 
-const setField = async ($: EngineInterface, issue: Issue, field: 'status' | 'priority', name: string): Promise<void> => {
+const setField = async ($: EngineInterface, issue: Target, field: 'status' | 'priority', name: string): Promise<void> => {
   const project = (await read($, board))?.project
   const target = field === 'status' ? project?.status : project?.priority
   const option = optionOf(target, name)
@@ -2137,20 +2141,39 @@ const tickTask = async ($: EngineInterface, task: BoxTask): Promise<void> => {
   }
 }
 
+// An issue the board doesn't hold, such as one a merge just closed: its node and its item in the board's project, read
+// from GitHub. It has no item when it was never in the project; setting a field adds it.
+const offBoard = async ($: EngineInterface, number: number): Promise<Target> => {
+  const project = (await read($, board))?.project
+  if (!project) throw new Error("the board reads no project for this repo, so it can't set its fields")
+  const { id } = JSON.parse(await gh($, ['issue', 'view', String(number), '--json', 'id'])) as { id: string }
+  const found = (await graphql($, ISSUE_ITEMS, { issue: id })) as { node?: { projectItems?: { nodes?: { id: string; project: { id: string } }[] } } }
+  return { number, id, item: found.node?.projectItems?.nodes?.find(one => one.project.id === project.id)?.id ?? null }
+}
+
 // Makes a change to an issue, from its card or from Claude's issue_update tool: Status and Priority in the project,
 // then the gh edit, comment and close, then the board read again so it shows. Answers what it did.
 const applyChanges = async ($: EngineInterface, number: number, changes: IssueChanges): Promise<string> => {
   const issue = (await read($, board))?.issues.find(one => one.number === number)
+  const fields = changes.fields && Object.keys(changes.fields).length > 0 ? changes.fields : null
+  // A closed issue is set through its item in the project all the same. Its Status or Priority may already be what was
+  // asked, as when the board moved it to Done as it closed: that is said, and nothing is written.
+  const target = issue ?? (changes.status || changes.priority || fields ? await offBoard($, number) : null)
+  const current = !issue && target?.item ? itemValuesOf(await graphql($, ITEM_VALUES, { item: target.item })) : {}
+  const already: string[] = []
+  const skipped: ('status' | 'priority')[] = []
   for (const field of ['status', 'priority'] as const) {
     const value = changes[field]
-    if (!value) continue
-    if (!issue) throw new Error(`#${number} isn't open on the board, so its ${field === 'status' ? 'Status' : 'Priority'} can't be set`)
-    await setField($, issue, field, value)
+    if (!value || !target) continue
+    const name = field === 'status' ? 'Status' : 'Priority'
+    if (current[name] && current[name].toLowerCase() === value.toLowerCase()) {
+      already.push(`#${number}'s ${name} is already ${current[name]}.`)
+      skipped.push(field)
+      continue
+    }
+    await setField($, target, field, value)
   }
-  if (changes.fields && Object.keys(changes.fields).length > 0) {
-    if (!issue) throw new Error(`#${number} isn't open on the board, so its fields can't be set`)
-    await setFields($, issue, changes.fields)
-  }
+  if (fields && target) await setFields($, target, fields)
   const repo = (await read($, board))?.repo
   if (repo && (changes.title || changes.body !== undefined || changes.addBoxes?.length || changes.rewordBoxes?.length)) await rewrite($, repo, number, changes)
   const made = repo && changes.addLabels?.length ? await ensureLabels($, repo, changes.addLabels) : []
@@ -2173,7 +2196,11 @@ const applyChanges = async ($: EngineInterface, number: number, changes: IssueCh
   if (repo && changes.addBlockedBy?.length) await block($, repo, number, changes.addBlockedBy, true)
   if (repo && changes.removeBlockedBy?.length) await block($, repo, number, changes.removeBlockedBy, false)
   await refreshAfter($)
-  return `${changesText(number, changes)}${made.length > 0 ? ` Created the ${made.length === 1 ? 'label' : 'labels'} ${made.join(', ')}, new to the repo.` : ''}`
+  const left = { ...changes }
+  for (const field of skipped) delete left[field]
+  const done = changesText(number, left)
+  const said = [...already, ...(already.length > 0 && done.startsWith('Nothing to change') ? [] : [done])].join(' ')
+  return `${said}${made.length > 0 ? ` Created the ${made.length === 1 ? 'label' : 'labels'} ${made.join(', ')}, new to the repo.` : ''}`
 }
 
 // A change made on a card: said in a toast, and an error that may be a missing permission checked.
@@ -2372,7 +2399,7 @@ export const register: Register = (on, options) => {
             type: 'boolean',
             description: 'true when you start work on it here: it becomes the issue this session is on, moves to In progress and is assigned, as the Start button does. Needs no permission.',
           },
-          status: { type: 'string', description: "A Status option of the repo's project, such as In progress, Verification or Done." },
+          status: { type: 'string', description: "A Status option of the repo's project, such as In progress, Verification or Done. A closed issue's is set too." },
           priority: { type: 'string', description: "A Priority option of the repo's project, such as P0, P1 or P2." },
           addLabels: { type: 'array', items: { type: 'string' }, description: "Labels to add. One the repo hasn't got yet is created first, and the answer says so." },
           removeLabels: { type: 'array', items: { type: 'string' }, description: 'Labels to take off.' },
