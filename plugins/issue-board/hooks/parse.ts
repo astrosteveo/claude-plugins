@@ -338,6 +338,14 @@ export const nextOf = (issues: Issue[], epic: number, project: Project | null = 
     issues.find(issue => issue.number === epic)?.subOrder,
   ).find(issue => !isBlocked(issue))
 
+// What Start on an issue starts. An epic is worked one sub-issue at a time, so Start on one starts its next ready
+// sub-issue, as Next does; null when none is ready. Any other issue starts itself.
+export const startTargetOf = (issues: Issue[], issue: Issue, project: Project | null = null): Issue | null =>
+  (issue.subIssues?.total ?? 0) > 0 ? (nextOf(issues, issue.number, project) ?? null) : issue
+
+// What Start on an epic says when it has no sub-issue to start.
+export const noReadyText = (epic: number): string => `Epic #${epic} has no ready sub-issue to start: each open one is blocked, or none is open.`
+
 // A heading of the issue list and the issues under it. `folded`: drawn shut until the person opens it, as the Backlog
 // option is.
 // `epic`: the parent the group is for, so its row isn't drawn again beneath it.
@@ -1355,7 +1363,7 @@ export const helpText = (filters: { hotkey: string; name: string }[], off: { fea
     '- Enter, or a click, opens an issue.',
     '',
     'An open issue',
-    '- s Start hands it to Claude here; b Start in background hands it to an agent in its own worktree.',
+    '- s Start hands it to Claude here; b Start in background hands it to an agent in its own worktree. On an epic, both start its first ready sub-issue.',
     '- e Edit first puts the message in the prompt box. x or Esc folds it. Press a box to tick it.',
     '- Change opens the editor: title, boxes, labels, assignee, epic, milestone, type, project fields, and closing.',
     '',

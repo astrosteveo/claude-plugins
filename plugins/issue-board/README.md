@@ -103,6 +103,10 @@ GitHub. The card shows the latest three comments, a field to reply, and
   The row shows the agent: `⚙ working`, `waiting`, `done`, `failed` or
   `stopped`. When it ends, the conversation says so, with its last answer
   and pull request. It asks for permission as any background agent does.
+- On an epic's card, both Starts act on its first ready sub-issue, as
+  **▶ Next** does, and the buttons name it, such as `▶ Start #185`. An epic
+  is worked one sub-issue at a time. When no sub-issue is ready, Start says
+  so in a toast and sends nothing.
 - **✎ Edit first** (`e`) puts Start's message in the prompt box to edit.
 - **⚙ Change** opens the editor; see [File and plan issues](#file-and-plan-issues).
 - **↗ GitHub** opens the issue. **Collapse** (`x` or Esc) folds the card.
@@ -224,7 +228,8 @@ The board gives Claude seven tools:
   siblings (`moveBefore`, `moveAfter`), milestone, type, the project's
   fields (`fields`), blocked-by links, pin, lock, transfer to another of the
   owner's repos, a comment, and closing, as a duplicate too. `start` marks
-  that Claude started on it here, as Start does. It sets the Status,
+  that Claude started on it here, as Start does; on an epic it starts the
+  next ready sub-issue and says which one. It sets the Status,
   Priority and fields of a closed issue too, such as one a merge just
   closed, and says when one is already at the Status asked for.
 - `issue_create` files an issue, or an epic with its sub-issues, with

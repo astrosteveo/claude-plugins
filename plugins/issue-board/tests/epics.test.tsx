@@ -1,4 +1,5 @@
 import type { On } from 'claude-code'
+import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { draftPrompt, nextOf, parseDraft, parseGraph, sortIssues } from '../hooks/parse'
@@ -44,13 +45,13 @@ test('an epic draft asks for sub-issues and reads them back', () => {
 })
 
 // GitHub with those issues, and the issues gh was asked to create.
-const github = (on: On) => {
+const github = (on: On, issues: typeof ISSUES = ISSUES) => {
   const state = { created: [] as string[][], bodies: [] as string[], next: 50 }
   on('process.run', async (_$, e) => {
     const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
     const argv = e.argv
     if (argv[0] === 'git') return answer('main\n')
-    if (isIssuesQuery(argv)) return answer(graphPage(ISSUES))
+    if (isIssuesQuery(argv)) return answer(graphPage(issues))
     if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/claude-plugins', hasIssuesEnabled: true }))
     if (argv[1] === 'issue' && argv[2] === 'create') {
       state.created.push(argv.slice(3))
@@ -89,12 +90,79 @@ test("grouped by epic, the heading has the epic's progress and Next, and a block
   await ui.press({ key: 'next-35' })
   expect(sent.at(-1)).toMatch(/^Let's start on #43: Edit issues from the board\./)
 
-  // The epic's own card has Next too.
+  // The epic's own card has no Next of its own: its Start does the same.
   await ui.press({ key: 'group-area' })
   await ui.press({ key: 'issue-35' })
   expect(await ui.find({ text: /^epic · 6\/12 sub-issues closed$/ })).toBeDefined()
-  expect(await ui.find({ key: 'next-35' })).toMatchObject({ text: '▶ Next: #43' })
+  expect(await ui.find({ key: 'next-35' })).toBeUndefined()
   await ui.unmount()
+})
+
+// The board with epic #35's card open, the prompts sent to Claude and the toasts shown.
+const epicCard = async ($: Engine, on: On, issues: typeof ISSUES = ISSUES) => {
+  mock.store(on)
+  github(on, issues)
+  const sent: string[] = []
+  const toasts: string[] = []
+  on('prompt.submit', async (_$, e) => {
+    sent.push(e.text)
+    return { text: e.text }
+  })
+  on('ui.toast', async (_$, e) => {
+    toasts.push(String((e as { text?: unknown }).text))
+    return { value: undefined }
+  })
+  await $.command.run({ ...RUN, args: 'refresh' })
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'filter-all' })
+  await ui.press({ key: 'issue-35' })
+  return { ui, sent, toasts }
+}
+
+test("Start on an epic's card names its first ready sub-issue and starts that, not the epic", async ($, on) => {
+  const { ui, sent } = await epicCard($, on)
+  expect(await ui.find({ key: 'start-35' })).toMatchObject({ text: '▶ Start #43' })
+  await ui.press({ key: 'start-35' })
+  expect(sent).toHaveLength(1)
+  expect(sent[0]).toMatch(/^Let's start on #43: Edit issues from the board\./)
+  await ui.unmount()
+})
+
+test('Start in background on an epic dispatches the worker on its first ready sub-issue', async ($, on) => {
+  const { ui, sent } = await epicCard($, on)
+  expect(await ui.find({ key: 'background-35' })).toMatchObject({ text: '⚙ Start #43 in background' })
+  await ui.press({ key: 'background-35' })
+  expect(sent).toHaveLength(1)
+  expect(sent[0]).toMatch(/^Dispatch a background agent to work on #43: Edit issues from the board\./)
+  expect(sent[0]).toContain('description `#43 Edit issues from the board`')
+  await ui.unmount()
+})
+
+test('Start on an epic with no ready sub-issue says so in a toast and sends nothing', async ($, on) => {
+  // #42 waits on #41, and #43 is gone: nothing under #35 is ready.
+  const { ui, sent, toasts } = await epicCard($, on, ISSUES.filter(issue => issue.number !== 43))
+  expect(await ui.find({ key: 'start-35' })).toMatchObject({ text: '▶ Start' })
+  await ui.press({ key: 'start-35' })
+  await ui.press({ key: 'background-35' })
+  expect(sent).toEqual([])
+  expect(toasts.filter(text => text.startsWith('Epic #35 has no ready sub-issue'))).toHaveLength(2)
+  await ui.unmount()
+})
+
+test('issue_update start on an epic starts its next ready sub-issue and says which one', async ($, on) => {
+  mock.store(on)
+  github(on)
+  await $.command.run({ ...RUN, args: 'refresh' })
+  const answer = await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 35, start: true })
+  expect(JSON.stringify(answer)).toContain('Started #43, the next ready sub-issue of epic #35')
+})
+
+test('issue_update start on an epic with no ready sub-issue refuses and says why', async ($, on) => {
+  mock.store(on)
+  github(on, ISSUES.filter(issue => issue.number !== 43))
+  await $.command.run({ ...RUN, args: 'refresh' })
+  const answer = await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 35, start: true })
+  expect(JSON.stringify(answer)).toContain('Epic #35 has no ready sub-issue to start')
 })
 
 test('/issues new epic drafts a parent and its sub-issues, and creates each one under the parent', async ($, on) => {

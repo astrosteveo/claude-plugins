@@ -71,6 +71,7 @@ import {
   newsOf,
   nextOf,
   nextStepOf,
+  noReadyText,
   issueText,
   labelsOf,
   liveRunsOf,
@@ -78,6 +79,7 @@ import {
   pad,
   pageOf,
   peekPlace,
+  startTargetOf,
   proseOf,
   matches,
   mergeNoteOf,
@@ -1727,19 +1729,22 @@ const fileOne = async ($: EngineInterface, spec: NewIssue): Promise<{ number: nu
 
 // Claude starting on an issue in the conversation, by the issue_update tool's `start`: as Start does, the issue becomes
 // the one this session is on, moves to In progress and is assigned to the person. A pull request's number starts the
-// issue it is for.
+// issue it is for. An epic starts its next ready sub-issue, as the Start button does.
 const startHere = async ($: EngineInterface, number: number): Promise<string> => {
   const now = await read($, board)
   const pr = now?.prs.find(one => one.number === number)
   const target = pr ? pr.issues.find(one => now?.issues.some(issue => issue.number === one)) : number
-  const issue = now?.issues.find(one => one.number === target)
-  if (!issue) throw new Error(pr ? `pull request #${number} names no issue open on the board` : `#${number} isn't open on the board`)
+  const asked = now?.issues.find(one => one.number === target)
+  if (!asked) throw new Error(pr ? `pull request #${number} names no issue open on the board` : `#${number} isn't open on the board`)
+  const issue = startTargetOf(now?.issues ?? [], asked, now?.project ?? null)
+  if (!issue) throw new Error(noReadyText(asked.number))
+  const epic = issue.number !== asked.number ? `, the next ready sub-issue of epic #${asked.number}` : ''
   await track($, issue, true)
   await claim($, issue)
   $.ui.toast(`Working on #${issue.number} now`)
   const started = startedOf(now?.project)
   const claimed = settings.claimOnStart ? (started ? `, ${started.name} and assigned` : ', assigned') : ''
-  return `Started #${issue.number}${pr ? `, the issue pull request #${number} is for` : ''}: it is the issue this session is on${claimed}.`
+  return `Started #${issue.number}${pr ? `, the issue pull request #${number} is for` : ''}${epic}: it is the issue this session is on${claimed}.`
 }
 
 // A GraphQL call with its variables as JSON, which `-f` can't carry for a list such as a field's options.
@@ -4384,8 +4389,13 @@ export const register: Register = (on, options) => {
       // The background agent Start in background set on it, with what it last said.
       const worker = working$.find(one => one.number === issue.number)
       const workerAge = worker ? ago(new Date(worker.startedAt).toISOString(), clock) : ''
-      // An epic's card: Next starts its first ready sub-issue.
-      const epicNext = (issue.subIssues?.total ?? 0) > 0 ? nextOf(now.issues, issue.number, project) : undefined
+      // What Start starts: on an epic's card, its first ready sub-issue, which the button names; null when none is.
+      const isEpic = (issue.subIssues?.total ?? 0) > 0
+      const target = startTargetOf(now.issues, issue, project)
+      const goes = target ?? issue
+      const startLabel = isEpic && target ? `▶ Start #${target.number}` : '▶ Start'
+      const startIt = () => (target ? start(target) : Promise.resolve($.ui.toast(noReadyText(issue.number))))
+      const backgroundIt = () => (target ? startInBackground($, target) : Promise.resolve($.ui.toast(noReadyText(issue.number))))
       return (
         <Box key={`card-${issue.number}`} flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1} marginLeft={2} marginBottom={1}>
           <Text bold wrap="wrap">
@@ -4484,31 +4494,26 @@ export const register: Register = (on, options) => {
             </Box>
           )}
           <Box flexDirection="row" gap={1} marginTop={1} flexWrap="wrap">
-            {launches.some(one => one.number === issue.number && one.how === 'start') ? (
+            {launches.some(one => one.number === goes.number && one.how === 'start') ? (
               <Text key={`starting-${issue.number}`} color="claude">
                 ▶ Starting…
               </Text>
-            ) : startedHere === issue.number ? (
+            ) : startedHere === goes.number ? (
               <Text key={`started-${issue.number}`} color="claude">
                 ▶ Started
               </Text>
             ) : (
-              <Button key={`start-${issue.number}`} variant="primary" hotkey={hotkeys ? 's' : undefined} onPress={() => void start(issue)}>
-                ▶ Start
+              <Button key={`start-${issue.number}`} variant="primary" hotkey={hotkeys ? 's' : undefined} onPress={() => void startIt()}>
+                {startLabel}
               </Button>
             )}
-            {(worker && ACTIVE.includes(worker.status)) || startedHere === issue.number ? null : launches.some(one => one.number === issue.number && one.how === 'background') ? (
+            {working$.some(one => one.number === goes.number && ACTIVE.includes(one.status)) || startedHere === goes.number ? null : launches.some(one => one.number === goes.number && one.how === 'background') ? (
               <Text key={`starting-background-${issue.number}`} color="claude">
                 ⚙ Starting in background…
               </Text>
             ) : (
-              <Button key={`background-${issue.number}`} hotkey={hotkeys ? 'b' : undefined} onPress={() => void startInBackground($, issue)}>
-                ⚙ Start in background
-              </Button>
-            )}
-            {epicNext && (
-              <Button key={`next-${issue.number}`} onPress={() => void start(epicNext)}>
-                {`▶ Next: #${epicNext.number}`}
+              <Button key={`background-${issue.number}`} hotkey={hotkeys ? 'b' : undefined} onPress={() => void backgroundIt()}>
+                {isEpic && target ? `⚙ Start #${target.number} in background` : '⚙ Start in background'}
               </Button>
             )}
             <Button key={`draft-${issue.number}`} hotkey={hotkeys ? 'e' : undefined} onPress={() => void $.prompt.fill({ text: startPrompt(issue) })}>
