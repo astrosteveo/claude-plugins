@@ -4,7 +4,7 @@ import type { Caught, EngineInterface, HookFailure, ModelForkResult, Register, T
 import type { Alert, Board, BoxTask, Check, Comment, Draft, DraftEdit, Filter, GroupBy, Issue, Known, Launch, Problem, Project, ProjectField, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
 import type { Ended, IssueChanges, NewIssue } from './parse'
 import { authOf, problemsOf, problemsText, repoOf } from './access'
-import { ADD_ITEM, CLEAR_VALUE, ITEM_VALUES, SET_FIELD, SET_VALUE, issuesQuery, optionOf, startedOf } from './project'
+import { ADD_ITEM, ARCHIVE_ITEM, CLEAR_VALUE, ITEM_VALUES, SET_FIELD, SET_VALUE, issuesQuery, optionOf, startedOf } from './project'
 import {
   CREATE_FIELD,
   CREATE_PROJECT,
@@ -135,6 +135,7 @@ import {
   fieldValueOf,
   itemValuesOf,
   reordered,
+  toArchive,
 } from './parse'
 
 const PANE = 'issue-board'
@@ -156,6 +157,7 @@ const TICK_TOOL = 'mcp__issue-board__tick'
 const UPDATE_TOOL = 'mcp__issue-board__issue_update'
 const CREATE_TOOL = 'mcp__issue-board__issue_create'
 const MILESTONE_TOOL = 'mcp__issue-board__milestone'
+const ARCHIVE_TOOL = 'mcp__issue-board__project_archive'
 
 const strings = (value: unknown): string[] | undefined =>
   Array.isArray(value) ? value.filter((one): one is string => typeof one === 'string' && one.trim() !== '').map(one => one.trim()) : undefined
@@ -1259,6 +1261,33 @@ const saveMilestone = async (
   return text
 }
 
+// The project's items over REST, one page of 100, with the Status field's values.
+const projectItems = async ($: EngineInterface, path: string, project: Project): Promise<unknown[]> => {
+  const fields = JSON.parse(await gh($, ['api', `${path}/fields?per_page=50`])) as { id: number; name: string }[]
+  const field = fields.find(one => one.name === 'Status')
+  if (!field) throw new Error(`${project.title} has no Status field`)
+  return JSON.parse(await gh($, ['api', `${path}/items?per_page=100&fields=${field.id}`])) as unknown[]
+}
+
+// Archives project items for the project_archive tool: one issue's, or every one at Done that closed before a date. The
+// first call only says how many and which; the archive waits for a call with `confirm`.
+const archiveItems = async ($: EngineInterface, project: Project, ask: { number?: number; doneBefore?: string; confirm: boolean }): Promise<string> => {
+  const path = projectPathOf(project.url)
+  if (!path) throw new Error(`couldn't tell where ${project.title} lives on GitHub`)
+  if (ask.number === undefined && !ask.doneBefore) throw new Error('give an issue number, or doneBefore a date')
+  if (ask.doneBefore && !/^\d{4}-\d{2}-\d{2}$/.test(ask.doneBefore)) throw new Error('give doneBefore as a date, YYYY-MM-DD')
+  const items = await projectItems($, path, project)
+  const chosen = toArchive(items, ask)
+  const what = ask.number !== undefined ? `#${ask.number}` : `the items at Done that closed before ${ask.doneBefore}`
+  if (chosen.length === 0) return ask.number !== undefined ? `#${ask.number} isn't in ${project.title}, or is archived already.` : `Nothing in ${project.title} to archive: no ${what.slice(4)}.`
+  const listed = chosen.map(one => `#${one.number} ${one.title}`).join('\n')
+  const count = `${chosen.length} ${chosen.length === 1 ? 'item' : 'items'}`
+  const partial = items.length >= 100 ? ' Only the first 100 items of the project were read.' : ''
+  if (!ask.confirm) return `Archiving ${what} takes ${count} out of ${project.title}'s views:\n${listed}\nThe issues stay as they are.${partial} Call again with confirm: true to archive.`
+  for (const one of chosen) await graphql($, ARCHIVE_ITEM, { project: project.id, item: one.node })
+  return `Archived ${count} from ${project.title}:\n${listed}`
+}
+
 // The project's issues at a Status, open and closed, for the issues tool: the board's copy holds open issues only, so
 // the project is read over REST, with its Status field's values. One page of 100 items.
 const readProject = async ($: EngineInterface, project: Project, status: string, since?: string): Promise<string> => {
@@ -1266,10 +1295,7 @@ const readProject = async ($: EngineInterface, project: Project, status: string,
   if (!path) return `Couldn't tell where ${project.title} lives on GitHub.`
   if (since && !/^\d{4}-\d{2}-\d{2}$/.test(since)) return 'Give since as a date, YYYY-MM-DD.'
   try {
-    const fields = JSON.parse(await gh($, ['api', `${path}/fields?per_page=50`])) as { id: number; name: string }[]
-    const field = fields.find(one => one.name === 'Status')
-    if (!field) return `${project.title} has no Status field.`
-    const items = JSON.parse(await gh($, ['api', `${path}/items?per_page=100&fields=${field.id}`])) as unknown[]
+    const items = await projectItems($, path, project)
     const found = itemsAt(items, status, since)
     const clock = await nowOf($)
     const scope = `${project.title} at ${status}${since ? `, closed since ${since}` : ''}`
@@ -2185,6 +2211,20 @@ export const register: Register = on => {
       },
     })
     await $.tool.register({
+      name: 'project_archive',
+      description:
+        "Archives items in the repo's GitHub Project, which takes them out of its views and leaves the issues as they are: one issue's item, by number, " +
+        'or every item at Done whose issue closed before a date. The first call says how many and which, and changes nothing; call again with confirm: true to archive.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          number: { type: 'integer', description: "One issue whose item to archive." },
+          doneBefore: { type: 'string', description: 'Every item at Done whose issue closed before this date, YYYY-MM-DD.' },
+          confirm: { type: 'boolean', description: 'true archives what the first call listed.' },
+        },
+      },
+    })
+    await $.tool.register({
       name: 'issue_create',
       description:
         "Files a new GitHub issue in this repository and puts it on the issue board at once: its title and body, labels, assignees, milestone, the epic it is a sub-issue of, " +
@@ -2588,6 +2628,31 @@ export const register: Register = on => {
       return { deny: `Couldn't file the issue: ${message}${problems.length > 0 ? `\n${problemsText(problems)}` : ''}` }
     }
   }).catch(($, _e, next) => toolFailed($, next, 'issue_create'))
+
+  // Claude archiving project items: the first call lists them, the second, with confirm, archives them.
+  on('tool.call', { tool: ARCHIVE_TOOL }, async ($, e) => {
+    const ask = e as unknown as { number?: unknown; doneBefore?: unknown; confirm?: unknown }
+    const project = (await read($, board))?.project
+    if (!project) return { deny: "The board reads no project for this repo, so there's nothing to archive." }
+    try {
+      return {
+        result: await archiveItems($, project, {
+          ...(typeof ask.number === 'number' ? { number: ask.number } : {}),
+          ...(typeof ask.doneBefore === 'string' && ask.doneBefore.trim() ? { doneBefore: ask.doneBefore.trim() } : {}),
+          confirm: ask.confirm === true,
+        }),
+      }
+    } catch (cause) {
+      return { deny: `Couldn't archive: ${messageOf(cause)}` }
+    }
+  }).catch(($, _e, next) => toolFailed($, next, 'project_archive'))
+
+  // Listing what an archive would take changes nothing, so it needs no permission prompt; the archive itself asks. A rule
+  // that denies still stands, as does an organization's ceiling.
+  on('tool.check', { tool: ARCHIVE_TOOL }, async ($, e, next) => {
+    const verdict = await next(e)
+    return verdict.decision === 'ask' && mayAllow(e.ceiling) && (e.input as { confirm?: unknown }).confirm !== true ? { decision: 'allow' as const } : verdict
+  }).catch(($, e, next) => fallBack($, e, next, 'tool.check on project_archive'))
 
   // Claude making or changing a milestone. Claude Code asks first, as for any tool that changes something.
   on('tool.call', { tool: MILESTONE_TOOL }, async ($, e) => {

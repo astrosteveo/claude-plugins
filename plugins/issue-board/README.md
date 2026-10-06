@@ -329,7 +329,7 @@ stays quiet there.
 
 ## What Claude gets
 
-- Five tools:
+- Six tools:
   - `issues` lists the board's issues and pull requests, one line each, or
     one issue in full with its boxes numbered. It reads the board's copy, so
     it doesn't run `gh`, and it needs no permission prompt. A label,
@@ -371,6 +371,10 @@ stays quiet there.
     changes one by its title: renames it, moves its due date, closes or
     reopens it. Claude Code asks before it runs. `issues` with `milestones`
     lists the open ones with their progress.
+  - `project_archive` archives items in the project, which takes them out
+    of its views and leaves the issues as they are: one issue's, or every
+    one at Done that closed before a date. It first says how many and
+    which, without asking; only archiving them asks.
   - If your organization requires Claude Code to ask before `issues` or
     `issue_update` runs, the board doesn't skip that prompt.
   - When you ask Claude in the conversation to work on an issue, Claude

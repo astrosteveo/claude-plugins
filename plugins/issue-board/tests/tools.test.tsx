@@ -127,6 +127,8 @@ const world = (on: On) => {
     // The repo's issue types, #315's type, and each PATCH of an issue over REST, as `<number> <fields>`.
     types: [] as string[],
     type315: '',
+    // Project items archived, by node id.
+    archived: [] as string[],
     patches: [] as string[],
   }
   on('process.run', async (_$, e) => {
@@ -150,6 +152,10 @@ const world = (on: On) => {
     if (argv[1] === 'api' && argv[2] === 'graphql' && argv[3] === '--input') {
       const asked = JSON.parse(e.init?.stdin ?? '{}') as { query: string; variables: Record<string, unknown> }
       const item = String(asked.variables.item)
+      if (asked.query.includes('archiveProjectV2Item')) {
+        state.archived.push(item)
+        return answer(JSON.stringify({ data: { archiveProjectV2Item: { item: { id: item } } } }))
+      }
       if (asked.query.includes('fieldValues')) {
         const nodes = Object.entries(state.values[item] ?? {}).map(([name, value]) => ({ [typeof value === 'number' ? 'number' : 'text']: value, field: { name } }))
         return answer(JSON.stringify({ data: { node: { fieldValues: { nodes } } } }))
@@ -224,7 +230,13 @@ const world = (on: On) => {
     // The project over REST: its fields, and its items with the Status field's values.
     if (argv[1] === 'api' && argv[2] === 'users/astrosteveo/projectsV2/8/fields?per_page=50') return answer(JSON.stringify([{ id: 111, name: 'Status' }]))
     if (argv[1] === 'api' && argv[2] === 'users/astrosteveo/projectsV2/8/items?per_page=100&fields=111') {
-      const item = (status: string, content: Record<string, unknown>, type = 'Issue') => ({ content_type: type, content, fields: [{ name: 'Status', value: { name: { raw: status } } }] })
+      const item = (status: string, content: Record<string, unknown>, type = 'Issue') => ({
+        node_id: `PVTI_${String(content.number)}`,
+        archived_at: state.archived.includes(`PVTI_${String(content.number)}`) ? '2026-10-04T10:00:00Z' : null,
+        content_type: type,
+        content,
+        fields: [{ name: 'Status', value: { name: { raw: status } } }],
+      })
       return answer(
         JSON.stringify([
           item('Done', { number: 290, title: 'Dock the shuttle', state: 'closed', state_reason: 'completed', closed_at: '2026-10-03T10:00:00Z' }),
@@ -988,6 +1000,34 @@ test('a repo without issue types offers none, and setting one says why it cannot
   await ui.press({ key: 'edit-315' })
   expect(await ui.find({ key: 'type-315-Bug' })).toBeUndefined()
   await ui.unmount()
+})
+
+test('project_archive says how many items it would take first, without asking, and archives them on confirm', async ($, on) => {
+  mock.store(on)
+  const gh = world(on)
+  gh.project = true
+  on('tool.check', async () => ({ decision: 'ask' as const }))
+  await $.command.run(REFRESH)
+  const archive = (input: Record<string, unknown>) => $.tool.call({ tool: 'mcp__issue-board__project_archive', ...input })
+  const check = (input: Record<string, unknown>) => $.tool.check({ tool: 'mcp__issue-board__project_archive', input })
+
+  // Listing changes nothing, so it doesn't ask; archiving does.
+  expect((await check({ doneBefore: '2026-10-01' })).decision).toBe('allow')
+  expect((await check({ doneBefore: '2026-10-01', confirm: true })).decision).toBe('ask')
+
+  expect(String((await archive({ doneBefore: '2026-10-01' })).result)).toBe(
+    "Archiving the items at Done that closed before 2026-10-01 takes 1 item out of Void Sector's views:\n#250 Old work\nThe issues stay as they are. Call again with confirm: true to archive.",
+  )
+  expect(gh.archived).toEqual([])
+  expect(String((await archive({ doneBefore: '2026-10-01', confirm: true })).result)).toBe('Archived 1 item from Void Sector:\n#250 Old work')
+  expect(gh.archived).toEqual(['PVTI_250'])
+  // Once archived, it isn't taken again.
+  expect(String((await archive({ doneBefore: '2026-10-01' })).result)).toBe('Nothing in Void Sector to archive: no items at Done that closed before 2026-10-01.')
+
+  // One issue's item, by number.
+  expect(String((await archive({ number: 290, confirm: true })).result)).toBe('Archived 1 item from Void Sector:\n#290 Dock the shuttle')
+  expect(String((await archive({ number: 999 })).result)).toBe("#999 isn't in Void Sector, or is archived already.")
+  expect((await archive({ doneBefore: 'soon' })).deny).toBe("Couldn't archive: give doneBefore as a date, YYYY-MM-DD")
 })
 
 test('the pane draws on every surface, with search where the surface has a text field', async ($, on) => {
