@@ -1035,6 +1035,26 @@ export const workingSection = (working: Working, rule: PrRule): string =>
     ...prRuleText(working.number, rule),
   ].join(' ')
 
+// Where Start works by default: `main` starts the issue in this chat, `background` hands it to the board's agent and
+// keeps the main-chat Start one key away.
+export type StartMode = 'main' | 'background'
+export const START_MODES: readonly StartMode[] = ['main', 'background']
+
+// What Claude does when a background agent it handed an issue to ends, in `background` start mode. It follows the
+// person's own rules on merging, since some want to merge by hand.
+const reviewText =
+  "When a worker ends, review its pull request, run the repository's tests and checks on its branch, and watch its CI. Then merge it, if the person's rules let you merge, or tell the person what is left."
+
+// The system prompt's section in `background` start mode: Claude orchestrates. It hands issues to the board's agent and
+// keeps the main context small, doing only small changes itself. It never changes, so the prompt cache holds.
+export const orchestratorSection = (): string =>
+  [
+    'The person wants you to work as an orchestrator. Hand each GitHub issue of this repository to a background worker instead of working on it here.',
+    `Dispatch one with the Agent tool, subagent_type \`${WORKER}\`, a description that starts with the issue's #number, and a prompt that starts on the issue.`,
+    'Do only small changes yourself, such as a one-line fix or a typo in the docs.',
+    reviewText,
+  ].join(' ')
+
 // What `/issues new` asks Claude for, over the conversation so far. With `epic`, a parent issue and its sub-issues.
 export const draftPrompt = (what: string, labels: string[], epic = false): string =>
   [
@@ -1877,12 +1897,21 @@ export const endedLine = (issue: { number: number; title?: string }, status: End
 }
 
 // What Claude reads when a background agent ends, so it can follow up without the person passing anything on.
-export const handoffPrompt = (issue: { number: number; title?: string }, status: Ended, answer: string | null, pr: { number: number; url: string } | null): string =>
+// In `background` start mode, a finished agent's pull request is Claude's to review and see through.
+export const handoffPrompt = (
+  issue: { number: number; title?: string },
+  status: Ended,
+  answer: string | null,
+  pr: { number: number; url: string } | null,
+  mode: StartMode = 'main',
+): string =>
   [
     `The background agent that Start in background set on ${named(issue)} ${ENDED[status]}.`,
     pr ? `Its pull request: #${pr.number}${pr.url ? ` ${pr.url}` : ''}` : 'The board sees no pull request for the issue.',
     answer?.trim() ? `Its last answer:\n${fit(answer.trim(), 4000)}` : 'It gave no answer.',
-    status === 'completed'
-      ? 'Tell the person in a few sentences what it did and what is left, such as a review of the pull request.'
-      : 'Tell the person in a sentence or two, and say what they could do next.',
+    status === 'completed' && mode === 'background' && pr
+      ? `Review pull request #${pr.number}, run the repository's tests and checks on its branch, and watch its CI. Then merge it, if the person's rules let you merge, or tell the person in a few sentences what is left.`
+      : status === 'completed'
+        ? 'Tell the person in a few sentences what it did and what is left, such as a review of the pull request.'
+        : 'Tell the person in a sentence or two, and say what they could do next.',
   ].join('\n\n')

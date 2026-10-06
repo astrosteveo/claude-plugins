@@ -2,7 +2,7 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "issue-board",
   "displayName": "Issue Board",
-  "version": "0.54.0",
+  "version": "0.55.0",
   "description": "The repository's open GitHub issues and pull requests in a pane and under the prompt, with acceptance progress and CI, and a button that hands an issue to Claude.",
   "author": {
     "name": "astrosteveo"
@@ -42,6 +42,16 @@
       "title": "Start assigns and moves the issue",
       "description": "Start, and Claude starting on an issue, assign it to you and move it to In progress.",
       "default": true
+    },
+    "startMode": {
+      "type": "string",
+      "title": "Where Start works",
+      "description": "main starts an issue in this chat. background makes Start in background the first button, on s and Enter, and the working note tells Claude to hand issues to background workers and then review, check and merge or report their pull requests. The main-chat Start moves to b.",
+      "options": [
+        "main",
+        "background"
+      ],
+      "default": "main"
     },
     "workingNote": {
       "type": "boolean",
