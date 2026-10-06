@@ -272,7 +272,7 @@ test('Start names the issue in the system prompt; the pane searches, filters Min
   await ui.unmount()
 })
 
-test('the band says when CI passes and offers Merge, and shows the issue Claude is on', async ($, on) => {
+test('the band says when CI passes and offers Merge; the issue Claude is on is in the pane, not the band', async ($, on) => {
   mock.store(on)
   const gh = world(on)
   on('ui.render', { component: 'AbovePrompt' }, async ($$, e) => {
@@ -301,10 +301,13 @@ test('the band says when CI passes and offers Merge, and shows the issue Claude 
   const pane = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   await pane.press({ key: 'issue-315' })
   await pane.press({ key: 'start-315' })
-  expect(await band.find({ key: 'stop-315' })).toBeDefined()
-  expect(await band.find({ text: / 1\/3/ })).toBeDefined()
-  await band.press({ key: 'stop-315' })
+  // Progress isn't something to act on, so the band says nothing about it; the pane's Working on line does.
+  expect(await band.find({ key: 'engine' })).toBeDefined()
   expect(await band.find({ key: 'stop-315' })).toBeUndefined()
+  expect(await pane.find({ text: /▶ Working on/ })).toBeDefined()
+  await pane.press({ key: 'stop-315' })
+  expect(await pane.find({ key: 'stop-315' })).toBeUndefined()
+  expect(await pane.find({ text: /▶ Working on/ })).toBeUndefined()
 
   await pane.unmount()
   await band.unmount()
@@ -371,11 +374,11 @@ test('a new session paints the saved board and keeps the issue Claude was on', a
   on('command.register', async (_$, e) => ({ value: { command: e.name } }))
   on('tool.register', async (_$, e) => ({ value: { tool: `mcp__issue-board__${e.name}` } }))
   await $.session.start({ cwd: REPO.root, surface: 'terminal', isInteractive: true })
-  const band = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...BAND })
-  expect(await band.find({ key: 'stop-315' })).toBeDefined()
+  const pane = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  expect(await pane.find({ key: 'stop-315' })).toBeDefined()
   // Another session started it, so this session's system prompt doesn't claim it.
   expect((await $.prompt.compose(COMPOSE)).sections.map(section => section.id)).toEqual(['intro'])
-  await band.unmount()
+  await pane.unmount()
 })
 
 test('the board looks again every 30 seconds while CI runs, and every 5 minutes otherwise', async ($, on) => {

@@ -358,7 +358,7 @@ test('a turn that ran git reads GitHub again and suggests the next step; a check
   await clock.settle()
   const sections = (await $.prompt.compose(COMPOSE)).sections
   expect(sections.at(-1)?.text).toMatch(/^The person is working on GitHub issue #289: Asteroids didn't draw\./)
-  const band = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...BAND })
-  expect(await band.find({ key: 'stop-289' })).toBeDefined()
-  await band.unmount()
+  const working = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  expect(await working.find({ key: 'stop-289' })).toBeDefined()
+  await working.unmount()
 })
