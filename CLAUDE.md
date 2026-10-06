@@ -12,12 +12,13 @@ element prop.
 
 ```sh
 sh scripts/validate.sh                      # strict `claude plugin validate` on the marketplace and every plugin, and every gating hook has a .catch (what CI runs)
-claude plugin test plugins/issue-board      # run a plugin's *.test.ts(x); there is no per-test filter
+sh scripts/test.sh                          # run every plugin's tests (what CI runs after validate.sh)
+claude plugin test plugins/issue-board      # run one plugin's *.test.ts(x); there is no per-test filter
 claude plugin validate --json plugins/issue-board   # what the module hooks and calls, state keys, gating hooks and `.catch`
 npx -p typescript tsc -p plugins/issue-board        # type-check; needs .claude-plugin/types/, see below
 ```
 
-CI (`.github/workflows/validate.yml`) runs only `validate.sh`, not the tests, so run `claude plugin test` yourself.
+CI (`.github/workflows/validate.yml`) runs `validate.sh`, then `test.sh`.
 
 The marketplace is registered from this local checkout, so the installed plugins are whatever is checked out here.
 After changing a plugin, or after merging and pulling `main`, the person runs `/reload-plugins` to load it.
