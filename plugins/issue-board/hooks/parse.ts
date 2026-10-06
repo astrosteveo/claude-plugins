@@ -392,12 +392,16 @@ export const nextOf = (issues: Issue[], epic: number, project: Project | null = 
   ).find(issue => !isBlocked(issue))
 
 // What Start on an issue starts. An epic is worked one sub-issue at a time, so Start on one starts its next ready
-// sub-issue, as Next does; null when none is ready. Any other issue starts itself.
-export const startTargetOf = (issues: Issue[], issue: Issue, project: Project | null = null): Issue | null =>
-  (issue.subIssues?.total ?? 0) > 0 ? (nextOf(issues, issue.number, project) ?? null) : issue
+// sub-issue, as Next does; null when its open sub-issues are all blocked. An epic whose sub-issues are all closed
+// starts itself, so its own open boxes can be finished. Any other issue starts itself.
+export const startTargetOf = (issues: Issue[], issue: Issue, project: Project | null = null): Issue | null => {
+  const subs = issue.subIssues
+  if (!subs || subs.total === 0 || subs.completed >= subs.total) return issue
+  return nextOf(issues, issue.number, project) ?? null
+}
 
-// What Start on an epic says when it has no sub-issue to start.
-export const noReadyText = (epic: number): string => `Epic #${epic} has no ready sub-issue to start: each open one is blocked, or none is open.`
+// What Start on an epic says when every open sub-issue is blocked.
+export const noReadyText = (epic: number): string => `Epic #${epic} has no ready sub-issue to start: each open one is blocked.`
 
 // A heading of the issue list and the issues under it. `folded`: drawn shut until the person opens it, as the Backlog
 // option is.

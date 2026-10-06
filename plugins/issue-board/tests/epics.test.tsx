@@ -45,7 +45,7 @@ test('an epic draft asks for sub-issues and reads them back', () => {
 })
 
 // GitHub with those issues, and the issues gh was asked to create.
-const github = (on: On, issues: typeof ISSUES = ISSUES) => {
+const github = (on: On, issues: Raw[] = ISSUES) => {
   const state = { created: [] as string[][], bodies: [] as string[], next: 50 }
   on('process.run', async (_$, e) => {
     const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
@@ -99,7 +99,7 @@ test("grouped by epic, the heading has the epic's progress and Next, and a block
 })
 
 // The board with epic #35's card open, the prompts sent to Claude and the toasts shown.
-const epicCard = async ($: Engine, on: On, issues: typeof ISSUES = ISSUES) => {
+const epicCard = async ($: Engine, on: On, issues: Raw[] = ISSUES) => {
   mock.store(on)
   github(on, issues)
   const sent: string[] = []
@@ -147,6 +147,20 @@ test('Start on an epic with no ready sub-issue says so in a toast and sends noth
   expect(sent).toEqual([])
   expect(toasts.filter(text => text.startsWith('Epic #35 has no ready sub-issue'))).toHaveLength(2)
   await ui.unmount()
+})
+
+test('an epic whose sub-issues are all closed starts itself, from the card and from issue_update', async ($, on) => {
+  // #35 with every sub-issue closed and its own boxes still open, as an epic moved to Verification is.
+  const done = [{ ...ISSUES[0]!, subIssues: { total: 12, completed: 12 } }, ISSUES[3]!]
+  const { ui, sent, toasts } = await epicCard($, on, done)
+  expect(await ui.find({ key: 'start-35' })).toMatchObject({ text: '▶ Start' })
+  await ui.press({ key: 'start-35' })
+  expect(sent).toHaveLength(1)
+  expect(sent[0]).toMatch(/^Let's start on #35: Make the issue board a full issue tracker\./)
+  expect(toasts.filter(text => text.includes('no ready sub-issue'))).toEqual([])
+  await ui.unmount()
+  const answer = await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 35, start: true })
+  expect(JSON.stringify(answer)).toContain('Started #35: it is')
 })
 
 test('issue_update start on an epic starts its next ready sub-issue and says which one', async ($, on) => {

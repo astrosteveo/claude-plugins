@@ -4403,7 +4403,7 @@ export const register: Register = (on, options) => {
       const isEpic = (issue.subIssues?.total ?? 0) > 0
       const target = startTargetOf(now.issues, issue, project)
       const goes = target ?? issue
-      const startLabel = isEpic && target ? `▶ Start #${target.number}` : '▶ Start'
+      const startLabel = isEpic && target && target.number !== issue.number ? `▶ Start #${target.number}` : '▶ Start'
       const startIt = () => (target ? start(target) : Promise.resolve($.ui.toast(noReadyText(issue.number))))
       const backgroundIt = () => (target ? startInBackground($, target) : Promise.resolve($.ui.toast(noReadyText(issue.number))))
       return (
@@ -4523,7 +4523,7 @@ export const register: Register = (on, options) => {
               </Text>
             ) : (
               <Button key={`background-${issue.number}`} hotkey={hotkeys ? 'b' : undefined} onPress={() => void backgroundIt()}>
-                {isEpic && target ? `⚙ Start #${target.number} in background` : '⚙ Start in background'}
+                {isEpic && target && target.number !== issue.number ? `⚙ Start #${target.number} in background` : '⚙ Start in background'}
               </Button>
             )}
             <Button key={`draft-${issue.number}`} hotkey={hotkeys ? 'e' : undefined} onPress={() => void $.prompt.fill({ text: startPrompt(issue) })}>
