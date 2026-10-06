@@ -12,6 +12,7 @@ import {
   searched,
   tickBody,
   wentGreen,
+  workerPrompt,
   workingSection,
   projectPathOf,
 } from '../hooks/parse'
@@ -365,11 +366,26 @@ test('a draft reads back from JSON, keeping only labels the repository has', () 
   expect(parseDraft('{"body": "no title"}', ['bug'])).toBeNull()
 })
 
-test('the working note says Closes only when every box is ticked, and Refs otherwise', () => {
-  const note = workingSection({ number: 315, title: 'Lay Kessik out', updatedAt: '' })
-  expect(note).toMatch(/^The person is working on GitHub issue #315: Lay Kessik out\./)
-  expect(note).toMatch(/write `Closes #315` in its body only if every acceptance box of #315 is ticked by then\. Otherwise write `Refs #315`, so the issue stays open for what is left\./)
-  expect(note).toMatch(/If the repository's contributing guidelines say otherwise, follow them\.$/)
+test('the working note says Closes only when every box is ticked, always Closes, or nothing, as its PR rule says', () => {
+  const issue = { number: 315, title: 'Lay Kessik out', updatedAt: '' }
+  const ticked = workingSection(issue, 'closes-when-ticked')
+  expect(ticked).toMatch(/^The person is working on GitHub issue #315: Lay Kessik out\./)
+  expect(ticked).toMatch(/write `Closes #315` in its body only if every acceptance box of #315 is ticked by then\. Otherwise write `Refs #315`, so the issue stays open for what is left\./)
+  expect(ticked).toMatch(/If the repository's contributing guidelines say otherwise, follow them\.$/)
+
+  const always = workingSection(issue, 'always-closes')
+  expect(always).toMatch(/When you open a pull request for #315, write `Closes #315` in its body\. If the repository's contributing guidelines say otherwise, follow them\.$/)
+  expect(always).not.toMatch(/Refs/)
+
+  const none = workingSection(issue, 'none')
+  expect(none).toMatch(/^The person is working on GitHub issue #315: Lay Kessik out\./)
+  expect(none).toMatch(/moving its Status needs no permission\.$/)
+  expect(none).not.toMatch(/Closes|Refs|pull request/)
+
+  // The background agent follows the same rule.
+  expect(workerPrompt('closes-when-ticked')).toMatch(/Write `Closes #<number>` in its body only if every acceptance box is ticked by then, and `Refs #<number>` otherwise\./)
+  expect(workerPrompt('always-closes')).toMatch(/open a pull request\. Write `Closes #<number>` in its body\.\n/)
+  expect(workerPrompt('none')).not.toMatch(/Closes|Refs/)
 })
 
 test('the issues tool lists the board, and the tick tool ticks a box on GitHub', async ($, on) => {

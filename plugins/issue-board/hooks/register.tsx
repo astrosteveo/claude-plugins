@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Caught, EngineInterface, HookFailure, ModelForkResult, Register, ThemeKey, Timer, UiCopyArgs } from 'claude-code'
 
 import type { Alert, Board, BoxTask, Check, Comment, Draft, DraftEdit, Filter, GroupBy, Issue, Known, Launch, Problem, Project, ProjectField, StatusUpdate, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
-import type { Ended, IssueChanges, NewIssue } from './parse'
+import type { Ended, IssueChanges, NewIssue, PrRule } from './parse'
 import { authOf, problemsOf, problemsText, repoOf } from './access'
 import { ADD_ITEM, ARCHIVE_ITEM, CLEAR_VALUE, ISSUE_ITEMS, ITEM_VALUES, POST_STATUS, SET_FIELD, SET_VALUE, issuesQuery, optionOf, startedOf } from './project'
 import {
@@ -27,10 +27,10 @@ import {
   templatePrompt,
 } from './setup'
 import {
+  PR_RULES,
   THREADS_QUERY,
   WEEKS,
   WORKER,
-  WORKER_PROMPT,
   absorbed,
   ago,
   alertsOf,
@@ -111,6 +111,7 @@ import {
   workerBadge,
   workerIssueOf,
   workerPrOf,
+  workerPrompt,
   workingSection,
   writesGitHub,
   filedText,
@@ -152,12 +153,28 @@ import {
 const PANE = 'issue-board'
 
 // The person's settings, from the manifest's userConfig. What changes the shared project by itself is off for a new
-// install; Start's own changes are on, since the person pressed Start.
-type Settings = { moveToDone: boolean; moveToVerification: boolean; claimOnStart: boolean }
+// install; Start's own changes are on, since the person pressed Start. Of what the board adds to Claude's prompts, the
+// working note and the copies of issues a prompt names are on, but the note's PR rule is this repo's own, so it is
+// none; the next-step suggestion and following the branch change how Claude Code behaves, so they are off.
+type Settings = {
+  moveToDone: boolean
+  moveToVerification: boolean
+  claimOnStart: boolean
+  workingNote: boolean
+  prRule: PrRule
+  issueCopies: boolean
+  suggestNextStep: boolean
+  followBranch: boolean
+}
 const settingsOf = (options: Readonly<Record<string, unknown>> | undefined): Settings => ({
   moveToDone: options?.moveToDone === true,
   moveToVerification: options?.moveToVerification === true,
   claimOnStart: options?.claimOnStart !== false,
+  workingNote: options?.workingNote !== false,
+  prRule: PR_RULES.find(rule => rule === options?.prRule) ?? 'none',
+  issueCopies: options?.issueCopies !== false,
+  suggestNextStep: options?.suggestNextStep === true,
+  followBranch: options?.followBranch === true,
 })
 let settings: Settings = settingsOf(undefined)
 const REFRESH_MS = 5 * 60 * 1000
@@ -426,7 +443,8 @@ const track = async ($: EngineInterface, issue: Issue, started = false): Promise
 const followBranch = async ($: EngineInterface, name: string | null): Promise<void> => {
   const was = await read($, branch)
   await update($, branch, () => name)
-  const number = name === was ? null : issueOfBranch(name)
+  // Turned off, the branch still marks its pull request, but names no issue for Claude.
+  const number = name === was || !settings.followBranch ? null : issueOfBranch(name)
   const issue = number === null ? undefined : (await read($, board))?.issues.find(one => one.number === number)
   if (!issue) return
   const doing = await read($, working)
@@ -1861,7 +1879,8 @@ const afterTurn = async ($: EngineInterface): Promise<void> => {
   await settle($)
   if (touches > readTouches) await poll($)
   const now = await read($, board)
-  const step = now ? nextStepOf(now, await doingHere($)) : null
+  // Turned off, the prompt box keeps Claude Code's own suggestion.
+  const step = now && settings.suggestNextStep ? nextStepOf(now, await doingHere($)) : null
   nextStep = step
   // The box takes a suggestion once the turn has wound down: a few tries, while no new prompt has come.
   for (let tries = 0; step && nextStep === step && tries < 3; tries += 1) {
@@ -2432,7 +2451,7 @@ export const register: Register = (on, options) => {
       .register({
         name: 'worker',
         description: "Works one GitHub issue of this repository end to end in its own git worktree, for the issue board's Start in background.",
-        prompt: WORKER_PROMPT,
+        prompt: workerPrompt(settings.prRule),
         isolation: 'worktree',
         background: true,
       })
@@ -2605,7 +2624,7 @@ export const register: Register = (on, options) => {
         const note = await newsFor($, now)
         if (note) added.push(note)
         // A background task's notice quotes its command, which may name an issue nobody asked about.
-        for (const number of e.origin.kind === 'task-notification' ? [] : mentionsOf(e.text)) {
+        for (const number of e.origin.kind === 'task-notification' || !settings.issueCopies ? [] : mentionsOf(e.text)) {
           const copy = mentionText(now, number, Date.now())
           if (copy) added.push(copy)
         }
@@ -2919,9 +2938,9 @@ export const register: Register = (on, options) => {
   on('prompt.compose', async ($, e, next) => {
     const composed = await next(e)
     const now = await read($, working)
-    if (!now?.sessionId || now.sessionId !== (await $.session.id().catch(() => undefined))) return composed
+    if (!settings.workingNote || !now?.sessionId || now.sessionId !== (await $.session.id().catch(() => undefined))) return composed
 
-    return { sections: [...composed.sections, { id: 'issue-board:working', text: workingSection(now), scope: 'session' as const }] }
+    return { sections: [...composed.sections, { id: 'issue-board:working', text: workingSection(now, settings.prRule), scope: 'session' as const }] }
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {

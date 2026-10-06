@@ -2,7 +2,7 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "issue-board",
   "displayName": "Issue Board",
-  "version": "0.46.0",
+  "version": "0.47.0",
   "description": "The repository's open GitHub issues and pull requests in a pane and under the prompt, with acceptance progress and CI, and a button that hands an issue to Claude.",
   "author": {
     "name": "astrosteveo"
@@ -35,6 +35,41 @@
       "title": "Start assigns and moves the issue",
       "description": "Start, and Claude starting on an issue, assign it to you and move it to In progress.",
       "default": true
+    },
+    "workingNote": {
+      "type": "boolean",
+      "title": "Working note in the system prompt",
+      "description": "While Claude works on an issue you started, the system prompt names it and says how to tick its boxes and change it.",
+      "default": true
+    },
+    "prRule": {
+      "type": "string",
+      "title": "Working note's pull request rule",
+      "description": "How the working note tells Claude to name the issue in a pull request: closes-when-ticked writes Closes only when every box is ticked and Refs otherwise, always-closes always writes Closes, none says nothing. The background agent follows it too.",
+      "options": [
+        "closes-when-ticked",
+        "always-closes",
+        "none"
+      ],
+      "default": "none"
+    },
+    "issueCopies": {
+      "type": "boolean",
+      "title": "Copies of issues a prompt names",
+      "description": "A prompt that names #123 carries the board's copy of that issue or pull request, unseen.",
+      "default": true
+    },
+    "suggestNextStep": {
+      "type": "boolean",
+      "title": "Suggest the next step",
+      "description": "After Claude's turn, the prompt box suggests the next step for the issue Claude is on, in place of Claude Code's own suggestion.",
+      "default": false
+    },
+    "followBranch": {
+      "type": "boolean",
+      "title": "Follow the branch",
+      "description": "Checking out a branch named for an issue, such as fix/315-glide, makes it the issue Claude is on.",
+      "default": false
     }
   }
 }

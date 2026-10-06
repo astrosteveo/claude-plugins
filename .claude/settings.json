@@ -1,10 +1,28 @@
 {
   "pluginConfigs": {
     "issue-board@astrosteveo-plugins": {
-      "options": { "moveToDone": true, "moveToVerification": true, "claimOnStart": true }
+      "options": {
+        "moveToDone": true,
+        "moveToVerification": true,
+        "claimOnStart": true,
+        "workingNote": true,
+        "prRule": "closes-when-ticked",
+        "issueCopies": true,
+        "suggestNextStep": true,
+        "followBranch": true
+      }
     },
     "issue-board": {
-      "options": { "moveToDone": true, "moveToVerification": true, "claimOnStart": true }
+      "options": {
+        "moveToDone": true,
+        "moveToVerification": true,
+        "claimOnStart": true,
+        "workingNote": true,
+        "prRule": "closes-when-ticked",
+        "issueCopies": true,
+        "suggestNextStep": true,
+        "followBranch": true
+      }
     }
   }
 }
