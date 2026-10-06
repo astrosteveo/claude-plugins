@@ -81,7 +81,7 @@ test("a background agent's checkout in its own worktree doesn't make its issue t
   await $.tool.call({ tool: 'EnterWorktree', name: 'fix-90', agentId: 'agent-1' } as never)
   await clock.settle()
   const pane = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
-  expect(await pane.find({ text: /▶ Working on/ })).toBeUndefined()
+  expect(await pane.find({ text: /^▶ $/ })).toBeUndefined()
   expect((await $.prompt.compose(COMPOSE)).sections.map(section => section.id)).toEqual(['intro'])
 
   // The main session's own checkout still does.
@@ -90,11 +90,11 @@ test("a background agent's checkout in its own worktree doesn't make its issue t
   gh.branch = 'fix/90-worker-message'
   await $.tool.call({ tool: 'Bash', command: 'git checkout -b fix/90-worker-message' })
   await clock.settle()
-  expect(await pane.find({ text: /▶ Working on/ })).toBeDefined()
+  expect(await pane.find({ text: /^▶ $/ })).toBeDefined()
   await pane.unmount()
 })
 
-test('the band has a line for each background agent at work, which goes when it ends; Working on is only the main session', async ($, on) => {
+test('the band has a line for each background agent at work, which goes when it ends; ▶ marks only the main session\'s issue', async ($, on) => {
   mock.store(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   const gh = world(on)
@@ -111,8 +111,8 @@ test('the band has a line for each background agent at work, which goes when it 
   await $.agent.spawn(spawn())
   await clock.settle()
   const pane = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
-  // The agent has #90, so it isn't under Working on: its row says it is the agent's.
-  expect(await pane.find({ text: /▶ Working on/ })).toBeUndefined()
+  // The agent has #90, so its row has no ▶: it says it is the agent's.
+  expect(await pane.find({ text: /^▶ $/ })).toBeUndefined()
   expect(await pane.find({ text: /^⚙ working$/ })).toBeDefined()
 
   expect(await wide.find({ key: 'engine' })).toBeUndefined()

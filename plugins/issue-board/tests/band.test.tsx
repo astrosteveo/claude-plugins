@@ -113,7 +113,7 @@ test('the band shows nothing while nothing needs the person, even with an issue 
   await $.command.run(REFRESH)
   expect(await band.find({ key: 'engine' })).toBeDefined()
   expect(await band.find({ key: 'stop-315' })).toBeUndefined()
-  expect(await pane.find({ text: /▶ Working on/ })).toBeDefined()
+  expect(await pane.find({ text: /^▶ $/ })).toBeDefined()
   expect(await pane.find({ key: 'stop-315' })).toBeDefined()
   expect(await pane.find({ key: 'pr-335' })).toBeDefined()
 
@@ -125,9 +125,9 @@ test('the band shows nothing while nothing needs the person, even with an issue 
   await band.press({ key: 'dismiss-ci-335-2026-10-03T20:00:00Z' })
   expect(await band.find({ key: 'engine' })).toBeDefined()
 
-  // The pane's ✕ on Working on stops tracking the issue, as the band's row used to.
+  // The ✕ on the pane's ▶ row stops tracking the issue, as the band's row used to.
   await pane.press({ key: 'stop-315' })
-  expect(await pane.find({ text: /▶ Working on/ })).toBeUndefined()
+  expect(await pane.find({ text: /^▶ $/ })).toBeUndefined()
 
   await pane.unmount()
   await band.unmount()

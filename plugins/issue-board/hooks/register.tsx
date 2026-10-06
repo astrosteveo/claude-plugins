@@ -94,6 +94,7 @@ import {
   startPrompt,
   statusFor,
   statusOnly,
+  rowRoom,
   sumProgress,
   summary,
   threadsOf,
@@ -1794,17 +1795,6 @@ export const register: Register = on => {
     }
     const togglePr = (number: number) => () => void update($, openPr, was => (was === number ? null : number))
 
-    // A section's heading: its name, a rule across the pane, and what sits at its right.
-    const rule = (title: string, right: string, color = 'claude') => (
-      <Box flexDirection="row" marginTop={1}>
-        <Text bold color={color}>
-          {title}
-        </Text>
-        <Text dimColor>{` ${'─'.repeat(Math.max(1, width - [...title].length - [...right].length - 2))} `}</Text>
-        <Text dimColor>{right}</Text>
-      </Box>
-    )
-
     const meter = (done: number, total: number, cells: number) => {
       const [filled, empty] = bar({ done, total }, cells)
       return (
@@ -2089,7 +2079,7 @@ export const register: Register = on => {
     // project the first two filters read Priority, and the grouping can be Status.
     const groupings = GROUPINGS.filter(one => one.id !== 'status' || project)
     const issuesHeading = (
-      <Box flexDirection="row" gap={1} marginTop={1} flexWrap="wrap">
+      <Box flexDirection="row" gap={1} flexWrap="wrap">
         <Text bold color="claude">
           Issues
         </Text>
@@ -2126,47 +2116,6 @@ export const register: Register = on => {
             {one.label}
           </Button>
         ))}
-      </Box>
-    )
-
-    // The issue Claude is on, with how far along it is, and the pull request for it with that pull request's CI. Only
-    // the main session's: an issue a background agent works on is the agent's, and its row and the band say so.
-    const delegated = doing ? working$.some(one => one.number === doing.number && ACTIVE.includes(one.status)) : false
-    const workingIssue = doing && !delegated ? now.issues.find(issue => issue.number === doing.number) : undefined
-    const workingStep = workingIssue && progress(workingIssue.checks)
-    const workingPr = workingIssue && now.prs.find(pr => (pr.issues ?? []).includes(workingIssue.number))
-    const workingLine = workingIssue && workingStep && (
-      <Box flexDirection="row" gap={1} marginTop={1}>
-        <Text color="claude" bold>
-          ▶ Working on
-        </Text>
-        <Text color="claude">{`#${workingIssue.number}`}</Text>
-        <Text>{fit(workingIssue.title, Math.max(12, width - (workingPr ? 52 : 34)))}</Text>
-        {workingStep.total > 0 && (
-          <Text>
-            {meter(workingStep.done, workingStep.total, 8)}
-            <Text dimColor>{` ${workingStep.done}/${workingStep.total}`}</Text>
-          </Text>
-        )}
-        {workingPr && (
-          <Text>
-            <Text dimColor>· </Text>
-            <Text color="suggestion" bold>{`PR #${workingPr.number} `}</Text>
-            <Text color={ciBadge[workingPr.ci].color}>{ciBadge[workingPr.ci].text.trim()}</Text>
-          </Text>
-        )}
-        <Button
-          key={`stop-${workingIssue.number}`}
-          dimColor
-          onPress={() =>
-            void (async () => {
-              await update($, working, () => null)
-              await save($)
-            })()
-          }
-        >
-          ✕
-        </Button>
       </Box>
     )
 
@@ -2416,15 +2365,22 @@ export const register: Register = on => {
       return rank === 0 ? 'error' : rank === 1 ? 'warning' : 'inactive'
     }
 
-    // One issue on one line: its progress, priority, number, title, its pull request with CI, chips and age; the title
-    // opens it.
+    // Stop tracking the issue this session is on: no row has the ▶ until Start or a branch names one again.
+    const stopTracking = async () => {
+      await update($, working, () => null)
+      await save($)
+    }
+
+    // One issue on one line: a mark, its priority, number and title at the left, which opens it; at the right its agent,
+    // what blocks it, its pull request with CI, chips, a short progress bar with the count, and its age. The mark is ▶
+    // on the issue this session is on and ▲ on a bug.
     const issueRow = (issue: Issue) => {
       const isOpen = open.includes(issue.number)
       const step = progress(issue.checks)
       const bug = isBug(issue)
-      const chips = roomy ? chipsOf(issue).slice(0, 2) : []
+      const chipList = roomy ? chipsOf(issue).slice(0, 2) : []
       const age = ago(issue.updatedAt, clock)
-      const count = step.total > 0 ? `${step.done}/${step.total}`.padEnd(5) : '     '
+      const count = `${step.done}/${step.total}`.padEnd(5)
       const linked = prsFor(issue, now.prs)[0]
       const pr = linked ? `⇄ #${linked.number} ${ciBadge[linked.ci].text.trim().split(' ')[0]}` : ''
       const tag = project && issue.priority ? `${fit(issue.priority, 3)} ` : ''
@@ -2434,30 +2390,35 @@ export const register: Register = on => {
       // The background agent on it, if Start in background set one going.
       const worker = working$.find(one => one.number === issue.number)
       const badge = worker && workerBadge(worker.status)
-      const right =
-        chips.reduce((sum, chip) => sum + cells(chip.name) + 3, 0) +
-        age.padStart(3).length +
-        (pr ? cells(pr) + 1 : 0) +
-        (blocked ? cells(blocked) + 1 : 0) +
-        (badge ? cells(badge.text) + 1 : 0)
-      const left = 6 + 1 + 5 + 1 + (bug ? 2 : 0) + tag.length + String(issue.number).length + 2
-      const [filled, empty] = bar(step, 6)
+      // The issue this session is on, unless a background agent is at work on it: then the row shows the agent instead.
+      // Its ✕ at the row's end stops tracking it.
+      const onIt = doing?.number === issue.number && !(worker && ACTIVE.includes(worker.status))
+      // Each right-hand part with the cell of gap before it. A narrow pane drops the chips, then the bar, then the age.
+      const fits = rowRoom(width, 2 + (onIt && bug ? 2 : 0) + tag.length + String(issue.number).length + 2, {
+        chips: chipList.reduce((sum, chip) => sum + cells(chip.name) + 3, 0),
+        bar: step.total > 0 ? 3 + 1 + 5 + 1 : 0,
+        age: age ? 3 + 1 : 0,
+        rest: (pr ? cells(pr) + 1 : 0) + (blocked ? cells(blocked) + 1 : 0) + (badge ? cells(badge.text) + 1 : 0) + (onIt ? 2 : 0),
+      })
+      const chips = fits.chips ? chipList : []
       return (
         <Box key={`row-${issue.number}`} flexDirection="row" justifyContent="space-between">
           {!isOpen && peek(issue)}
           <Box flexDirection="row">
-            <Text color={tone(step)}>{filled}</Text>
-            <Text color="inactive" dimColor>
-              {empty}
-            </Text>
-            <Text color={tone(step)} dimColor={step.total === 0}>{` ${count} `}</Text>
-            {bug && <Text color="error">▲ </Text>}
+            {onIt ? (
+              <Text color="claude" bold>
+                {'▶ '}
+              </Text>
+            ) : (
+              <Text color="error">{bug ? '▲ ' : '  '}</Text>
+            )}
+            {onIt && bug && <Text color="error">▲ </Text>}
             {tag && <Text color={priorityColor(issue.priority ?? '')}>{tag}</Text>}
-            <Text color={isOpen ? 'claude' : undefined} dimColor={!isOpen} hover={{ dimColor: false, color: 'claude' }}>
+            <Text color={isOpen || onIt ? 'claude' : undefined} dimColor={!isOpen && !onIt} hover={{ dimColor: false, color: 'claude' }}>
               {`#${issue.number} `}
             </Text>
             <Button key={`issue-${issue.number}`} plain hover={{ bold: true }} onPress={toggle(issue.number)}>
-              {fit(issue.title, width - left - right - 1)}
+              {fit(issue.title, fits.title)}
             </Button>
           </Box>
           <Box flexDirection="row" gap={1}>
@@ -2470,7 +2431,18 @@ export const register: Register = on => {
                 <Text dimColor>{` ${chip.name}`}</Text>
               </Text>
             ))}
-            <Text dimColor>{age.padStart(3)}</Text>
+            {fits.bar && (
+              <Text key={`progress-${issue.number}`}>
+                {meter(step.done, step.total, 3)}
+                <Text color={tone(step)}>{` ${count}`}</Text>
+              </Text>
+            )}
+            {fits.age && <Text dimColor>{age.padStart(3)}</Text>}
+            {onIt && (
+              <Button key={`stop-${issue.number}`} dimColor onPress={() => void stopTracking()}>
+                ✕
+              </Button>
+            )}
           </Box>
         </Box>
       )
@@ -2532,7 +2504,7 @@ export const register: Register = on => {
     // What hovering a row shows above it: the title, how far along, and the boxes still open.
     // Every line is padded to the card's width, its margins spaces rather than paddingX, so it covers the rows it is
     // painted over: the surface paints a floating box's text and border but leaves its padding showing what is beneath.
-    // It sits at the pane's right, leaving the rows above their bar, number and the start of their title, so the
+    // It sits at the pane's right, leaving the rows above their mark, number and the start of their title, so the
     // pointer moving up the list reaches the row above rather than the card. A pane without that room shows none.
     const PEEK_CLEAR = 28
     const peek = (issue: Issue) => {
@@ -2891,28 +2863,25 @@ export const register: Register = on => {
         {topLine}
         {setupPlan}
         {trends}
-        {workingLine}
         {setupCard}
         {draftCard}
-        {failure && (
-          <Box marginTop={1}>
-            <Text color="error">{`✗ Last refresh failed: ${failure}`}</Text>
+        {failure && <Text color="error">{`✗ Last refresh failed: ${failure}`}</Text>}
+
+        {now.prs.length > 0 && (
+          <Box flexDirection="row" justifyContent="space-between">
+            <Text>
+              <Text bold color="suggestion">
+                Pull requests
+              </Text>
+              <Text dimColor>{` ${now.prs.length} open`}</Text>
+            </Text>
+            {!arming && (
+              <Button key="close-out-all" dimColor hotkey="m" onPress={arm(true)}>
+                {`⇶ Merge all ${now.prs.length}…`}
+              </Button>
+            )}
           </Box>
         )}
-
-        <Box flexDirection="row" justifyContent="space-between" marginTop={1}>
-          <Text>
-            <Text bold color="suggestion">
-              Pull requests
-            </Text>
-            <Text dimColor>{now.prs.length > 0 ? ` ${now.prs.length} open` : ' none open'}</Text>
-          </Text>
-          {now.prs.length > 0 && !arming && (
-            <Button key="close-out-all" dimColor hotkey="m" onPress={arm(true)}>
-              {`⇶ Merge all ${now.prs.length}…`}
-            </Button>
-          )}
-        </Box>
         {confirm && (
           <Box flexDirection="row" gap={1} flexWrap="wrap">
             <Text color="warning">{`Finish and merge all ${now.prs.length} open ${now.prs.length === 1 ? 'PR' : 'PRs'}?`}</Text>
@@ -2945,13 +2914,13 @@ export const register: Register = on => {
         {issuesHeading}
 
         {shown.length === 0 && (
-          <Box flexDirection="column" alignItems="center" marginTop={2}>
+          <Box flexDirection="column" alignItems="center">
             <Text color="success">✓</Text>
             <Text dimColor>{typed.trim() ? `Nothing under ${filterName} matches “${typed.trim()}”.` : `Nothing open under ${filterName}.`}</Text>
           </Box>
         )}
         {triaging && (
-          <Box flexDirection="row" gap={1} marginTop={1} flexWrap="wrap">
+          <Box flexDirection="row" gap={1} flexWrap="wrap">
             <Text color={triaged.asking ? 'warning' : undefined} dimColor={!triaged.asking}>
               {triaged.asking ? '◌ Claude is suggesting a Priority, area and Status for each…' : '✦ Claude suggests a Priority, area and Status for each. Change any, then accept.'}
             </Text>
@@ -2971,20 +2940,18 @@ export const register: Register = on => {
             </Box>
           ))}
         {!triaging && groupsOf(shown, grouping, project).map(group => {
-          const sum = sumProgress(group.issues)
-          const done = sum.total > 0 ? `${Math.round((sum.done / sum.total) * 100)}%` : '—'
-          const right = group.epic ? `${group.issues.length} open · ${group.epic.completed}/${group.epic.total} closed` : `${group.issues.length} · ${done}`
+          const count = String(group.issues.length)
           const shut = group.folded && !opened.includes(group.key)
           // A folded group, such as Backlog, is a heading the person opens; open, its heading folds it again.
           const fold = () => void update($, unfolded, list => (list.includes(group.key) ? list.filter(one => one !== group.key) : [...list, group.key]))
           return (
             <Box key={`group-${group.key}`} flexDirection="column">
               {group.folded ? (
-                <Box flexDirection="row" marginTop={1} gap={1}>
+                <Box flexDirection="row" gap={1}>
                   <Button key={`fold-${group.key}`} plain hover={{ bold: true }} onPress={fold}>
                     {`${shut ? '▸' : '▾'} ${group.title}`}
                   </Button>
-                  <Text dimColor>{shut ? `${group.issues.length} folded` : right}</Text>
+                  <Text dimColor>{shut ? `${count} folded` : count}</Text>
                 </Box>
               ) : group.epic ? (
                 // An epic: how many of its sub-issues are closed, as a bar, and Next, which starts the first ready one.
@@ -2993,9 +2960,12 @@ export const register: Register = on => {
                   const next = nextOf(now.issues, epic.number, project)
                   const closed = `${epic.completed}/${epic.total} closed`
                   return (
-                    <Box flexDirection="row" justifyContent="space-between" marginTop={1}>
-                      <Text bold color="claude">
-                        {fit(group.title, Math.max(12, width - 12 - cells(closed) - (next ? 10 : 0) - 4))}
+                    <Box flexDirection="row" justifyContent="space-between">
+                      <Text>
+                        <Text bold color="claude">
+                          {fit(group.title, Math.max(12, width - 12 - cells(closed) - (next ? 10 : 0) - 5 - count.length))}
+                        </Text>
+                        <Text dimColor>{` ${count}`}</Text>
                       </Text>
                       <Box flexDirection="row" gap={1}>
                         {meter(epic.completed, epic.total, 10)}
@@ -3010,7 +2980,13 @@ export const register: Register = on => {
                   )
                 })()
               ) : (
-                rule(fit(group.title, Math.max(12, width - right.length - 6)), right)
+                // One short label with its count, such as `In Progress 1`.
+                <Box flexDirection="row" gap={1}>
+                  <Text bold color="claude">
+                    {fit(group.title, Math.max(12, width - count.length - 1))}
+                  </Text>
+                  <Text dimColor>{count}</Text>
+                </Box>
               )}
               {!shut &&
                 group.issues.map(issue => (
@@ -3023,7 +2999,7 @@ export const register: Register = on => {
           )
         })}
 
-        <Box marginTop={1}>
+        <Box>
           <Text dimColor>
             {confirm
               ? 'y merge every open PR · n cancel'
