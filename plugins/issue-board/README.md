@@ -19,6 +19,9 @@ CLI, signed in, in the folder the session started in.
     many task-list boxes are ticked, and sparklines of the issues closed and
     pull requests merged each week over the last 12 weeks, such as
     `closed ▁▂▅▃▇█▁▂▅▃▇█ 41`.
+  - The project's latest status update, under the header line, such as
+    `◉ At risk · Docking slipped. · target 2026-10-20 · 2h ago`, in green,
+    yellow or red by how it stands.
   - The open milestones, under a **Milestones** heading: how many of each
     one's issues are closed, as a bar, and when it is due, in red once it
     is past due with issues still open. The section shows only when the
@@ -329,7 +332,7 @@ stays quiet there.
 
 ## What Claude gets
 
-- Six tools:
+- Seven tools:
   - `issues` lists the board's issues and pull requests, one line each, or
     one issue in full with its boxes numbered. It reads the board's copy, so
     it doesn't run `gh`, and it needs no permission prompt. A label,
@@ -371,6 +374,9 @@ stays quiet there.
     changes one by its title: renames it, moves its due date, closes or
     reopens it. Claude Code asks before it runs. `issues` with `milestones`
     lists the open ones with their progress.
+  - `project_status` reads the project's latest status update, without
+    asking, or posts one: On track, At risk, Off track, Complete or
+    Inactive, with a note and start and target dates. Posting asks.
   - `project_archive` archives items in the project, which takes them out
     of its views and leaves the issues as they are: one issue's, or every
     one at Done that closed before a date. It first says how many and

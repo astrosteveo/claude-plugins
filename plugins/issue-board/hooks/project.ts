@@ -6,7 +6,8 @@ const PROJECTS =
   'projectsV2(first: 5) { nodes { id number title url closed fields(first: 30) { nodes { ' +
   '... on ProjectV2Field { id name dataType } ' +
   '... on ProjectV2SingleSelectField { id name dataType options { id name } } ' +
-  '... on ProjectV2IterationField { id name dataType configuration { iterations { id title } } } } } } }'
+  '... on ProjectV2IterationField { id name dataType configuration { iterations { id title } } } } } ' +
+  'statusUpdates(last: 1) { nodes { status body createdAt startDate targetDate } } } }'
 // Each issue's items in those projects, with the Status and Priority set on them.
 const ITEMS =
   'projectItems(first: 10) { nodes { id project { id } ' +
@@ -50,6 +51,11 @@ export const SET_VALUE =
   '{projectId: $project, itemId: $item, fieldId: $field, value: $value}) { projectV2Item { id } } }'
 export const CLEAR_VALUE =
   'mutation($project: ID!, $item: ID!, $field: ID!) { clearProjectV2ItemFieldValue(input: {projectId: $project, itemId: $item, fieldId: $field}) { projectV2Item { id } } }'
+
+// Posts a status update on a project.
+export const POST_STATUS =
+  'mutation($project: ID!, $status: ProjectV2StatusUpdateStatus!, $body: String, $start: Date, $target: Date) { createProjectV2StatusUpdate(input: ' +
+  '{projectId: $project, status: $status, body: $body, startDate: $start, targetDate: $target}) { statusUpdate { id createdAt } } }'
 
 // Archives an item: it leaves the project's views, and the issue stays as it is.
 export const ARCHIVE_ITEM = 'mutation($project: ID!, $item: ID!) { archiveProjectV2Item(input: {projectId: $project, itemId: $item}) { item { id } } }'

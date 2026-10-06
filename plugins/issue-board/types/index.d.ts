@@ -43,7 +43,21 @@ export type ProjectField = { id: string; name: string; kind: 'text' | 'number' |
 
 // The GitHub Project linked to the repository, as far as the board uses it. `fields`: every field the board can read and
 // set, Status and Priority among them; absent on an older board.
-export type Project = { id: string; number: number; title: string; url: string; status: Field | null; priority: Field | null; fields?: ProjectField[] }
+export type Project = {
+  id: string
+  number: number
+  title: string
+  url: string
+  status: Field | null
+  priority: Field | null
+  fields?: ProjectField[]
+  // The project's latest status update, such as On track with a note; absent when it has none.
+  update?: StatusUpdate | null
+}
+
+// A project status update: how it stands (On track, At risk, Off track, Complete, Inactive), the note, when it was
+// posted, and the dates it gives.
+export type StatusUpdate = { status: string; body: string; at: string; start: string | null; target: string | null }
 
 export type Ci = 'pass' | 'fail' | 'pending' | 'none'
 

@@ -1,10 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { Caught, EngineInterface, HookFailure, ModelForkResult, Register, ThemeKey, Timer, UiCopyArgs } from 'claude-code'
 
-import type { Alert, Board, BoxTask, Check, Comment, Draft, DraftEdit, Filter, GroupBy, Issue, Known, Launch, Problem, Project, ProjectField, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
+import type { Alert, Board, BoxTask, Check, Comment, Draft, DraftEdit, Filter, GroupBy, Issue, Known, Launch, Problem, Project, ProjectField, StatusUpdate, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
 import type { Ended, IssueChanges, NewIssue } from './parse'
 import { authOf, problemsOf, problemsText, repoOf } from './access'
-import { ADD_ITEM, ARCHIVE_ITEM, CLEAR_VALUE, ITEM_VALUES, SET_FIELD, SET_VALUE, issuesQuery, optionOf, startedOf } from './project'
+import { ADD_ITEM, ARCHIVE_ITEM, CLEAR_VALUE, ITEM_VALUES, POST_STATUS, SET_FIELD, SET_VALUE, issuesQuery, optionOf, startedOf } from './project'
 import {
   CREATE_FIELD,
   CREATE_PROJECT,
@@ -136,6 +136,9 @@ import {
   itemValuesOf,
   reordered,
   toArchive,
+  statusEnumOf,
+  updateLine,
+  updateWords,
 } from './parse'
 
 const PANE = 'issue-board'
@@ -158,6 +161,7 @@ const UPDATE_TOOL = 'mcp__issue-board__issue_update'
 const CREATE_TOOL = 'mcp__issue-board__issue_create'
 const MILESTONE_TOOL = 'mcp__issue-board__milestone'
 const ARCHIVE_TOOL = 'mcp__issue-board__project_archive'
+const STATUS_TOOL = 'mcp__issue-board__project_status'
 
 const strings = (value: unknown): string[] | undefined =>
   Array.isArray(value) ? value.filter((one): one is string => typeof one === 'string' && one.trim() !== '').map(one => one.trim()) : undefined
@@ -1288,6 +1292,26 @@ const archiveItems = async ($: EngineInterface, project: Project, ask: { number?
   return `Archived ${count} from ${project.title}:\n${listed}`
 }
 
+// Posts a status update on the project for the project_status tool, and shows it in the pane's header at once.
+const postStatus = async ($: EngineInterface, project: Project, ask: { status: string; note?: string; start?: string; target?: string }): Promise<string> => {
+  const status = statusEnumOf(ask.status)
+  if (!status) throw new Error(`a status update is On track, At risk, Off track, Complete or Inactive, not ${ask.status}`)
+  for (const [name, date] of [['start', ask.start], ['target', ask.target]] as const) {
+    if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error(`give ${name} as a date, YYYY-MM-DD`)
+  }
+  const posted = await graphql($, POST_STATUS, { project: project.id, status, body: ask.note ?? null, start: ask.start ?? null, target: ask.target ?? null })
+  const latest: StatusUpdate = {
+    status: updateWords(status),
+    body: ask.note?.trim() ?? '',
+    at: (posted as { createProjectV2StatusUpdate?: { statusUpdate?: { createdAt?: string } } }).createProjectV2StatusUpdate?.statusUpdate?.createdAt ?? new Date(await nowOf($)).toISOString(),
+    start: ask.start ?? null,
+    target: ask.target ?? null,
+  }
+  await update($, board, now => (now?.project?.id === project.id ? { ...now, project: { ...now.project, update: latest } } : now))
+  await save($)
+  return `Posted on ${project.title}: ${updateLine(latest, await nowOf($))}.`
+}
+
 // The project's issues at a Status, open and closed, for the issues tool: the board's copy holds open issues only, so
 // the project is read over REST, with its Status field's values. One page of 100 items.
 const readProject = async ($: EngineInterface, project: Project, status: string, since?: string): Promise<string> => {
@@ -2211,6 +2235,22 @@ export const register: Register = on => {
       },
     })
     await $.tool.register({
+      name: 'project_status',
+      description:
+        "Reads or posts the status update of the repo's GitHub Project, which shows at the top of the project and in the issue board's pane. " +
+        'Without status, it answers the latest update. With status (On track, At risk, Off track, Complete or Inactive), it posts one, with a note and optional start and target dates. ' +
+        'Reading needs no permission; posting asks.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          status: { type: 'string', enum: ['On track', 'At risk', 'Off track', 'Complete', 'Inactive'], description: 'How the project stands; leave it out to read the latest update.' },
+          note: { type: 'string', description: 'What to say about it, in Markdown.' },
+          start: { type: 'string', description: 'The start date, YYYY-MM-DD.' },
+          target: { type: 'string', description: 'The target date, YYYY-MM-DD.' },
+        },
+      },
+    })
+    await $.tool.register({
       name: 'project_archive',
       description:
         "Archives items in the repo's GitHub Project, which takes them out of its views and leaves the issues as they are: one issue's item, by number, " +
@@ -2628,6 +2668,33 @@ export const register: Register = on => {
       return { deny: `Couldn't file the issue: ${message}${problems.length > 0 ? `\n${problemsText(problems)}` : ''}` }
     }
   }).catch(($, _e, next) => toolFailed($, next, 'issue_create'))
+
+  // Claude reading or posting the project's status update.
+  on('tool.call', { tool: STATUS_TOOL }, async ($, e) => {
+    const ask = e as unknown as { status?: unknown; note?: unknown; start?: unknown; target?: unknown }
+    const project = (await read($, board))?.project
+    if (!project) return { deny: 'The board reads no project for this repo.' }
+    if (typeof ask.status !== 'string' || !ask.status.trim()) {
+      const latest = project.update
+      return { result: latest ? `${project.title}: ${updateLine(latest, await nowOf($))}${latest.body.includes('\n') ? `\n${latest.body}` : ''}` : `${project.title} has no status update yet.` }
+    }
+    const text = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : undefined)
+    try {
+      const note = text(ask.note)
+      const start = text(ask.start)
+      const target = text(ask.target)
+      return { result: await postStatus($, project, { status: ask.status, ...(note ? { note } : {}), ...(start ? { start } : {}), ...(target ? { target } : {}) }) }
+    } catch (cause) {
+      return { deny: `Couldn't post the status update: ${messageOf(cause)}` }
+    }
+  }).catch(($, _e, next) => toolFailed($, next, 'project_status'))
+
+  // Reading the status update changes nothing, so it needs no permission prompt; posting one asks.
+  on('tool.check', { tool: STATUS_TOOL }, async ($, e, next) => {
+    const verdict = await next(e)
+    const status = (e.input as { status?: unknown }).status
+    return verdict.decision === 'ask' && mayAllow(e.ceiling) && !(typeof status === 'string' && status.trim()) ? { decision: 'allow' as const } : verdict
+  }).catch(($, e, next) => fallBack($, e, next, 'tool.check on project_status'))
 
   // Claude archiving project items: the first call lists them, the second, with confirm, archives them.
   on('tool.call', { tool: ARCHIVE_TOOL }, async ($, e) => {
@@ -3575,6 +3642,7 @@ export const register: Register = on => {
       heading$ +
       (trends ? 1 : 0) +
       (failure ? 1 : 0) +
+      (project?.update ? 1 : 0) +
       (now.prs.length > 0 ? 1 + now.prs.length : 0) +
       ((now.milestones ?? []).length > 0 ? 1 + (now.milestones ?? []).length : 0) +
       (arming && now.prs.length > 0 ? 1 : 0) +
@@ -4076,6 +4144,13 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
         {topLine}
+        {project?.update && (
+          // The project's latest status update, colored by how it stands.
+          <Text wrap="truncate-end">
+            <Text color={{ 'On track': 'success', 'At risk': 'warning', 'Off track': 'error', Complete: 'claude' }[project.update.status] as ThemeKey | undefined}>{'◉ '}</Text>
+            {updateLine(project.update, clock)}
+          </Text>
+        )}
         {setupPlan}
         {trends}
         {setupCard}
