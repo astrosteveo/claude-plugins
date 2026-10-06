@@ -115,21 +115,17 @@ GitHub. The card shows the latest three comments, a field to reply, and
   is worked one sub-issue at a time. When every open sub-issue is blocked,
   Start says so in a toast and sends nothing. When every sub-issue is
   closed, Start starts the epic itself, so you can finish its own boxes.
-- The **note** box above the buttons adds your own instructions to the
-  start. Start and Start in background end their message with
-  `Note from the person: …`, so a background agent, which can't ask you
-  anything, gets it in its prompt. Enter in the box starts the issue here.
-  The box clears once the issue starts. Left empty, it changes nothing.
-- **✎ Edit first** (`e`) puts Start's message, with the note, in the prompt
-  box to edit. When you send it and it still names the issue, the board
-  does what Start does: it tracks the issue, makes its tasks, moves it to
-  In progress and assigns it. Rewritten so it no longer names the issue, it
-  is sent as a plain prompt.
+- **✎ Edit first** (`e`) puts Start's message in the prompt box to edit,
+  so you can add your own instructions at the bottom. When you send it and
+  it still names the issue, the board does what Start does: it tracks the
+  issue, makes its tasks, moves it to In progress and assigns it. Rewritten
+  so it no longer names the issue, it is sent as a plain prompt.
 - **✎ Edit first in background** puts Start in background's message in the
-  prompt box instead. Sending it asks Claude to dispatch the agent, and the
-  row follows the agent as it does for Start in background.
-- On an epic's card, the note and both Edit first buttons follow the same
-  sub-issue as Start.
+  prompt box instead. Lines you add go in the agent's prompt, since the
+  agent can't ask you anything. Sending it asks Claude to dispatch the
+  agent, and the row follows the agent as it does for Start in background.
+- On an epic's card, both Edit first buttons follow the same sub-issue as
+  Start.
 - **⚙ Change** opens the editor; see [File and plan issues](#file-and-plan-issues).
 - **↗ GitHub** opens the issue. **Collapse** (`x` or Esc) folds the card.
   With nothing open, Esc closes the pane.
@@ -142,14 +138,13 @@ Start.
 - `main`, the default, is what the list above says. Claude works on the
   issue in this chat.
 - `background` makes Claude an orchestrator. **⚙ Start in background**
-  comes first and takes `s`, and Enter in the note box starts the issue in
-  the background. **✎ Edit first in background** takes `e`. **▶ Start**
-  is still there, on `b`. The working note in the system prompt tells
-  Claude to hand each issue to `issue-board:worker` and to do only small
-  changes itself, such as a one-line fix or a typo in the docs. When a
-  worker ends, Claude reviews its pull request, runs the repository's
-  checks, watches CI, and then merges it or tells you what is left. It
-  merges only if your own rules let it.
+  comes first and takes `s`. **✎ Edit first in background** takes `e`.
+  **▶ Start** is still there, on `b`. The working note in the system
+  prompt tells Claude to hand each issue to `issue-board:worker` and to do
+  only small changes itself, such as a one-line fix or a typo in the docs.
+  When a worker ends, Claude reviews its pull request, runs the
+  repository's checks, watches CI, and then merges it or tells you what is
+  left. It merges only if your own rules let it.
 
 Workers that change the same files get in each other's way, and each
 pull request then conflicts with the one merged before it. In a repository
@@ -342,7 +337,7 @@ How Start works:
 
 | What | Setting | Default |
 |---|---|---|
-| `main` starts an issue in this chat. `background` makes Start in background the card's first button, on `s` and Enter, and the working note tells Claude to hand issues to workers and see their pull requests through. See [Start in the main chat or in the background](#start-in-the-main-chat-or-in-the-background). | Where Start works (`startMode`) | `main` |
+| `main` starts an issue in this chat. `background` makes Start in background the card's first button, on `s`, and the working note tells Claude to hand issues to workers and see their pull requests through. See [Start in the main chat or in the background](#start-in-the-main-chat-or-in-the-background). | Where Start works (`startMode`) | `main` |
 
 In Claude's prompts and the prompt box:
 

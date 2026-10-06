@@ -86,56 +86,37 @@ const epicCard = async ($: Engine, on: On) => {
   return { ui, gh, clock }
 }
 
-const NOTE = 'Keep the change small.'
-
-test('the note ends the start message, and an empty one adds nothing', () => {
+test('the start messages end with the open boxes, and a prompt names an issue only by its own number', () => {
   const issue = { number: 43, title: 'Edit issues', checks: [{ text: 'Edit', done: false }], labels: [], assignees: [], updatedAt: '' } as unknown as Parameters<typeof startPrompt>[0]
-  expect(startPrompt(issue, false, '  ')).toBe(startPrompt(issue))
-  expect(startPrompt(issue, true, ` ${NOTE} `)).toMatch(/mark it completed when it is done\.\n\nNote from the person: Keep the change small\.$/)
-  // In the background, the note goes in the prompt the worker gets.
-  expect(backgroundPrompt(issue, NOTE)).toMatch(/and this prompt:\n\nLet's start on #43[^]*Note from the person: Keep the change small\.$/)
+  expect(startPrompt(issue, true)).toMatch(/\n\nIts open acceptance boxes:\n- Edit\n\nEach is a task in your task list too: mark it completed when it is done\.$/)
+  expect(backgroundPrompt(issue)).toMatch(/and this prompt:\n\nLet's start on #43[^]*\n- Edit$/)
   expect(namesIssue("Let's start on #43: Edit issues.", 43)).toBe(true)
   expect(namesIssue('Look at #430 and https://x/#43 instead.', 43)).toBe(false)
 })
 
-test("Start sends the card's note with its target's message, and the note clears once it starts", async ($, on) => {
+test("the card has no note box, and Start sends its target's message as it was", async ($, on) => {
   const { ui, gh } = await epicCard($, on)
-  expect(await ui.find({ key: 'note-35' })).toMatchObject({ props: { value: '' } })
-  await ui.input({ key: 'note-35', text: NOTE, kind: 'change' })
-  expect(await ui.find({ key: 'note-35' })).toMatchObject({ props: { value: NOTE } })
+  expect(await ui.find({ key: 'note-35' })).toBeUndefined()
   await ui.press({ key: 'start-35' })
   expect(gh.sent).toHaveLength(1)
   expect(gh.sent[0]?.text).toMatch(/^Let's start on #43: Edit issues from the board\./)
-  expect(gh.sent[0]?.text).toMatch(/\n\nNote from the person: Keep the change small\.$/)
-  expect(await ui.find({ key: 'note-35' })).toMatchObject({ props: { value: '' } })
-  await ui.unmount()
-})
-
-test('Start with an empty note sends the message as it was', async ($, on) => {
-  const { ui, gh } = await epicCard($, on)
-  await ui.press({ key: 'start-35' })
-  expect(gh.sent[0]?.text).not.toContain('Note from the person')
   expect(gh.sent[0]?.text).toMatch(/mark it completed when it is done\.$/)
   await ui.unmount()
 })
 
-test("Start in background puts the card's note in the worker's prompt, and the note clears", async ($, on) => {
+test("Start in background sends the dispatch message with its target's start message", async ($, on) => {
   const { ui, gh } = await epicCard($, on)
-  await ui.input({ key: 'note-35', text: NOTE, kind: 'change' })
   await ui.press({ key: 'background-35' })
   expect(gh.sent).toHaveLength(1)
   expect(gh.sent[0]?.text).toMatch(/^Dispatch a background agent to work on #43/)
-  expect(gh.sent[0]?.text).toMatch(/and this prompt:\n\nLet's start on #43[^]*\n\nNote from the person: Keep the change small\.$/)
-  expect(await ui.find({ key: 'note-35' })).toMatchObject({ props: { value: '' } })
+  expect(gh.sent[0]?.text).toMatch(/and this prompt:\n\nLet's start on #43[^]*\n- Save$/)
   await ui.unmount()
 })
 
-test("Edit first fills its target's message with the note; sent still naming the issue, it starts it as Start does", async ($, on) => {
+test("Edit first fills its target's message; sent still naming the issue, it starts it as Start does", async ($, on) => {
   const { ui, gh, clock } = await epicCard($, on)
-  await ui.input({ key: 'note-35', text: NOTE, kind: 'change' })
   await ui.press({ key: 'draft-35' })
-  expect(gh.filled).toEqual([startPrompt({ ...ISSUES[1]!, checks: [{ text: 'Edit', done: false }, { text: 'Save', done: false }], assignees: [] } as never, false, NOTE)])
-  expect(await ui.find({ key: 'note-35' })).toMatchObject({ props: { value: '' } })
+  expect(gh.filled).toEqual([startPrompt({ ...ISSUES[1]!, checks: [{ text: 'Edit', done: false }, { text: 'Save', done: false }], assignees: [] } as never)])
   // Nothing has started yet: the message is only in the prompt box.
   expect(gh.writes).toEqual([])
   expect(gh.sent).toEqual([])
@@ -170,12 +151,9 @@ test('an Edit-first message rewritten so it no longer names the issue is sent as
 
 test('Edit first in background fills the dispatch message; sent, Claude dispatches the worker and the board follows it', async ($, on) => {
   const { ui, gh, clock } = await epicCard($, on)
-  await ui.input({ key: 'note-35', text: NOTE, kind: 'change' })
   await ui.press({ key: 'draft-background-35' })
   expect(gh.filled).toHaveLength(1)
   expect(gh.filled[0]).toMatch(/^Dispatch a background agent to work on #43/)
-  expect(gh.filled[0]).toMatch(/Note from the person: Keep the change small\.$/)
-  expect(await ui.find({ key: 'note-35' })).toMatchObject({ props: { value: '' } })
 
   // Sending it makes the issue no foreground start: the worker takes it.
   await $.prompt.submit({ text: gh.filled[0] ?? '', wait: false, origin: { kind: 'composer' } })

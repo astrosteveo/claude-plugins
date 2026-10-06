@@ -339,8 +339,6 @@ declare module 'claude-code' {
       editorMore: boolean
       // What the band says about epics until it is dismissed.
       epicNotes: EpicNote[]
-      // What each card's note box holds, by the card's issue number, until a start takes it.
-      notes: Record<number, string>
       // The issue whose start message Edit first put in the prompt box, until the person next sends a prompt.
       drafted: number | null
     }
