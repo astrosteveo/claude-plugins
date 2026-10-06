@@ -111,6 +111,10 @@ export type Worker = {
   answer: string | null
   // True once the conversation and Claude were told how it ended.
   told?: boolean
+  // True when Claude started it with its own Agent tool call, in the main session: Claude Code then gives Claude the
+  // agent's result itself, so the board doesn't tell Claude it ended. Absent when a plugin's `$.agent.spawn` or
+  // another agent started it, and on an older board.
+  byClaude?: boolean
 }
 
 // A Start or Start in background pressed on an issue, from the press until the work is under way.

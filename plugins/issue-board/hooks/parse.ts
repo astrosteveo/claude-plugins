@@ -1059,6 +1059,10 @@ export const workerIssueOf = (spawn: { name?: string; description: string; promp
   return found ? Number(found[1]) : undefined
 }
 
+// Whether Claude's own Agent tool call started an agent: the engine raised the spawn, not a plugin's `$.agent.spawn`,
+// in the main session's loop, not another agent's. Claude Code then hands Claude the agent's result itself.
+export const startedByClaude = (origin: { plugin: string }, spawn: { parentAgentId?: string }): boolean => origin.plugin === 'engine' && spawn.parentAgentId === undefined
+
 // A background agent's status on an issue's row.
 export const workerBadge = (status: Worker['status']): { text: string; color: string } =>
   status === 'completed'

@@ -141,7 +141,7 @@ test('the band has a line for each background agent at work, which goes when it 
   expect(await wide.find({ text: /\d\/\d/ })).toBeUndefined()
   expect(await wide.find({ key: 'agent-row-agent-1' })).toBeDefined()
 
-  // It ends: the conversation and Claude are told, and the band has nothing more to say.
+  // It ends: the conversation is told, and the band has nothing more to say.
   await $.turn.complete({ answer: 'Opened PR #91.', durationMs: 1, isAborted: false, turnId: 't', agentId: 'agent-1', reason: 'answer' })
   await clock.settle()
   expect(await wide.find({ key: 'agent-row-agent-1' })).toBeUndefined()
