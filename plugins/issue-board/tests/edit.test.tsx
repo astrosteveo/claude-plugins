@@ -1,8 +1,11 @@
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { changesText, commandsOf, statusOnly } from '../hooks/parse'
+import type { Board, Issue } from '../types'
+import { changesText, commandsOf, leftForDone, statusOnly } from '../hooks/parse'
 import { asksProject, graphPage, isIssuesQuery, optionId } from './graph'
+
+type Raw = Parameters<typeof graphPage>[0][number]
 
 const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 120, placement: 'dock', scroll: { offset: 0, bodyRows: 80 }, view: {} } } as const
 const RUN = { command: 'issues', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
@@ -36,7 +39,8 @@ const EPIC = { number: 35, title: 'Make the issue board a full issue tracker', t
 // GitHub for claude-plugins with its project: every gh command asked for, its stdin, and how often the issues were read.
 const github = (on: On, prs: unknown[] = []) => {
   // `blocked`: what #43 is blocked by on GitHub, as the links made leave it.
-  const state = { calls: [] as { argv: string[]; stdin?: string }[], reads: 0, links: [] as string[], blocked: [] as number[] }
+  // `closed`: how an issue closed on GitHub, which takes it off the board's next read.
+  const state = { calls: [] as { argv: string[]; stdin?: string }[], reads: 0, links: [] as string[], blocked: [] as number[], closed: {} as Record<number, string> }
   on('process.run', async (_$, e) => {
     const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
     const argv = [...e.argv]
@@ -45,7 +49,8 @@ const github = (on: On, prs: unknown[] = []) => {
       state.reads += 1
       return answer(
         graphPage(
-          [
+          (
+            [
             { number: 35, title: EPIC.title, labels: [], body: 'The whole.', updatedAt: '2026-10-05T00:00:00Z', subIssues: { total: 12, completed: 6 }, status: 'In progress', priority: 'P1' },
             {
               number: 43,
@@ -58,7 +63,8 @@ const github = (on: On, prs: unknown[] = []) => {
               priority: 'P1',
               blockedBy: state.blocked.map(number => ({ number, state: 'OPEN' })),
             },
-          ],
+            ] as Raw[]
+          ).filter(raw => !state.closed[raw.number]),
           argv,
           asksProject(argv),
         ),
@@ -68,6 +74,10 @@ const github = (on: On, prs: unknown[] = []) => {
     state.calls.push({ argv: argv.slice(1), ...(e.init?.stdin !== undefined ? { stdin: e.init.stdin } : {}) })
     if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/claude-plugins', hasIssuesEnabled: true }))
     if (argv[1] === 'label' && argv[2] === 'list') return answer(JSON.stringify([{ name: 'bug' }, { name: 'enhancement' }, { name: 'area:issue-board' }]))
+    if (argv[1] === 'api' && argv.includes('{state, state_reason}')) {
+      const how = state.closed[Number(/issues\/(\d+)$/.exec(argv[2] ?? '')?.[1])]
+      return answer(JSON.stringify(how ? { state: 'closed', state_reason: how } : { state: 'open', state_reason: null }))
+    }
     // An issue's REST id, by number: #35 and #43 exist, nothing else does.
     const one = /^repos\/[^/]+\/[^/]+\/issues\/(\d+)$/.exec(argv[2] ?? '')
     if (argv[1] === 'api' && one) {
@@ -196,6 +206,37 @@ test("issue_update links and unlinks blocked-by issues over REST, the row shows 
 
   // A Status move with a blocked-by change still asks.
   expect((await $.tool.check({ tool: 'mcp__issue-board__issue_update', input: { number: 43, status: 'Done', addBlockedBy: [35] } })).decision).toBe('ask')
+})
+
+test('an issue that closes as completed moves to Done in the project; one closed as not planned stays', async ($, on) => {
+  mock.store(on)
+  const gh = github(on)
+  await $.command.run({ ...RUN, args: 'refresh' })
+  const before = writes(gh.calls).length
+
+  // On GitHub, #43 closes as completed and #35 as not planned; both leave the board at its next read.
+  gh.closed = { 43: 'completed', 35: 'not planned' }
+  await $.command.run({ ...RUN, args: 'refresh' })
+  await $.command.run({ ...RUN, args: 'refresh' })
+  const moved = writes(gh.calls).slice(before)
+  expect(moved.map(call => [call.argv.find(arg => arg.startsWith('item=')), call.argv.find(arg => arg.startsWith('option='))])).toEqual([[expect.stringMatching(/43/), `option=${optionId('Done')}`]])
+})
+
+test("only an issue that had an item and wasn't at Done yet is looked at, and nothing without a Done", () => {
+  const issue = (number: number, status: string | null, item: string | null): Issue => ({ number, title: '', url: '', labels: [], assignees: [], checks: [], updatedAt: '', body: '', item, status })
+  const field = (names: string[]) => ({ id: 'F', options: names.map(name => ({ id: name, name })) })
+  const board = (issues: Issue[], statuses: string[]): Board => ({
+    repo: 'o/r',
+    issues,
+    prs: [],
+    velocity: { closed: [], merged: [] },
+    fetchedAt: 0,
+    project: { id: 'P', number: 1, title: 'P', url: '', status: field(statuses), priority: null },
+  })
+  const before = board([issue(1, 'Ready', 'I1'), issue(2, 'Done', 'I2'), issue(3, 'Ready', null), issue(4, 'Ready', 'I4')], ['Ready', 'Done'])
+  expect(leftForDone(before, board([issue(4, 'Ready', 'I4')], ['Ready', 'Done']))).toEqual([{ number: 1, item: 'I1' }])
+  expect(leftForDone(before, board([], ['Ready', 'Shipped']))).toEqual([])
+  expect(leftForDone(null, board([], ['Ready', 'Done']))).toEqual([])
 })
 
 test("moving the Status of the issue Claude is on doesn't ask; any other change does", async ($, on) => {
