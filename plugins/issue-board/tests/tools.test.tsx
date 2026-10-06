@@ -96,8 +96,9 @@ const world = (on: On) => {
     filed: [] as Record<string, unknown>[],
     linked: [] as [number, string][],
     failLink: false,
-    // The number the next filed issue gets.
+    // The number the next filed issue gets, and the blocked-by links made, as `<issue> <blocker's id>`.
     next: 340,
+    blocks: [] as string[],
   }
   on('process.run', async (_$, e) => {
     const argv = e.argv
@@ -148,6 +149,12 @@ const world = (on: On) => {
     if (argv[1] === 'api' && argv[2] === '-X' && /\/sub_issues$/.test(argv[4] ?? '')) {
       if (state.failLink) return { value: { exitCode: 1, stdout: '', stderr: 'gh: Sub issue may only have one parent (HTTP 422)', isStdoutTruncated: false, isStderrTruncated: false } }
       state.linked.push([Number(/issues\/(\d+)\//.exec(argv[4] ?? '')?.[1]), argv[argv.length - 1]?.split('=')[1] ?? ''])
+      return answer('{}')
+    }
+    const one = /^repos\/[^/]+\/[^/]+\/issues\/(\d+)$/.exec(argv[2] ?? '')
+    if (argv[1] === 'api' && one) return answer(`90${one[1]}\n`)
+    if (argv[1] === 'api' && argv[2] === '-X' && argv[4]?.includes('/dependencies/blocked_by')) {
+      state.blocks.push(`${/issues\/(\d+)\//.exec(argv[4])?.[1]} ${argv[6]?.split('=')[1]}`)
       return answer('{}')
     }
     if (argv[1] === 'api' && argv[2]?.includes('/milestones')) return answer(JSON.stringify([{ number: 3, title: 'Launch' }]))
@@ -672,6 +679,15 @@ test('issue_create files an epic and its sub-issues in order, each under it and 
   expect(await ui.find({ text: /^#340 Stations/ })).toBeDefined()
   expect(await ui.find({ text: /0\/2 closed/ })).toBeDefined()
   await ui.unmount()
+
+  // An issue filed as blocked by another shows so at once.
+  const blocked = await $.tool.call({ tool: 'mcp__issue-board__issue_create', title: 'Refuel at a station', blockedBy: [289] })
+  expect(String(blocked.result)).toBe('Filed #343: “Refuel at a station”, blocked by #289, in Void Sector, Inbox.')
+  expect(gh.blocks).toEqual(['343 90289'])
+  const pane = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await pane.press({ key: 'filter-all' })
+  expect(await pane.find({ text: /⛔ #289/ })).toBeDefined()
+  await pane.unmount()
 
   // A sub-issue can't have sub-issues of its own.
   const nested = await $.tool.call({ tool: 'mcp__issue-board__issue_create', title: 'x', subIssues: [{ title: 'y', subIssues: [{ title: 'z' }] }] })

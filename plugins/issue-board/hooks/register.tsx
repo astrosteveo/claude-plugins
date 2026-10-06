@@ -114,6 +114,7 @@ import {
   writesGitHub,
   filedText,
   newIssueOf,
+  numbersOf,
 } from './parse'
 
 const PANE = 'issue-board'
@@ -159,6 +160,10 @@ const changesOf = (input: unknown): (IssueChanges & { number: number }) | null =
   if (comment) changes.comment = comment
   if (raw.close === 'completed' || raw.close === 'not planned') changes.close = raw.close
   if (raw.reopen === true) changes.reopen = true
+  const blocking = numbersOf(raw.addBlockedBy)
+  const unblocking = numbersOf(raw.removeBlockedBy)
+  if (blocking.length > 0) changes.addBlockedBy = blocking
+  if (unblocking.length > 0) changes.removeBlockedBy = unblocking
   return changes
 }
 
@@ -871,6 +876,34 @@ const claim = async ($: EngineInterface, issue: Issue): Promise<void> => {
   if (failures.some(failure => ACCESS_ERROR.test(failure))) void checkAccess($, failures.join('\n'))
 }
 
+// Makes or takes away an issue's blocked-by links, over REST, which spends none of the GraphQL limit, and shows them on
+// the board at once. A blocker that doesn't exist fails, by its number, before any link is made.
+const block = async ($: EngineInterface, repo: string, number: number, blockers: number[], on: boolean): Promise<void> => {
+  const ids = await Promise.all(
+    blockers.map(async one => {
+      try {
+        return { number: one, id: (await gh($, ['api', `repos/${repo}/issues/${one}`, '--jq', '.id'])).trim() }
+      } catch (cause) {
+        throw new Error(/HTTP 404|Not Found/i.test(messageOf(cause)) ? `#${one} doesn't exist in ${repo}` : `couldn't read #${one}: ${messageOf(cause)}`)
+      }
+    }),
+  )
+  const path = `repos/${repo}/issues/${number}/dependencies/blocked_by`
+  for (const one of ids) await gh($, on ? ['api', '-X', 'POST', path, '-F', `issue_id=${one.id}`] : ['api', '-X', 'DELETE', `${path}/${one.id}`])
+  // The board lists the open issues an issue is blocked by: a new link to one it holds shows, a removed one goes.
+  await update($, board, was => {
+    if (!was) return was
+    const open = new Set(was.issues.map(one => one.number))
+    const issues = was.issues.map(one => {
+      if (one.number !== number) return one
+      const kept = (one.blockedBy ?? []).filter(blocker => !blockers.includes(blocker))
+      return { ...one, blockedBy: on ? [...kept, ...blockers.filter(blocker => open.has(blocker))] : kept }
+    })
+    return { ...was, issues }
+  })
+  await save($)
+}
+
 // Files an issue for Claude's issue_create tool. REST does what it can, which spends nothing of the GraphQL limit the
 // board reads with: the issue with its labels, assignees and milestone in one call, then its place under an epic. Only
 // the project needs GraphQL: adding the item and setting its Status and Priority. Once the issue exists, a later step
@@ -931,6 +964,16 @@ const fileOne = async ($: EngineInterface, spec: NewIssue): Promise<{ number: nu
     }
   }
 
+  if (spec.blockedBy?.length) {
+    try {
+      // The issue isn't on the board yet: the links show with it, below.
+      await block($, repo, raw.number, spec.blockedBy, true)
+      did.push(`blocked by ${spec.blockedBy.map(one => `#${one}`).join(', ')}`)
+    } catch (cause) {
+      failed.push(`mark it blocked by ${spec.blockedBy.map(one => `#${one}`).join(', ')} (${messageOf(cause)})`)
+    }
+  }
+
   // Into the project, at the Status asked for, or Inbox where the project has one, to be triaged.
   const project = now.project
   let item: string | null = null
@@ -981,6 +1024,7 @@ const fileOne = async ($: EngineInterface, spec: NewIssue): Promise<{ number: nu
     priority: set.priority ?? null,
     milestone: milestone?.title ?? null,
     parent,
+    blockedBy: did.some(said => said.startsWith('blocked by')) ? (spec.blockedBy ?? []).filter(one => now.issues.some(issue => issue.number === one)) : [],
   }
   await update($, board, was => {
     if (!was) return was
@@ -1484,6 +1528,9 @@ const applyChanges = async ($: EngineInterface, number: number, changes: IssueCh
     await setField($, issue, field, value)
   }
   for (const command of commandsOf(number, changes)) await gh($, command.argv, command.stdin)
+  const repo = (await read($, board))?.repo
+  if (repo && changes.addBlockedBy?.length) await block($, repo, number, changes.addBlockedBy, true)
+  if (repo && changes.removeBlockedBy?.length) await block($, repo, number, changes.removeBlockedBy, false)
   await refreshAfter($)
   return changesText(number, changes)
 }
@@ -1677,6 +1724,8 @@ export const register: Register = on => {
           comment: { type: 'string', description: 'A comment to add, in Markdown.' },
           close: { type: 'string', enum: ['completed', 'not planned'], description: 'Close it, saying why.' },
           reopen: { type: 'boolean', description: 'true reopens a closed issue.' },
+          addBlockedBy: { type: 'array', items: { type: 'integer' }, description: 'Issues it is blocked by, by number, to link.' },
+          removeBlockedBy: { type: 'array', items: { type: 'integer' }, description: 'Issues it is no longer blocked by, by number.' },
         },
         required: ['number'],
       },
@@ -1697,6 +1746,7 @@ export const register: Register = on => {
           assign: { type: 'array', items: { type: 'string' }, description: 'GitHub logins to assign; @me for the signed-in user.' },
           milestone: { type: 'string', description: 'An open milestone to put it on, by title.' },
           parent: { type: 'integer', minimum: 1, description: 'The epic to file it under, as a sub-issue, by number.' },
+          blockedBy: { type: 'array', items: { type: 'integer' }, description: 'Issues it is blocked by, by number.' },
           status: { type: 'string', description: "A Status option of the repo's project, such as Backlog or Ready." },
           priority: { type: 'string', description: "A Priority option of the repo's project, such as P0, P1 or P2." },
           subIssues: {
@@ -1712,6 +1762,7 @@ export const register: Register = on => {
                 milestone: { type: 'string' },
                 status: { type: 'string' },
                 priority: { type: 'string' },
+                blockedBy: { type: 'array', items: { type: 'integer' } },
               },
               required: ['title'],
             },

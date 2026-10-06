@@ -21,14 +21,22 @@ test('a change becomes gh commands in order: the edit, then the comment, then th
   expect(commandsOf(43, { status: 'Verification', priority: 'P1' })).toEqual([])
   expect(changesText(43, { status: 'Verification', addLabels: ['bug'], close: 'completed' })).toBe('#43 moved to Verification, labelled bug, closed as completed.')
   expect(changesText(43, {})).toBe('Nothing to change on #43.')
-  expect([statusOnly({ status: 'Done' }), statusOnly({ status: 'Done', comment: 'x' }), statusOnly({ priority: 'P0' }), statusOnly({})]).toEqual([true, false, false, false])
+  expect([statusOnly({ status: 'Done' }), statusOnly({ status: 'Done', comment: 'x' }), statusOnly({ priority: 'P0' }), statusOnly({}), statusOnly({ status: 'Done', addBlockedBy: [35] })]).toEqual([
+    true,
+    false,
+    false,
+    false,
+    false,
+  ])
+  expect(changesText(43, { addBlockedBy: [35, 44], removeBlockedBy: [12] })).toBe('#43 blocked by #35, #44, no longer blocked by #12.')
 })
 
 const EPIC = { number: 35, title: 'Make the issue board a full issue tracker', total: 12, completed: 6 }
 
 // GitHub for claude-plugins with its project: every gh command asked for, its stdin, and how often the issues were read.
 const github = (on: On, prs: unknown[] = []) => {
-  const state = { calls: [] as { argv: string[]; stdin?: string }[], reads: 0 }
+  // `blocked`: what #43 is blocked by on GitHub, as the links made leave it.
+  const state = { calls: [] as { argv: string[]; stdin?: string }[], reads: 0, links: [] as string[], blocked: [] as number[] }
   on('process.run', async (_$, e) => {
     const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
     const argv = [...e.argv]
@@ -39,7 +47,17 @@ const github = (on: On, prs: unknown[] = []) => {
         graphPage(
           [
             { number: 35, title: EPIC.title, labels: [], body: 'The whole.', updatedAt: '2026-10-05T00:00:00Z', subIssues: { total: 12, completed: 6 }, status: 'In progress', priority: 'P1' },
-            { number: 43, title: 'Edit issues from the board', labels: [{ name: 'enhancement' }], body: '- [ ] Edit', updatedAt: '2026-10-05T00:00:00Z', parent: EPIC, status: 'Ready', priority: 'P1' },
+            {
+              number: 43,
+              title: 'Edit issues from the board',
+              labels: [{ name: 'enhancement' }],
+              body: '- [ ] Edit',
+              updatedAt: '2026-10-05T00:00:00Z',
+              parent: EPIC,
+              status: 'Ready',
+              priority: 'P1',
+              blockedBy: state.blocked.map(number => ({ number, state: 'OPEN' })),
+            },
           ],
           argv,
           asksProject(argv),
@@ -50,6 +68,18 @@ const github = (on: On, prs: unknown[] = []) => {
     state.calls.push({ argv: argv.slice(1), ...(e.init?.stdin !== undefined ? { stdin: e.init.stdin } : {}) })
     if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/claude-plugins', hasIssuesEnabled: true }))
     if (argv[1] === 'label' && argv[2] === 'list') return answer(JSON.stringify([{ name: 'bug' }, { name: 'enhancement' }, { name: 'area:issue-board' }]))
+    // An issue's REST id, by number: #35 and #43 exist, nothing else does.
+    const one = /^repos\/[^/]+\/[^/]+\/issues\/(\d+)$/.exec(argv[2] ?? '')
+    if (argv[1] === 'api' && one) {
+      if (!['35', '43'].includes(one[1] ?? '')) return { value: { exitCode: 1, stdout: '', stderr: 'gh: Not Found (HTTP 404)', isStdoutTruncated: false, isStderrTruncated: false } }
+      return answer(`90${one[1]}\n`)
+    }
+    if (argv[1] === 'api' && argv[2] === '-X' && argv[4]?.includes('/dependencies/blocked_by')) {
+      state.links.push(`${argv[3]} ${argv[4].replace('repos/astrosteveo/claude-plugins/issues/', '')}${argv[6] ? ` ${argv[6]}` : ''}`)
+      const blocker = Number((argv[6] ?? argv[4]).match(/90(\d+)$/)?.[1])
+      state.blocked = argv[3] === 'POST' ? [...state.blocked, blocker] : state.blocked.filter(one => one !== blocker)
+      return answer('{}')
+    }
     if (argv[1] === 'api' && argv[2]?.startsWith('repos/')) return answer(JSON.stringify([{ title: 'Launch' }]))
     if (argv[1] === 'issue' && argv[2] === 'view') return answer(JSON.stringify({ number: 43, title: 'Edit issues from the board', labels: [], body: '- [ ] Edit', updatedAt: '2026-10-05T00:00:00Z' }))
     if (argv[1] === 'api' && argv[2] === 'graphql') return answer(JSON.stringify({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: 'x' } } } }))
@@ -137,6 +167,35 @@ test('Claude starting on an issue in the conversation marks it as Start does, an
   expect(String(viaPr.result)).toBe('Started #43, the issue pull request #50 is for: it is the issue this session is on, In progress and assigned.')
   const missing = await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 77, start: true })
   expect(missing.deny).toMatch(/^Couldn't change #77: #77 isn't open on the board/)
+})
+
+test("issue_update links and unlinks blocked-by issues over REST, the row shows it at once, and an unknown blocker fails by number", async ($, on) => {
+  mock.store(on)
+  const gh = github(on)
+  on('tool.check', async () => ({ decision: 'ask' as const }))
+  await $.command.run({ ...RUN, args: 'refresh' })
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'filter-all' })
+
+  const linked = await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, addBlockedBy: [35] })
+  expect(String(linked.result)).toBe('#43 blocked by #35.')
+  expect(gh.links).toEqual(['POST 43/dependencies/blocked_by issue_id=9035'])
+  expect(await ui.find({ text: /⛔ #35/ })).toBeDefined()
+
+  const unlinked = await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, removeBlockedBy: [35] })
+  expect(String(unlinked.result)).toBe('#43 no longer blocked by #35.')
+  expect(gh.links.at(-1)).toBe('DELETE 43/dependencies/blocked_by/9035')
+  expect(await ui.find({ text: /⛔/ })).toBeUndefined()
+  await ui.unmount()
+
+  // A blocker that doesn't exist fails by its number, and no link is made.
+  const made = gh.links.length
+  const missing = await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, addBlockedBy: [35, 999] })
+  expect(missing.deny).toBe("Couldn't change #43: #999 doesn't exist in astrosteveo/claude-plugins")
+  expect(gh.links).toHaveLength(made)
+
+  // A Status move with a blocked-by change still asks.
+  expect((await $.tool.check({ tool: 'mcp__issue-board__issue_update', input: { number: 43, status: 'Done', addBlockedBy: [35] } })).decision).toBe('ask')
 })
 
 test("moving the Status of the issue Claude is on doesn't ask; any other change does", async ($, on) => {
