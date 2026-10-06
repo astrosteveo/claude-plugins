@@ -234,12 +234,12 @@ test("only Claude's own Agent tool call in the main session counts as Claude sta
   expect(startedByClaude({ plugin: 'engine' }, { parentAgentId: 'agent-0' })).toBe(false)
 })
 
-test('Start in background asks Claude to dispatch the board\'s agent, the row follows the agent Claude starts, and its end comes back to the conversation but not again to Claude', async ($, on) => {
+test('Start in background starts the board\'s agent itself and sends Claude nothing; the row follows it, and its end comes back to the conversation and to Claude', async ($, on) => {
   mock.store(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   world(on)
   const registered: { name: string; isolation?: string; background?: boolean }[] = []
-  const spawned: { type?: unknown; prompt: string; name?: string }[] = []
+  const spawned: { type?: unknown; description?: string; prompt: string; name?: string }[] = []
   let status = 'running'
   on('session.start', async (_$, e) => ({ cwd: e.cwd }))
   on('command.register', async (_$, e) => ({ value: { command: e.name } }))
@@ -248,9 +248,10 @@ test('Start in background asks Claude to dispatch the board\'s agent, the row fo
     registered.push({ name: e.name, ...(e.isolation ? { isolation: e.isolation } : {}), ...(e.background ? { background: e.background } : {}) })
     return { value: { agent: `issue-board:${e.name}` } }
   })
-  // Beneath the plugins: the spawns that reach core.
+  // Beneath the plugins: the spawns that reach core. A plugin's own spawn reaches the test as the Agent tool's input,
+  // which spells the type `subagent_type`.
   on('agent.spawn', async (_$, e) => {
-    spawned.push({ type: e.subagentType, prompt: e.prompt, ...(e.name ? { name: e.name } : {}) })
+    spawned.push({ type: e.subagentType ?? (e as unknown as { subagent_type?: string }).subagent_type, description: e.description, prompt: e.prompt, ...(e.name ? { name: e.name } : {}) })
     return { model: 'claude-sonnet-5-5', agentId: 'agent-1' }
   })
   on('agent.list', async () => ({ value: [{ id: 'agent-1', description: '#315 Lay Kessik out for play', type: 'issue-board:worker', status: status as 'running' }] }))
@@ -283,23 +284,15 @@ test('Start in background asks Claude to dispatch the board\'s agent, the row fo
   await ui.press({ key: 'filter-all' })
   await ui.press({ key: 'issue-315' })
   await ui.press({ key: 'background-315' })
-  // The board starts no agent itself: it asks Claude to, with the agent's type and a description that names the issue,
-  // and hands it Start's message. It asks for no name: the Agent tool may take none.
-  expect(spawned).toEqual([])
-  expect(sent).toHaveLength(1)
-  expect(sent[0]).toMatch(/^Dispatch a background agent to work on #315: Lay Kessik out for play\. Don't work on the issue yourself\./)
-  expect(sent[0]).toContain('Use the Agent tool with subagent_type `issue-board:worker`, description `#315 Lay Kessik out for play`, and this prompt:')
-  expect(sent[0]).not.toMatch(/\bname `/)
-  expect(sent[0]).toMatch(/\nLet's start on #315: Lay Kessik out for play\./)
-  expect(toasts).toContain('Asked Claude to start a background agent on #315')
-  expect(await ui.find({ text: /^⚙ working$/ })).toBeUndefined()
-
-  // Claude calls the Agent tool as asked, with no name: the row shows the agent.
-  await $.agent.spawn(agentCall({ subagentType: 'issue-board:worker', description: '#315 Lay Kessik out for play', prompt: "Let's start on #315: Lay Kessik out for play." }))
   await clock.settle()
-  expect(spawned).toEqual([{ type: 'issue-board:worker', prompt: expect.stringMatching(/^Let's start on #315/) }])
+  // The board starts the agent itself, with its type, a description that names the issue, and Start's message as its
+  // prompt. It gives no name. Claude is sent nothing.
+  expect(spawned).toEqual([{ type: 'issue-board:worker', description: '#315 Lay Kessik out for play', prompt: expect.stringMatching(/^Let's start on #315: Lay Kessik out for play\./) }])
+  expect(sent).toEqual([])
   expect(await ui.find({ text: /^⚙ working$/ })).toBeDefined()
-  expect(toasts).toContain('Started a background agent on #315')
+  // The board follows it once, from the spawn's result, not again from its own agent.spawn hook.
+  expect(toasts.filter(text => text === 'Started a background agent on #315')).toHaveLength(1)
+  expect(toasts.some(text => /Asked Claude/.test(text))).toBe(false)
   // One agent an issue at a time.
   expect(await ui.find({ key: 'background-315' })).toBeUndefined()
 
@@ -315,12 +308,14 @@ test('Start in background asks Claude to dispatch the board\'s agent, the row fo
   expect(await ui.find({ text: /^Opened PR #335\.\n\nBox 1 is ticked\.$/ })).toBeDefined()
   expect(await ui.find({ key: 'background-315' })).toBeDefined()
   // The conversation says it is done, naming the issue, with what it said and its pull request, after the board read
-  // GitHub again. Claude started it with its own Agent tool, so Claude Code hands Claude its result: the board sends
-  // Claude nothing more.
+  // GitHub again. Claude didn't start it, so Claude Code gives Claude no result of its own: the board hands it over, in
+  // the board's name.
   expect(lines).toEqual([
     'The background agent on #315 "Lay Kessik out for play" is done. Opened PR #335. Box 1 is ticked. Pull request #335: https://github.com/astrosteveo/void-sector/pull/335',
   ])
   expect(handed.length).toBe(1)
+  expect(handed[0]?.origin).toEqual({ kind: 'plugin', name: 'issue-board' })
+  expect(handed[0]?.text).toMatch(/#315/)
   expect(toasts).toContain('The background agent on #315 finished')
 
   // The list then says it ended too: nothing is told twice.
@@ -533,7 +528,6 @@ test('a background agent something other than Claude started that fails or is st
   await ui.press({ key: 'issue-315' })
 
   // An API error ends the first: the line says it failed, with its last words, and no pull request.
-  await ui.press({ key: 'background-315' })
   await $.agent.spawn(worker)
   await $.turn.complete({ answer: 'The tests would not build.', durationMs: 1, isAborted: false, turnId: 't', agentId: 'agent-1', reason: 'error' })
   await clock.settle()
@@ -545,7 +539,6 @@ test('a background agent something other than Claude started that fails or is st
   expect(handed.at(-1)).toMatch(/say what they could do next/)
 
   // The second is stopped and never answers: the list says so, and 10 seconds on the line does.
-  await ui.press({ key: 'background-315' })
   await $.agent.spawn(worker)
   await clock.settle()
   expect(await ui.find({ text: /^⚙ working$/ })).toBeDefined()
@@ -579,9 +572,23 @@ test('Start and Start in background change once pressed, and a second press star
   on('agent.register', async (_$, e) => ({ value: { agent: `issue-board:${e.name}` } }))
   on('tool.call', { tool: 'TaskCreate' }, async (_$, e) => ({ result: { task: { id: '1', subject: e.subject } } }))
   on('ui.log', async () => ({ value: undefined }))
-  let refuse = true
-  on('agent.spawn', async () => (refuse ? { deny: 'Background tasks are turned off' } : { model: 'claude-sonnet-5-5', agentId: 'agent-1' }))
-  on('agent.list', async () => ({ value: [{ id: 'agent-1', name: 'issue-315', description: '#315', type: 'issue-board:worker', status: 'running' as const }] }))
+  const toasts: string[] = []
+  on('ui.toast', async (_$, e) => {
+    toasts.push(String((e as { text?: unknown }).text))
+    return { value: undefined }
+  })
+  // Core refuses the spawn, fails it, or starts the agent once the test lets it go.
+  let answer: 'refuse' | 'fail' | 'start' = 'refuse'
+  let spawns = 0
+  let started = (): void => {}
+  on('agent.spawn', async () => {
+    spawns += 1
+    if (answer === 'refuse') return { deny: 'Background tasks are turned off' }
+    if (answer === 'fail') throw new Error('The agent could not start')
+    await new Promise<void>(go => (started = go))
+    return { model: 'claude-sonnet-5-5', agentId: 'agent-1' }
+  })
+  on('agent.list', async () => ({ value: [{ id: 'agent-1', description: '#315 Lay Kessik out for play', type: 'issue-board:worker', status: 'running' as const }] }))
   // Start's message waits until the test lets it go.
   const sent: string[] = []
   let entered = (): void => {}
@@ -590,8 +597,6 @@ test('Start and Start in background change once pressed, and a second press star
     if (e.text.startsWith("Let's start")) await new Promise<void>(go => (entered = go))
     return { text: e.text }
   })
-  const asked = () => sent.filter(text => text.startsWith('Dispatch a background agent to work on #315')).length
-  const worker = agentCall({ subagentType: 'issue-board:worker', name: 'issue-315', description: '#315 Lay Kessik out for play', prompt: "Let's start on #315." })
 
   await $.session.start({ cwd: REPO.root, surface: 'terminal', isInteractive: true })
   await $.command.run(REFRESH)
@@ -600,33 +605,39 @@ test('Start and Start in background change once pressed, and a second press star
   await ui.press({ key: 'filter-all' })
   await ui.press({ key: 'issue-315' })
 
-  // Start in background: until Claude's agent starts, its button says so, and there's none to press again. Two presses
-  // that land before it is drawn again ask Claude once.
+  // The spawn is refused: a toast says why, and the button comes back. Claude is sent nothing.
+  await ui.press({ key: 'background-315' })
+  await clock.settle()
+  expect(spawns).toBe(1)
+  expect(toasts).toContain("Couldn't start a background agent on #315: Background tasks are turned off")
+  expect(await ui.find({ text: /^⚙ Starting in background…$/ })).toBeUndefined()
+  expect(await ui.find({ key: 'background-315' })).toBeDefined()
+  expect(await ui.find({ text: /^⚙ working$/ })).toBeUndefined()
+
+  // The spawn fails: the same.
+  answer = 'fail'
+  await ui.press({ key: 'background-315' })
+  await clock.settle()
+  expect(spawns).toBe(2)
+  expect(toasts.at(-1)).toMatch(/^Couldn't start a background agent on #315: /)
+  expect(await ui.find({ key: 'background-315' })).toBeDefined()
+
+  // Until the agent starts, the button says so, and there's none to press again. Two presses that land before it is
+  // drawn again start one agent.
+  answer = 'start'
   await Promise.all([ui.press({ key: 'background-315' }), ui.press({ key: 'background-315' })])
-  expect(asked()).toBe(1)
+  expect(spawns).toBe(3)
   expect(await ui.find({ text: /^⚙ Starting in background…$/ })).toBeDefined()
   await expect(ui.press({ key: 'background-315' })).rejects.toThrow(/no Button of issue-board keyed "background-315"/)
 
-  // Claude's spawn is refused: the button comes back.
-  await $.agent.spawn(worker)
-  expect(await ui.find({ text: /^⚙ Starting in background…$/ })).toBeUndefined()
-  expect(await ui.find({ key: 'background-315' })).toBeDefined()
-
-  // Claude starts no agent in five minutes: the button comes back too.
-  await ui.press({ key: 'background-315' })
-  expect(asked()).toBe(2)
-  await clock.advance(5 * 60 * 1000)
-  expect(await ui.find({ key: 'background-315' })).toBeDefined()
-
-  // Claude starts it: the row shows it working, and there's no button while it works.
-  refuse = false
-  await ui.press({ key: 'background-315' })
-  await $.agent.spawn(worker)
+  // It starts: the row shows it working, and there's no button while it works.
+  started()
   await clock.settle()
   expect(await ui.find({ text: /^⚙ working$/ })).toBeDefined()
   expect(await ui.find({ text: /^⚙ Starting in background…$/ })).toBeUndefined()
   expect(await ui.find({ key: 'background-315' })).toBeUndefined()
-  expect(asked()).toBe(3)
+  expect(spawns).toBe(3)
+  expect(sent).toEqual([])
 
   // Start: while Claude is being sent the issue, its button says so; once sent, it says it started, and stays that way.
   await Promise.all([ui.press({ key: 'start-315' }), ui.press({ key: 'start-315' })])

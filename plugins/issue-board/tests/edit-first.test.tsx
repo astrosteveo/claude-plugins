@@ -28,12 +28,12 @@ const worker = (number: number): AgentSpawnInput => ({
 })
 
 // GitHub with the project, the writes Start makes (`status #N <Status>`, `assign #N`), the prompts sent with what they
-// carried for Claude, what Edit first filled, and the tasks made.
+// carried for Claude, what Edit first filled, the tasks made, and the agents spawned.
 const world = (on: On) => {
   // These tests have the board write to the project, which the person let it do.
   adoptedStore(on)
   on('session.root', async () => ({ value: '/work/void-sector' }))
-  const state = { writes: [] as string[], sent: [] as { text: string; context: readonly string[] }[], filled: [] as string[], tasks: [] as string[] }
+  const state = { writes: [] as string[], sent: [] as { text: string; context: readonly string[] }[], filled: [] as string[], tasks: [] as string[], spawned: [] as { description: string; prompt: string }[] }
   on('process.run', async (_$, e) => {
     const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
     const argv = [...e.argv]
@@ -72,7 +72,10 @@ const world = (on: On) => {
     state.tasks.push(e.subject)
     return { result: { task: { id: String(state.tasks.length), subject: e.subject } } }
   })
-  on('agent.spawn', async () => ({ model: 'claude-sonnet-5-5', agentId: 'agent-1' }))
+  on('agent.spawn', async (_$, e) => {
+    state.spawned.push({ description: e.description, prompt: e.prompt })
+    return { model: 'claude-sonnet-5-5', agentId: 'agent-1' }
+  })
   on('agent.list', async () => ({ value: [{ id: 'agent-1', description: '#43 Edit issues from the board', type: 'issue-board:worker', status: 'running' as const }] }))
   return state
 }
@@ -107,12 +110,14 @@ test("the card has no note box, and Start sends its target's message as it was",
   await ui.unmount()
 })
 
-test("Start in background sends the dispatch message with its target's start message", async ($, on) => {
-  const { ui, gh } = await epicCard($, on)
+test("Start in background starts the worker with its target's start message, and sends Claude nothing", async ($, on) => {
+  const { ui, gh, clock } = await epicCard($, on)
   await ui.press({ key: 'background-35' })
-  expect(gh.sent).toHaveLength(1)
-  expect(gh.sent[0]?.text).toMatch(/^Dispatch a background agent to work on #43/)
-  expect(gh.sent[0]?.text).toMatch(/and this prompt:\n\nLet's start on #43[^]*\n- Save$/)
+  await clock.settle()
+  expect(gh.spawned).toEqual([{ description: '#43 Edit issues from the board', prompt: expect.stringMatching(/^Let's start on #43[^]*\n- Save$/) }])
+  expect(gh.sent).toEqual([])
+  // The board claims the issue it started, as Start does.
+  expect(gh.writes).toEqual(['status #43 In progress', 'assign #43'])
   await ui.unmount()
 })
 
