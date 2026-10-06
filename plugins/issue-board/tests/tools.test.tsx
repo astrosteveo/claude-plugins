@@ -117,6 +117,9 @@ const world = (on: On) => {
       290: Array.from({ length: 12 }, (_, index) => ({ user: { login: index % 2 ? 'alice' : 'astrosteveo' }, body: `Note ${index + 1}.`, created_at: '2026-10-04T09:00:00Z' })),
     } as Record<number, unknown[]>,
     commentReads: [] as string[],
+    // The repo's milestones as REST has them, and what each POST or PATCH to them sent.
+    milestones: [{ number: 3, title: 'Launch', state: 'open', due_on: '2026-10-20T00:00:00Z', description: '', open_issues: 2, closed_issues: 5 }] as Record<string, unknown>[],
+    milestoneWrites: [] as string[],
   }
   on('process.run', async (_$, e) => {
     const argv = e.argv
@@ -193,7 +196,17 @@ const world = (on: On) => {
       return answer('{}')
     }
     if (argv[1] === 'api' && argv[2]?.endsWith('/labels?per_page=100')) return answer(JSON.stringify([{ name: 'bug' }, { name: 'enhancement' }, { name: 'area:simulation' }]))
-    if (argv[1] === 'api' && argv[2]?.includes('/milestones')) return answer(JSON.stringify([{ number: 3, title: 'Launch' }]))
+    if (argv[1] === 'api' && argv[2] === '-X' && argv[4]?.includes('/milestones')) {
+      const fields = JSON.parse(e.init?.stdin ?? '{}') as Record<string, unknown>
+      state.milestoneWrites.push(`${argv[3]} ${argv[4].replace(/^repos\/[^/]+\/[^/]+\//, '')} ${JSON.stringify(fields)}`)
+      if (argv[3] === 'POST') state.milestones.push({ number: 4, state: 'open', description: '', open_issues: 0, closed_issues: 0, due_on: null, ...fields })
+      else state.milestones = state.milestones.map(one => (argv[4]?.endsWith(`/${String(one.number)}`) ? { ...one, ...fields } : one))
+      return answer('{}')
+    }
+    if (argv[1] === 'api' && argv[2]?.includes('/milestones')) {
+      const open = argv[2].includes('state=open')
+      return answer(JSON.stringify(state.milestones.filter(one => !open || one.state === 'open')))
+    }
     if (argv[1] === 'api') return answer('astrosteveo\n')
     if (argv[1] === 'issue' && argv[2] === 'edit' && argv.includes('--add-assignee')) {
       state.assigned.push(Number(argv[3]))
@@ -784,6 +797,41 @@ test("the pane's Closed filter lists the issues closed lately, read from GitHub 
   await ui.press({ key: 'filter-closed' })
   expect(await ui.find({ text: /Dock the shuttle/ })).toBeDefined()
   expect(await ui.find({ key: 'issue-315' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('the milestone tool makes and changes milestones over REST, and the pane and the issues tool show their progress', async ($, on) => {
+  mock.store(on)
+  mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
+  const gh = world(on)
+  on('tool.check', async () => ({ decision: 'ask' as const }))
+  await $.command.run(REFRESH)
+
+  // Reading them is the issues tool's, with no permission prompt; changing one asks.
+  expect(String((await $.tool.call({ tool: 'mcp__issue-board__issues', milestones: true })).result)).toBe('Launch · 5/7 closed · due 2026-10-20')
+  expect((await $.tool.check({ tool: 'mcp__issue-board__milestone', input: { title: 'Beta' } })).decision).toBe('ask')
+
+  const made = await $.tool.call({ tool: 'mcp__issue-board__milestone', title: 'Beta', due: '2026-11-01', description: 'Playable start to end.' })
+  expect(String(made.result)).toBe('Made the milestone Beta: due 2026-11-01, described.')
+  expect(gh.milestoneWrites.at(-1)).toBe('POST milestones {"title":"Beta","due_on":"2026-11-01T00:00:00Z","description":"Playable start to end."}')
+
+  const changed = await $.tool.call({ tool: 'mcp__issue-board__milestone', title: 'launch', due: '', close: true })
+  expect(String(changed.result)).toBe('Changed the milestone Launch: no due date, closed.')
+  expect(gh.milestoneWrites.at(-1)).toBe('PATCH milestones/3 {"due_on":null,"state":"closed"}')
+
+  // A due date not written as a date, and closing one the repo hasn't got, change nothing.
+  const writes = gh.milestoneWrites.length
+  expect((await $.tool.call({ tool: 'mcp__issue-board__milestone', title: 'Beta', due: 'next week' })).deny).toBe(
+    "Couldn't change the milestone: give the due date as YYYY-MM-DD, or an empty string to clear it",
+  )
+  expect((await $.tool.call({ tool: 'mcp__issue-board__milestone', title: 'Gamma', close: true })).deny).toBe("Couldn't change the milestone: the repo has no milestone called Gamma")
+  expect(gh.milestoneWrites).toHaveLength(writes)
+
+  // The pane lists the open ones at once: Launch closed, Beta made.
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  expect(await ui.find({ text: /^Beta$/ })).toBeDefined()
+  expect(await ui.find({ text: /^Launch$/ })).toBeUndefined()
+  expect(await ui.find({ text: 'due 2026-11-01' })).toBeDefined()
   await ui.unmount()
 })
 

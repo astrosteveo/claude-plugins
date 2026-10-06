@@ -128,6 +128,8 @@ import {
   labelColorFor,
   missingLabels,
   leftForVerification,
+  milestoneLine,
+  milestonesOf,
 } from './parse'
 
 const PANE = 'issue-board'
@@ -148,6 +150,7 @@ const ISSUES_TOOL = 'mcp__issue-board__issues'
 const TICK_TOOL = 'mcp__issue-board__tick'
 const UPDATE_TOOL = 'mcp__issue-board__issue_update'
 const CREATE_TOOL = 'mcp__issue-board__issue_create'
+const MILESTONE_TOOL = 'mcp__issue-board__milestone'
 
 const strings = (value: unknown): string[] | undefined =>
   Array.isArray(value) ? value.filter((one): one is string => typeof one === 'string' && one.trim() !== '').map(one => one.trim()) : undefined
@@ -609,7 +612,7 @@ const readGitHub = async ($: EngineInterface, seen: boolean): Promise<void> => {
     const [owner = '', name = ''] = repo.nameWithOwner.split('/')
     // The weekly counts change a little a day, and reading them takes up to ten GraphQL searches: kept for an hour.
     const kept = before?.repo === repo.nameWithOwner && before.velocityAt !== undefined && (await nowOf($)) - before.velocityAt < VELOCITY_MS ? before : null
-    const [graph, prs, threads, closed, merged, login, current] = await Promise.all([
+    const [graph, prs, threads, closed, merged, login, current, milestones] = await Promise.all([
       repo.hasIssuesEnabled ? fetchIssues($, repo.nameWithOwner) : Promise.resolve({ issues: [], project: null }),
       gh($, [
         'pr',
@@ -628,6 +631,10 @@ const readGitHub = async ($: EngineInterface, seen: boolean): Promise<void> => {
       // Who Mine means: asked once, then kept.
       known ?? gh($, ['api', 'user', '--jq', '.login']).then(out => out.trim() || null, () => null),
       currentBranch($),
+      // The open milestones, over REST; the last read's stand when they can't be read.
+      gh($, ['api', `repos/${repo.nameWithOwner}/milestones?state=open&per_page=50`])
+        .then(out => milestonesOf(JSON.parse(out) as unknown[]))
+        .catch(() => before?.milestones ?? []),
     ])
     const fetchedAt = await nowOf($)
     const next: Board = {
@@ -639,6 +646,7 @@ const readGitHub = async ($: EngineInterface, seen: boolean): Promise<void> => {
           ? kept.velocity
           : { closed: weekly(timesOf(closed ?? '[]', 'closedAt'), fetchedAt), merged: weekly(timesOf(merged ?? '[]', 'mergedAt'), fetchedAt) },
       velocityAt: kept?.velocityAt ?? fetchedAt,
+      milestones,
       fetchedAt,
       project: graph.project,
     }
@@ -1088,6 +1096,45 @@ const latestComments = async ($: EngineInterface, repo: string, number: number, 
   } catch (cause) {
     return `Couldn't read its comments: ${messageOf(cause)}`
   }
+}
+
+// Makes or changes a milestone for Claude's milestone tool, over REST. By its title: one the repo hasn't got is made, and
+// one it has, open or closed, is changed. The board's list follows at once.
+const saveMilestone = async (
+  $: EngineInterface,
+  repo: string,
+  ask: { title: string; newTitle?: string; due?: string; description?: string; close?: boolean; reopen?: boolean },
+): Promise<string> => {
+  if (ask.due && !/^\d{4}-\d{2}-\d{2}$/.test(ask.due)) throw new Error('give the due date as YYYY-MM-DD, or an empty string to clear it')
+  const all = JSON.parse(await gh($, ['api', `repos/${repo}/milestones?state=all&per_page=100`])) as { number: number; title: string }[]
+  const found = all.find(one => one.title.toLowerCase() === ask.title.toLowerCase())
+  const fields = {
+    ...(ask.newTitle ? { title: ask.newTitle } : {}),
+    ...(ask.due !== undefined ? { due_on: ask.due ? `${ask.due}T00:00:00Z` : null } : {}),
+    ...(ask.description !== undefined ? { description: ask.description } : {}),
+    ...(ask.close ? { state: 'closed' } : ask.reopen ? { state: 'open' } : {}),
+  }
+  const said = [
+    ask.newTitle ? `renamed ${ask.newTitle}` : '',
+    ask.due !== undefined ? (ask.due ? `due ${ask.due}` : 'no due date') : '',
+    ask.description !== undefined ? 'described' : '',
+    ask.close ? 'closed' : ask.reopen ? 'reopened' : '',
+  ].filter(Boolean)
+  let text: string
+  if (!found) {
+    if (ask.close || ask.reopen) throw new Error(`the repo has no milestone called ${ask.title}`)
+    await gh($, ['api', '-X', 'POST', `repos/${repo}/milestones`, '--input', '-'], JSON.stringify({ title: ask.title, ...fields }))
+    text = `Made the milestone ${ask.newTitle ?? ask.title}${said.length > 0 ? `: ${said.join(', ')}` : ''}.`
+  } else {
+    if (Object.keys(fields).length === 0) return `Nothing to change on the milestone ${found.title}.`
+    await gh($, ['api', '-X', 'PATCH', `repos/${repo}/milestones/${found.number}`, '--input', '-'], JSON.stringify(fields))
+    text = `Changed the milestone ${found.title}: ${said.join(', ')}.`
+  }
+  const open = milestonesOf(JSON.parse(await gh($, ['api', `repos/${repo}/milestones?state=open&per_page=50`])) as unknown[])
+  await update($, board, was => was && { ...was, milestones: open })
+  await update($, palette, was => was && { ...was, milestones: open.map(one => one.title) })
+  await save($)
+  return text
 }
 
 // The issues closed lately, for the pane's Closed filter: read when the filter is chosen, over REST.
@@ -1886,6 +1933,7 @@ export const register: Register = on => {
           label: { type: 'string', description: 'Only issues with this label.' },
           assignee: { type: 'string', description: 'Only issues assigned to this login.' },
           milestone: { type: 'string', description: 'Only issues on this milestone, by title.' },
+          milestones: { type: 'boolean', description: 'true lists the open milestones instead: how many of their issues are closed, and when each is due.' },
         },
       },
     })
@@ -1947,6 +1995,25 @@ export const register: Register = on => {
           removeBlockedBy: { type: 'array', items: { type: 'integer' }, description: 'Issues it is no longer blocked by, by number.' },
         },
         required: ['number'],
+      },
+    })
+    await $.tool.register({
+      name: 'milestone',
+      description:
+        "Makes or changes a milestone of this repository, by its title: one the repo hasn't got is made, with an optional due date and description; " +
+        'one it has is renamed, given a new due date or description, closed or reopened. The issue board shows open milestones with their progress. ' +
+        'List them with the issues tool and `milestones`. Changing a milestone asks for permission.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'The milestone, by title.' },
+          newTitle: { type: 'string', description: 'A new title.' },
+          due: { type: 'string', description: 'The due date, YYYY-MM-DD; an empty string clears it.' },
+          description: { type: 'string', description: 'What the milestone is for.' },
+          close: { type: 'boolean', description: 'true closes it.' },
+          reopen: { type: 'boolean', description: 'true reopens a closed one.' },
+        },
+        required: ['title'],
       },
     })
     await $.tool.register({
@@ -2227,7 +2294,23 @@ export const register: Register = on => {
   on('prompt.suggest', async ($, e, next) => (e.origin.kind === 'suggestion' && nextStep ? next({ ...e, text: nextStep }) : next(e)))
 
   on('tool.call', { tool: ISSUES_TOOL }, async ($, e) => {
-    const input = e as unknown as { number?: number; filter?: Filter; area?: string; query?: string; state?: string; search?: string; label?: string; assignee?: string; milestone?: string }
+    const input = e as unknown as {
+      number?: number
+      filter?: Filter
+      area?: string
+      query?: string
+      state?: string
+      search?: string
+      label?: string
+      assignee?: string
+      milestone?: string
+      milestones?: boolean
+    }
+    if (input.milestones) {
+      const listed = (await read($, board))?.milestones ?? []
+      const today = new Date(await nowOf($)).toISOString().slice(0, 10)
+      return { result: listed.length > 0 ? listed.map(one => milestoneLine(one, today)).join('\n') : 'The repo has no open milestones.' }
+    }
     // Closed issues, and words searched in every issue, are GitHub's search to answer: the board holds open issues only.
     if (input.number === undefined && (input.state === 'closed' || input.state === 'all' || input.search?.trim())) {
       const repo = (await read($, board))?.repo ?? repoInfo?.nameWithOwner
@@ -2325,6 +2408,31 @@ export const register: Register = on => {
       return { deny: `Couldn't file the issue: ${message}${problems.length > 0 ? `\n${problemsText(problems)}` : ''}` }
     }
   }).catch(($, _e, next) => toolFailed($, next, 'issue_create'))
+
+  // Claude making or changing a milestone. Claude Code asks first, as for any tool that changes something.
+  on('tool.call', { tool: MILESTONE_TOOL }, async ($, e) => {
+    const ask = e as unknown as { title?: unknown; newTitle?: unknown; due?: unknown; description?: unknown; close?: unknown; reopen?: unknown }
+    const text = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : undefined)
+    const title = text(ask.title)
+    if (!title) return { deny: 'Give the milestone a title.' }
+    const repo = (await read($, board))?.repo
+    if (!repo) return { deny: "The issue board hasn't read GitHub yet; refresh it and try again." }
+    try {
+      const newTitle = text(ask.newTitle)
+      return {
+        result: await saveMilestone($, repo, {
+          title,
+          ...(newTitle ? { newTitle } : {}),
+          ...(typeof ask.due === 'string' ? { due: ask.due.trim() } : {}),
+          ...(typeof ask.description === 'string' ? { description: ask.description } : {}),
+          ...(ask.close === true ? { close: true } : {}),
+          ...(ask.reopen === true ? { reopen: true } : {}),
+        }),
+      }
+    } catch (cause) {
+      return { deny: `Couldn't change the milestone: ${messageOf(cause)}` }
+    }
+  }).catch(($, _e, next) => toolFailed($, next, 'milestone'))
 
   // Moving the Status of the issue the person started is part of working on it, so it doesn't ask, and nor does starting
   // on an issue. Any other change
@@ -3217,6 +3325,7 @@ export const register: Register = on => {
       (trends ? 1 : 0) +
       (failure ? 1 : 0) +
       (now.prs.length > 0 ? 1 + now.prs.length : 0) +
+      ((now.milestones ?? []).length > 0 ? 1 + (now.milestones ?? []).length : 0) +
       (arming && now.prs.length > 0 ? 1 : 0) +
       watched.length +
       (triaging ? 1 + (triaged.failed ? 1 : 0) : 0)
@@ -3679,6 +3788,34 @@ export const register: Register = on => {
             {run.running && <Text dimColor>{fit(`${run.running}${run.step ? ` › ${run.step}` : ''}`, Math.max(12, width - 76))}</Text>}
           </Box>
         ))}
+
+        {(now.milestones ?? []).length > 0 && (
+          // The open milestones, release scope: how far along each is, and when it is due.
+          <Box key="milestones" flexDirection="column">
+            <Text>
+              <Text bold color="suggestion">
+                Milestones
+              </Text>
+              <Text dimColor>{` ${(now.milestones ?? []).length} open`}</Text>
+            </Text>
+            {(now.milestones ?? []).map(one => {
+              const total = one.open + one.closed
+              const late = one.due !== null && one.due < new Date(clock).toISOString().slice(0, 10) && one.open > 0
+              return (
+                <Box key={`milestone-${one.number}`} flexDirection="row" justifyContent="space-between">
+                  <Text>{fit(one.title, Math.max(12, width - 34))}</Text>
+                  <Box flexDirection="row" gap={1}>
+                    {meter(one.closed, total, 8)}
+                    <Text dimColor>{`${one.closed}/${total}`}</Text>
+                    <Text color={late ? 'error' : undefined} dimColor={!late}>
+                      {one.due ? (late ? `was due ${one.due}` : `due ${one.due}`) : 'no due date'}
+                    </Text>
+                  </Box>
+                </Box>
+              )
+            })}
+          </Box>
+        )}
 
         {issuesHeading}
 
