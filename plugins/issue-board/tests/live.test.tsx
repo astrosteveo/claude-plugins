@@ -69,16 +69,17 @@ const REFRESH = { command: 'issues', args: 'refresh', origin: { kind: 'composer'
 const REPO = { root: '/work/void-sector', remote: null, internal: false, name: null }
 
 // GitHub and git as the board reads them; how often it read the issues, and what it ran.
-const world = (on: On) => {
-  const state = { prs: [pr('pending')] as unknown[], runs: [] as unknown[], reads: 0, watched: [] as string[][] }
+const world = (on: On, shown: typeof issue = issue) => {
+  const state = { prs: [pr('pending')] as unknown[], runs: [] as unknown[], reads: 0, watched: [] as string[][], ran: [] as string[] }
   on('process.run', async (_$, e) => {
     const argv = e.argv
+    state.ran.push(argv.join(' '))
     const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
     if (argv[0] === 'git') return answer('fix/315-glide\n')
     if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true }))
     if (isIssuesQuery(argv)) {
       state.reads += 1
-      return answer(graphPage([issue]))
+      return answer(graphPage([shown]))
     }
     if (argv[1] === 'api' && argv[2] === 'graphql') return answer(JSON.stringify({ data: { repository: { pullRequests: { nodes: [] } } } }))
     if (argv[1] === 'api') return answer('astrosteveo\n')
@@ -412,6 +413,37 @@ test('A spawn of the board\'s agent that is refused or names no agent shows none
   await $.turn.complete({ answer: 'Opened PR #336.', durationMs: 1, isAborted: false, turnId: 't', agentId: 'agent-3', reason: 'answer' })
   await clock.settle()
   expect(await ui.find({ text: /^⚙ done$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test("Claude dispatching the board's agent from the conversation claims the issue as Start in background does", async ($, on) => {
+  mock.store(on)
+  const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
+  // Nobody is assigned to it yet.
+  const gh = world(on, { ...issue, assignees: [] })
+  on('session.start', async (_$, e) => ({ cwd: e.cwd }))
+  on('command.register', async (_$, e) => ({ value: { command: e.name } }))
+  on('tool.register', async (_$, e) => ({ value: { tool: `mcp__issue-board__${e.name}` } }))
+  on('agent.register', async (_$, e) => ({ value: { agent: `issue-board:${e.name}` } }))
+  on('agent.spawn', async () => ({ model: 'claude-sonnet-5-5', agentId: 'agent-1' }))
+  on('agent.list', async () => ({ value: [{ id: 'agent-1', description: '#315 Lay Kessik out for play', type: 'issue-board:worker', status: 'running' as const }] }))
+  on('prompt.submit', async (_$, e) => ({ text: e.text }))
+  on('ui.toast', async () => ({ value: undefined }))
+
+  await $.session.start({ cwd: REPO.root, surface: 'terminal', isInteractive: true })
+  await $.command.run(REFRESH)
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'filter-all' })
+  await ui.press({ key: 'issue-315' })
+  expect(await ui.find({ key: 'background-315' })).toBeDefined()
+
+  // Nobody pressed Start in background: Claude dispatched the agent because the person asked in the conversation.
+  await $.agent.spawn(agentCall({ subagentType: 'issue-board:worker', description: '#315 Lay Kessik out for play', prompt: 'Work #315.' }))
+  await clock.settle()
+  expect(await ui.find({ text: /^⚙ working$/ })).toBeDefined()
+  expect(await ui.find({ key: 'background-315' })).toBeUndefined()
+  expect(gh.ran.filter(line => line.startsWith('gh issue edit 315'))).toEqual(['gh issue edit 315 --add-assignee @me'])
   await ui.unmount()
 })
 

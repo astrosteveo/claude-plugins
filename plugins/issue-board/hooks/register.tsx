@@ -728,6 +728,21 @@ const claim = async ($: EngineInterface, issue: Issue): Promise<void> => {
   if (failures.some(failure => ACCESS_ERROR.test(failure))) void checkAccess($, failures.join('\n'))
 }
 
+// Claude starting on an issue in the conversation, by the issue_update tool's `start`: as Start does, the issue becomes
+// the one this session is on, moves to In progress and is assigned to the person. A pull request's number starts the
+// issue it is for.
+const startHere = async ($: EngineInterface, number: number): Promise<string> => {
+  const now = await read($, board)
+  const pr = now?.prs.find(one => one.number === number)
+  const target = pr ? pr.issues.find(one => now?.issues.some(issue => issue.number === one)) : number
+  const issue = now?.issues.find(one => one.number === target)
+  if (!issue) throw new Error(pr ? `pull request #${number} names no issue open on the board` : `#${number} isn't open on the board`)
+  await track($, issue, true)
+  await claim($, issue)
+  $.ui.toast(`Working on #${issue.number} now`)
+  return `Started #${issue.number}${pr ? `, the issue pull request #${number} is for` : ''}: it is the issue this session is on, In progress and assigned.`
+}
+
 // A GraphQL call with its variables as JSON, which `-f` can't carry for a list such as a field's options.
 const graphql = async ($: EngineInterface, query: string, variables: Record<string, unknown>): Promise<Record<string, any>> => {
   const answer = JSON.parse(await gh($, ['api', 'graphql', '--input', '-'], JSON.stringify({ query, variables }))) as { data?: Record<string, any>; errors?: { message: string }[] }
@@ -1365,11 +1380,17 @@ export const register: Register = on => {
       description:
         "Changes a GitHub issue of this repository and updates the issue board at once: its Status and Priority in the repo's GitHub Project, labels, assignees, " +
         'parent (the epic it is a sub-issue of), milestone, a comment, closing it as completed or not planned, or reopening it. Give only what changes. ' +
-        'Moving the Status of the issue the person started needs no permission; any other change asks.',
+        'Moving the Status of the issue the person started needs no permission; any other change asks. ' +
+        'When you start work on an issue or pull request in this conversation, without the board\'s Start, call this with start: true, so the board shows it under way. ' +
+        "To work one in the background, dispatch the issue-board:worker agent with a description that starts with the issue's #number: the board follows it on its own.",
       inputSchema: {
         type: 'object',
         properties: {
-          number: { type: 'integer', description: 'The issue.' },
+          number: { type: 'integer', description: 'The issue; with start, a pull request starts the issue it is for.' },
+          start: {
+            type: 'boolean',
+            description: 'true when you start work on it here: it becomes the issue this session is on, moves to In progress and is assigned, as the Start button does. Needs no permission.',
+          },
           status: { type: 'string', description: "A Status option of the repo's project, such as In progress, Verification or Done." },
           priority: { type: 'string', description: "A Priority option of the repo's project, such as P0, P1 or P2." },
           addLabels: { type: 'array', items: { type: 'string' }, description: 'Labels to add.' },
@@ -1580,6 +1601,8 @@ export const register: Register = on => {
     const started = await next(e)
     if (e.subagentType !== WORKER) return started
     const number = workerIssueOf(e)
+    // Start in background claimed the issue when pressed; a dispatch from the conversation claims it here.
+    const fromPress = number !== undefined && pressed.has(`background-${number}`)
     if (number !== undefined) await landed($, number, 'background')
     if (started.deny !== undefined) {
       $.ui.toast(`Couldn't start a background agent${number ? ` on #${number}` : ''}: ${started.deny}`)
@@ -1596,6 +1619,8 @@ export const register: Register = on => {
       const agentId = started.agentId ?? (await listed())
       if (!agentId) throw new Error('no agent id')
       await workerStarted($, number, agentId, startedByClaude(next.origin, e))
+      const issue = fromPress ? undefined : (await read($, board))?.issues.find(one => one.number === number)
+      if (issue) await claim($, issue)
     } catch (cause) {
       $.ui.toast(`Started a background agent on #${number}, but the board couldn't follow it: ${messageOf(cause)}`)
     }
@@ -1666,7 +1691,10 @@ export const register: Register = on => {
     const changes = changesOf(e)
     if (!changes) return { deny: 'Give the issue number, and what to change on it.' }
     const { number, ...rest } = changes
+    const starting = (e as { start?: unknown }).start === true
     try {
+      const started = starting ? await startHere($, number) : null
+      if (started && Object.keys(rest).length === 0) return { result: started }
       const copy = (await read($, working))?.number === number ? await copyOf($) : null
       const result = await applyChanges($, number, rest)
       // What the tool changed that Claude is told of: a comment, and closing or reopening.
@@ -1674,7 +1702,7 @@ export const register: Register = on => {
         const closed = rest.close ? true : rest.reopen ? false : copy.closed
         await absorb($, copy, { ...copy, comments: copy.comments === null ? null : copy.comments + (rest.comment ? 1 : 0), closed })
       }
-      return { result }
+      return { result: started ? `${started}\n${result}` : result }
     } catch (cause) {
       const message = messageOf(cause)
       const problems = ACCESS_ERROR.test(message) ? await checkAccess($, message) : []
@@ -1682,15 +1710,20 @@ export const register: Register = on => {
     }
   }).catch(($, _e, next) => toolFailed($, next, 'issue_update'))
 
-  // Moving the Status of the issue the person started is part of working on it, so it doesn't ask. Any other change
+  // Moving the Status of the issue the person started is part of working on it, so it doesn't ask, and nor does starting
+  // on an issue. Any other change
   // asks, as a tool that changes something does; a rule that allows or denies still stands, and so does an
   // organization's ceiling that keeps the tool at asking.
   on('tool.check', { tool: UPDATE_TOOL }, async ($, e, next) => {
     const verdict = await next(e)
     if (verdict.decision !== 'ask' || !mayAllow(e.ceiling)) return verdict
     const changes = changesOf(e.input)
+    if (!changes) return verdict
+    // Starting on an issue, with nothing else, is what Start does when pressed: it doesn't ask either.
+    const { number, ...rest } = changes
+    if ((e.input as { start?: unknown }).start === true && Object.keys(rest).length === 0) return { decision: 'allow' as const }
     const doing = await read($, working)
-    return changes && doing && changes.number === doing.number && statusOnly(changes) ? { decision: 'allow' as const } : verdict
+    return doing && number === doing.number && statusOnly(changes) ? { decision: 'allow' as const } : verdict
   }).catch(($, e, next) => fallBack($, e, next, 'tool.check on issue_update'))
 
   // Reading the board changes nothing, so it needs no permission prompt; a rule that denies it still stands, and so
@@ -2898,7 +2931,7 @@ export const register: Register = on => {
                 ▶ Start
               </Button>
             )}
-            {worker && ACTIVE.includes(worker.status) ? null : launches.some(one => one.number === issue.number && one.how === 'background') ? (
+            {(worker && ACTIVE.includes(worker.status)) || startedHere === issue.number ? null : launches.some(one => one.number === issue.number && one.how === 'background') ? (
               <Text key={`starting-background-${issue.number}`} color="claude">
                 ⚙ Starting in background…
               </Text>
