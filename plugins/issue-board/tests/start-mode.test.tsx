@@ -66,7 +66,7 @@ const starts = async (ui: Awaited<ReturnType<typeof card>>['ui']) =>
     .filter(one => /^(start|background|draft|draft-background)-43$/.test(one.key ?? ''))
     .map(one => [one.key, one.props.hotkey, one.props.variant ?? null])
 
-test('in main start mode, Start comes first on s, Enter in the note starts here, and the system prompt has no orchestrator note', async ($, on) => {
+test('in main start mode, Start comes first on s and starts here, and the system prompt has no orchestrator note', async ($, on) => {
   const { ui, gh } = await card($, on)
   expect(await starts(ui)).toEqual([
     ['start-43', 's', 'primary'],
@@ -75,7 +75,7 @@ test('in main start mode, Start comes first on s, Enter in the note starts here,
     ['draft-background-43', undefined, null],
   ])
   expect((await $.prompt.compose(COMPOSE)).sections.map(section => section.id)).toEqual(['intro'])
-  await ui.input({ key: 'note-43', text: 'Small, please.' })
+  await ui.press({ key: 'start-43' })
   expect(gh.sent).toHaveLength(1)
   expect(gh.sent[0]).toMatch(/^Let's start on #43: Edit issues from the board\./)
   // Started here, the system prompt names the issue and nothing else of the board.
@@ -83,7 +83,7 @@ test('in main start mode, Start comes first on s, Enter in the note starts here,
   await ui.unmount()
 })
 
-test('in background start mode, Start in background comes first on s and Enter, and the main-chat Start is on b', { options: { startMode: 'background' } }, async ($, on) => {
+test('in background start mode, Start in background comes first on s, and the main-chat Start is on b', { options: { startMode: 'background' } }, async ($, on) => {
   const { ui, gh } = await card($, on)
   expect(await starts(ui)).toEqual([
     ['background-43', 's', 'primary'],
@@ -91,11 +91,9 @@ test('in background start mode, Start in background comes first on s and Enter, 
     ['draft-background-43', 'e', null],
     ['draft-43', undefined, null],
   ])
-  expect(await ui.find({ key: 'note-43' })).toMatchObject({ props: { placeholder: "added to Start's message; Enter starts in background" } })
-  await ui.input({ key: 'note-43', text: 'Small, please.' })
+  await ui.press({ key: 'background-43' })
   expect(gh.sent).toHaveLength(1)
   expect(gh.sent[0]).toMatch(/^Dispatch a background agent to work on #43/)
-  expect(gh.sent[0]).toMatch(/Note from the person: Small, please\.$/)
 
   // Edit first fills the background message.
   await ui.press({ key: 'draft-background-43' })
