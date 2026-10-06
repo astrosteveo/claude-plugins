@@ -1304,6 +1304,18 @@ export const helpText = (filters: { hotkey: string; name: string }[]): string =>
     ...TOOLS.map(one => `- ${one.name}: ${one.what}.`),
   ].join('\n')
 
+// What the board did on its own in one read, in a line for a toast: the issues it moved to a Status and why, many at
+// once in one line. `why` reads for one issue; `whyMany` for several.
+export const movedText = (to: string, moved: number[], why: string, whyMany: string): string =>
+  moved.length === 1 ? `Moved #${moved[0]} to ${to}: ${why}.` : `Moved ${moved.length} issues to ${to} (${moved.map(one => `#${one}`).join(', ')}): ${whyMany}.`
+
+// And the ones it couldn't move, with the first reason and where to look.
+export const unmovedText = (to: string, failed: { number: number; message: string }[]): string => {
+  const [first] = failed
+  const which = failed.length === 1 ? `#${first?.number}` : `${failed.length} issues (${failed.map(one => `#${one.number}`).join(', ')})`
+  return `Couldn't move ${which} to ${to}: ${first?.message ?? 'GitHub refused'}. /issues check may say why.`
+}
+
 // Issue numbers from a tool's input: whole and positive, each once.
 export const numbersOf = (value: unknown): number[] =>
   Array.isArray(value) ? [...new Set(value.filter((one): one is number => typeof one === 'number' && Number.isInteger(one) && one > 0))] : []

@@ -145,6 +145,8 @@ import {
   openedText,
   SUBCOMMANDS,
   helpText,
+  movedText,
+  unmovedText,
 } from './parse'
 
 const PANE = 'issue-board'
@@ -793,6 +795,8 @@ const moveToVerification = async ($: EngineInterface, before: Board | null, next
   const verify = optionOf(project?.status, 'Verification')
   if (!project?.status || !verify) return
   const merged = new Map<number, boolean>()
+  const verified: number[] = []
+  const failed: { number: number; message: string }[] = []
   for (const left of leftForVerification(before, next)) {
     try {
       if (!merged.has(left.pr)) merged.set(left.pr, !/^(null)?$/.test((await gh($, ['api', `repos/${next.repo}/pulls/${left.pr}`, '--jq', '.merged_at'])).trim()))
@@ -800,10 +804,15 @@ const moveToVerification = async ($: EngineInterface, before: Board | null, next
       await gh($, ['api', 'graphql', '-f', `query=${SET_FIELD}`, '-f', `project=${project.id}`, '-f', `item=${left.item}`, '-f', `field=${project.status.id}`, '-f', `option=${verify.id}`])
       await update($, board, was => was && { ...was, issues: was.issues.map(one => (one.number === left.number ? { ...one, status: verify.name } : one)) })
       moved.push(`#${left.number} moved to ${verify.name}: pull request #${left.pr}, which refers to it without closing it, merged.`)
+      verified.push(left.number)
     } catch (cause) {
-      $.ui.log(`issue-board: couldn't move #${left.number} to ${verify.name}: ${messageOf(cause)}`, { to: 'debug' })
+      failed.push({ number: left.number, message: messageOf(cause) })
     }
   }
+  if (verified.length > 0) {
+    $.ui.toast(movedText(verify.name, verified, 'a pull request that refers to it merged without closing it', 'pull requests that refer to them merged without closing them'))
+  }
+  if (failed.length > 0) $.ui.toast(unmovedText(verify.name, failed))
 }
 
 // An issue that closed as completed since the last read moves to Done in the project, wherever it was closed: by a
@@ -813,16 +822,22 @@ const moveToDone = async ($: EngineInterface, before: Board | null, next: Board)
   const project = next.project
   const done = optionOf(project?.status, 'Done')
   if (!project?.status || !done) return
+  const done$: number[] = []
+  const failed: { number: number; message: string }[] = []
   for (const left of leftForDone(before, next)) {
     try {
       const how = JSON.parse(await gh($, ['api', `repos/${next.repo}/issues/${left.number}`, '--jq', '{state, state_reason}'])) as { state?: string; state_reason?: string | null }
       if (how.state !== 'closed' || how.state_reason !== 'completed') continue
       await gh($, ['api', 'graphql', '-f', `query=${SET_FIELD}`, '-f', `project=${project.id}`, '-f', `item=${left.item}`, '-f', `field=${project.status.id}`, '-f', `option=${done.id}`])
-      $.ui.log(`issue-board: #${left.number} closed as completed, so it moved to ${done.name}`, { to: 'debug' })
+      done$.push(left.number)
+      moved.push(`#${left.number} moved to ${done.name}: it closed as completed.`)
     } catch (cause) {
-      $.ui.log(`issue-board: couldn't move #${left.number} to ${done.name}: ${messageOf(cause)}`, { to: 'debug' })
+      failed.push({ number: left.number, message: messageOf(cause) })
     }
   }
+  // The person sees what the board did on its own, once a read, and what it couldn't.
+  if (done$.length > 0) $.ui.toast(movedText(done.name, done$, 'it closed as completed', 'they closed as completed'))
+  if (failed.length > 0) $.ui.toast(unmovedText(done.name, failed))
 }
 
 // Puts an issue read straight from GitHub on the board. The change is the person's or Claude's own, so the issue

@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
 import type { Board, Issue } from '../types'
-import { addBoxes, changesText, commandsOf, leftForDone, leftForVerification, rewordBoxes, statusOnly } from '../hooks/parse'
+import { addBoxes, changesText, commandsOf, leftForDone, leftForVerification, movedText, rewordBoxes, statusOnly, unmovedText } from '../hooks/parse'
 import { asksProject, graphPage, isIssuesQuery, optionId } from './graph'
 
 type Raw = Parameters<typeof graphPage>[0][number]
@@ -60,6 +60,8 @@ const github = (on: On, prs: unknown[] = [], extra: Raw[] = []) => {
     // #35's sub-issues in GitHub's order, and each move made, as `<sub-issue id> <before_id|after_id>=<id>`.
     order: [43] as number[],
     moves: [] as string[],
+    // When set, GitHub refuses to set a project field.
+    refuseFields: false,
   }
   on('process.run', async (_$, e) => {
     const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
@@ -157,6 +159,8 @@ const github = (on: On, prs: unknown[] = [], extra: Raw[] = []) => {
     }
     if (argv[1] === 'api' && argv[2]?.startsWith('repos/')) return answer(JSON.stringify([{ title: 'Launch' }]))
     if (argv[1] === 'issue' && argv[2] === 'view') return answer(JSON.stringify({ number: 43, title: 'Edit issues from the board', labels: [], body: '- [ ] Edit', updatedAt: '2026-10-05T00:00:00Z' }))
+    if (argv[1] === 'api' && argv[2] === 'graphql' && state.refuseFields && argv.some(arg => arg.includes('updateProjectV2ItemFieldValue')))
+      return { value: { exitCode: 1, stdout: '', stderr: 'gh: Resource not accessible by integration', isStdoutTruncated: false, isStderrTruncated: false } }
     if (argv[1] === 'api' && argv[2] === 'graphql') return answer(JSON.stringify({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: 'x' } } } }))
     return answer(argv[1] === 'api' ? 'astrosteveo\n' : '[]')
   })
@@ -276,6 +280,11 @@ test("issue_update links and unlinks blocked-by issues over REST, the row shows 
 test('an issue that closes as completed moves to Done in the project; one closed as not planned stays', async ($, on) => {
   mock.store(on)
   const gh = github(on)
+  const toasts: string[] = []
+  on('ui.toast', async (_$, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
   await $.command.run({ ...RUN, args: 'refresh' })
   const before = writes(gh.calls).length
 
@@ -285,6 +294,31 @@ test('an issue that closes as completed moves to Done in the project; one closed
   await $.command.run({ ...RUN, args: 'refresh' })
   const moved = writes(gh.calls).slice(before)
   expect(moved.map(call => [call.argv.find(arg => arg.startsWith('item=')), call.argv.find(arg => arg.startsWith('option='))])).toEqual([[expect.stringMatching(/43/), `option=${optionId('Done')}`]])
+  // The person sees it once: what moved, and why.
+  expect(toasts.filter(text => text.startsWith('Moved'))).toEqual(['Moved #43 to Done: it closed as completed.'])
+})
+
+test("a move the board makes on its own that GitHub refuses says so once, with where to look", async ($, on) => {
+  mock.store(on)
+  const gh = github(on)
+  const toasts: string[] = []
+  on('ui.toast', async (_$, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  await $.command.run({ ...RUN, args: 'refresh' })
+  gh.refuseFields = true
+  gh.closed = { 43: 'completed', 35: 'completed' }
+  await $.command.run({ ...RUN, args: 'refresh' })
+  await $.command.run({ ...RUN, args: 'refresh' })
+  expect(toasts.filter(text => text.startsWith("Couldn't move"))).toEqual([
+    "Couldn't move 2 issues (#35, #43) to Done: gh: Resource not accessible by integration. /issues check may say why.",
+  ])
+})
+
+test('many moves at once read as one line', () => {
+  expect(movedText('Done', [41, 42, 43], 'it closed as completed', 'they closed as completed')).toBe('Moved 3 issues to Done (#41, #42, #43): they closed as completed.')
+  expect(unmovedText('Verification', [{ number: 7, message: 'nope' }])).toBe("Couldn't move #7 to Verification: nope. /issues check may say why.")
 })
 
 test("only an issue that had an item and wasn't at Done yet is looked at, and nothing without a Done", () => {
