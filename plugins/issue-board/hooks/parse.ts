@@ -1,4 +1,4 @@
-import type { ThemeKey } from 'claude-code'
+import type { ModelTextBlock, ThemeKey } from 'claude-code'
 import type { Alert, Board, BoxTask, Check, Ci, Comment, Draft, Field, Filter, Found, GroupBy, Issue, Known, Label, Milestone, ProjectField, StatusUpdate, Project, PullRequest, Role, RunWatch, Suggestion, Worker, Working } from '../types'
 import { ROLE_NAMES, isLater, isNow, isRole, nowCountOf, priorityRank, roleOf } from './project'
 
@@ -235,28 +235,42 @@ export const statusFor = (project: Project | null, priority: string | null): 'Re
 // How much of an issue's text Claude reads to triage it.
 const TRIAGE_TEXT = 1500
 
-// What the Inbox asks Claude: a Priority, an area and a Status for each issue, as JSON.
-export const triagePrompt = (repo: string, issues: Issue[], priorities: { name: string; description: string }[], areas: string[]): string =>
-  [
-    `Triage these new GitHub issues of ${repo}. For each, suggest:`,
-    priorities.length > 0
-      ? `- priority: one of ${priorities.map(one => (one.description ? `${one.name} (${one.description})` : one.name)).join(', ')};`
-      : '- priority: null, as the project has no Priority field;',
-    areas.length > 0 ? `- area: the part of the repository it is about, one of ${areas.join(', ')}, or null when none fits;` : '- area: null, as the repository has no area labels;',
-    '- status: "Ready" when it is clear enough to start on now, "Backlog" when it should wait;',
-    '- reason: one short, plain sentence saying why.',
-    'Keep a Priority or area the issue already has unless it is clearly wrong.',
-    'Answer with one JSON array and nothing else: [{"number": 1, "priority": "P1", "area": "...", "status": "Ready", "reason": "..."}].',
-    ...issues.flatMap(issue => {
-      const text = issue.body.trim()
-      return [
-        '',
-        `#${issue.number} ${issue.title}`,
-        `Labels: ${issue.labels.map(label => label.name).join(', ') || 'none'}. Priority: ${issue.priority ?? 'none'}.`,
-        ...(text ? [text.length > TRIAGE_TEXT ? `${text.slice(0, TRIAGE_TEXT - 1)}…` : text] : []),
-      ]
-    }),
-  ].join('\n')
+// What the Inbox asks Claude: a Priority, an area and a Status for each issue, as JSON. The rules come first, marked
+// for the prompt cache, and hold nothing that changes from one ask to the next, so a retry or the next batch within five
+// minutes reads them from the cache. The repo and the issues follow in a second block. The engine joins the blocks with
+// nothing between them, so the second opens with its own blank line.
+export const triagePrompt = (repo: string, issues: Issue[], priorities: { name: string; description: string }[], areas: string[]): ModelTextBlock[] => [
+  {
+    text: [
+      'Triage the new GitHub issues listed below. For each, suggest:',
+      priorities.length > 0
+        ? `- priority: one of ${priorities.map(one => (one.description ? `${one.name} (${one.description})` : one.name)).join(', ')};`
+        : '- priority: null, as the project has no Priority field;',
+      areas.length > 0 ? `- area: the part of the repository it is about, one of ${areas.join(', ')}, or null when none fits;` : '- area: null, as the repository has no area labels;',
+      '- status: "Ready" when it is clear enough to start on now, "Backlog" when it should wait;',
+      '- reason: one short, plain sentence saying why.',
+      'Keep a Priority or area the issue already has unless it is clearly wrong.',
+      'Answer with one JSON array and nothing else: [{"number": 1, "priority": "P1", "area": "...", "status": "Ready", "reason": "..."}].',
+    ].join('\n'),
+    cache: true,
+  },
+  {
+    text: [
+      '',
+      '',
+      `The issues, of ${repo}:`,
+      ...issues.flatMap(issue => {
+        const text = issue.body.trim()
+        return [
+          '',
+          `#${issue.number} ${issue.title}`,
+          `Labels: ${issue.labels.map(label => label.name).join(', ') || 'none'}. Priority: ${issue.priority ?? 'none'}.`,
+          ...(text ? [text.length > TRIAGE_TEXT ? `${text.slice(0, TRIAGE_TEXT - 1)}…` : text] : []),
+        ]
+      }),
+    ].join('\n'),
+  },
+]
 
 // Claude's suggestions read back from its answer, one per issue asked about, keeping only the priorities and areas
 // offered; a Status it didn't give follows the priority.

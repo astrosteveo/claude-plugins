@@ -27,6 +27,7 @@ const world = (on: On, answer: string) => {
     fields: [] as Record<string, string>[],
     edits: [] as string[][],
     asked: [] as string[],
+    blocks: [] as (readonly { text: string; cache?: true }[] | undefined)[],
   }
   on('process.run', async (_$, e) => {
     const argv = e.argv
@@ -54,6 +55,7 @@ const world = (on: On, answer: string) => {
   })
   on('model.complete', async (_$, e) => {
     state.asked.push(e.prompt)
+    state.blocks.push(e.promptBlocks)
     return { value: { isAnswered: true, text: answer, usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } }
   })
   on('session.id', async () => ({ value: 'session-1' }))
@@ -76,10 +78,20 @@ test('the Inbox holds issues with Status Inbox or none, and only with a project'
 
 test("Claude's answer reads back as one suggestion an issue, with only the priorities and areas offered", () => {
   const issues = parseIssues(JSON.stringify([raw(340, 'Saves drop the hangar', ['area:simulation']), raw(341, 'The map key hides the legend')]))
-  const prompt = triagePrompt('astrosteveo/void-sector', issues, [{ name: 'P0', description: 'Blocks the release' }, { name: 'P1', description: 'Planned work' }], ['interface', 'simulation'])
-  expect(prompt).toMatch(/^Triage these new GitHub issues of astrosteveo\/void-sector\. For each, suggest:\n- priority: one of P0 \(Blocks the release\), P1 \(Planned work\);/)
-  expect(prompt).toMatch(/one of interface, simulation, or null when none fits;/)
-  expect(prompt).toMatch(/\n\n#340 Saves drop the hangar\nLabels: area:simulation\. Priority: none\.\nSaves drop the hangar, in more words\./)
+  const priorities = [{ name: 'P0', description: 'Blocks the release' }, { name: 'P1', description: 'Planned work' }]
+  const [rules, asked, ...more] = triagePrompt('astrosteveo/void-sector', issues, priorities, ['interface', 'simulation'])
+  expect(more).toEqual([])
+  // The rules are the cached first block: nothing in them names the repo or an issue.
+  expect(rules!.cache).toBe(true)
+  expect(rules!.text).toMatch(/^Triage the new GitHub issues listed below\. For each, suggest:\n- priority: one of P0 \(Blocks the release\), P1 \(Planned work\);/)
+  expect(rules!.text).toMatch(/one of interface, simulation, or null when none fits;/)
+  expect(rules!.text).not.toMatch(/void-sector|#340|hangar/)
+  // Another repo's or another batch's ask opens with the very same rules, so it reads them from the cache.
+  expect(triagePrompt('someone/else', issues.slice(1), priorities, ['interface', 'simulation'])[0]).toEqual(rules)
+  // The issues follow, uncached, opening with their own blank line since the blocks are joined with nothing between.
+  expect(asked!.cache).toBeUndefined()
+  expect(asked!.text).toMatch(/^\n\nThe issues, of astrosteveo\/void-sector:\n\n#340 Saves drop the hangar\nLabels: area:simulation\. Priority: none\.\nSaves drop the hangar, in more words\./)
+  expect(asked!.text).toMatch(/\n\n#341 The map key hides the legend\n/)
 
   const reply = `Here you go:\n[${[
     '{"number": 340, "priority": "p1", "area": "Simulation", "status": "ready", "reason": "Breaks\\n saves."}',
@@ -106,6 +118,10 @@ test('Claude suggests for each Inbox issue; the person changes a pick, and Accep
   expect(gh.asked[0]).toMatch(/#340 Saves drop the hangar/)
   expect(gh.asked[0]).toMatch(/#341 The map key hides the legend/)
   expect(gh.asked[0]).not.toMatch(/#315/)
+  // Sent as two blocks: the rules marked for the cache, then the issues.
+  expect(gh.blocks[0]?.map(block => block.cache ?? false)).toEqual([true, false])
+  expect(gh.blocks[0]?.[0]?.text).not.toMatch(/#340/)
+  expect(gh.blocks[0]?.[1]?.text).toMatch(/#340 Saves drop the hangar/)
   expect(await ui.find({ key: 'issue-315' })).toBeUndefined()
 
   // Claude's picks are highlighted, with its reason.
