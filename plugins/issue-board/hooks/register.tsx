@@ -115,6 +115,7 @@ import {
   filedText,
   newIssueOf,
   numbersOf,
+  leftForDone,
 } from './parse'
 
 const PANE = 'issue-board'
@@ -662,6 +663,26 @@ const land = async ($: EngineInterface, before: Board | null, next: Board, seen:
   // New issues in the Inbox while it shows: Claude suggests for them too, unless its last answer failed, which waits
   // for Suggest again.
   if ((await read($, filter)) === 'inbox' && !(await read($, triage)).failed) void suggestInbox($)
+  void moveToDone($, before, next)
+}
+
+// An issue that closed as completed since the last read moves to Done in the project, wherever it was closed: by a
+// merge, by Claude, or on GitHub. One closed as not planned stays where it was. REST says how it closed; only the move
+// spends GraphQL.
+const moveToDone = async ($: EngineInterface, before: Board | null, next: Board): Promise<void> => {
+  const project = next.project
+  const done = optionOf(project?.status, 'Done')
+  if (!project?.status || !done) return
+  for (const left of leftForDone(before, next)) {
+    try {
+      const how = JSON.parse(await gh($, ['api', `repos/${next.repo}/issues/${left.number}`, '--jq', '{state, state_reason}'])) as { state?: string; state_reason?: string | null }
+      if (how.state !== 'closed' || how.state_reason !== 'completed') continue
+      await gh($, ['api', 'graphql', '-f', `query=${SET_FIELD}`, '-f', `project=${project.id}`, '-f', `item=${left.item}`, '-f', `field=${project.status.id}`, '-f', `option=${done.id}`])
+      $.ui.log(`issue-board: #${left.number} closed as completed, so it moved to ${done.name}`, { to: 'debug' })
+    } catch (cause) {
+      $.ui.log(`issue-board: couldn't move #${left.number} to ${done.name}: ${messageOf(cause)}`, { to: 'debug' })
+    }
+  }
 }
 
 // Puts an issue read straight from GitHub on the board. The change is the person's or Claude's own, so the issue

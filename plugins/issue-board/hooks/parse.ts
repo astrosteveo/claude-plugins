@@ -882,6 +882,15 @@ export const changesText = (number: number, changes: IssueChanges): string => {
   return said.length > 0 ? `#${number} ${said.join(', ')}.` : `Nothing to change on #${number}.`
 }
 
+// The issues that left the board between two reads and may need moving to Done: each had an item in the project and
+// wasn't at Done yet. Whether it closed as completed is GitHub's to say. None when the project has no Done.
+export const leftForDone = (before: Board | null, next: Board): { number: number; item: string }[] => {
+  const done = next.project?.status?.options.find(option => option.name.toLowerCase() === 'done')
+  if (!before || !done) return []
+  const still = new Set(next.issues.map(one => one.number))
+  return before.issues.flatMap(one => (one.item && !still.has(one.number) && one.status?.toLowerCase() !== 'done' ? [{ number: one.number, item: one.item }] : []))
+}
+
 // Issue numbers from a tool's input: whole and positive, each once.
 export const numbersOf = (value: unknown): number[] =>
   Array.isArray(value) ? [...new Set(value.filter((one): one is number => typeof one === 'number' && Number.isInteger(one) && one > 0))] : []

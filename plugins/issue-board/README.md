@@ -197,6 +197,9 @@ CLI, signed in, in the folder the session started in.
   project's own "Item added to project" automation may set its Status
   instead: `/issues setup` says to set that to Inbox when the project still
   has GitHub's Todo.
+- When an issue closes as completed, by a merge, by Claude or on GitHub, the
+  board moves it to Done in the project at its next read. One closed as not
+  planned stays where it was.
 - Claude closing an epic with `gh issue close` while some of its sub-issues
   are open asks you first, whatever your permission rules allow, and says
   how many are open. A background agent or other subagent is refused
