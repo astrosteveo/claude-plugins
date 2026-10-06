@@ -75,19 +75,45 @@ export const ADD_ITEM = 'mutation($project: ID!, $content: ID!) { addProjectV2It
 export const optionOf = (field: Field | null | undefined, name: string): { id: string; name: string } | undefined =>
   field?.options.find(option => option.name.toLowerCase() === name.toLowerCase())
 
-// The board's own name for each role: what setup suggests, and what counts for a project setup saved no roles for.
+// The board's own name for each role: what setup suggests, and the first name each role goes by.
 export const ROLE_NAMES: Record<Role, string> = { inbox: 'Inbox', ready: 'Ready', backlog: 'Backlog', started: 'In progress', verification: 'Verification', done: 'Done' }
 export const ROLE_ORDER: Role[] = ['inbox', 'ready', 'backlog', 'started', 'verification', 'done']
 
-// Which option has each role by the board's names, whatever their case.
-export const rolesByName = (options: readonly { id?: string; name: string }[]): Roles =>
-  Object.fromEntries(ROLE_ORDER.flatMap(role => {
-    const id = options.find(option => option.name.toLowerCase() === ROLE_NAMES[role].toLowerCase())?.id
-    return id ? [[role, id]] : []
-  })) as Roles
+// The names each role goes by in projects the board didn't set up, the board's own first, then the most common. A
+// project that says `Todo`, `Doing` and `Shipped` works without setup.
+export const COMMON_NAMES: Record<Role, string[]> = {
+  inbox: ['Inbox', 'Triage', 'New'],
+  ready: ['Ready', 'Todo', 'To do', 'Up next'],
+  backlog: ['Backlog', 'Icebox', 'Later'],
+  started: ['In progress', 'Doing', 'Active', 'Started'],
+  verification: ['Verification', 'In review', 'Review', 'QA', 'Testing'],
+  done: ['Done', 'Shipped', 'Closed', 'Complete', 'Completed'],
+}
 
-// The roles the board goes by for a project: the ones setup saved for it, kept to options it still has, or else the
-// board's names.
+const named = (option: { name: string }, name: string): boolean => option.name.trim().toLowerCase() === name.toLowerCase()
+
+// Which option has each role by its name, whatever its case. Every role tries the board's own name before any role
+// tries a common one, then the common names go in the list's order, so `Ready` beats `Todo`, and `Todo` beats `Up
+// next`. An option that took a role is out for the rest: no option plays two parts.
+export const rolesByName = (options: readonly { id?: string; name: string }[]): Roles => {
+  const roles: Roles = {}
+  const taken = new Set<string>()
+  const longest = Math.max(...ROLE_ORDER.map(role => COMMON_NAMES[role].length))
+  for (let rank = 0; rank < longest; rank += 1) {
+    for (const role of ROLE_ORDER) {
+      const name = COMMON_NAMES[role][rank]
+      if (roles[role] || name === undefined) continue
+      const option = options.find(one => one.id && !taken.has(one.id) && named(one, name))
+      if (!option?.id) continue
+      roles[role] = option.id
+      taken.add(option.id)
+    }
+  }
+  return roles
+}
+
+// The roles the board goes by for a project: the ones saved for it, by setup or /issues statuses, kept to options it
+// still has, or else the names.
 export const rolesFor = (status: Field | null, saved: Roles | undefined): Roles => {
   if (!status) return {}
   if (!saved) return rolesByName(status.options)
@@ -100,6 +126,32 @@ export const roleOf = (project: Project | null | undefined, role: Role): { id: s
   if (!status) return undefined
   const id = (project.roles ?? rolesByName(status.options))[role]
   return id ? status.options.find(option => option.id === id) : undefined
+}
+
+// The roles the board guessed from a common name rather than its own, for a project with no saved mapping: what the
+// band asks the person to confirm. Empty when nothing is a guess.
+export const guessOf = (project: Project | null | undefined): { role: Role; name: string }[] => {
+  if (!project?.guessed) return []
+  return ROLE_ORDER.flatMap(role => {
+    const option = roleOf(project, role)
+    return option && !named(option, ROLE_NAMES[role]) ? [{ role, name: option.name }] : []
+  })
+}
+
+// The guess as a line: `Status: Todo is Ready, Doing is In progress, Shipped is Done`.
+export const guessText = (guess: readonly { role: Role; name: string }[]): string => `Status: ${guess.map(one => `${one.name} is ${ROLE_NAMES[one.role]}`).join(', ')}`
+
+// What tells one guess from another, so a guess the person answered stays answered, and a new one asks again.
+export const guessKey = (project: { id: string }, guess: readonly { role: Role; name: string }[]): string => `${project.id}:${guess.map(one => `${one.role}=${one.name}`).join(',')}`
+
+// The mapping saved for a project: setup's when setup saved one for it, else the one /issues statuses or Looks right
+// saved. Undefined when neither did, and the names count.
+export const savedRolesOf = (
+  saved: { setup?: { project: { id: string }; status: { roles: Roles } | null }; statuses?: Record<string, Roles> } | null | undefined,
+  project: string,
+): Roles | undefined => {
+  if (saved?.setup?.status && saved.setup.project.id === project) return saved.setup.status.roles
+  return saved?.statuses?.[project]
 }
 
 // Whether a Status name is the option with a role.

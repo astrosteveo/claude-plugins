@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Caught, EngineInterface, HookFailure, ModelForkResult, Register, ThemeKey, Timer, UiCopyArgs } from 'claude-code'
 
-import type { Adopted, Adoption, Alert, Board, BoxTask, Check, Comment, Draft, DraftEdit, EpicNote, Filter, GroupBy, Issue, Known, Launch, Problem, Project, ProjectField, Role, StatusUpdate, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
+import type { Adopted, Adoption, Alert, Board, BoxTask, Check, Comment, Draft, DraftEdit, EpicNote, Filter, GroupBy, Issue, Known, Launch, Problem, Project, ProjectField, Role, Roles, StatusPicks, StatusUpdate, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
 import type { Ended, IssueChanges, NewIssue, PrRule, StartMode, Switches } from './parse'
 import { authOf, problemsOf, problemsText, repoOf } from './access'
 import {
@@ -17,6 +17,9 @@ import {
   ROLE_ORDER,
   adoptText,
   adoptedOf,
+  guessKey,
+  guessOf,
+  guessText,
   isMutation,
   issuesQuery,
   nowNames,
@@ -24,6 +27,7 @@ import {
   ownerOf,
   roleOf,
   rolesFor,
+  savedRolesOf,
   startedOf,
   writeRefusal,
 } from './project'
@@ -359,6 +363,9 @@ const drafted = atom({ plugin: 'issue-board', key: 'drafted' } as const, null)
 // The project the board may write to, as the store last said, and the prompts the person turned down. The prompt and
 // setup read it; every write checks the store itself.
 const adoption = atom({ plugin: 'issue-board', key: 'adoption' } as const, { adopted: null, declined: [] })
+// `/issues statuses` while it shows, and the guessed Status mappings the person answered, as the store last said.
+const statusPicks = atom({ plugin: 'issue-board', key: 'statusPicks' } as const, null)
+const guessSeen = atom({ plugin: 'issue-board', key: 'guessSeen' } as const, [])
 
 // Whether a tool's calls may be allowed without asking: an organization can set a ceiling, the most permissive verdict
 // a call of the tool may reach. None set, they may.
@@ -646,7 +653,8 @@ const costOf = (page: string): { cost: number; remaining: number; resetAt: strin
 
 // What the board keeps between sessions, one entry per repository; `setup` is what `/issues setup` last saved, `adopted`
 // the project the board may write to (null once released; absent before adopting existed), and `declined` the projects
-// whose prompt the person turned down.
+// whose prompt the person turned down. `statuses` is the Status mapping /issues statuses or Looks right saved, by project
+// id, and `guessSeen` the guessed mappings the person answered.
 type Saved = {
   board: Board | null
   working: Working | null
@@ -656,6 +664,8 @@ type Saved = {
   sections?: Record<string, boolean>
   adopted?: Adopted | null
   declined?: string[]
+  statuses?: Record<string, Roles>
+  guessSeen?: string[]
 }
 
 let storeKey: string | undefined
@@ -665,15 +675,6 @@ const keyOf = async ($: EngineInterface): Promise<string> => {
     storeKey = `repo:${repo?.root ?? (await $.session.root())}`
   }
   return storeKey
-}
-
-// What `/issues setup` saved for this repo, if it has run here.
-const savedSetup = async ($: EngineInterface): Promise<SavedSetup | undefined> => {
-  try {
-    return ((await $.store.get(await keyOf($))) as Partial<Saved> | undefined)?.setup
-  } catch {
-    return undefined
-  }
 }
 
 // What the board saved for this repo, as a whole; empty when nothing is, or the store can't be read.
@@ -695,6 +696,8 @@ const loadAdoption = async ($: EngineInterface): Promise<void> => {
   const next = { adopted: adoptedOf(saved), declined: saved.declined ?? [] }
   const was = await read($, adoption)
   if (was.adopted?.id !== next.adopted?.id || was.declined.join() !== next.declined.join()) await update($, adoption, () => next)
+  const seen = saved.guessSeen ?? []
+  if ((await read($, guessSeen)).join() !== seen.join()) await update($, guessSeen, () => seen)
 }
 
 // Changes what the store holds for the repo beside the board: adopting, releasing, turning a prompt down.
@@ -775,6 +778,65 @@ const declineFromPrompt = async ($: EngineInterface, project: Project): Promise<
   }
 }
 
+// Saves which Status option plays each part for a project, in the store only: nothing goes to GitHub, and saving a
+// mapping isn't letting the board write to the project. A setup saved for the project keeps it in its own roles, which
+// leaves what counts as adopted as it was; otherwise it goes with the other projects' mappings. The board goes by it at
+// once.
+const saveRoles = async ($: EngineInterface, project: { id: string }, roles: Roles): Promise<void> => {
+  await changeSaved($, was =>
+    was.setup?.status && was.setup.project.id === project.id
+      ? { ...was, setup: { ...was.setup, status: { ...was.setup.status, roles } } }
+      : { ...was, statuses: { ...(was.statuses ?? {}), [project.id]: roles } },
+  )
+  await update($, board, now => (now?.project?.id === project.id ? { ...now, project: { ...now.project, roles: rolesFor(now.project.status, roles), guessed: false } } : now))
+}
+
+// A guessed mapping the person answered: the band doesn't show it again, in this session or another.
+const seeGuess = async ($: EngineInterface, key: string): Promise<void> => {
+  try {
+    await changeSaved($, was => ({ ...was, guessSeen: [...(was.guessSeen ?? []).filter(one => one !== key), key].slice(-20) }))
+  } catch (cause) {
+    $.ui.toast(`Couldn't save that: ${messageOf(cause)}`)
+  }
+}
+
+// Looks right, on the band's guess: the board keeps going by it, saved so it isn't a guess any more.
+const confirmGuess = async ($: EngineInterface, project: Project): Promise<void> => {
+  const key = guessKey(project, guessOf(project))
+  try {
+    await saveRoles($, project, project.roles ?? {})
+    await seeGuess($, key)
+    $.ui.toast(`Saved which Status is which for ${project.title}. Change it with /issues statuses.`)
+  } catch (cause) {
+    $.ui.toast(`Couldn't save which Status is which: ${messageOf(cause)}`)
+  }
+}
+
+// `/issues statuses`, and Change on the band's guess: the Which Status is which step alone, at the top of the pane,
+// starting from what the board goes by now. Null when the board has no project with a Status field to map.
+const openStatuses = async ($: EngineInterface): Promise<Project | null> => {
+  if ((await read($, board)) === null) await refresh($)
+  const project = (await read($, board))?.project
+  if (!project?.status) return null
+  const picks = { ...(project.roles ?? rolesFor(project.status, undefined)) }
+  await update($, statusPicks, () => ({ project: { id: project.id, title: project.title }, options: project.status?.options ?? [], picks }))
+  await $.ui.open(OPEN)
+  return project
+}
+
+// Save, in /issues statuses.
+const saveStatuses = async ($: EngineInterface): Promise<void> => {
+  const shown = await read($, statusPicks)
+  if (!shown) return
+  try {
+    await saveRoles($, shown.project, shown.picks)
+    await update($, statusPicks, () => null)
+    $.ui.toast(`Saved which Status is which for ${shown.project.title}. Nothing changed on GitHub.`)
+  } catch (cause) {
+    $.ui.toast(`Couldn't save which Status is which: ${messageOf(cause)}`)
+  }
+}
+
 // Release, in setup: the board only reads the project again, and the plan offers to adopt it once more.
 const releaseFromSetup = async ($: EngineInterface): Promise<void> => {
   const was = (await adoptedNow($))?.title
@@ -807,6 +869,8 @@ const save = async ($: EngineInterface): Promise<void> => {
       ...(before.setup ? { setup: before.setup } : {}),
       ...(before.adopted !== undefined ? { adopted: before.adopted } : {}),
       ...(before.declined ? { declined: before.declined } : {}),
+      ...(before.statuses ? { statuses: before.statuses } : {}),
+      ...(before.guessSeen ? { guessSeen: before.guessSeen } : {}),
     }
     await $.store.set(await keyOf($), saved)
   } catch (cause) {
@@ -843,8 +907,8 @@ let projectRefusal: string | undefined
 // The open issues over GraphQL, up to 300, with the repo's project when gh may read it.
 const fetchIssues = async ($: EngineInterface, nameWithOwner: string): Promise<{ issues: Issue[]; project: Project | null; types: string[] }> => {
   const [owner = '', name = ''] = nameWithOwner.split('/')
-  const saved = await savedSetup($)
-  const preferred = saved?.project.id
+  const kept = await savedAll($)
+  const preferred = kept.setup?.project.id
   // Another session may have adopted or released the project meanwhile; the prompt follows.
   await loadAdoption($)
   const pull = async (withProject: boolean) => {
@@ -862,9 +926,11 @@ const fetchIssues = async ($: EngineInterface, nameWithOwner: string): Promise<{
       $.ui.log(`issue-board: the issues query cost ${cost} GraphQL points over ${pages.length} ${pages.length === 1 ? 'page' : 'pages'}; ${last.remaining} left until ${last.resetAt}`, { to: 'debug' })
     }
     const parsed = parseGraph(pages, preferred)
-    // The board goes by the roles setup saved for the project it reads, and by the person's count of Now priorities.
-    const roles = saved?.status && saved.project.id === parsed.project?.id ? saved.status.roles : undefined
-    return parsed.project ? { ...parsed, project: { ...parsed.project, roles: rolesFor(parsed.project.status, roles), nowCount: settings.nowCount } } : parsed
+    // The board goes by the roles saved for the project it reads, by setup or /issues statuses, or else by the names,
+    // which is a guess for the band to confirm; and by the person's count of Now priorities.
+    if (!parsed.project) return parsed
+    const roles = savedRolesOf(kept, parsed.project.id)
+    return { ...parsed, project: { ...parsed.project, roles: rolesFor(parsed.project.status, roles), guessed: roles === undefined, nowCount: settings.nowCount } }
   }
   const unread = projectRefusal !== undefined || ((await read($, access))?.problems.some(problem => problem.id === 'scope-project') ?? false)
   if (!unread) {
@@ -1703,7 +1769,7 @@ const archiveItems = async ($: EngineInterface, project: Project, ask: { number?
   if (ask.number === undefined && !ask.doneBefore) throw new Error('give an issue number, or doneBefore a date')
   if (ask.doneBefore && !/^\d{4}-\d{2}-\d{2}$/.test(ask.doneBefore)) throw new Error('give doneBefore as a date, YYYY-MM-DD')
   const done = roleOf(project, 'done')
-  if (ask.number === undefined && !done) throw new Error(`${project.title} has no Done option set; pick one in /issues setup`)
+  if (ask.number === undefined && !done) throw new Error(`${project.title} has no Done option set; pick one in /issues statuses`)
   const items = await projectItems($, path, project)
   const chosen = toArchive(items, ask, done?.name)
   const what = ask.number !== undefined ? `#${ask.number}` : `the items at ${done?.name ?? 'Done'} that closed before ${ask.doneBefore}`
@@ -1978,12 +2044,15 @@ const readSetup = async ($: EngineInterface): Promise<void> => {
     } while (after && pages.length < PAGES)
     const root = (await $.session.repo().catch(() => null))?.root ?? (await $.session.root())
     const labels = ((facts.repository?.labels?.nodes ?? []) as { name: string }[]).map(label => label.name)
-    const saved = await savedSetup($)
+    const kept = await savedAll($)
+    const saved = kept.setup
     const read$ = factsOf(JSON.stringify({ data: facts }), pages, suggestAreas(labels, await foldersOf($, root)), await hasTemplate($, root))
-    const known = { ...read$, adopted: (await adoptedNow($))?.id ?? null }
-    const found = saved?.status ? { ...known, saved: { project: saved.project.id, roles: saved.status.roles } } : known
+    const known = { ...read$, adopted: adoptedOf(kept)?.id ?? null }
     // The project the board already reads, when setup saved one and it's still linked; else the first linked.
-    const chosen = found.projects.find(one => one.id === saved?.project.id)?.id ?? found.projects[0]?.id ?? null
+    const chosen = known.projects.find(one => one.id === saved?.project.id)?.id ?? known.projects[0]?.id ?? null
+    // The mapping saved for it, by an earlier setup or by /issues statuses, which setup starts from.
+    const roles$ = chosen ? savedRolesOf(kept, chosen) : undefined
+    const found = chosen && roles$ ? { ...known, saved: { project: chosen, roles: roles$ } } : known
     const areas = found.suggested.join(', ')
     const roles = picksFor(found, chosen)
     await update($, setup, () => ({ phase: 'ready' as const, facts: found, chosen, areas, roles, steps: stepsOf(found, chosen, areas, roles) }))
@@ -2885,6 +2954,14 @@ export const register: Register = (on, options) => {
       void readSetup($)
       return { text: 'Reading the repo and its project. What setup would change shows at the top of the issues pane, and nothing changes until you press Apply.' }
     }
+    if (e.args.trim() === 'statuses') {
+      const project = await openStatuses($)
+      if (!project) {
+        const now = (await read($, board))?.project
+        return { text: now ? `${now.title} has no Status field, so there is nothing to map. Add one in the project, or run /issues setup.` : 'The board reads no GitHub Project for this repo, so there are no Status options to map. /issues setup can link or make one.' }
+      }
+      return { text: `Which Status is which for ${project.title} shows at the top of the issues pane. Save keeps it here, and nothing changes on GitHub.` }
+    }
     if (e.args.trim() === 'help') {
       const project = (await read($, board))?.project
       return { text: helpText(filtersFor(project), featuresOff(switchesOf(settings), project, !project || (await mayWrite($, project)))) }
@@ -2895,7 +2972,11 @@ export const register: Register = (on, options) => {
       // What is off, by a setting or for want of a Status option, is said here and in /issues help, not in the band.
       const project = (await read($, board))?.project
       const off = offText(featuresOff(switchesOf(settings), project, !project || (await mayWrite($, project))))
-      const withOff = (text: string) => ({ text: [text, ...(off.length > 0 ? ['', ...off] : [])].join('\n') })
+      // A mapping found by common names, until the person answers it, with how to change it.
+      const guess = guessOf(project)
+      const guessed = project && guess.length > 0 && !(await read($, guessSeen)).includes(guessKey(project, guess))
+      const said = guessed ? [`The board guessed which Status is which. ${guessText(guess)}. Press Looks right in the band to keep it, or run /issues statuses to change it.`] : []
+      const withOff = (text: string) => ({ text: [text, ...(said.length > 0 ? ['', ...said] : []), ...(off.length > 0 ? ['', ...off] : [])].join('\n') })
       if (problems.length > 0) {
         const count = problems.length === 1 ? 'one problem' : `${problems.length} problems`
         return withOff(`The issue board found ${count}:\n${problems.map(problem => `- ${problem.title}. ${problem.detail} ${problem.fix}`).join('\n')}`)
@@ -2941,6 +3022,11 @@ export const register: Register = (on, options) => {
   // pane; with nothing open the pane closes. The engine stamps both as the person's close, so they step back alike.
   on('ui.close', { id: PANE }, async ($, e, next) => {
     if (e.origin.kind !== 'person') return next(e)
+    // /issues statuses steps back first: it shows above setup, and saves nothing on the way out.
+    if (await read($, statusPicks)) {
+      await update($, statusPicks, () => null)
+      return { value: undefined }
+    }
     // Setup showing steps back first, unless Apply is running: that keeps the pane open until it's done.
     const shown = await read($, setup)
     if (shown) {
@@ -3565,6 +3651,50 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
+    // `/issues statuses`: Which Status is which alone, picked among the project's own options. Save keeps it in the
+    // store; adding an option the project lacks stays in /issues setup.
+    const mapping = await read($, statusPicks)
+    const pickStatus = (role: Role, id: string | null) => () =>
+      void update($, statusPicks, was => {
+        if (!was) return was
+        // One option plays one part: picking it for this role takes it from any other.
+        const picks: Roles = Object.fromEntries(Object.entries(was.picks).filter(([other, one]) => other !== role && one !== id))
+        return { ...was, picks: id === null ? picks : { ...picks, [role]: id } }
+      })
+    const statusesCard = mapping && (
+      <Box key="statuses-card" flexDirection="column" borderStyle="round" borderColor="suggestion" paddingX={1} marginTop={1}>
+        <Text color="suggestion" bold>
+          {`⚙ Which Status is which in ${mapping.project.title}`}
+        </Text>
+        <Text dimColor wrap="wrap">
+          Pick the option that plays each part, or none to turn that part off. Save keeps it here and changes nothing on GitHub.
+        </Text>
+        {ROLE_ORDER.map(role => {
+          const pick = mapping.picks[role] ?? null
+          const choice = (key: string, label: string, id: string | null) => (
+            <Button key={`statuses-${role}-${key}`} variant={pick === id ? 'primary' : undefined} dimColor={pick !== id} onPress={pickStatus(role, id)}>
+              {label}
+            </Button>
+          )
+          return (
+            <Box key={`statuses-${role}`} flexDirection="row" gap={1} flexWrap="wrap">
+              <Text dimColor>{`${ROLE_NAMES[role]}${role === 'backlog' ? ' (folds)' : ''}`}</Text>
+              {mapping.options.map(option => choice(option.id, option.name, option.id))}
+              {choice('none', 'none', null)}
+            </Box>
+          )
+        })}
+        <Box flexDirection="row" gap={1} marginTop={1}>
+          <Button key="statuses-save" variant="primary" onPress={() => void saveStatuses($)}>
+            Save
+          </Button>
+          <Button key="statuses-cancel" dimColor onPress={() => void update($, statusPicks, () => null)}>
+            Cancel
+          </Button>
+        </Box>
+      </Box>
+    )
+
     // `/issues setup`: the project it would use, what it would change, what only the project's settings can turn on,
     // and Apply, the one ask before anything changes. While Apply runs, each change is marked as it goes.
     const MARKS = { running: ['◌', 'warning'], done: ['✓', 'success'], failed: ['✗', 'error'], skipped: ['–', 'inactive'] } as const
@@ -3750,6 +3880,7 @@ export const register: Register = (on, options) => {
       return (
         <Box flexDirection="column">
           {header}
+          {statusesCard}
           {setupPlan}
           {setupCard ||
             (failure ? (
@@ -4848,6 +4979,7 @@ export const register: Register = (on, options) => {
             {updateLine(project.update, clock)}
           </Text>
         )}
+        {statusesCard}
         {setupPlan}
         {trends}
         {setupCard}
@@ -5110,7 +5242,10 @@ export const register: Register = (on, options) => {
     const notes = now ? liveEpicNotes(await read($, epicNotes), now, await nowOf($)) : []
     // The project the board reads but may not write to yet: the band points at the pane, which has the whole warning.
     const unadopted = now?.project && adoptAsk(now.project, await read($, adoption)) ? now.project : null
-    if (problems.length === 0 && alerts.length === 0 && offers.length === 0 && agents.length === 0 && notes.length === 0 && !unadopted) return next(e)
+    // Which Status is which, when the board found it by common names and the person hasn't answered: once per guess.
+    const guess = guessOf(now?.project)
+    const guessed = now?.project && guess.length > 0 && !(await read($, guessSeen)).includes(guessKey(now.project, guess)) ? now.project : null
+    if (problems.length === 0 && alerts.length === 0 && offers.length === 0 && agents.length === 0 && notes.length === 0 && !unadopted && !guessed) return next(e)
 
     const { Box, Text, Button, Link } = $.ui.resolve(e)
     const width = e.props.bodyColumns
@@ -5307,6 +5442,29 @@ export const register: Register = (on, options) => {
       )
     }
 
+    // `? STATUS Status: Todo is Ready, Doing is In progress, Shipped is Done`. Looks right saves it; Change opens
+    // /issues statuses; ✕ leaves it a guess, unasked.
+    const guessLine = (project: Project) => {
+      const key = guessKey(project, guess)
+      return (
+        <Box key="guess-row" flexDirection="row" gap={1}>
+          <Text color="suggestion" inverse bold>
+            {' ? STATUS '}
+          </Text>
+          <Text>{fit(guessText(guess), Math.max(16, width - 44))}</Text>
+          <Button key="guess-yes" variant="primary" onPress={() => void confirmGuess($, project)}>
+            Looks right
+          </Button>
+          <Button key="guess-change" dimColor onPress={() => void seeGuess($, key).then(() => openStatuses($))}>
+            Change
+          </Button>
+          <Button key="guess-dismiss" dimColor onPress={() => void seeGuess($, key)}>
+            ✕
+          </Button>
+        </Box>
+      )
+    }
+
     // A background agent at work: `⚙ #90 <title> · working · ━━━━━━ 0/4`, the bar only when the issue has boxes.
     const agentLine = (worker: Worker) => {
       const issue = now?.issues.find(one => one.number === worker.number)
@@ -5347,6 +5505,7 @@ export const register: Register = (on, options) => {
       <Box flexDirection="column">
         {problems.slice(0, 2).map(problemLine)}
         {unadopted && adoptLine(unadopted)}
+        {guessed && guessLine(guessed)}
         {alerts.slice(0, 3).map(line)}
         {offers.slice(0, 3).map(offerLine)}
         {agents.slice(0, 3).map(agentLine)}
