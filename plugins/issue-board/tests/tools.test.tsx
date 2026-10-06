@@ -127,8 +127,9 @@ const world = (on: On) => {
     // The repo's issue types, #315's type, and each PATCH of an issue over REST, as `<number> <fields>`.
     types: [] as string[],
     type315: '',
-    // Project items archived, by node id.
+    // Project items archived, by node id; status updates posted, as their variables.
     archived: [] as string[],
+    statusPosts: [] as Record<string, unknown>[],
     patches: [] as string[],
   }
   on('process.run', async (_$, e) => {
@@ -152,6 +153,10 @@ const world = (on: On) => {
     if (argv[1] === 'api' && argv[2] === 'graphql' && argv[3] === '--input') {
       const asked = JSON.parse(e.init?.stdin ?? '{}') as { query: string; variables: Record<string, unknown> }
       const item = String(asked.variables.item)
+      if (asked.query.includes('createProjectV2StatusUpdate')) {
+        state.statusPosts.push(asked.variables)
+        return answer(JSON.stringify({ data: { createProjectV2StatusUpdate: { statusUpdate: { id: 'SU_1', createdAt: '2026-10-04T10:00:00Z' } } } }))
+      }
       if (asked.query.includes('archiveProjectV2Item')) {
         state.archived.push(item)
         return answer(JSON.stringify({ data: { archiveProjectV2Item: { item: { id: item } } } }))
@@ -1028,6 +1033,34 @@ test('project_archive says how many items it would take first, without asking, a
   expect(String((await archive({ number: 290, confirm: true })).result)).toBe('Archived 1 item from Void Sector:\n#290 Dock the shuttle')
   expect(String((await archive({ number: 999 })).result)).toBe("#999 isn't in Void Sector, or is archived already.")
   expect((await archive({ doneBefore: 'soon' })).deny).toBe("Couldn't archive: give doneBefore as a date, YYYY-MM-DD")
+})
+
+test("project_status reads the project's latest update without asking, posts one when asked, and the pane shows it", async ($, on) => {
+  mock.store(on)
+  mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
+  const gh = world(on)
+  gh.project = true
+  on('tool.check', async () => ({ decision: 'ask' as const }))
+  await $.command.run(REFRESH)
+  const status = (input: Record<string, unknown>) => $.tool.call({ tool: 'mcp__issue-board__project_status', ...input })
+
+  expect((await $.tool.check({ tool: 'mcp__issue-board__project_status', input: {} })).decision).toBe('allow')
+  expect((await $.tool.check({ tool: 'mcp__issue-board__project_status', input: { status: 'At risk' } })).decision).toBe('ask')
+  expect(String((await status({})).result)).toBe('Void Sector has no status update yet.')
+
+  const posted = await status({ status: 'at risk', note: 'Docking slipped.\nThe glide needs another pass.', target: '2026-10-20' })
+  expect(String(posted.result)).toBe('Posted on Void Sector: At risk · Docking slipped. · target 2026-10-20 · just now.')
+  expect(gh.statusPosts).toEqual([{ project: 'PVT_8', status: 'AT_RISK', body: 'Docking slipped.\nThe glide needs another pass.', start: null, target: '2026-10-20' }])
+  expect(String((await status({})).result)).toBe('Void Sector: At risk · Docking slipped. · target 2026-10-20 · just now\nDocking slipped.\nThe glide needs another pass.')
+
+  // A status GitHub hasn't got, or a date not written as one, posts nothing.
+  expect((await status({ status: 'Great' })).deny).toBe("Couldn't post the status update: a status update is On track, At risk, Off track, Complete or Inactive, not Great")
+  expect((await status({ status: 'On track', start: 'Monday' })).deny).toBe("Couldn't post the status update: give start as a date, YYYY-MM-DD")
+  expect(gh.statusPosts).toHaveLength(1)
+
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  expect(await ui.find({ text: /At risk · Docking slipped\./ })).toBeDefined()
+  await ui.unmount()
 })
 
 test('the pane draws on every surface, with search where the surface has a text field', async ($, on) => {

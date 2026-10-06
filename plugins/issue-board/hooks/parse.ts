@@ -1,5 +1,5 @@
 import type { ThemeKey } from 'claude-code'
-import type { Alert, Board, BoxTask, Check, Ci, Comment, Draft, Field, Filter, Found, GroupBy, Issue, Known, Label, Milestone, ProjectField, Project, PullRequest, RunWatch, Suggestion, Worker, Working } from '../types'
+import type { Alert, Board, BoxTask, Check, Ci, Comment, Draft, Field, Filter, Found, GroupBy, Issue, Known, Label, Milestone, ProjectField, StatusUpdate, Project, PullRequest, RunWatch, Suggestion, Worker, Working } from '../types'
 import { isLater, isNow, priorityRank } from './project'
 
 type RawLabel = { name: string; color?: string }
@@ -390,7 +390,8 @@ const fieldsOf = (project: RawProject): ProjectField[] =>
     const options = kind === 'iteration' ? (one.configuration?.iterations ?? []).map(it => ({ id: it.id, name: it.title })) : one.options
     return [{ id: one.id, name: one.name, kind, ...(options ? { options } : {}) }]
   })
-type RawProject = { id: string; number: number; title: string; url: string; closed?: boolean; fields?: RawNodes<RawField> }
+type RawUpdate = { status?: string | null; body?: string | null; createdAt: string; startDate?: string | null; targetDate?: string | null }
+type RawProject = { id: string; number: number; title: string; url: string; closed?: boolean; fields?: RawNodes<RawField>; statusUpdates?: RawNodes<RawUpdate> }
 type RawValue = { name?: string } | null | undefined
 type RawItem = { id: string; project?: { id: string } | null; status?: RawValue; priority?: RawValue }
 type RawGraphIssue = {
@@ -420,6 +421,21 @@ const fieldOf = (project: RawProject, name: string): Field | null => {
   return field?.id && field.options ? { id: field.id, options: field.options } : null
 }
 
+// GitHub's status of a project update in words, and back.
+const STATUS_WORDS: Record<string, string> = { ON_TRACK: 'On track', AT_RISK: 'At risk', OFF_TRACK: 'Off track', COMPLETE: 'Complete', INACTIVE: 'Inactive' }
+export const statusEnumOf = (words: string): string | undefined => Object.entries(STATUS_WORDS).find(([, said]) => said.toLowerCase() === words.trim().toLowerCase())?.[0]
+export const updateWords = (status: string): string => STATUS_WORDS[status] ?? status
+
+const updateOf = (raw: RawUpdate | undefined): StatusUpdate | null =>
+  raw ? { status: updateWords(raw.status ?? ''), body: (raw.body ?? '').trim(), at: raw.createdAt, start: raw.startDate ?? null, target: raw.targetDate ?? null } : null
+
+// A status update in a line: how the project stands, the note's first line, and when.
+export const updateLine = (update: StatusUpdate, now: number): string => {
+  const when = ago(update.at, now)
+  const note = update.body.split('\n')[0]?.trim() ?? ''
+  return [update.status, note, update.target ? `target ${update.target}` : '', when === 'now' ? 'just now' : when ? `${when} ago` : ''].filter(Boolean).join(' · ')
+}
+
 // Where the next page of issues starts, or null after the last.
 export const nextPageOf = (json: string): string | null => {
   const info = (JSON.parse(json) as RawPage).data?.repository?.issues?.pageInfo
@@ -441,6 +457,7 @@ export const parseGraph = (pages: string[], preferred?: string): { issues: Issue
         status: fieldOf(linked, 'Status'),
         priority: fieldOf(linked, 'Priority'),
         fields: fieldsOf(linked),
+        update: updateOf(nodesOf(linked.statusUpdates).at(-1)),
       }
     : null
   const issues = parsed.flatMap(page => (page.data?.repository?.issues?.nodes ?? []).filter((one): one is RawGraphIssue => one !== null))
