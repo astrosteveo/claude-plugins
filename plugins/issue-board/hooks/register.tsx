@@ -1191,15 +1191,16 @@ const lookForRuns = async ($: EngineInterface): Promise<void> => {
   }
 }
 
-// Watches one run with `gh run watch`, which draws it again every few seconds until it ends: each drawing updates the
-// run's progress on the board. Its end reads GitHub again, so the pull request shows how it went.
+// Watches one run with `gh run watch`, which draws it again every 15 seconds until it ends: each drawing updates the
+// run's progress on the board. Its end reads GitHub again, so the pull request shows how it went. Each drawing costs
+// about three REST calls, from the same hourly limit as the cheap checks, so it doesn't draw more often.
 const watchRun = async ($: EngineInterface, run: { id: number; workflow: string }, runBranch: string): Promise<void> => {
   watching.add(run.id)
   const fresh: RunWatch = { id: run.id, workflow: run.workflow, branch: runBranch, done: 0, total: 0, failed: 0, running: null, step: null }
   await update($, runs, list => [...list.filter(one => one.id !== run.id), fresh])
   try {
     let seen = ''
-    for await (const { text } of $.process.spawn({ argv: ['gh', 'run', 'watch', String(run.id), '--interval', '5'] })) {
+    for await (const { text } of $.process.spawn({ argv: ['gh', 'run', 'watch', String(run.id), '--interval', '15'] })) {
       seen = (seen + text).slice(-20_000)
       const progress = runProgressOf(seen)
       if (progress) await update($, runs, list => list.map(one => (one.id === run.id ? { ...one, ...progress } : one)))
