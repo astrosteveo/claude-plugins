@@ -99,6 +99,7 @@ import {
   since,
   spark,
   startPrompt,
+  namesIssue,
   startedByClaude,
   statusFor,
   statusOnly,
@@ -325,6 +326,10 @@ const runs = atom({ plugin: 'issue-board', key: 'runs' } as const, [])
 const workers = atom({ plugin: 'issue-board', key: 'workers' } as const, [])
 const launching = atom({ plugin: 'issue-board', key: 'launching' } as const, [])
 const epicNotes = atom({ plugin: 'issue-board', key: 'epicNotes' } as const, [])
+// What each card's note box holds, by the card's issue number, until a start takes it.
+const notes = atom({ plugin: 'issue-board', key: 'notes' } as const, {})
+// The issue whose start message Edit first put in the prompt box, until the person next sends a prompt.
+const drafted = atom({ plugin: 'issue-board', key: 'drafted' } as const, null)
 
 // Whether a tool's calls may be allowed without asking: an organization can set a ceiling, the most permissive verdict
 // a call of the tool may reach. None set, they may.
@@ -2149,15 +2154,34 @@ const launch = async ($: EngineInterface, issue: Issue, how: Launch['how'], work
   }
 }
 
+// The person's own prompt, sent after Edit first filled the box with Start's message: when it still names the issue,
+// the issue becomes the one Claude is on and gets its tasks, as Start does. Rewritten so it no longer names the issue,
+// it is a plain prompt. Answers the issue started, and whether it has tasks, for the hook to claim once it is sent.
+const draftedStart = async ($: EngineInterface, e: { text: string; origin: { kind: string } }): Promise<{ issue: Issue; listed: boolean } | null> => {
+  if (e.origin.kind !== 'composer' && e.origin.kind !== 'bridge') return null
+  const number = await read($, drafted)
+  if (number === null) return null
+  await update($, drafted, () => null)
+  const issue = (await read($, board))?.issues.find(one => one.number === number)
+  if (!issue || !namesIssue(e.text, number)) return null
+  try {
+    await track($, issue, true)
+    return { issue, listed: (await makeTasks($, issue)) > 0 }
+  } catch (cause) {
+    $.ui.log(`issue-board: couldn't start #${number} from its edited message: ${messageOf(cause)}`, { to: 'debug' })
+    return null
+  }
+}
+
 // How long Start in background waits for Claude to start the agent before its button comes back.
 const DISPATCH_MS = 5 * 60 * 1000
 
 // Start in background: Claude dispatches an agent of the board's own type on the issue, to work it in a git worktree
 // of its own, in the background, and leave a pull request. The button says it is starting until the agent starts, the
 // spawn is refused, or five minutes pass. The issue moves to In progress and is assigned, as Start does.
-const startInBackground = ($: EngineInterface, issue: Issue): Promise<void> =>
+const startInBackground = ($: EngineInterface, issue: Issue, note = ''): Promise<void> =>
   launch($, issue, 'background', async () => {
-    await $.prompt.submit({ text: backgroundPrompt(issue), asUser: true })
+    await $.prompt.submit({ text: backgroundPrompt(issue, note), asUser: true })
     $.ui.toast(`Asked Claude to start a background agent on #${issue.number}`)
     $.clock.after(DISPATCH_MS, () => void landed($, issue.number, 'background'))
     await claim($, issue)
@@ -2792,6 +2816,9 @@ export const register: Register = (on, options) => {
     // The session started over and no SessionStart hook has run since: the first prompt fills the board again.
     if (restarted) void begin($)
     const added: string[] = []
+    // The person sends the start message Edit first filled: while it still names the issue, Start's steps run.
+    const starting = await draftedStart($, e)
+    if (starting?.listed) added.push(`Each open acceptance box of #${starting.issue.number} is a task in your task list too: mark it completed when it is done.`)
     try {
       // What the board moved on its own since the last prompt.
       if (moved.length > 0 && e.origin.kind !== 'task-notification') {
@@ -2811,7 +2838,12 @@ export const register: Register = (on, options) => {
     } catch (cause) {
       $.ui.log(`issue-board: couldn't add the board to the prompt: ${messageOf(cause)}`, { to: 'debug' })
     }
-    return next(added.length > 0 ? { ...e, context: [...(e.context ?? []), ...added] } : e)
+    const entered = await next(added.length > 0 ? { ...e, context: [...(e.context ?? []), ...added] } : e)
+    if (starting && entered.drop === undefined) {
+      $.ui.toast(`Sent #${starting.issue.number} to Claude`)
+      await claim($, starting.issue)
+    }
+    return entered
   }).catch(($, e, next) => fallBack($, e, next, 'prompt.submit'))
 
   on('turn.complete', async ($, e, next) => {
@@ -3170,6 +3202,7 @@ export const register: Register = (on, options) => {
     const watched = await read($, runs)
     const working$ = await read($, workers)
     const launches = await read($, launching)
+    const noted = await read($, notes)
     // The issue Start sent Claude in this session: its Start says so rather than starting it again.
     const startedHere = doing?.started && doing.sessionId !== undefined && doing.sessionId === (await $.session.id().catch(() => undefined)) ? doing.number : null
     const clock = Date.now()
@@ -3186,11 +3219,13 @@ export const register: Register = (on, options) => {
     )
 
     // Start: the issue is the one Claude is on, and Claude gets it. Its button says so from the press on.
-    const start = (issue: Issue) =>
+    const start = (issue: Issue, note = '') =>
       launch($, issue, 'start', async () => {
+        // A start message Edit first left in the prompt box is spent: sending it later doesn't start the issue again.
+        await update($, drafted, () => null)
         await track($, issue, true)
         const listed = await makeTasks($, issue)
-        await $.prompt.submit({ text: startPrompt(issue, listed > 0), asUser: true })
+        await $.prompt.submit({ text: startPrompt(issue, listed > 0, note), asUser: true })
         $.ui.toast(`Sent #${issue.number} to Claude`)
         await claim($, issue)
         return true
@@ -4404,8 +4439,29 @@ export const register: Register = (on, options) => {
       const target = startTargetOf(now.issues, issue, project)
       const goes = target ?? issue
       const startLabel = isEpic && target && target.number !== issue.number ? `▶ Start #${target.number}` : '▶ Start'
-      const startIt = () => (target ? start(target) : Promise.resolve($.ui.toast(noReadyText(issue.number))))
-      const backgroundIt = () => (target ? startInBackground($, target) : Promise.resolve($.ui.toast(noReadyText(issue.number))))
+      // The card's note goes with whichever start is pressed, and clears once it has gone.
+      const note = (noted[issue.number] ?? '').trim()
+      const clearNote = () => update($, notes, was => Object.fromEntries(Object.entries(was).filter(([key]) => Number(key) !== issue.number)))
+      const startIt = async (typed = note) => {
+        if (!target) return $.ui.toast(noReadyText(issue.number))
+        await start(target, typed.trim())
+        if (note) await clearNote()
+      }
+      const backgroundIt = async () => {
+        if (!target) return $.ui.toast(noReadyText(issue.number))
+        await startInBackground($, target, note)
+        if (note) await clearNote()
+      }
+      // Edit first puts the start message, note and all, in the prompt box; the note box clears as its text moves there.
+      // Sending the foreground message starts the issue, by the prompt.submit hook; the background one asks Claude to
+      // dispatch the worker, and the agent.spawn hook claims it and follows it.
+      const draftIt = async (background: boolean) => {
+        if (!target) return $.ui.toast(noReadyText(issue.number))
+        const filled = await $.prompt.fill({ text: background ? backgroundPrompt(target, note) : startPrompt(target, false, note) })
+        if (!filled.isFilled) return
+        await update($, drafted, () => (background ? null : target.number))
+        if (note) await clearNote()
+      }
       return (
         <Box key={`card-${issue.number}`} flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1} marginLeft={2} marginBottom={1}>
           <Text bold wrap="wrap">
@@ -4503,6 +4559,19 @@ export const register: Register = (on, options) => {
               )}
             </Box>
           )}
+          {Input && (
+            <Box marginTop={1}>
+              <Input
+                key={`note-${issue.number}`}
+                label="note "
+                placeholder="added to Start's message; Enter starts"
+                value={noted[issue.number] ?? ''}
+                submitLabel="start"
+                onInput={text => void update($, notes, was => ({ ...was, [issue.number]: text }))}
+                onSubmit={text => void startIt(text)}
+              />
+            </Box>
+          )}
           <Box flexDirection="row" gap={1} marginTop={1} flexWrap="wrap">
             {launches.some(one => one.number === goes.number && one.how === 'start') ? (
               <Text key={`starting-${issue.number}`} color="claude">
@@ -4526,8 +4595,11 @@ export const register: Register = (on, options) => {
                 {isEpic && target && target.number !== issue.number ? `⚙ Start #${target.number} in background` : '⚙ Start in background'}
               </Button>
             )}
-            <Button key={`draft-${issue.number}`} hotkey={hotkeys ? 'e' : undefined} onPress={() => void $.prompt.fill({ text: startPrompt(issue) })}>
+            <Button key={`draft-${issue.number}`} hotkey={hotkeys ? 'e' : undefined} onPress={() => void draftIt(false)}>
               ✎ Edit first
+            </Button>
+            <Button key={`draft-background-${issue.number}`} dimColor onPress={() => void draftIt(true)}>
+              ✎ Edit first in background
             </Button>
             <Button key={`edit-${issue.number}`} variant={changing === issue.number ? 'primary' : undefined} dimColor={changing !== issue.number} onPress={openEditor(issue.number)}>
               ⚙ Change

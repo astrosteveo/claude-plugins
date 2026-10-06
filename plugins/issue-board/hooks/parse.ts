@@ -746,13 +746,20 @@ export const summary = (issues: Issue[], prs: PullRequest[]): string | undefined
   return parts.length > 0 ? parts.join(' · ') : undefined
 }
 
-// The message the Start and Draft buttons hand Claude for an issue. `tasks`: Start made a task for each open box.
-export const startPrompt = (issue: Issue, tasks = false): string => {
+// The message the Start and Edit first buttons hand Claude for an issue. `tasks`: Start made a task for each open box.
+// `note`: what the person wrote in the card's note box, which goes last; an empty one adds nothing.
+export const startPrompt = (issue: Issue, tasks = false, note = ''): string => {
   const open = issue.checks.filter(check => !check.done)
   const listed = tasks ? '\n\nEach is a task in your task list too: mark it completed when it is done.' : ''
   const boxes = open.length > 0 ? `\n\nIts open acceptance boxes:\n${open.map(check => `- ${check.text}`).join('\n')}${listed}` : ''
-  return `Let's start on #${issue.number}: ${issue.title}. Read it with \`gh issue view ${issue.number}\` first.${boxes}`
+  return `Let's start on #${issue.number}: ${issue.title}. Read it with \`gh issue view ${issue.number}\` first.${boxes}${noteOf(note)}`
 }
+
+// The person's note, as it ends a start message.
+const noteOf = (note: string): string => (note.trim() ? `\n\nNote from the person: ${note.trim()}` : '')
+
+// Whether a prompt still names the issue: an Edit-first message the person rewrote may no longer be about it.
+export const namesIssue = (text: string, number: number): boolean => mentionsOf(text, Infinity).includes(number)
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000
 export const WEEKS = 12
@@ -1435,7 +1442,9 @@ export const helpText = (filters: { hotkey: string; name: string }[], off: { fea
     '',
     'An open issue',
     '- s Start hands it to Claude here; b Start in background hands it to an agent in its own worktree. On an epic, both start its first ready sub-issue.',
-    '- e Edit first puts the message in the prompt box. x or Esc folds it. Press a box to tick it.',
+    '- The note box adds a note to the start message, for either Start; Enter in it starts here.',
+    '- e Edit first puts the message in the prompt box; sending it still starts the issue while it names it. Edit first in background does the same for a background start.',
+    '- x or Esc folds it. Press a box to tick it.',
     '- Change opens the editor: title, boxes, labels, assignee, epic, milestone, type, project fields, and closing.',
     '',
     'Under the prompt',
@@ -1800,13 +1809,14 @@ export const workerPrompt = (rule: PrRule): string =>
 // The agent type Start in background runs, as `$.agent.register` names it.
 export const WORKER = 'issue-board:worker'
 
-// What Start in background sends Claude: dispatch the board's agent on the issue, and leave the work to it.
-export const backgroundPrompt = (issue: Issue): string =>
+// What Start in background sends Claude: dispatch the board's agent on the issue, and leave the work to it. The note goes
+// in the agent's prompt, since the agent can't ask the person anything.
+export const backgroundPrompt = (issue: Issue, note = ''): string =>
   [
     `Dispatch a background agent to work on #${issue.number}: ${issue.title}. Don't work on the issue yourself.`,
     `Use the Agent tool with subagent_type \`${WORKER}\`, description \`#${issue.number} ${issue.title}\`, and this prompt:`,
     '',
-    startPrompt(issue),
+    startPrompt(issue, false, note),
   ].join('\n')
 
 // The issue a spawn of the board's agent works on: by the `#<n>` its description starts with, else the first its prompt
