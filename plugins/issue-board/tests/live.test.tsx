@@ -172,7 +172,7 @@ test("a GitHub event for this repo's pull request reads GitHub at once; another 
   expect(gh.reads).toBe(reads + 1)
 })
 
-test("while the branch's CI runs, the band and the pane show its progress from gh run watch, and its end reads GitHub", async ($, on) => {
+test("while the branch's CI runs, the pane shows its progress from gh run watch, the band stays quiet, and its end reads GitHub", async ($, on) => {
   mock.store(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   const gh = world(on)
@@ -193,11 +193,11 @@ test("while the branch's CI runs, the band and the pane show its progress from g
   await clock.settle()
   expect(gh.watched).toEqual([['gh', 'run', 'watch', '987', '--interval', '5']])
   const band = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...BAND })
-  expect(await band.find({ text: / ◷ CI / })).toBeDefined()
-  expect(await band.find({ text: / 1\/2 jobs/ })).toBeDefined()
-  expect(await band.find({ text: /^validate › Install Claude Code$/ })).toBeDefined()
+  expect(await band.find({ text: / ◷ CI / })).toBeUndefined()
   const pane = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   expect(await pane.find({ key: 'run-987' })).toBeDefined()
+  expect(await pane.find({ text: / 1\/2 jobs/ })).toBeDefined()
+  expect(await pane.find({ text: /^validate › Install Claude Code$/ })).toBeDefined()
 
   // A refresh while it runs doesn't watch it twice.
   await $.command.run(REFRESH)
@@ -244,7 +244,7 @@ test('Start in background asks Claude to dispatch the board\'s agent, the row fo
     spawned.push({ type: e.subagentType, prompt: e.prompt, ...(e.name ? { name: e.name } : {}) })
     return { model: 'claude-sonnet-5-5', agentId: 'agent-1' }
   })
-  on('agent.list', async () => ({ value: [{ id: 'agent-1', name: 'issue-315', description: '#315', type: 'issue-board:worker', status: status as 'running' }] }))
+  on('agent.list', async () => ({ value: [{ id: 'agent-1', description: '#315 Lay Kessik out for play', type: 'issue-board:worker', status: status as 'running' }] }))
   on('turn.complete', async (_$, e) => ({ text: e.answer }))
   // What the board hands Claude, and as whose words.
   const sent: string[] = []
@@ -274,19 +274,21 @@ test('Start in background asks Claude to dispatch the board\'s agent, the row fo
   await ui.press({ key: 'filter-all' })
   await ui.press({ key: 'issue-315' })
   await ui.press({ key: 'background-315' })
-  // The board starts no agent itself: it asks Claude to, naming the agent, and hands it Start's message.
+  // The board starts no agent itself: it asks Claude to, with the agent's type and a description that names the issue,
+  // and hands it Start's message. It asks for no name: the Agent tool may take none.
   expect(spawned).toEqual([])
   expect(sent).toHaveLength(1)
   expect(sent[0]).toMatch(/^Dispatch a background agent to work on #315: Lay Kessik out for play\. Don't work on the issue yourself\./)
-  expect(sent[0]).toContain('subagent_type `issue-board:worker`, name `issue-315`')
+  expect(sent[0]).toContain('Use the Agent tool with subagent_type `issue-board:worker`, description `#315 Lay Kessik out for play`, and this prompt:')
+  expect(sent[0]).not.toMatch(/\bname `/)
   expect(sent[0]).toMatch(/\nLet's start on #315: Lay Kessik out for play\./)
   expect(toasts).toContain('Asked Claude to start a background agent on #315')
   expect(await ui.find({ text: /^⚙ working$/ })).toBeUndefined()
 
-  // Claude calls the Agent tool as asked: the row shows the agent.
-  await $.agent.spawn(agentCall({ subagentType: 'issue-board:worker', name: 'issue-315', description: '#315 Lay Kessik out for play', prompt: "Let's start on #315: Lay Kessik out for play." }))
+  // Claude calls the Agent tool as asked, with no name: the row shows the agent.
+  await $.agent.spawn(agentCall({ subagentType: 'issue-board:worker', description: '#315 Lay Kessik out for play', prompt: "Let's start on #315: Lay Kessik out for play." }))
   await clock.settle()
-  expect(spawned).toEqual([{ type: 'issue-board:worker', prompt: expect.stringMatching(/^Let's start on #315/), name: 'issue-315' }])
+  expect(spawned).toEqual([{ type: 'issue-board:worker', prompt: expect.stringMatching(/^Let's start on #315/) }])
   expect(await ui.find({ text: /^⚙ working$/ })).toBeDefined()
   expect(toasts).toContain('Started a background agent on #315')
   // One agent an issue at a time.
@@ -322,7 +324,7 @@ test('Start in background asks Claude to dispatch the board\'s agent, the row fo
   await ui.unmount()
 })
 
-test('A spawn of the board\'s agent that is refused or names no agent shows none on the row; other agents are left alone', async ($, on) => {
+test('A spawn of the board\'s agent that is refused or names no agent shows none on the row; one with no name is found by its description; other agents are left alone', async ($, on) => {
   mock.store(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   world(on)
@@ -331,11 +333,24 @@ test('A spawn of the board\'s agent that is refused or names no agent shows none
   on('tool.register', async (_$, e) => ({ value: { tool: `mcp__issue-board__${e.name}` } }))
   on('agent.register', async (_$, e) => ({ value: { agent: `issue-board:${e.name}` } }))
   // Core refuses the spawn, then starts none the session lists, then one it lists by the name it was given.
-  let spawn: 'deny' | 'nameless' | 'start' = 'deny'
+  // Last, one started with no name, listed by its description beside an earlier agent on the issue that has ended.
+  let spawn: 'deny' | 'nameless' | 'start' | 'unnamed' = 'deny'
   on('agent.spawn', async () => (spawn === 'deny' ? { deny: 'Background tasks are turned off' } : { model: 'claude-sonnet-5-5' }))
   on('agent.list', async () => ({
-    value: spawn === 'start' ? [{ id: 'agent-1', name: 'issue-315', description: '#315', type: 'issue-board:worker', status: 'running' as const }] : [],
+    value:
+      spawn === 'start'
+        ? [{ id: 'agent-1', name: 'issue-315', description: '#315', type: 'issue-board:worker', status: 'running' as const }]
+        : spawn === 'unnamed'
+          ? [
+              { id: 'agent-1', name: 'issue-315', description: '#315', type: 'issue-board:worker', status: 'running' as const },
+              { id: 'agent-2', description: '#315 Lay Kessik out for play', type: 'issue-board:worker', status: 'completed' as const },
+              { id: 'agent-3', description: '#315 Lay Kessik out for play', type: 'issue-board:worker', status: 'running' as const },
+              { id: 'agent-4', description: '#315 Lay Kessik out for play', type: 'general-purpose', status: 'running' as const },
+            ]
+          : [],
   }))
+  on('turn.complete', async (_$, e) => ({ text: e.answer }))
+  on('prompt.submit', async (_$, e) => ({ text: e.text }))
   const toasts: string[] = []
   on('ui.toast', async (_$, e) => {
     toasts.push(e.text)
@@ -375,8 +390,22 @@ test('A spawn of the board\'s agent that is refused or names no agent shows none
   await $.agent.spawn(worker)
   await clock.settle()
   expect(await ui.find({ text: /^⚙ working$/ })).toBeDefined()
+
   // The board adds no line to the conversation: Claude's own Agent call shows there.
   expect(lines).toEqual([])
+
+  // One started with no name, as Start in background asks, is found by its description: the one that hasn't ended.
+  spawn = 'unnamed'
+  const { name: _, ...unnamed } = worker
+  await $.agent.spawn(unnamed)
+  await clock.settle()
+  await $.turn.complete({ answer: 'Opened PR #335.', durationMs: 1, isAborted: false, turnId: 't', agentId: 'agent-1', reason: 'answer' })
+  await clock.settle()
+  expect(await ui.find({ text: /^⚙ done$/ })).toBeUndefined()
+  expect(await ui.find({ text: /^⚙ working$/ })).toBeDefined()
+  await $.turn.complete({ answer: 'Opened PR #336.', durationMs: 1, isAborted: false, turnId: 't', agentId: 'agent-3', reason: 'answer' })
+  await clock.settle()
+  expect(await ui.find({ text: /^⚙ done$/ })).toBeDefined()
   await ui.unmount()
 })
 

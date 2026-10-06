@@ -1065,13 +1065,14 @@ export const WORKER = 'issue-board:worker'
 export const backgroundPrompt = (issue: Issue): string =>
   [
     `Dispatch a background agent to work on #${issue.number}: ${issue.title}. Don't work on the issue yourself.`,
-    `Use the Agent tool with subagent_type \`${WORKER}\`, name \`issue-${issue.number}\`, description \`#${issue.number} ${issue.title}\`, and this prompt:`,
+    `Use the Agent tool with subagent_type \`${WORKER}\`, description \`#${issue.number} ${issue.title}\`, and this prompt:`,
     '',
     startPrompt(issue),
   ].join('\n')
 
-// The issue a spawn of the board's agent works on: by its name `issue-<n>`, else by the `#<n>` its description or
-// prompt starts with.
+// The issue a spawn of the board's agent works on: by the `#<n>` its description starts with, else the first its prompt
+// names. A name `issue-<n>` names it too, for a call that gives one; Start in background asks for none, as the Agent
+// tool may take none.
 export const workerIssueOf = (spawn: { name?: string; description: string; prompt: string }): number | undefined => {
   const found = /^issue-(\d+)$/.exec(spawn.name ?? '') ?? /^#(\d+)\b/.exec(spawn.description.trim()) ?? /#(\d+)\b/.exec(spawn.prompt)
   return found ? Number(found[1]) : undefined

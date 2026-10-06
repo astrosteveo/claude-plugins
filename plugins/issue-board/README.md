@@ -96,7 +96,8 @@ CLI, signed in, in the folder the session started in.
   - **⚙ Start in background** (`b`) asks Claude to hand the issue to a
     background agent, so you and Claude can go on with something else.
     Claude dispatches the board's own agent, `issue-board:worker`, with
-    Start's message, and doesn't work on the issue itself. The agent works
+    Start's message and the description `#<number> <title>`, and doesn't
+    work on the issue itself. The agent works
     in a git worktree of its own. It reads the issue, makes a branch for
     it, does the work, ticks boxes as it finishes them, and opens a pull
     request, with `Closes` or `Refs` as Start's note says. It doesn't merge
@@ -107,8 +108,9 @@ CLI, signed in, in the folder the session started in.
     row shows it: `⚙ working`, `⚙ waiting`, `⚙ done`, `⚙ failed` or
     `⚙ stopped`, and its card shows the agent's last answer. While the
     agent works there is no button, so one agent works on an issue at a
-    time. The board follows any agent of this type that names its issue,
-    so Claude can also dispatch one when you ask. When the agent ends, a
+    time. The board follows any agent of this type whose description
+    starts with its issue's `#<number>`, so Claude can also dispatch one
+    when you ask. When the agent ends, a
     line in the conversation says it is done, failed or was stopped. The
     line names the issue, gives the agent's last answer, and links its
     pull request when there is one. Claude gets the same news as a message
@@ -193,7 +195,11 @@ CLI, signed in, in the folder the session started in.
 - Claude closing an epic with `gh issue close` while some of its sub-issues
   are open asks you first, whatever your permission rules allow, and says
   how many are open.
-- A band above the prompt speaks up, without the pane open, when:
+- A band above the prompt is for what needs you now, something to fix,
+  merge, tick or look at, and for the background agents working out of
+  sight. It shows nothing otherwise. The main session's progress is the
+  pane's job, so the band doesn't repeat it. Each line is one row at any
+  width. It speaks up, without the pane open, when:
   - a pull request's CI fails. It names the failing checks. **Fix** hands
     Claude the failure to fix (into the prompt box while Claude is busy),
     with the command that prints the failing log, and **↗ GitHub** opens it;
@@ -204,19 +210,23 @@ CLI, signed in, in the folder the session started in.
     own changes or yours from the board. **↗ GitHub** opens it;
   - that issue is closed;
   - Claude completes a task that Start made for a box, and the box is still
-    open. **Tick box N** ticks it on GitHub.
+    open. **Tick box N** ticks it on GitHub;
+  - a background agent works on an issue. Its line names the issue, says
+    `working` or `waiting`, and, when the issue has boxes, shows a bar of
+    those ticked, such as
+    `⚙ #90 Tell the agent its issue · working · ━━━━━━ 1/4`. The line goes when the agent ends, since the conversation and Claude
+    are told then.
 
-  `✕` waves an alert off until it happens again. While you work on an issue,
-  the band also shows a `▶` row with its progress. `✕` on that row stops
-  tracking the issue.
+  `✕` waves an alert off until it happens again. The issue you are working
+  on and its progress are on its row in the pane, marked `▶`.
 
-  While CI runs on the branch you have checked out, the band shows a
-  `◷ CI` row with its progress: the workflow, a bar of its jobs done, and
-  the job and step running, such as `validate › Install Claude Code`. The
-  pane shows the same under the pull requests. The board follows the run
-  with `gh run watch`, from when it sees the branch's pull request's CI
-  running, or a few seconds after a `git push`, and reads GitHub again when
-  the run ends.
+  While CI runs on the branch you have checked out, the pane shows a `◷` row
+  under the pull requests with its progress: the workflow, a bar of its jobs
+  done, and the job and step running, such as
+  `validate › Install Claude Code`. The board follows the run with
+  `gh run watch`, from when it sees the branch's pull request's CI running,
+  or a few seconds after a `git push`, and reads GitHub again when the run
+  ends. The band says nothing until the run fails or passes.
 
 The board refreshes every 5 minutes, and every 30 seconds while a pull
 request's CI is running. It also refreshes straight after Claude changes
@@ -297,7 +307,9 @@ stays quiet there.
 - Checking out a branch named for an issue makes it the issue Claude is on,
   as Start does, but without a message or tasks. A part of the branch name
   starts with the number, such as `fix/315-glide`, `315-glide` or
-  `issue-315`. A worktree's branch counts too. The issue must be open on the
+  `issue-315`. A worktree's branch counts too. Only the main session's
+  checkouts count: a subagent's, such as a background agent's in its own
+  worktree, don't. The issue must be open on the
   board.
 - A prompt that names an issue or pull request as `#123` carries the board's
   copy of it for Claude to read: its labels, Status, boxes, pull requests
