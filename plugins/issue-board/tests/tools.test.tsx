@@ -72,6 +72,17 @@ const COMPOSE = { model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surf
 // GitHub and git as the board reads them, with what the tests change and what gh was asked to write.
 // `project`: the repo has the Void Sector project, and `planned` is each issue's Status and Priority in it.
 // `refuseProject`: what GitHub says to a query that asks for projects, as to a token without read:project.
+// An issue closed as completed, as GitHub's REST answers it.
+const CLOSED = {
+  number: 290,
+  title: 'Dock the shuttle',
+  html_url: 'https://github.com/astrosteveo/void-sector/issues/290',
+  state: 'closed',
+  state_reason: 'completed',
+  closed_at: '2026-10-03T10:00:00Z',
+  labels: [{ name: 'enhancement' }],
+}
+
 const world = (on: On) => {
   const state = {
     body: BODY,
@@ -99,6 +110,8 @@ const world = (on: On) => {
     // The number the next filed issue gets, and the blocked-by links made, as `<issue> <blocker's id>`.
     next: 340,
     blocks: [] as string[],
+    // GitHub's search terms asked for.
+    searched: [] as string[],
   }
   on('process.run', async (_$, e) => {
     const argv = e.argv
@@ -129,7 +142,7 @@ const world = (on: On) => {
       state.planned[number] = { ...state.planned[number], ...(args.field === 'F_status' ? { status: name } : { priority: name }) }
       return answer(JSON.stringify({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: args.item } } } }))
     }
-    if (argv[1] === 'api' && argv[2] === '-X' && /\/issues$/.test(argv[4] ?? '')) {
+    if (argv[1] === 'api' && argv[2] === '-X' && argv[3] === 'POST' && /^repos\/.*\/issues$/.test(argv[4] ?? '')) {
       const fields = JSON.parse(e.init?.stdin ?? '{}') as { title: string; labels: string[]; assignees: string[] }
       if (fields.title.includes('refused')) return { value: { exitCode: 1, stdout: '', stderr: 'gh: Validation Failed (HTTP 422)', isStdoutTruncated: false, isStderrTruncated: false } }
       state.filed.push(fields)
@@ -152,7 +165,17 @@ const world = (on: On) => {
       return answer('{}')
     }
     const one = /^repos\/[^/]+\/[^/]+\/issues\/(\d+)$/.exec(argv[2] ?? '')
-    if (argv[1] === 'api' && one) return answer(`90${one[1]}\n`)
+    if (argv[1] === 'api' && one && argv.includes('.id')) return answer(`90${one[1]}\n`)
+    // An issue the board doesn't hold: #290 closed as completed; nothing else exists.
+    if (argv[1] === 'api' && one) {
+      if (one[1] !== '290') return { value: { exitCode: 1, stdout: '', stderr: 'gh: Not Found (HTTP 404)', isStdoutTruncated: false, isStderrTruncated: false } }
+      return answer(JSON.stringify({ ...CLOSED, body: '- [x] Shipped\n- [ ] Follow up', assignees: [{ login: 'astrosteveo' }] }))
+    }
+    if (argv[1] === 'api' && argv[2] === '-X' && argv[4] === 'search/issues') {
+      state.searched.push(argv[argv.indexOf('-f') + 1]?.slice(2) ?? '')
+      return answer(JSON.stringify({ total_count: 45, items: [CLOSED, { ...CLOSED, number: 291, title: 'A pull request', pull_request: {} }] }))
+    }
+    if (argv[1] === 'api' && argv[2]?.includes('/issues?state=closed')) return answer(JSON.stringify([CLOSED]))
     if (argv[1] === 'api' && argv[2] === '-X' && argv[4]?.includes('/dependencies/blocked_by')) {
       state.blocks.push(`${/issues\/(\d+)\//.exec(argv[4])?.[1]} ${argv[6]?.split('=')[1]}`)
       return answer('{}')
@@ -692,6 +715,52 @@ test('issue_create files an epic and its sub-issues in order, each under it and 
   // A sub-issue can't have sub-issues of its own.
   const nested = await $.tool.call({ tool: 'mcp__issue-board__issue_create', title: 'x', subIssues: [{ title: 'y', subIssues: [{ title: 'z' }] }] })
   expect(nested.deny).toBe('Sub-issue 1: A sub-issue takes no sub-issues of its own.')
+})
+
+test('the issues tool reads a closed issue from GitHub, searches every issue, and filters the open ones by label', async ($, on) => {
+  mock.store(on)
+  mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
+  const gh = world(on)
+  await $.command.run(REFRESH)
+
+  // An issue the board doesn't hold is read from GitHub, with how it closed and its boxes.
+  const closed = await $.tool.call({ tool: 'mcp__issue-board__issues', number: 290 })
+  expect(String(closed.result)).toBe(
+    [
+      '#290 Dock the shuttle (closed as completed 1d ago)',
+      'https://github.com/astrosteveo/void-sector/issues/290',
+      'Labels: enhancement',
+      'Assignees: astrosteveo',
+      'Boxes (1/2 ticked):',
+      '1. [x] Shipped',
+      '2. [ ] Follow up',
+      'Read the whole issue with `gh issue view 290`.',
+    ].join('\n'),
+  )
+  expect(String((await $.tool.call({ tool: 'mcp__issue-board__issues', number: 999 })).result)).toBe("#999 doesn't exist in astrosteveo/void-sector.")
+
+  // Closed issues are GitHub's search to answer, one line each, without pull requests, and how many more there are.
+  const found = await $.tool.call({ tool: 'mcp__issue-board__issues', state: 'closed', label: 'needs design' })
+  expect(gh.searched.at(-1)).toBe('repo:astrosteveo/void-sector is:issue state:closed label:"needs design"')
+  expect(String(found.result)).toBe('#290 Dock the shuttle · closed as completed 1d ago · enhancement\nShowing 1 of 45; narrow the search to see the rest.')
+  await $.tool.call({ tool: 'mcp__issue-board__issues', search: 'shuttle dock', assignee: 'astrosteveo' })
+  expect(gh.searched.at(-1)).toBe('repo:astrosteveo/void-sector is:issue assignee:astrosteveo shuttle dock')
+
+  // Open issues still come from the board's copy, which a label or an assignee narrows.
+  const open = await $.tool.call({ tool: 'mcp__issue-board__issues', label: 'bug' })
+  expect(String(open.result)).toMatch(/#289/)
+  expect(String(open.result)).not.toMatch(/#315 /)
+})
+
+test("the pane's Closed filter lists the issues closed lately, read from GitHub when chosen", async ($, on) => {
+  mock.store(on)
+  world(on)
+  await $.command.run(REFRESH)
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'filter-closed' })
+  expect(await ui.find({ text: /Dock the shuttle/ })).toBeDefined()
+  expect(await ui.find({ key: 'issue-315' })).toBeUndefined()
+  await ui.unmount()
 })
 
 test('the pane draws on every surface, with search where the surface has a text field', async ($, on) => {
