@@ -142,6 +142,8 @@ import {
   filterKeys,
   hintFit,
   openedText,
+  SUBCOMMANDS,
+  helpText,
 } from './parse'
 
 const PANE = 'issue-board'
@@ -2160,7 +2162,7 @@ export const register: Register = on => {
     await $.command.register({
       name: 'issues',
       description: 'Show open issues and pull requests in a pane',
-      argumentHint: '[refresh | check | setup | new [epic] <what it is about>]',
+      argumentHint: `[${SUBCOMMANDS.map(one => one.name.replace(' <what>', '')).filter((one, index, all) => all.indexOf(one) === index).join(' | ')}]`,
     })
     await $.tool.register({
       name: 'issues',
@@ -2418,6 +2420,7 @@ export const register: Register = on => {
       void readSetup($)
       return { text: 'Reading the repo and its project. What setup would change shows at the top of the issues pane, and nothing changes until you press Apply.' }
     }
+    if (e.args.trim() === 'help') return { text: helpText(filtersFor(Boolean((await read($, board))?.project))) }
     if (e.args.trim() === 'check') {
       const problems = await checkAccess($)
       const found = await read($, access)
