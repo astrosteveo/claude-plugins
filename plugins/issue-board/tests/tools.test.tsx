@@ -1153,6 +1153,34 @@ test("/issues check notes the project's Item closed workflow when it's on, as a 
   await clock.settle()
 })
 
+test('on a short pane the sections above the issues start folded to a summary, and stay as the person leaves them', async ($, on) => {
+  mock.store(on)
+  world(on)
+  on('ui.toast', async () => ({ value: undefined }))
+  await $.command.run(REFRESH)
+  const mount = (bodyRows: number) => $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE, props: { ...PANE.props, scroll: { offset: 0, bodyRows } } })
+
+  // Short: folded, each a line that sums it up, and the rows beneath hidden.
+  const short = await mount(20)
+  expect(await short.find({ text: '▸ Pull requests' })).toBeDefined()
+  expect(await short.find({ text: /^1 open · ✓ 1$/ })).toBeDefined()
+  expect(await short.find({ text: '▸ Milestones' })).toBeDefined()
+  expect(await short.find({ text: /^Launch 5\/7$/ })).toBeDefined()
+  expect(await short.find({ key: 'pr-335' })).toBeUndefined()
+
+  // Opened, the pull requests show, and stay open on a taller pane and a short one alike.
+  await short.press({ key: 'section-prs' })
+  expect(await short.find({ key: 'pr-335' })).toBeDefined()
+  await short.unmount()
+  const tall = await mount(60)
+  expect(await tall.find({ key: 'pr-335' })).toBeDefined()
+  expect(await tall.find({ text: '▾ Milestones' })).toBeDefined()
+  // Folded on the tall pane, it stays folded.
+  await tall.press({ key: 'section-milestones' })
+  expect(await tall.find({ text: '▸ Milestones' })).toBeDefined()
+  await tall.unmount()
+})
+
 test('the pane draws on every surface, with search where the surface has a text field', async ($, on) => {
   mock.store(on)
   world(on)

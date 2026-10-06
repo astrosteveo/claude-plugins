@@ -312,6 +312,7 @@ declare module 'claude-code' {
       recent: { items: Found[]; at: number; failed?: string } | null
       values: Record<number, Record<string, string>>
       typedFields: Record<string, string>
+      sections: Record<string, boolean>
     }
   }
 }
