@@ -1,6 +1,7 @@
 import type { Issue, LabelChange, Markers, Milestone, PlanChange, PlanRow, Project, ProjectView, ViewChange, ViewShape } from '../types'
 import type { IssueChanges } from './parse'
-import { fieldValueOf, projectMoveOf, viewMatchOf } from './parse'
+import { fieldValueOf, projectMoveOf, stringsOf, textOf, viewMatchOf } from './parse'
+import { same } from './markers'
 import { optionOf } from './project'
 
 // A plan Claude proposes with project_plan: the changes it lists, checked against the board, each with its reason.
@@ -43,15 +44,7 @@ export const groupOf = (change: PlanChange): number | 'label' | 'view' => (chang
 // The name of the view a change is to: the view's own, or the new one's.
 const viewNameOf = (change: ViewChange): string => change.view?.name ?? change.to?.name ?? ''
 
-// GitHub keeps label names unique whatever their case.
-const same = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase()
-
 export type Planned = { changes: { change: PlanChange; reason: string }[] } | { problems: string[] }
-
-const names = (value: unknown): string[] =>
-  Array.isArray(value) ? value.filter((one): one is string => typeof one === 'string' && one.trim() !== '').map(one => one.trim()) : []
-
-const text = (value: unknown): string | undefined => (typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined)
 
 // The name a kind goes by in the card, the prompt and the problems.
 const KIND_NAMES: Record<PlanChange['kind'], string> = { status: 'Status', priority: 'Priority', field: 'fields', labels: 'labels', assignees: 'assignees', milestone: 'milestone', parent: 'parent', order: 'order', label: 'repo labels', view: 'views' }
@@ -70,17 +63,17 @@ const viewChangeOf = (entry: unknown, index: number, context: PlanContext, probl
   const one = (entry ?? {}) as Record<string, unknown>
   const { project } = context
   const named = typeof one.view === 'number' || typeof one.view === 'string' ? one.view : undefined
-  const name = text(one.name)
+  const name = textOf(one.name)
   const at = named !== undefined ? `View ${named}` : `New view ${name ?? `(entry ${index + 1})`}`
   const before = problems.length
   if (!project) {
     problems.push(`${at}: the board reads no project, so it can't change its views.`)
     return null
   }
-  if (!text(one.reason)) problems.push(`${at} has no reason.`)
+  if (!textOf(one.reason)) problems.push(`${at} has no reason.`)
   const unknown = Object.keys(one).filter(key => !VIEW_KEYS.has(key))
   if (unknown.length > 0) problems.push(`${at}: a view entry can't hold ${unknown.join(', ')}.`)
-  const written = text(one.layout)?.toLowerCase()
+  const written = textOf(one.layout)?.toLowerCase()
   const layout = LAYOUTS.find(known => known === written)
   if (written !== undefined && !layout) problems.push(`${at}: a layout is table, board or roadmap, not ${written}.`)
   if (one.filter !== undefined && typeof one.filter !== 'string') problems.push(`${at}: give its filter as text.`)
@@ -126,18 +119,18 @@ const labelChangesOf = (entries: unknown[], context: PlanContext, problems: stri
   const known = (name: string) => repo?.find(one => same(one, name))
   entries.forEach((entry, index) => {
     const one = (entry ?? {}) as Record<string, unknown>
-    const given = text(one.name)
+    const given = textOf(one.name)
     if (!given) {
       problems.push(`Label ${index + 1} has no name.`)
       return
     }
     const name = known(given) ?? given
     const at = `Label ${name}`
-    const reason = text(one.reason)
+    const reason = textOf(one.reason)
     if (!reason) problems.push(`${at} has no reason.`)
     const unknown = Object.keys(one).filter(key => !LABEL_KEYS.has(key))
     if (unknown.length > 0) problems.push(`${at}: a plan can't change its ${unknown.join(', ')}.`)
-    const rename = text(one.rename)
+    const rename = textOf(one.rename)
     const description = typeof one.description === 'string' ? one.description.trim() : undefined
     let color: string | undefined
     if (one.color !== undefined) {
@@ -200,13 +193,13 @@ export const planOf = (input: unknown, context: PlanContext): Planned => {
     }
     const at = `#${number}`
     if (!open.has(number)) problems.push(`${at} isn't an open issue on the board.`)
-    const reason = text(one.reason)
+    const reason = textOf(one.reason)
     if (!reason) problems.push(`${at} has no reason.`)
     const unknown = Object.keys(one).filter(key => !ISSUE_KEYS.has(key))
     if (unknown.length > 0) problems.push(`${at}: a plan can't change ${unknown.join(', ')}; use issue_update for that.`)
     const made: PlanChange[] = []
     for (const kind of ['status', 'priority'] as const) {
-      const value = text(one[kind])
+      const value = textOf(one[kind])
       if (!value) continue
       const field = kind === 'status' ? project?.status : project?.priority
       const option = optionOf(field, value)
@@ -240,8 +233,8 @@ export const planOf = (input: unknown, context: PlanContext): Planned => {
       }
     }
     for (const [kind, add, remove] of [
-      ['labels', names(one.addLabels), names(one.removeLabels)],
-      ['assignees', names(one.assign), names(one.unassign)],
+      ['labels', stringsOf(one.addLabels), stringsOf(one.removeLabels)],
+      ['assignees', stringsOf(one.assign), stringsOf(one.unassign)],
     ] as const) {
       if (add.length > 0 || remove.length > 0) made.push({ kind, number, add, remove })
     }
@@ -273,7 +266,7 @@ export const planOf = (input: unknown, context: PlanContext): Planned => {
   })
   viewEntries.forEach((entry, index) => {
     const change = viewChangeOf(entry, index, context, problems)
-    if (change) changes.push({ change, reason: text((entry as { reason?: unknown } | null)?.reason) ?? '' })
+    if (change) changes.push({ change, reason: textOf((entry as { reason?: unknown } | null)?.reason) ?? '' })
   })
   const seen = new Set<string>()
   for (const { change } of changes) {

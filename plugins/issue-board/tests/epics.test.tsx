@@ -39,7 +39,7 @@ test('an epic draft asks for sub-issues and reads them back', () => {
     title: 'Saves survive a crash',
     body: 'Why.',
     labels: ['bug'],
-    children: [
+    subIssues: [
       { title: 'Write saves atomically', body: '## Acceptance\n- [ ] Temp file then rename', labels: ['bug'] },
       { title: 'Check saves on load', body: '- [ ] Checksums', labels: [] },
     ],

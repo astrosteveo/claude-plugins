@@ -177,10 +177,6 @@ export type Worker = {
 // A Start or Start in background pressed on an issue, from the press until the work is under way.
 export type Launch = { number: number; how: 'start' | 'background' }
 
-// An issue Claude wrote from the conversation for `/issues new`, to capture to the Inbox.
-// With `children`, an epic: the parent issue, and the sub-issues filed under it.
-export type Draft = { title: string; body: string; labels: string[]; children?: { title: string; body: string; labels: string[] }[] }
-
 // Something the band above the prompt raises; `key` changes when it happens again.
 export type Alert =
   | { kind: 'ci'; key: string; pr: PullRequest }

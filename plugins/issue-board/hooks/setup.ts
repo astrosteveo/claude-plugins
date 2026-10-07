@@ -1,5 +1,5 @@
 import type { RolePicks, Roles, SetupFacts, SetupOption, SetupProject, SetupStep } from '../types'
-import { BUG_LABELS } from './markers'
+import { BUG_LABELS, same } from './markers'
 import type { RawNodes, RawProjectBase } from './parse'
 import { fieldOf, nodesOf } from './parse'
 import { ROLE_NAMES, ROLE_ORDER, rolesFor } from './project'
@@ -53,8 +53,6 @@ export const CREATE_FIELD =
   'mutation($project: ID!, $name: String!, $options: [ProjectV2SingleSelectFieldOptionInput!]) { createProjectV2Field(input: {projectId: $project, dataType: SINGLE_SELECT, name: $name, singleSelectOptions: $options}) { projectV2Field { ... on ProjectV2SingleSelectField { id } } } }'
 
 type RawProject = RawProjectBase<SetupOption>
-
-const same = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase()
 
 // A project as setup reads it, from the facts query or the one-project query.
 export const projectOf = (raw: RawProject): SetupProject => ({

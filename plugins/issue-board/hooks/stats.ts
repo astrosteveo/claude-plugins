@@ -50,7 +50,8 @@ export const CAUSES: readonly Cause[] = ['full read', 'poll', 'write', 'tool', '
 
 export const newStats = (startedAt: number): Stats => ({ startedAt, calls: {}, points: 0, remaining: null, resetAt: null, context: {}, lastRead: null, tools: {}, prompts: 0 })
 
-const zero = (): Tally => ({ rest: 0, rest304: 0, graphql: 0 })
+// An empty tally, to count from.
+export const zero = (): Tally => ({ rest: 0, rest304: 0, graphql: 0 })
 
 // How GitHub counts one gh command. `gh api` is REST unless it calls graphql. gh's issue, pr and repo view commands,
 // and `label list`, ask GraphQL; `label create`, `repo edit`, `run` and `auth` use REST. One command counts as one call,

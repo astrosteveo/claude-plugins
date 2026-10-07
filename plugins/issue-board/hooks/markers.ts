@@ -10,8 +10,9 @@ export const LATER_LABELS = ['future', 'later', 'someday', 'icebox']
 // GitHub's issue type for bugs, where the repo's organization has types.
 export const BUG_TYPE = 'Bug'
 
-// GitHub keeps label names unique whatever their case, so a name matches in any case.
-const same = (a: string, b: string): boolean => a.trim().toLowerCase() === b.trim().toLowerCase()
+// GitHub keeps label, option and field names unique whatever their case, so a name matches in any case, and the
+// space around it doesn't count.
+export const same = (a: string, b: string): boolean => a.trim().toLowerCase() === b.trim().toLowerCase()
 
 export const isBug = (issue: Issue, markers: Markers = DEFAULT_MARKERS): boolean => {
   const bug = markers.bug

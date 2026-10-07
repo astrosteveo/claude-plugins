@@ -3,15 +3,15 @@ Test: plugins/issue-board: a rule that denies stands, a subagent is refused, and
 Test: plugins/issue-board: in bypass or auto mode a plan is refused, stays on the card to apply in /issues, and writes nothing; default mode asks
 
 diff --git a/plugins/issue-board/hooks/register.tsx b/plugins/issue-board/hooks/register.tsx
-index 47ad2f7..5bb2d6a 100644
+index 12e605f..6522799 100644
 --- a/plugins/issue-board/hooks/register.tsx
 +++ b/plugins/issue-board/hooks/register.tsx
-@@ -314,7 +314,7 @@ const PLAN_TOOL = 'mcp__issue-board__project_plan'
+@@ -321,7 +321,7 @@ const PLAN_TOOL = 'mcp__issue-board__project_plan'
  // Permission modes that settle a plugin's ask without showing it to the person: auto has a classifier decide, and
  // bypassPermissions lets every call through. Adopting a project and applying a plan need the person to read the prompt,
  // so project_adopt and project_plan are refused in them.
 -const UNSEEN_MODES = new Set(['auto', 'bypassPermissions'])
 +const UNSEEN_MODES = new Set(['auto'])
  
- const strings = (value: unknown): string[] | undefined =>
-   Array.isArray(value) ? value.filter((one): one is string => typeof one === 'string' && one.trim() !== '').map(one => one.trim()) : undefined
+ const board = atom({ plugin: 'issue-board', key: 'board' } as const, null)
+ const error = atom({ plugin: 'issue-board', key: 'error' } as const, null)
