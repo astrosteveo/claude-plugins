@@ -6,19 +6,15 @@ import {
   NOT_READ_SENTENCE,
   captureOf,
   changesOf,
-  ciGlyph,
-  groupingOf,
-  helpText,
   issueNumberIn,
-  milestoneDue,
-  milestoneLine,
-  notFoundText,
-  parseGraph,
-  prCountsText,
   stringsOf,
   textOf,
-  toolListOf,
-} from '../hooks/parse'
+} from '../hooks/changes'
+import { groupingOf } from '../hooks/filters'
+import { parseGraph } from '../hooks/github'
+import { ciGlyph, prCountsText } from '../hooks/layout'
+import { helpText, toolListOf } from '../hooks/prompts'
+import { milestoneDue, milestoneLine, notFoundText } from '../hooks/rest'
 import { same } from '../hooks/markers'
 import { adoptedOf } from '../hooks/project'
 import { zero } from '../hooks/stats'

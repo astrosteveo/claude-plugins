@@ -1,6 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { captureSection, draftPrompt, parseDraft, sameWorkOf, titleLikeness } from '../hooks/parse'
+import { sameWorkOf, titleLikeness } from '../hooks/changes'
+import { captureSection, draftPrompt, parseDraft } from '../hooks/prompts'
 import { adoptedStore } from './github'
 import { COMPOSE, REFRESH, engineBand } from './ui'
 import { BAND, CAPTURE, PANE, issue, world } from './void-sector'

@@ -2,7 +2,7 @@ import type { AgentSpawnInput, On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { workerOnLine } from '../hooks/parse'
+import { workerOnLine } from '../hooks/workers'
 import { adoptedStore, fakeGitHub, registrations, session } from './github'
 import type { Raw } from './graph'
 import { COMPOSE, REFRESH, REPO, RUN, band, engineBand, pane } from './ui'

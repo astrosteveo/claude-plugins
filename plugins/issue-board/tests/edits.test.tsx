@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
-import { addBoxes, changesText, commandsOf, rewordBoxes, statusOnly } from '../hooks/parse'
+import { addBoxes, rewordBoxes } from '../hooks/boxes'
+import { changesText, commandsOf, statusOnly } from '../hooks/changes'
 import { PANE, github, writeLine, writes } from './claude-plugins'
 import { optionId } from './graph'
 import { adoptedStore } from './github'

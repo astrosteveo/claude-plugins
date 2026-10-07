@@ -1,7 +1,9 @@
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { matches, parseIssues, parseTriage, triagePrompt } from '../hooks/parse'
+import { matches } from '../hooks/filters'
+import { parseIssues } from '../hooks/github'
+import { parseTriage, triagePrompt } from '../hooks/prompts'
 import { adoptedStore, fakeGitHub, json, ok, session } from './github'
 import type { Route } from './github'
 import { PRIORITIES, STATUSES, graphArgs, graphPage, isIssuesQuery, optionId } from './graph'

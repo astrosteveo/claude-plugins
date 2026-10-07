@@ -1,4 +1,4 @@
-import { cells } from '../hooks/parse'
+import { cells } from '../hooks/layout'
 
 // A test has no rendered frame, so this lays a drawn tree out the way Ink and its flexbox engine would, closely enough to
 // tell whether a number, a link or a count can break across lines. A row Box gives each child its natural width when

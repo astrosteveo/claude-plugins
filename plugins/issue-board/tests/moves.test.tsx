@@ -1,7 +1,8 @@
 import { expect, test } from 'claude-code/testing'
 
 import type { Board, Issue } from '../types'
-import { leftForDone, leftForVerification, movedText, unmovedText } from '../hooks/parse'
+import { movedText, unmovedText } from '../hooks/changes'
+import { leftForDone, leftForVerification } from '../hooks/epics'
 import { EPIC, PANE, github, writeLine, writes } from './claude-plugins'
 import { graphArg, optionId } from './graph'
 import { adoptedStore } from './github'

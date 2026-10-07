@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
-import { groupsOf, matches, nextPageOf, parseGraph } from '../hooks/parse'
+import { groupsOf, matches } from '../hooks/filters'
+import { nextPageOf, parseGraph } from '../hooks/github'
 import { issuesQuery, priorityRank, startedOf } from '../hooks/project'
 import { graphPage } from './graph'
 

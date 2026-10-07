@@ -1,6 +1,11 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { alertsOf, fixPrompt, matches, parseIssues, parsePrs, searched, tickBody, wentGreen, workerPrompt, workingSection } from '../hooks/parse'
+import { tickBody } from '../hooks/boxes'
+import { matches, searched } from '../hooks/filters'
+import { parseIssues, parsePrs } from '../hooks/github'
+import { alertsOf, wentGreen } from '../hooks/news'
+import { fixPrompt, workingSection } from '../hooks/prompts'
+import { workerPrompt } from '../hooks/workers'
 import { optionId } from './graph'
 import { KESSIK_BODY, adoptedStore, pr335 } from './github'
 import { COMPOSE, REFRESH, REPO, engineBand } from './ui'

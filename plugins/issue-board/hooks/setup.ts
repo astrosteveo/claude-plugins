@@ -1,7 +1,7 @@
 import type { RolePicks, Roles, SetupFacts, SetupOption, SetupProject, SetupStep } from '../types'
 import { BUG_LABELS, same } from './markers'
-import type { RawNodes, RawProjectBase } from './parse'
-import { fieldOf, nodesOf } from './parse'
+import type { RawNodes, RawProjectBase } from './github'
+import { fieldOf, nodesOf } from './github'
 import { ROLE_NAMES, ROLE_ORDER, rolesFor } from './project'
 
 // The board's Status options, in its order, with the color and description a new one gets.

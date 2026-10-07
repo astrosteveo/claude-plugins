@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
-import { captureSection } from '../hooks/parse'
+import { captureSection } from '../hooks/prompts'
 import { countCall, countContext, countPoints, countPrompt, defineTool, kindOf, loadTool, newStats, statsText } from '../hooks/stats'
 import { letThrough } from './engine'
 import { KESSIK, adoptedStore, fakeGitHub, json, pr335, registrations, session } from './github'

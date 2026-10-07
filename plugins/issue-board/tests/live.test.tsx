@@ -1,7 +1,8 @@
 import type { AgentSpawnInput, On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { eventRepoOf, liveRunsOf, runProgressOf, startedByClaude, workerBadge } from '../hooks/parse'
+import { eventRepoOf, liveRunsOf, runProgressOf } from '../hooks/news'
+import { startedByClaude, workerBadge } from '../hooks/workers'
 import { KESSIK, fakeGitHub, issueReads, json, line, pr335, session } from './github'
 import type { Route } from './github'
 import type { Raw } from './graph'

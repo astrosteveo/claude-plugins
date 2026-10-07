@@ -1,6 +1,8 @@
 import type { Issue, LabelChange, Markers, Milestone, PlanChange, PlanRow, Project, ProjectView, ViewChange, ViewShape } from '../types'
-import type { IssueChanges } from './parse'
-import { fieldValueOf, projectMoveOf, stringsOf, textOf, viewMatchOf } from './parse'
+import type { IssueChanges } from './changes'
+import { stringsOf, textOf } from './changes'
+import { viewMatchOf } from './filters'
+import { fieldValueOf, projectMoveOf } from './rest'
 import { same } from './markers'
 import { optionOf } from './project'
 

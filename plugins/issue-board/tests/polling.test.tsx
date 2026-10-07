@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { parseIssues } from '../hooks/parse'
+import { parseIssues } from '../hooks/github'
 import { letThrough } from './engine'
 import { KESSIK_BODY, adoptedStore, fail, fakeGitHub, pr335 } from './github'
 import { COMPOSE, REFRESH, REPO } from './ui'

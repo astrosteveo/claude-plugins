@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { projectPathOf } from '../hooks/parse'
+import { projectPathOf } from '../hooks/rest'
 import { adoptedStore } from './github'
 import { HINT, REFRESH, engineHint } from './ui'
 import { PANE, savedRoles, world } from './void-sector'
