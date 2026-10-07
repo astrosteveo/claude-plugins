@@ -229,9 +229,8 @@ export type Triage = {
   failed: string | null
 }
 
-// One change in a plan Claude proposes with project_plan. `kind` says what it changes; each kind changes one thing on
-// one issue, as issue_update would. Later kinds, such as the repo's labels or the project's views, add their own members
-// here.
+// One change in a plan Claude proposes with project_plan. `kind` says what it changes; most kinds change one thing on
+// one issue, as issue_update would. `view` changes one of the project's views and has no issue.
 export type PlanChange =
   | { kind: 'status' | 'priority'; number: number; value: string }
   | { kind: 'field'; number: number; field: string; value: string | number | null }
@@ -240,6 +239,12 @@ export type PlanChange =
   | { kind: 'parent'; number: number; value: number | null }
   // A place in the project's own order: straight after the issue `after`, or at the top for null.
   | { kind: 'order'; number: number; after: number | null }
+  // A project view: `view` is the view as the board read it, null for a new one; `to` is what it becomes, null to
+  // delete it. `partial` holds the terms of the new filter the board can't apply, so its tab shows more than GitHub.
+  | { kind: 'view'; view: ProjectView | null; to: ViewShape | null; partial: string[] }
+
+// What a plan makes a view: its name, layout and filter.
+export type ViewShape = { name: string; layout: ProjectView['layout']; filter: string }
 
 // A row of the plan card: the change, Claude's reason for it, whether it is ticked to apply, and why it failed the last
 // time it was applied.

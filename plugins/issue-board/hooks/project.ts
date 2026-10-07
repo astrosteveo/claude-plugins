@@ -101,6 +101,18 @@ export const MOVE_ITEM =
 // Adds an issue to a project, for an issue the project doesn't hold yet; answers the new item's id.
 export const ADD_ITEM = 'mutation($project: ID!, $content: ID!) { addProjectV2ItemById(input: {projectId: $project, contentId: $content}) { item { id } } }'
 
+// A view's node id, by its number in the project's URL: what a plan's view change writes to.
+export const VIEW_ID = 'query($project: ID!, $number: Int!) { node(id: $project) { ... on ProjectV2 { view(number: $number) { id } } } }'
+
+// Creates, changes and deletes a view. Creating takes no filter, so a new view's filter is set by a change after it.
+// The inputs go whole, so a change sends only what it changes.
+export const CREATE_VIEW = 'mutation($input: CreateProjectV2ViewInput!) { createProjectV2View(input: $input) { projectV2View { id number } } }'
+export const UPDATE_VIEW = 'mutation($input: UpdateProjectV2ViewInput!) { updateProjectV2View(input: $input) { projectV2View { id } } }'
+export const DELETE_VIEW = 'mutation($view: ID!) { deleteProjectV2View(input: {viewId: $view}) { projectV2View { id } } }'
+
+// The layouts as GitHub's API names them.
+export const LAYOUT_NAMES = { table: 'TABLE_LAYOUT', board: 'BOARD_LAYOUT', roadmap: 'ROADMAP_LAYOUT' } as const
+
 // A field's option by name, ignoring case: what a pick or Start sets.
 export const optionOf = (field: Field | null | undefined, name: string): { id: string; name: string } | undefined =>
   field?.options.find(option => option.name.toLowerCase() === name.toLowerCase())
