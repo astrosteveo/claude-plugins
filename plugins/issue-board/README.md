@@ -610,10 +610,11 @@ What stays the same without an adopted project:
   project has them.
 - Changes to issues themselves: Start still tracks the issue and assigns it
   to you, boxes still tick, an epic still closes when its last sub-issue
-  does, and issue_create still files the issue.
+  does, issue_create still files the issue, and triage's Accept still
+  changes the `area:` label.
 - What doesn't happen: Start, triage's Accept and the moves a read makes
   leave the project's Status and Priority alone, and new issues aren't added
-  as items. A tool asked to change the project, such as issue_update with a
+  as items. Accept says it skipped them, and the issue stays in the Inbox. A tool asked to change the project, such as issue_update with a
   Status or project_status posting an update, is refused, and the refusal
   says why and how to adopt the project. `/issues check` and `/issues help`
   list it under Off.

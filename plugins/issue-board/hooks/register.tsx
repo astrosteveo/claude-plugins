@@ -3239,18 +3239,30 @@ const triageTarget = (project: Project | null | undefined, status: 'Ready' | 'Ba
 
 // Accept on an Inbox issue: its Priority and area as picked, Claude's suggestion unless changed, and its Status moved
 // on to Ready or Backlog, so it leaves the Inbox, where the project has that option. Another area label it had comes off.
+// On a project the board only reads, the labels still change, since they are the repo's, not the project's. The Status
+// and Priority are skipped and the toast says why. The issue stays in the Inbox then, so the person's picks stay too.
 const acceptTriage = async ($: EngineInterface, issue: Issue, choice: { priority: string | null; area: string | null }, status: 'Ready' | 'Backlog'): Promise<void> => {
   const label = choice.area ? `area:${choice.area}` : null
   const others = label ? issue.labels.map(one => one.name).filter(name => name.startsWith('area:') && name !== label) : []
-  const target = triageTarget((await read($, board))?.project, status)
-  const changes: IssueChanges = {
+  const project = (await read($, board))?.project
+  const refusal = project ? writeRefusal((await grantsNow($)).all, project) : null
+  const target = triageTarget(project, status)
+  const fields: IssueChanges = {
     ...(target ? { status: target } : {}),
     ...(choice.priority && choice.priority !== issue.priority ? { priority: choice.priority } : {}),
+  }
+  const labels: IssueChanges = {
     ...(label && !issue.labels.some(one => one.name === label) ? { addLabels: [label] } : {}),
     ...(others.length > 0 ? { removeLabels: others } : {}),
   }
   try {
-    $.ui.toast(await applyChanges($, issue.number, changes))
+    if (refusal) {
+      const done = labels.addLabels || labels.removeLabels ? await applyChanges($, issue.number, labels) : ''
+      const skipped = fields.status || fields.priority ? `Skipped its Status and Priority: ${refusal}` : ''
+      $.ui.toast([done || (skipped ? `Nothing changed on #${issue.number}.` : `Nothing to change on #${issue.number}.`), skipped].filter(Boolean).join(' '))
+      return
+    }
+    $.ui.toast(await applyChanges($, issue.number, { ...fields, ...labels }))
     await update($, triage, was => ({ ...was, picks: was.picks.filter(one => one.number !== issue.number) }))
   } catch (cause) {
     const message = messageOf(cause)
