@@ -5,6 +5,15 @@ const GROUP_FIELD = '(first: 1) { nodes { ... on ProjectV2FieldCommon { name } }
 // The project's views in the order GitHub shows them, which become the pane's tabs.
 const VIEWS = `views(first: 20, orderBy: {field: POSITION, direction: ASC}) { nodes { name number layout filter groupByFields${GROUP_FIELD} verticalGroupByFields${GROUP_FIELD} } }`
 
+// The project's open issues from this repo in the project's own order, the one a person sets by dragging rows, as item
+// ids. `$order` is the filter, `is:open is:issue repo:<owner>/<name>`, so the closed items that pile up at the top of an
+// old project don't use up the hundred. GitHub answers items in the order POSITION gives, so reading the order costs
+// one small list per project and no extra request.
+const ORDER = 'order: items(first: 100, query: $order, orderBy: {field: POSITION, direction: ASC}) { nodes { id } }'
+
+// The filter for the project order's items, for the issues query's `$order` variable.
+export const orderFilter = (owner: string, name: string): string => `is:open is:issue repo:${owner}/${name}`
+
 // The repo's projects with their fields and views, which needs gh to have the read:project permission. A field's kind
 // and its options or iterations are the project's, not each issue's, so reading them costs little; so do the views.
 const PROJECTS =
@@ -12,7 +21,7 @@ const PROJECTS =
   '... on ProjectV2Field { id name dataType } ' +
   '... on ProjectV2SingleSelectField { id name dataType options { id name } } ' +
   '... on ProjectV2IterationField { id name dataType configuration { iterations { id title } } } } } ' +
-  `statusUpdates(last: 1) { nodes { status body createdAt startDate targetDate } } workflows(first: 20) { nodes { name enabled } } ${VIEWS} } }`
+  `statusUpdates(last: 1) { nodes { status body createdAt startDate targetDate } } workflows(first: 20) { nodes { name enabled } } ${VIEWS} ${ORDER} } }`
 // A field's value on an item, whatever the field's kind.
 const ANY_VALUE =
   '{ ... on ProjectV2ItemFieldSingleSelectValue { name } ... on ProjectV2ItemFieldIterationValue { title } ... on ProjectV2ItemFieldTextValue { text } ' +
@@ -27,12 +36,13 @@ const itemsOf = (fields: readonly string[]): string =>
   fields.map((name, index) => `f${index}: fieldValueByName(name: ${JSON.stringify(name)}) ${ANY_VALUE} `).join('') +
   '} }'
 
-// The open issues as the board reads them, 100 a page, newest change first; with the project's fields and views and each
-// issue's item when `withProject`, which a token without read:project would have GitHub refuse. `fields` are the extra
+// The open issues as the board reads them, 100 a page, newest change first; with the project's fields, views and item
+// order and each issue's item when `withProject`, which a token without read:project would have GitHub refuse. The
+// project read takes the `$order` variable, from orderFilter. `fields` are the extra
 // field values to read on each item, in the order the answer's `f0`, `f1`… follow.
 export const issuesQuery = (withProject: boolean, fields: readonly string[] = []): string =>
   [
-    'query($owner: String!, $name: String!, $after: String) { rateLimit { cost remaining resetAt } repository(owner: $owner, name: $name) {',
+    `query($owner: String!, $name: String!, $after: String${withProject ? ', $order: String!' : ''}) { rateLimit { cost remaining resetAt } repository(owner: $owner, name: $name) {`,
     'issueTypes(first: 20) { nodes { name } }',
     // The repo's labels, which the board guesses the Bugs and Later labels from. A hundred names cost a point at most.
     'labels(first: 100) { nodes { name } }',
@@ -83,6 +93,10 @@ export const ARCHIVE_ITEM = 'mutation($project: ID!, $item: ID!) { archiveProjec
 export const SET_FIELD =
   'mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) { updateProjectV2ItemFieldValue(input: ' +
   '{projectId: $project, itemId: $item, fieldId: $field, value: {singleSelectOptionId: $option}}) { projectV2Item { id } } }'
+
+// Moves an item in the project's own order: straight after the item `after`, or to the top when `after` is left out.
+export const MOVE_ITEM =
+  'mutation($project: ID!, $item: ID!, $after: ID) { updateProjectV2ItemPosition(input: {projectId: $project, itemId: $item, afterId: $after}) { clientMutationId } }'
 
 // Adds an issue to a project, for an issue the project doesn't hold yet; answers the new item's id.
 export const ADD_ITEM = 'mutation($project: ID!, $content: ID!) { addProjectV2ItemById(input: {projectId: $project, contentId: $content}) { item { id } } }'

@@ -35,6 +35,9 @@ export type Issue = {
   // The item's values in the project fields the project's views filter or group by, beyond Status and Priority, by
   // field name. Absent when no view needs any.
   fields?: Record<string, string>
+  // Its item's place in the project's own order, 0 first, among the open issues of this repo the project holds. Absent
+  // when the project doesn't hold it, when the board read no project, or on an older board.
+  position?: number
 }
 
 // A single-select field of a project, such as Status, with its options in the project's order.
