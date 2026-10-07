@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { handoffPrompt, orchestratorSection } from '../hooks/parse'
+import { HANDOFF_ANSWER, handoffPrompt, orchestratorSection } from '../hooks/parse'
 import { graphPage, isIssuesQuery } from './graph'
 
 const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 110, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } } as const
@@ -140,4 +140,31 @@ test('when a worker ends, background start mode asks Claude to review, check and
   // With no pull request, or a failed agent, there is nothing to review.
   expect(handoffPrompt(issue, 'completed', 'Done.', null, 'background')).toBe(handoffPrompt(issue, 'completed', 'Done.', null))
   expect(handoffPrompt(issue, 'failed', null, pr, 'background')).toBe(handoffPrompt(issue, 'failed', null, pr))
+})
+
+// Claude Code sends no task notification for an agent a plugin spawned, so the hand-off is where Claude reads the
+// answer. It keeps the start, and the pull request holds the rest.
+test("a hand-off keeps a short excerpt of a long answer, and still names the issue, the result, the pull request and the next step", () => {
+  const issue = { number: 43, title: 'Edit issues' }
+  const pr = { number: 50, url: 'https://github.com/astrosteveo/claude-plugins/pull/50' }
+  const report = `Opened PR #50. ${'All boxes are ticked and the tests pass. '.repeat(120)}`.trim()
+  const done = handoffPrompt(issue, 'completed', report, pr)
+  expect(done).toMatch(/^The background agent that Start in background set on #43 "Edit issues" is done\./)
+  expect(done).toContain('Its pull request: #50 https://github.com/astrosteveo/claude-plugins/pull/50')
+  expect(done).toContain('Its last answer, cut short:\nOpened PR #50. All boxes')
+  expect(done).toMatch(/Tell the person in a few sentences what it did and what is left/)
+  expect(done).not.toContain(report)
+  // The answer took up to 4,000 characters before; a report this long now costs about 3,000 fewer.
+  const excerpt = done.split('\n\n').find(part => part.startsWith('Its last answer'))!
+  expect(excerpt.length).toBeLessThanOrEqual(HANDOFF_ANSWER + 30)
+  expect(report.length - excerpt.length).toBeGreaterThan(3000)
+
+  // A short answer is kept whole, and a failed agent's last words still come through.
+  expect(handoffPrompt(issue, 'completed', 'Done.', pr)).toContain('Its last answer:\nDone.')
+  const failed = handoffPrompt(issue, 'failed', 'The tests would not build.', null)
+  expect(failed).toMatch(/^The background agent that Start in background set on #43 "Edit issues" failed\./)
+  expect(failed).toContain('Its last answer:\nThe tests would not build.')
+  expect(failed).toContain('The board sees no pull request for the issue.')
+  expect(failed).toMatch(/say what they could do next\.$/)
+  expect(handoffPrompt(issue, 'failed', null, null)).toContain('It gave no answer.')
 })
