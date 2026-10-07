@@ -148,7 +148,7 @@ changed. A narrow pane drops the labels, then the bar, then the age, so the
 row stays on one line. An issue waiting on an open one shows `⛔ #N`.
 
 Within a group, rows follow the project's own order, the one you set by
-dragging items on GitHub. Issues the project doesn't hold come after, in the
+dragging items on GitHub, unless the tab's view sorts by a field. Issues the project doesn't hold come after, in the
 board's order: the most pressing priority first, then bugs (`▲`), then work
 under way, then the newest. Without a project, the whole list is in the
 board's order.
@@ -199,8 +199,16 @@ as Area, which then shows among the **by** buttons. You can pick another
 grouping any time. A view grouped by labels or assignees keeps the pane's
 grouping, since an issue can have several of those.
 
-The board reads the views with the issues. When a view filters or groups by a
-field beyond Status and Priority, it reads that field's values for each issue
+A tab sorts its rows the way the view does, when the view has a sort. It sorts
+by each of the view's sort fields in turn, in the view's direction: a
+single-select such as Priority by its options' order, a number as a number, a
+date by day, an iteration by the day it starts, and text such as Title in
+alphabetical order. Issues with no value in a field come after the rest, both
+ways. Ties keep the project's own order. A view with no sort keeps the
+project's own order, as before.
+
+The board reads the views with the issues. When a view filters, groups or
+sorts by a field beyond Status and Priority, it reads that field's values for each issue
 too. A new or changed view that names such a field costs one extra read the
 first time. The band, the hint line and **▶ Next** go by the issues, not the
 tab.

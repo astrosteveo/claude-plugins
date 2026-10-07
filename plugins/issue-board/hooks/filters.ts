@@ -1,4 +1,4 @@
-import type { Board, BuiltInFilter, Ci, Filter, GroupBy, Issue, Iteration, Markers, Project, ProjectField, ProjectView, Role } from '../types'
+import type { Board, BuiltInFilter, Ci, Filter, GroupBy, Issue, Iteration, Markers, Project, ProjectField, ProjectView, Role, ViewSort } from '../types'
 import { DEFAULT_MARKERS, isBug, isFuture, same } from './markers'
 import { isLater, isNow, isRole, priorityRank, roleOf } from './project'
 
@@ -237,6 +237,52 @@ const groupsByField = (issues: Issue[], name: string, project: Project | null, m
   return [...named, { key: `field:${name}:none`, title: `No ${name}`, issues: rest, folded: false }].filter(group => group.issues.length > 0)
 }
 
+// What an issue sorts by in a field a view sorts by: an option's or iteration's place in the project's order, a number,
+// or text, which a date's YYYY-MM-DD is too. Undefined when the issue has no value, or the board can't read the field.
+const sortKeyOf = (issue: Issue, name: string, project: Project | null | undefined): number | string | undefined => {
+  if (same(name, 'Title')) return issue.title
+  const own = issueKeyOf(name)
+  const value = fieldValuesOf(issue, name, project)[0]
+  if (value === undefined || value === '') return undefined
+  const field = own ? undefined : projectFieldOf(name, project)
+  const options =
+    own === 'status' ? project?.status?.options : own === 'priority' ? project?.priority?.options : field?.kind === 'select' ? field.options : undefined
+  if (options) {
+    const at = options.findIndex(option => same(option.name, value))
+    return at < 0 ? options.length : at
+  }
+  if (field?.kind === 'number') return Number.isFinite(Number(value)) ? Number(value) : undefined
+  // An iteration sorts by the day it starts, which is also the order GitHub lists them in.
+  if (field?.kind === 'iteration') return field.iterations?.find(one => same(one.title, value))?.start ?? value
+  return value
+}
+
+// Two sort keys compared low to high: numbers as numbers, text in the reader's order.
+const compareKeys = (a: number | string, b: number | string): number =>
+  typeof a === 'number' && typeof b === 'number' ? a - b : String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' })
+
+// A view's rows in the view's own sort: by its first field, then the next, each in its direction. An issue with no
+// value in a field goes after the ones with one, either way, as on GitHub. The sort is stable, so ties keep the order
+// the rows came in, the project's own. With no sort fields, the rows stay as they are.
+export const sortRows = (issues: Issue[], sortBy: readonly ViewSort[] | undefined, project: Project | null | undefined): Issue[] => {
+  if (!sortBy || sortBy.length === 0) return issues
+  const keyed = issues.map(issue => ({ issue, keys: sortBy.map(sort => sortKeyOf(issue, sort.field, project)) }))
+  keyed.sort((a, b) => {
+    for (const [index, sort] of sortBy.entries()) {
+      const left = a.keys[index]
+      const right = b.keys[index]
+      if (left === undefined || right === undefined) {
+        if (left !== right) return left === undefined ? 1 : -1
+        continue
+      }
+      const order = compareKeys(left, right)
+      if (order !== 0) return sort.desc ? -order : order
+    }
+    return 0
+  })
+  return keyed.map(one => one.issue)
+}
+
 // A field named the way a filter writes it: any case, and a hyphen for a space, so `story-points` is Story Points.
 const sameField = (written: string, name: string): boolean => same(written.replace(/-/g, ' '), name.replace(/-/g, ' '))
 
@@ -456,6 +502,7 @@ export const viewFieldsOf = (project: Project | null | undefined): string[] => {
       else if (term.key && term.key !== 'is') add(term.key)
     }
     if (view.groupBy) add(view.groupBy)
+    for (const sort of view.sortBy ?? []) add(sort.field)
   }
   return [...names].sort()
 }
@@ -609,7 +656,8 @@ export const listOf = ({
   const groupings = [...GROUPINGS.filter(one => one.id !== 'status' || project), ...(viewField ? [{ id: 'view' as const, label: viewField }] : [])]
   // A tab's label: its name and how many open issues it holds; Closed's count isn't known until it is read.
   const tabLabel = (one: Tab) => (one.id === 'closed' ? one.name : `${one.name} ${now.issues.filter(issue => inTab(one, issue)).length}`)
-  const groups = triaging ? [] : groupsOf(shown, grouping, project, viewField, marks)
+  // Each group's rows follow the view's sort, when it has one; ties, and a view with none, keep the project's order.
+  const groups = triaging ? [] : groupsOf(shown, grouping, project, viewField, marks).map(group => ({ ...group, issues: sortRows(group.issues, tab.view?.sortBy, project) }))
   // The terms of the view's filter the board can't apply, for the note under the heading.
   const unknownTerms = tab.view ? viewMatchOf(tab.view.filter, project, clock).unknown : []
   return { project, tabs, tab, kept, shown, triaging, grouping, groupings, tabLabel, groups, unknownTerms }

@@ -1,0 +1,17 @@
+Guards #336: a view that sorts high to low lists its tab low to high, ignoring the view's direction.
+Test: plugins/issue-board: a view's sort orders its rows by each field in its direction, ties in the project's order and the unset last
+Test: plugins/issue-board: a view's tab lists each group's rows in the view's sort, and reads the fields it sorts by
+
+diff --git a/plugins/issue-board/hooks/filters.ts b/plugins/issue-board/hooks/filters.ts
+index ef37b3f..e52199e 100644
+--- a/plugins/issue-board/hooks/filters.ts
++++ b/plugins/issue-board/hooks/filters.ts
+@@ -276,7 +276,7 @@ export const sortRows = (issues: Issue[], sortBy: readonly ViewSort[] | undefine
+         continue
+       }
+       const order = compareKeys(left, right)
+-      if (order !== 0) return sort.desc ? -order : order
++      if (order !== 0) return order
+     }
+     return 0
+   })
