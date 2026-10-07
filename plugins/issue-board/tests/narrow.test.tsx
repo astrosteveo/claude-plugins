@@ -4,8 +4,9 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import { FINISH, FINISH_SHORT, prRowRoom } from '../hooks/parse'
 import type { Board, EpicNote, Plan, Worker } from '../types'
-import { graphPage, isIssuesQuery } from './graph'
+import { fakeGitHub, heldState, json } from './github'
 import { assertNoSplitAtoms, breaks, splitAtoms } from './narrow'
+import { REFRESH, band, engineBand, pane } from './ui'
 
 // One board with every kind of row the pane and the band draw, so a new kind of row is covered by adding it here.
 
@@ -93,9 +94,6 @@ const PRS = [
 
 const VIEWS = { views: [{ name: 'Bugs this sprint', number: 2, layout: 'TABLE_LAYOUT' as const, filter: 'label:bug' }, { name: 'Roadmap', number: 3, layout: 'ROADMAP_LAYOUT' as const, filter: null }] }
 
-const pane = (width: number) => ({ component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: width, placement: 'dock', scroll: { offset: 0, bodyRows: 200 }, view: {} } }) as const
-const band = (width: number) => ({ component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: width, scroll: { offset: 0, bodyRows: 20 }, view: {} } }) as const
-const REFRESH = { command: 'issues', args: 'refresh', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
 const WIDTHS = [40, 60, 80, 120]
 
 test('a word wrap breaks at spaces, and mid-word only where a word is wider than the line', () => {
@@ -116,32 +114,14 @@ test('a word wrap breaks at spaces, and mid-word only where a word is wider than
 const world = async ($: Engine, on: On) => {
   // No project adopted: the pane and the band ask about it.
   mock.store(on)
-  on('process.run', async (_$, e) => {
-    const argv = [...e.argv]
-    const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
-    if (argv[0] === 'git') return answer('main\n')
-    if (isIssuesQuery(argv)) return answer(graphPage(ISSUES, argv, true, [], VIEWS))
-    if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: REPO, hasIssuesEnabled: true }))
-    if (argv[1] === 'pr' && argv[2] === 'list') return answer(argv.includes('merged') ? '[]' : JSON.stringify(PRS))
-    if (argv[1] === 'api' && argv[2] === 'graphql') return answer(JSON.stringify({ data: { repository: { pullRequests: { nodes: [] } } } }))
-    if (argv[1] === 'api' && argv[2]?.includes('/milestones')) return answer(JSON.stringify([{ number: 3, title: 'Launch day', state: 'open', due_on: null, open_issues: 4, closed_issues: 2 }]))
-    if (argv[1] === 'api') return answer('astrosteveo\n')
-    return answer('[]')
-  })
+  const milestones = ({ argv }: { argv: readonly string[] }) =>
+    argv[1] === 'api' && argv[2]?.includes('/milestones') ? json([{ number: 3, title: 'Launch day', state: 'open', due_on: null, open_issues: 4, closed_issues: 2 }]) : undefined
+  fakeGitHub(on, { repo: REPO, issues: ISSUES, prs: PRS, project: true, views: VIEWS, routes: [milestones] })
   on('session.id', async () => ({ value: 'session-1' }))
   on('ui.open', async () => ({ value: { isPlaced: true as const } }))
-  on('ui.render', { component: 'AbovePrompt' }, async ($$, e) => {
-    const { Box } = $$.ui.resolve(e)
-    return <Box key="engine" />
-  })
+  engineBand(on)
   // The board's state, held here as the host holds it, so the test can add what a session would have gathered.
-  const held = new Map<string, { value: unknown; version: number }>()
-  on('state.get', async (_$, e) => ({ value: held.get(`${e.plugin}/${e.key}`) ?? { value: undefined, version: 0 } }))
-  on('state.set', async (_$, e) => {
-    const version = (held.get(`${e.plugin}/${e.key}`)?.version ?? 0) + 1
-    held.set(`${e.plugin}/${e.key}`, { value: e.value, version })
-    return { value: { isSet: true as const, version } }
-  })
+  const held = heldState(on)
   const put = (key: string, value: unknown) => held.set(`issue-board/${key}`, { value, version: (held.get(`issue-board/${key}`)?.version ?? 0) + 1 })
   await $.command.run(REFRESH)
 
@@ -187,11 +167,11 @@ const world = async ($: Engine, on: On) => {
   // The state is held here rather than by the host, so a drawing isn't drawn again when it changes: each press gets a
   // fresh one. #252 is for #302, which an agent is on, so its row shows the ⚙ and its Finish & merge asks first.
   for (const key of ['filter-all', 'group-epic', 'issue-302', 'close-out-252']) {
-    const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...pane(120) })
+    const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...pane(120, 200) })
     await ui.press({ key })
     await ui.unmount()
   }
-  const setup = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...pane(120) })
+  const setup = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...pane(120, 200) })
   for (const key of ['pr-row-252', 'close-out-ask-252', 'filter-view:2', 'filter-all', 'plan-card', 'plan-pick-label-5', 'plan-pick-view-6', 'adopt-card', 'card-302', 'next-301', 'box-row-302-2'])
     expect(await setup.find({ key }), key).toBeDefined()
   expect(await setup.find({ text: /^⚠ The board can't apply sprint:@current/ })).toBeDefined()
@@ -214,11 +194,11 @@ test('no number, link, count, badge or key hint splits across lines in the pane 
   }
 
   for (const width of WIDTHS) {
-    await check('pane', () => $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...pane(width) }), width)
-    await check('band', () => $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...band(width) }), width)
+    await check('pane', () => $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...pane(width, 200) }), width)
+    await check('band', () => $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...band(width, 20) }), width)
   }
   // Each kind of band line was drawn.
-  const wide = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...band(120) })
+  const wide = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...band(120, 20) })
   for (const text of [/ ✗ CI /, / ◆ EPIC /, / ⚠ PROJECT /, / ✦ PLAN /, / ✚ INBOX /]) expect(await wide.find({ text })).toBeDefined()
   await wide.unmount()
   expect(checks).toEqual([])
@@ -246,7 +226,7 @@ const shown = (node: Drawn): string =>
 test("a pull request's row keeps its number, badge, linked issue and counts whole, and cuts the title, narrow and wide", async ($, on) => {
   await world($, on)
   const row = async (width: number) => {
-    const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...pane(width) })
+    const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...pane(width, 200) })
     const line = kids(await ui.find({ key: 'pr-row-252' }))[0] as Drawn
     await ui.unmount()
     const [left, right] = kids(line) as [Drawn, Drawn]
