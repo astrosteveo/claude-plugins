@@ -1,0 +1,14 @@
+Guards #246: every userConfig field can be a /config row. writeProjects becomes a list field, which has no row.
+
+diff --git a/plugins/issue-board/.claude-plugin/plugin.json b/plugins/issue-board/.claude-plugin/plugin.json
+index e23f377..79486d2 100644
+--- a/plugins/issue-board/.claude-plugin/plugin.json
++++ b/plugins/issue-board/.claude-plugin/plugin.json
+@@ -142,6 +142,7 @@
+     },
+     "writeProjects": {
+       "type": "string",
++      "multiple": true,
+       "title": "Projects the board may write to",
+       "description": "The GitHub projects the board may change, as owner/number split by commas, such as astrosteveo/9, astrosteveo/8. In a repo, the board writes only to the project it reads there, or one linked to it, and only when it is listed here or in the repo's own .claude/settings.json. Empty means the board only reads. Let it write, Apply in /issues setup and the project_adopt tool add a project, and Release removes it.",
+       "default": ""
