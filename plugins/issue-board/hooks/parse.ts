@@ -747,8 +747,15 @@ export const summary = (issues: Issue[], prs: PullRequest[]): string | undefined
 }
 
 // The message the Start and Edit first buttons hand Claude for an issue. `tasks`: Start made a task for each open box.
-export const startPrompt = (issue: Issue, tasks = false): string => {
+// `copied`: the board's copy of the issue goes with the message, carrying its body and boxes, so the message only names
+// it. Without one it lists the boxes: with copies off, in the message Start submits, which the board's own
+// prompt.submit hook doesn't see, and in a worker's prompt, which goes to the agent alone.
+export const startPrompt = (issue: Issue, tasks = false, copied = false): string => {
   const open = issue.checks.filter(check => !check.done)
+  if (copied) {
+    const each = tasks && open.length > 0 ? ' Each of its open acceptance boxes is a task in your task list: mark it completed when it is done.' : ''
+    return `Let's start on #${issue.number}: ${issue.title}. The board's copy of it is attached.${each}`
+  }
   const listed = tasks ? '\n\nEach is a task in your task list too: mark it completed when it is done.' : ''
   const boxes = open.length > 0 ? `\n\nIts open acceptance boxes:\n${open.map(check => `- ${check.text}`).join('\n')}${listed}` : ''
   return `Let's start on #${issue.number}: ${issue.title}. Read it with \`gh issue view ${issue.number}\` first.${boxes}`

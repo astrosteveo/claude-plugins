@@ -86,6 +86,7 @@ import {
   commentsOf,
   commandsOf,
   copiesFor,
+  copyKeyOf,
   draftBody,
   draftLines,
   draftPrompt,
@@ -2474,6 +2475,15 @@ const launch = async ($: EngineInterface, issue: Issue, how: Launch['how'], work
   }
 }
 
+// Whether the start message Edit first fills for the issue will go with the board's copy of it: copies are on and the
+// board has the issue. The person sends it, so the prompt.submit hook sees it, and the message leaves the boxes to the
+// copy.
+const copyGoes = async ($: EngineInterface, issue: Issue): Promise<boolean> => {
+  if (!settings.issueCopies) return false
+  const now = await read($, board)
+  return now ? copyKeyOf(now, issue.number) !== null : false
+}
+
 // The person's own prompt, sent after Edit first filled the box with Start's message: when it still names the issue,
 // the issue becomes the one Claude is on and gets its tasks, as Start does. Rewritten so it no longer names the issue,
 // it is a plain prompt. Answers the issue started, and whether it has tasks, for the hook to claim once it is sent.
@@ -2484,6 +2494,8 @@ const draftedStart = async ($: EngineInterface, e: { text: string; origin: { kin
   await update($, drafted, () => null)
   const issue = (await read($, board))?.issues.find(one => one.number === number)
   if (!issue || !namesIssue(e.text, number)) return null
+  // The message leans on the issue's copy for its boxes, so it carries a fresh one even if an earlier prompt did.
+  sentCopies.delete(number)
   try {
     await track($, issue, true)
     return { issue, listed: (await makeTasks($, issue)) > 0 }
@@ -3657,6 +3669,8 @@ export const register: Register = (on, options) => {
         await update($, drafted, () => null)
         await track($, issue, true)
         const listed = await makeTasks($, issue)
+        // The board's own prompt.submit hook doesn't see a prompt the board submits, so this message goes without the
+        // issue's copy and lists the boxes itself.
         await $.prompt.submit({ text: startPrompt(issue, listed > 0), asUser: true })
         $.ui.toast(`Sent #${issue.number} to Claude`)
         await claim($, issue)
@@ -4967,7 +4981,7 @@ export const register: Register = (on, options) => {
       // follows it.
       const draftIt = async (background: boolean) => {
         if (!target) return $.ui.toast(noReadyText(issue.number))
-        const filled = await $.prompt.fill({ text: background ? backgroundPrompt(target) : startPrompt(target) })
+        const filled = await $.prompt.fill({ text: background ? backgroundPrompt(target) : startPrompt(target, false, await copyGoes($, target)) })
         if (!filled.isFilled) return
         await update($, drafted, () => (background ? null : target.number))
       }
