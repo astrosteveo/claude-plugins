@@ -42,7 +42,8 @@ const world = (on: On, adopted = true) => {
   else mock.store(on)
   const state = {
     planned: { 340: { status: 'Inbox' }, 341: { status: 'Backlog', priority: 'P2' }, 315: { status: 'Ready', priority: 'P1' } } as Record<number, { status?: string; priority?: string }>,
-    issues: [raw(340, 'Saves drop the hangar'), raw(341, 'The map key hides the legend', ['area:ui']), raw(315, 'Lay Kessik out for play')],
+    // In the project's own order: #315, #341, then #340.
+    issues: [{ ...raw(340, 'Saves drop the hangar'), position: 2 }, { ...raw(341, 'The map key hides the legend', ['area:ui']), position: 1 }, { ...raw(315, 'Lay Kessik out for play'), position: 0 }],
     writes: [] as string[],
     reads: 0,
     failEdit: 0,
@@ -59,7 +60,8 @@ const world = (on: On, adopted = true) => {
     }
     if (argv[1] === 'api' && argv[2] === 'graphql' && argv.includes('--input')) {
       const asked = JSON.parse(e.init?.stdin ?? '{}') as { query: string; variables: Record<string, unknown> }
-      if (/^\s*mutation\b/.test(asked.query)) state.writes.push(`${String(asked.variables.item)} ${String(asked.variables.field)} ${JSON.stringify(asked.variables.value)}`)
+      if (asked.query.includes('updateProjectV2ItemPosition')) state.writes.push(`move ${String(asked.variables.item)} after ${String(asked.variables.after)}`)
+      else if (/^\s*mutation\b/.test(asked.query)) state.writes.push(`${String(asked.variables.item)} ${String(asked.variables.field)} ${JSON.stringify(asked.variables.value)}`)
       if (asked.query.includes('fieldValues')) return answer(JSON.stringify({ data: { node: { fieldValues: { nodes: [] } } } }))
       return answer(JSON.stringify({ data: {} }))
     }
@@ -255,6 +257,32 @@ test('Apply on the card writes only the ticked rows, and a row that fails stays 
   expect(await ui.find({ key: 'plan-card' })).toBeUndefined()
   expect(gh.writes.length).toBe(2)
   await ui.unmount()
+})
+
+test("a plan ranks issues in the project's order, each move after the one before it", async ($, on) => {
+  const gh = world(on)
+  await $.command.run(REFRESH)
+  const order = { issues: [{ number: 340, reason: 'Most pressing.', projectAfter: 0 }, { number: 315, reason: 'Next.', projectAfter: 340 }] }
+  expect(await $.tool.check({ tool: TOOL, input: order })).toMatchObject({ reason: expect.stringMatching(/^Apply Claude's plan: 2 changes to 2 issues\?\norder 2\n/) })
+  gh.engine.verdict = 'ask'
+  gh.engine.answer = 'no'
+  await $.tool.call({ tool: TOOL, ...order })
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  expect((await ui.findAll({ type: 'Button', text: /^[☑☐] / })).map(one => one.text)).toEqual(["☑ top of the project's order", '☑ after #340 in the order'])
+  await ui.press({ key: 'plan-apply' })
+  expect(gh.writes).toEqual(['move PVTI_340 after null', 'move PVTI_315 after PVTI_340'])
+  expect(gh.toasts.at(-1)).toBe('Applied the plan: 2 changes.')
+  await ui.unmount()
+
+  // A move the project can't make is refused with the rest of the plan's problems.
+  const refused = await $.tool.call({ tool: TOOL, issues: [{ number: 340, reason: 'Loop.', projectAfter: 340 }, { number: 341, reason: 'Gone.', projectAfter: 999 }] })
+  expect(refused.deny).toBe(
+    [
+      "The plan wasn't made. Fix these and call again:",
+      "- #340: can't move beside itself.",
+      "- #341: #999 isn't an open issue the board has in the project's order.",
+    ].join('\n'),
+  )
 })
 
 test("an invalid plan is refused with every problem, and nothing is shown or asked", async ($, on) => {

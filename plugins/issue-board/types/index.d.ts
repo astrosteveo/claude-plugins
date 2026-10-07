@@ -228,14 +228,16 @@ export type Triage = {
 }
 
 // One change in a plan Claude proposes with project_plan. `kind` says what it changes; each kind changes one thing on
-// one issue, as issue_update would. Later kinds, such as an item's place in the project or the repo's labels, add their
-// own members here.
+// one issue, as issue_update would. Later kinds, such as the repo's labels or the project's views, add their own members
+// here.
 export type PlanChange =
   | { kind: 'status' | 'priority'; number: number; value: string }
   | { kind: 'field'; number: number; field: string; value: string | number | null }
   | { kind: 'labels' | 'assignees'; number: number; add: string[]; remove: string[] }
   | { kind: 'milestone'; number: number; value: string | null }
   | { kind: 'parent'; number: number; value: number | null }
+  // A place in the project's own order: straight after the issue `after`, or at the top for null.
+  | { kind: 'order'; number: number; after: number | null }
 
 // A row of the plan card: the change, Claude's reason for it, whether it is ticked to apply, and why it failed the last
 // time it was applied.

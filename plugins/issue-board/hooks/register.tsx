@@ -3330,6 +3330,7 @@ export const register: Register = (on, options) => {
                 unassign: { type: 'array', items: { type: 'string' } },
                 milestone: { type: 'string' },
                 parent: { type: 'integer', minimum: 0 },
+                projectAfter: { type: 'integer', minimum: 0 },
               },
               required: ['number', 'reason'],
             },

@@ -1,6 +1,6 @@
 import type { Issue, Milestone, PlanChange, PlanRow, Project } from '../types'
 import type { IssueChanges } from './parse'
-import { fieldValueOf } from './parse'
+import { fieldValueOf, projectMoveOf } from './parse'
 import { optionOf } from './project'
 
 // A plan Claude proposes with project_plan: the changes it lists, checked against the board, each with its reason.
@@ -9,7 +9,7 @@ import { optionOf } from './project'
 export const PLAN_LIMIT = 100
 
 // What one entry of the tool's `issues` list may change. Anything else is issue_update's.
-const ISSUE_KEYS = new Set(['number', 'reason', 'status', 'priority', 'fields', 'addLabels', 'removeLabels', 'assign', 'unassign', 'milestone', 'parent'])
+const ISSUE_KEYS = new Set(['number', 'reason', 'status', 'priority', 'fields', 'addLabels', 'removeLabels', 'assign', 'unassign', 'milestone', 'parent', 'projectAfter'])
 
 // What the checks need of the board: its open issues, its project and its open milestones, and why the project can't be
 // written to, if it can't.
@@ -23,7 +23,7 @@ const names = (value: unknown): string[] =>
 const text = (value: unknown): string | undefined => (typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined)
 
 // The name a kind goes by in the card, the prompt and the problems.
-const KIND_NAMES: Record<PlanChange['kind'], string> = { status: 'Status', priority: 'Priority', field: 'fields', labels: 'labels', assignees: 'assignees', milestone: 'milestone', parent: 'parent' }
+const KIND_NAMES: Record<PlanChange['kind'], string> = { status: 'Status', priority: 'Priority', field: 'fields', labels: 'labels', assignees: 'assignees', milestone: 'milestone', parent: 'parent', order: 'order' }
 
 // What a change touches, so the same thing changed twice for one issue is caught.
 const slotOf = (change: PlanChange): string => `${change.number} ${change.kind}${change.kind === 'field' ? ` ${change.field.toLowerCase()}` : ''}`
@@ -103,6 +103,16 @@ export const planOf = (input: unknown, context: PlanContext): Planned => {
       else if (one.parent > 0 && !open.has(one.parent)) problems.push(`${at}: its parent #${one.parent} isn't an open issue on the board.`)
       else made.push({ kind: 'parent', number, value: one.parent > 0 ? one.parent : null })
     }
+    if (typeof one.projectAfter === 'number' && Number.isInteger(one.projectAfter) && one.projectAfter >= 0) {
+      // An issue the project doesn't hold yet joins it when the plan sets one of its fields first, so it can move then.
+      const joins = made.some(touchesProject)
+      const issues = context.issues.map(issue => (issue.number === number && joins && !issue.item ? { ...issue, item: 'joining' } : issue))
+      const move = project ? projectMoveOf(issues, number, one.projectAfter > 0 ? one.projectAfter : null, false) : null
+      if (!project) problems.push(`${at}: the board reads no project, so it can't move it in the project's order.`)
+      else if (typeof move === 'string') {
+        if (open.has(number)) problems.push(`${at}: ${move.replace(`#${number} `, '')}.`)
+      } else made.push({ kind: 'order', number, after: one.projectAfter > 0 ? one.projectAfter : null })
+    }
     // An entry that asks for nothing a plan changes; one whose changes were refused already says why.
     const asked = Object.keys(one).some(key => ISSUE_KEYS.has(key) && key !== 'number' && key !== 'reason')
     if (made.length === 0 && !asked && unknown.length === 0) problems.push(`${at} changes nothing.`)
@@ -122,7 +132,7 @@ export const planOf = (input: unknown, context: PlanContext): Planned => {
 }
 
 // Whether a change writes to the project rather than to the issue.
-export const touchesProject = (change: PlanChange): boolean => change.kind === 'status' || change.kind === 'priority' || change.kind === 'field'
+export const touchesProject = (change: PlanChange): boolean => change.kind === 'status' || change.kind === 'priority' || change.kind === 'field' || change.kind === 'order'
 
 // The change as issue_update makes it.
 export const issueChangesOf = (change: PlanChange): IssueChanges => {
@@ -141,6 +151,8 @@ export const issueChangesOf = (change: PlanChange): IssueChanges => {
       return { milestone: change.value }
     case 'parent':
       return { parent: change.value }
+    case 'order':
+      return { projectAfter: change.after ?? 0 }
   }
 }
 
@@ -160,6 +172,8 @@ export const changeText = (change: PlanChange): string => {
       return change.value === null ? 'off its milestone' : `milestone → ${change.value}`
     case 'parent':
       return change.value === null ? 'out of its epic' : `under #${change.value}`
+    case 'order':
+      return change.after === null ? "top of the project's order" : `after #${change.after} in the order`
   }
 }
 

@@ -7,7 +7,7 @@ const REPO = '/work/void-sector'
 // sent with every request, so they stay at least 35% shorter than that.
 const BEFORE = 12946
 // project_plan came after #223, for #236: the cap grows by its size and no more.
-const PLAN = 880
+const PLAN = 925
 
 test('the tool definitions stay at least 35% shorter than before #223: name, description and input schema', async ($, on) => {
   const clock = mock.clock(on, { now: Date.parse('2026-10-06T10:00:00Z') })
