@@ -1253,7 +1253,7 @@ test('/issues help names every filter, subcommand and tool the board has, and th
   for (const sub of ['refresh', 'new <what>', 'new epic <what>', 'setup', 'check', 'stats', 'help']) expect(help).toContain(`- /issues ${sub}: `)
   // Without a project there is no Inbox; every other filter is there.
   expect(help).toContain('Filters: 1 Active, 2 Future, 3 Bugs, 4 Mine, 5 All, 7 Closed.')
-  expect(hint).toBe('[refresh | new | new epic | setup | statuses | check | stats | help]')
+  expect(hint).toBe('[refresh | new | new epic | setup | statuses | labels | check | stats | help]')
   await clock.settle()
 })
 

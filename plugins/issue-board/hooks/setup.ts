@@ -1,4 +1,5 @@
 import type { RolePicks, Roles, SetupFacts, SetupOption, SetupProject, SetupStep } from '../types'
+import { BUG_LABELS } from './markers'
 import { ROLE_NAMES, ROLE_ORDER, rolesFor } from './project'
 
 // The board's Status options, in its order, with the color and description a new one gets.
@@ -208,7 +209,8 @@ export const stepsOf = (facts: SetupFacts, chosen: string | null, typed: string,
     steps.push({ id: 'roles', title: `Go by these Status options: ${picksText(roles)}` })
   }
   if (!project?.priority) steps.push({ id: 'priority', title: 'Create a Priority field: P0, P1, P2' })
-  if (!facts.labels.includes('bug')) steps.push({ id: 'bug', title: 'Create the label bug' })
+  // A repo that marks bugs its own way, such as with `defect`, keeps it: the board finds that label.
+  if (!facts.labels.some(label => BUG_LABELS.includes(label.toLowerCase()))) steps.push({ id: 'bug', title: 'Create the label bug' })
   const areas = areasOf(typed, facts.labels)
   if (areas.length > 0) steps.push({ id: 'areas', title: `Create the labels ${areas.map(one => `area:${one}`).join(', ')}` })
   const missing = facts.issues.filter(issue => !project || !issue.items.some(item => item.project === project.id))
