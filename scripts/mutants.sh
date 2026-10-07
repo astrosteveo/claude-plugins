@@ -11,6 +11,12 @@
 # and checks every named test is among the failures. A failure elsewhere doesn't count: a patch that breaks loading,
 # or trips an unrelated test, would otherwise pass as caught. A patch that no longer applies is stale and must be
 # remade against the current code. Anything but a clean kill fails the run.
+#
+# It tests the last commit, not the working tree; only the patches are read from the working tree. When a file a patch
+# touches, or the place its tests live, has uncommitted changes, it says so before the run and beside that patch's
+# verdict, because the verdict is for the committed code and may not hold for the changes. It warns rather than stops,
+# so it can still be run mid-change to check the committed mutants. Commit and run it again for a verdict on the
+# changes. In CI the tree is always clean, so it never warns there.
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -28,6 +34,35 @@ failures() {
     -e 's/^ *✖ \(.*\) ([0-9.]*m\{0,1\}s)$/\1/p' "$1" | sort -u
 }
 
+# Prints the paths a patch touches, from its `diff --git a/<path> b/<path>` lines, and the places its tests live. Diff
+# body lines start with a space, + or -, so only header lines can match `Test: `.
+touched() {
+  awk '/^diff --git / { sub(/^a\//, "", $3); sub(/^b\//, "", $4); print $3; print $4 }
+    /^Test: / { sub(/^Test: /, ""); sub(/: .*/, ""); print }' "$1" | sort -u
+}
+
+# Prints which of the paths given, or the files beneath them, have uncommitted changes, staged or not, or are untracked.
+uncommitted() {
+  # With no paths, git status would report the whole tree.
+  [ "$#" -gt 0 ] || return 0
+  git status --porcelain --untracked-files=all -- "$@" | cut -c4- | sort -u
+}
+
+# The paths in patches have no spaces, so splitting touched's lines into arguments is safe.
+changed=$(uncommitted $(for patch in scripts/mutants/*.patch; do touched "$patch"; done | sort -u))
+if [ -n "$changed" ]; then
+  echo "WARNING: this tests the last commit, not your uncommitted changes. These files, which a patch touches or its"
+  echo "         tests live in, have uncommitted changes, so a verdict below may not hold for them:"
+  printf '%s\n' "$changed" | sed 's/^/           /'
+  echo "         Commit, then run it again for a verdict on the changes."
+fi
+
+# Says, after a patch's verdict, which of its files have uncommitted changes the verdict did not see.
+note() {
+  mine=$(uncommitted $(touched "$1") | tr '\n' ' ')
+  [ -z "$mine" ] || echo "          (tested the last commit; uncommitted changes to ${mine% })"
+}
+
 status=0
 for patch in scripts/mutants/*.patch; do
   name=$(basename "$patch" .patch)
@@ -41,6 +76,7 @@ for patch in scripts/mutants/*.patch; do
   git worktree add --quiet --detach "$tree" HEAD
   if ! git -C "$tree" apply "$PWD/$patch" 2>/dev/null; then
     echo "STALE     $name: the patch no longer applies; remake it against the current code"
+    note "$patch"
     status=1
     git worktree remove --force "$tree"
     continue
@@ -75,6 +111,7 @@ for patch in scripts/mutants/*.patch; do
     fi
     status=1
   fi
+  note "$patch"
   git worktree remove --force "$tree"
 done
 exit "$status"
