@@ -207,7 +207,8 @@ type RawProject = RawProjectBase & {
   order?: RawNodes<{ id: string }>
 }
 type RawGroup = RawNodes<{ name?: string }>
-type RawView = { name: string; number: number; layout?: string; filter?: string | null; groupByFields?: RawGroup; verticalGroupByFields?: RawGroup }
+type RawSort = RawNodes<{ direction?: string; field?: { name?: string } | null }>
+type RawView = { name: string; number: number; layout?: string; filter?: string | null; groupByFields?: RawGroup; verticalGroupByFields?: RawGroup; sortByFields?: RawSort }
 type RawValue = { name?: string } | null | undefined
 type RawAny = { name?: string; title?: string; text?: string; number?: number | null; date?: string } | null | undefined
 type RawItem = { id: string; project?: { id: string } | null; status?: RawValue; priority?: RawValue; [alias: `f${number}`]: RawAny }
@@ -215,12 +216,14 @@ type RawItem = { id: string; project?: { id: string } | null; status?: RawValue;
 const LAYOUTS: Record<string, ProjectView['layout']> = { TABLE_LAYOUT: 'table', BOARD_LAYOUT: 'board', ROADMAP_LAYOUT: 'roadmap' }
 
 // A project's views as the board keeps them. A table groups rows by its group-by field; a board's columns are its
-// vertical group-by field.
+// vertical group-by field. A view that sorts keeps its sort fields; one that doesn't has none, and keeps the project's
+// own order.
 const viewsOf = (project: RawProject): ProjectView[] =>
   nodesOf(project.views).map(view => {
     const layout = LAYOUTS[view.layout ?? ''] ?? 'table'
     const group = nodesOf(view.groupByFields)[0]?.name ?? (layout === 'board' ? nodesOf(view.verticalGroupByFields)[0]?.name : undefined)
-    return { name: view.name, number: view.number, layout, filter: (view.filter ?? '').trim(), groupBy: group ?? null }
+    const sortBy = nodesOf(view.sortByFields).flatMap(sort => (sort.field?.name ? [{ field: sort.field.name, desc: sort.direction === 'DESC' }] : []))
+    return { name: view.name, number: view.number, layout, filter: (view.filter ?? '').trim(), groupBy: group ?? null, ...(sortBy.length > 0 ? { sortBy } : {}) }
   })
 
 // A field value as text, whatever the field's kind.
@@ -233,6 +236,7 @@ type RawGraphIssue = {
   url?: string
   body?: string | null
   updatedAt: string
+  createdAt?: string
   labels?: RawNodes<RawLabel>
   assignees?: RawNodes<RawUser>
   milestone?: { title: string } | null
@@ -328,6 +332,7 @@ export const parseGraph = (
         assignees: nodesOf(raw.assignees).map(user => user.login),
         checks: checksOf(raw.body ?? null),
         updatedAt: raw.updatedAt,
+        ...(raw.createdAt ? { createdAt: raw.createdAt } : {}),
         body: raw.body ?? '',
         id: raw.id,
         item: item?.id ?? null,

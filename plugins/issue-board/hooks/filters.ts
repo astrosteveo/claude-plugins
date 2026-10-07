@@ -1,4 +1,4 @@
-import type { Board, BuiltInFilter, Ci, Filter, GroupBy, Issue, Iteration, Markers, Project, ProjectField, ProjectView, Role } from '../types'
+import type { Board, BuiltInFilter, Ci, Filter, GroupBy, Issue, Iteration, Markers, Project, ProjectField, ProjectView, Role, ViewSort } from '../types'
 import { DEFAULT_MARKERS, isBug, isFuture, same } from './markers'
 import { isLater, isNow, isRole, priorityRank, roleOf } from './project'
 
@@ -237,6 +237,52 @@ const groupsByField = (issues: Issue[], name: string, project: Project | null, m
   return [...named, { key: `field:${name}:none`, title: `No ${name}`, issues: rest, folded: false }].filter(group => group.issues.length > 0)
 }
 
+// What an issue sorts by in a field a view sorts by: an option's or iteration's place in the project's order, a number,
+// or text, which a date's YYYY-MM-DD is too. Undefined when the issue has no value, or the board can't read the field.
+const sortKeyOf = (issue: Issue, name: string, project: Project | null | undefined): number | string | undefined => {
+  if (same(name, 'Title')) return issue.title
+  const own = issueKeyOf(name)
+  const value = fieldValuesOf(issue, name, project)[0]
+  if (value === undefined || value === '') return undefined
+  const field = own ? undefined : projectFieldOf(name, project)
+  const options =
+    own === 'status' ? project?.status?.options : own === 'priority' ? project?.priority?.options : field?.kind === 'select' ? field.options : undefined
+  if (options) {
+    const at = options.findIndex(option => same(option.name, value))
+    return at < 0 ? options.length : at
+  }
+  if (field?.kind === 'number') return Number.isFinite(Number(value)) ? Number(value) : undefined
+  // An iteration sorts by the day it starts, which is also the order GitHub lists them in.
+  if (field?.kind === 'iteration') return field.iterations?.find(one => same(one.title, value))?.start ?? value
+  return value
+}
+
+// Two sort keys compared low to high: numbers as numbers, text in the reader's order.
+const compareKeys = (a: number | string, b: number | string): number =>
+  typeof a === 'number' && typeof b === 'number' ? a - b : String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' })
+
+// A view's rows in the view's own sort: by its first field, then the next, each in its direction. An issue with no
+// value in a field goes after the ones with one, either way, as on GitHub. The sort is stable, so ties keep the order
+// the rows came in, the project's own. With no sort fields, the rows stay as they are.
+export const sortRows = (issues: Issue[], sortBy: readonly ViewSort[] | undefined, project: Project | null | undefined): Issue[] => {
+  if (!sortBy || sortBy.length === 0) return issues
+  const keyed = issues.map(issue => ({ issue, keys: sortBy.map(sort => sortKeyOf(issue, sort.field, project)) }))
+  keyed.sort((a, b) => {
+    for (const [index, sort] of sortBy.entries()) {
+      const left = a.keys[index]
+      const right = b.keys[index]
+      if (left === undefined || right === undefined) {
+        if (left !== right) return left === undefined ? 1 : -1
+        continue
+      }
+      const order = compareKeys(left, right)
+      if (order !== 0) return sort.desc ? -order : order
+    }
+    return 0
+  })
+  return keyed.map(one => one.issue)
+}
+
 // A field named the way a filter writes it: any case, and a hyphen for a space, so `story-points` is Story Points.
 const sameField = (written: string, name: string): boolean => same(written.replace(/-/g, ' '), name.replace(/-/g, ' '))
 
@@ -317,9 +363,9 @@ export const parseFilter = (text: string): FilterTerm[] =>
     }
   })
 
-// A value the board compares as text. Ranges, comparisons, wildcards and `@` dates need more than the board knows, so
-// a term holding one is named as one it can't apply. `@me` is the person, for assignee. An iteration field's `@`
-// terms are iterationTitlesOf's.
+// A value the board compares as text. Ranges, comparisons, wildcards and `@` dates need more than text, so a term
+// holding one is named as one it can't apply, unless rangeTestOf takes it on a date or number field. `@me` is the
+// person, for assignee. An iteration field's `@` terms are iterationTitlesOf's.
 const plainValue = (value: string, key: string | undefined): boolean =>
   value.startsWith('@') ? value.toLowerCase() === '@me' && key === 'assignee' : !/^[<>]|\.\.|\*/.test(value)
 
@@ -383,13 +429,89 @@ export const currentIterationText = (project: Project | null | undefined, clock:
   return null
 }
 
+const DAY_MS = 86_400_000
+
+// A day as a count of days, so days compare as numbers: a project date field's `YYYY-MM-DD` is that day, and a time
+// such as an issue's `updatedAt` is the day it falls on in the person's own calendar, as GitHub's page has it in their
+// browser. Null for anything else.
+export const dayOf = (text: string): number | null => {
+  const plain = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text)
+  if (plain) return Date.UTC(Number(plain[1]), Number(plain[2]) - 1, Number(plain[3])) / DAY_MS
+  const time = /^\d{4}-\d{2}-\d{2}T/.test(text) ? Date.parse(text) : Number.NaN
+  if (Number.isNaN(time)) return null
+  const at = new Date(time)
+  return Date.UTC(at.getFullYear(), at.getMonth(), at.getDate()) / DAY_MS
+}
+
+// The kinds of value a filter can compare and take a range of.
+type Scale = 'date' | 'number'
+
+const TODAY = /^@today(?:([+-])(\d+)([dw])?)?$/i
+
+// One end of a comparison or range: a number on a number field; on a date field a day, `@today`, or `@today` moved
+// by days or weeks, such as `@today-7d` or `@today+2w`, on the board's clock. Null for a value that isn't one.
+const pointOf = (text: string, scale: Scale, clock: number): number | null => {
+  if (scale === 'number') return /^-?\d+(\.\d+)?$/.test(text) ? Number(text) : null
+  const today = TODAY.exec(text)
+  if (!today) return /^\d{4}-\d{2}-\d{2}$/.test(text) ? dayOf(text) : null
+  const now = new Date(clock)
+  const day = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) / DAY_MS
+  const by = Number(today[2] ?? 0) * (today[3]?.toLowerCase() === 'w' ? 7 : 1)
+  return today[1] === '-' ? day - by : day + by
+}
+
+// A field's value on the scale a term compares it on, or null when it has none there.
+const measureOf = (value: string, scale: Scale): number | null => {
+  if (scale === 'date') return dayOf(value)
+  const number = value.trim() === '' ? Number.NaN : Number(value)
+  return Number.isFinite(number) ? number : null
+}
+
+// The test one value of a date or number term puts to a field's value: `>`, `>=`, `<` or `<=` a point, a range `a..b`
+// that holds both ends, with `*` for an open end, or one point alone. Null for a value that isn't one of these.
+export const rangeTestOf = (value: string, scale: Scale, clock: number): ((had: string) => boolean) | null => {
+  const on = (keep: (had: number) => boolean) => (had: string) => {
+    const measure = measureOf(had, scale)
+    return measure !== null && keep(measure)
+  }
+  const compared = /^(>=|<=|>|<)(.+)$/.exec(value)
+  if (compared) {
+    const point = pointOf(compared[2] ?? '', scale, clock)
+    if (point === null) return null
+    if (compared[1] === '>') return on(had => had > point)
+    if (compared[1] === '>=') return on(had => had >= point)
+    if (compared[1] === '<') return on(had => had < point)
+    return on(had => had <= point)
+  }
+  const ends = value.split('..')
+  if (ends.length > 2) return null
+  if (ends.length === 2) {
+    const end = (text: string, open: number) => (text === '*' ? open : pointOf(text, scale, clock))
+    const from = end(ends[0] ?? '', Number.NEGATIVE_INFINITY)
+    const to = end(ends[1] ?? '', Number.POSITIVE_INFINITY)
+    if (from === null || to === null) return null
+    return on(had => had >= from && had <= to)
+  }
+  const point = pointOf(value, scale, clock)
+  return point === null ? null : on(had => had === point)
+}
+
+// The issue's own dates, which a filter writes as `created:`, `updated:` and `closed:`. The board holds open issues,
+// so none has a closed date.
+const ISSUE_DATES: Record<string, (issue: Issue) => string[]> = {
+  created: issue => (issue.createdAt ? [issue.createdAt] : []),
+  updated: issue => (issue.updatedAt ? [issue.updatedAt] : []),
+  closed: () => [],
+}
+
 // A test of one issue against a filter, with the login `@me` means.
 type IssueTest = (issue: Issue, viewer: string | null) => boolean
 
 // The board holds open issues only, so `is:open` and `is:issue` keep each of them, `is:closed` and `is:pr` none.
 const IS_KINDS: Record<string, boolean> = { open: true, closed: false, issue: true, pr: false }
 
-// The test for one term, or null for a term the board can't apply. `clock` places an iteration field's `@` terms.
+// The test for one term, or null for a term the board can't apply. `clock` places an iteration field's `@` terms and
+// `@today`.
 const termTest = (term: FilterTerm, project: Project | null | undefined, clock: number): IssueTest | null => {
   if (term.key === null) {
     const word = term.values[0] ?? ''
@@ -409,16 +531,23 @@ const termTest = (term: FilterTerm, project: Project | null | undefined, clock: 
     return issue => term.values.some(name => (fieldValuesOf(issue, name, project).length === 0) === empty)
   }
   const key = term.key
-  const own = issueKeyOf(key)
-  const field = own ? undefined : projectFieldOf(key, project)
-  if (!own && !field) return null
+  const dates = ISSUE_DATES[key]
+  const own = dates ? undefined : issueKeyOf(key)
+  const field = own || dates ? undefined : projectFieldOf(key, project)
+  if (!own && !field && !dates) return null
   // An iteration field's `@current`, `@next` and `@previous` are the titles of the iterations they name now.
   const iteration = field?.kind === 'iteration' ? field : undefined
   const named = term.values.map(value => (iteration ? iterationTitlesOf(value, iteration, clock) : null))
-  if (!term.values.every((value, index) => named[index] !== null || plainValue(value, own))) return null
+  // The issue's dates and a date or number field take comparisons and ranges. Their other values compare as text,
+  // except on the issue's dates, which hold nothing else.
+  const scale: Scale | null = dates || field?.kind === 'date' ? 'date' : field?.kind === 'number' ? 'number' : null
+  const ranges = term.values.map(value => (scale ? rangeTestOf(value, scale, clock) : null))
+  if (!term.values.every((value, index) => named[index] !== null || ranges[index] !== null || (!dates && plainValue(value, own)))) return null
   return (issue, viewer) => {
-    const has = fieldValuesOf(issue, key, project)
+    const has = dates ? dates(issue) : fieldValuesOf(issue, key, project)
     return term.values.some((value, index) => {
+      const range = ranges[index]
+      if (range) return has.some(range)
       const wanted = named[index] ?? [value.toLowerCase() === '@me' ? viewer : value]
       return wanted.some(one => one !== null && has.some(had => same(had, one)))
     })
@@ -429,8 +558,8 @@ const termTest = (term: FilterTerm, project: Project | null | undefined, clock: 
 // test, so the tab shows every issue the rest of the filter keeps: more than GitHub would, never fewer.
 export type ViewMatch = { test: IssueTest; unknown: string[] }
 
-// `clock` is the board's, for an iteration field's `@current`, `@next` and `@previous`. What the board can't apply
-// doesn't depend on it.
+// `clock` is the board's, for an iteration field's `@current`, `@next` and `@previous`, and for `@today`. What the
+// board can't apply doesn't depend on it.
 export const viewMatchOf = (filter: string, project: Project | null | undefined, clock: number = Date.now()): ViewMatch => {
   const tests: IssueTest[] = []
   const unknown: string[] = []
@@ -456,6 +585,7 @@ export const viewFieldsOf = (project: Project | null | undefined): string[] => {
       else if (term.key && term.key !== 'is') add(term.key)
     }
     if (view.groupBy) add(view.groupBy)
+    for (const sort of view.sortBy ?? []) add(sort.field)
   }
   return [...names].sort()
 }
@@ -609,7 +739,8 @@ export const listOf = ({
   const groupings = [...GROUPINGS.filter(one => one.id !== 'status' || project), ...(viewField ? [{ id: 'view' as const, label: viewField }] : [])]
   // A tab's label: its name and how many open issues it holds; Closed's count isn't known until it is read.
   const tabLabel = (one: Tab) => (one.id === 'closed' ? one.name : `${one.name} ${now.issues.filter(issue => inTab(one, issue)).length}`)
-  const groups = triaging ? [] : groupsOf(shown, grouping, project, viewField, marks)
+  // Each group's rows follow the view's sort, when it has one; ties, and a view with none, keep the project's order.
+  const groups = triaging ? [] : groupsOf(shown, grouping, project, viewField, marks).map(group => ({ ...group, issues: sortRows(group.issues, tab.view?.sortBy, project) }))
   // The terms of the view's filter the board can't apply, for the note under the heading.
   const unknownTerms = tab.view ? viewMatchOf(tab.view.filter, project, clock).unknown : []
   return { project, tabs, tab, kept, shown, triaging, grouping, groupings, tabLabel, groups, unknownTerms }

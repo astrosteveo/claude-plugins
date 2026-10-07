@@ -2,8 +2,10 @@ import type { Adopted, Field, Issue, Project, Role, Roles } from '../types'
 
 // A view's grouping field: the rows' groups on a table, the columns on a board.
 const GROUP_FIELD = '(first: 1) { nodes { ... on ProjectV2FieldCommon { name } } }'
+// The fields a view sorts by, first one first, each with its direction.
+const SORT_FIELDS = 'sortByFields(first: 5) { nodes { direction field { ... on ProjectV2FieldCommon { name } } } }'
 // The project's views in the order GitHub shows them, which become the pane's tabs.
-const VIEWS = `views(first: 20, orderBy: {field: POSITION, direction: ASC}) { nodes { name number layout filter groupByFields${GROUP_FIELD} verticalGroupByFields${GROUP_FIELD} } }`
+const VIEWS = `views(first: 20, orderBy: {field: POSITION, direction: ASC}) { nodes { name number layout filter groupByFields${GROUP_FIELD} verticalGroupByFields${GROUP_FIELD} ${SORT_FIELDS} } }`
 
 // The project's open issues from this repo in the project's own order, the one a person sets by dragging rows, as item
 // ids. `$order` is the filter, `is:open is:issue repo:<owner>/<name>`, so the closed items that pile up at the top of an
@@ -52,7 +54,7 @@ export const issuesQuery = (withProject: boolean, fields: readonly string[] = []
     withProject ? PROJECTS : '',
     'issues(first: 100, states: OPEN, after: $after, orderBy: {field: UPDATED_AT, direction: DESC}) {',
     'pageInfo { hasNextPage endCursor }',
-    'nodes { id number title url body updatedAt',
+    'nodes { id number title url body updatedAt createdAt',
     'labels(first: 20) { nodes { name color } } assignees(first: 10) { nodes { login } } milestone { title }',
     'parent { number title subIssuesSummary { total completed } } subIssuesSummary { total completed } issueType { name }',
     'blockedBy(first: 10) { nodes { number state } }',

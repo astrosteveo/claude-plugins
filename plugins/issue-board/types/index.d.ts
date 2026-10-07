@@ -11,6 +11,8 @@ export type Issue = {
   assignees: string[]
   checks: Check[]
   updatedAt: string
+  // When it was opened, for a view's `created:` term; absent on an issue read with `gh issue view`, or on an older board.
+  createdAt?: string
   // The issue's text as written; empty on a board saved between sessions, until it refreshes.
   body: string
   // What GraphQL adds, which `gh issue view` doesn't give: absent on an issue read that way, or on an older board.
@@ -86,8 +88,12 @@ export type Project = ProjectRef & {
 }
 
 // A view of the project as GitHub keeps it: its name, its number in the project's URL, its layout, its filter as typed
-// on GitHub (empty for none), and the field it groups by (a board's columns), or null.
-export type ProjectView = { name: string; number: number; layout: 'table' | 'board' | 'roadmap'; filter: string; groupBy: string | null }
+// on GitHub (empty for none), and the field it groups by (a board's columns), or null. `sortBy`: the fields it sorts
+// by, first one first; absent when it keeps the project's own order, or on an older board.
+export type ProjectView = { name: string; number: number; layout: 'table' | 'board' | 'roadmap'; filter: string; groupBy: string | null; sortBy?: ViewSort[] }
+
+// One field a view sorts by, by its name, and whether it sorts high to low.
+export type ViewSort = { field: string; desc: boolean }
 
 // A project status update: how it stands (On track, At risk, Off track, Complete, Inactive), the note, when it was
 // posted, and the dates it gives.
