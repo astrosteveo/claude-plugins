@@ -3,34 +3,17 @@ import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { HANDOFF_ANSWER, handoffPrompt, orchestratorSection } from '../hooks/parse'
-import { graphPage, isIssuesQuery, graphHas } from './graph'
+import { fakeGitHub } from './github'
+import type { Raw } from './graph'
+import { COMPOSE, REFRESH, pane } from './ui'
 
-const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 110, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } } as const
-const RUN = { origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 }, command: 'issues' } as const
-const COMPOSE = { model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: ['terminal'], tools: [], outputStyle: null, traits: [] } as const
-
-type Raw = Parameters<typeof graphPage>[0][number]
+const PANE = pane(110, 60)
 const ISSUES: Raw[] = [{ number: 43, title: 'Edit issues from the board', labels: [], body: '- [ ] Edit\n- [ ] Save', updatedAt: '2026-10-05T00:00:00Z', status: 'Ready', priority: 'P1' }]
 
 // GitHub with one ready issue, and the prompts the board sends.
 const world = (on: On) => {
   const state = { sent: [] as string[], filled: [] as string[] }
-  on('process.run', async (_$, e) => {
-    const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
-    const argv = [...e.argv]
-    if (argv[0] === 'git') return answer('main\n')
-    if (isIssuesQuery(argv)) return answer(graphPage(ISSUES, argv, true))
-    if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/claude-plugins', hasIssuesEnabled: true }))
-    if (argv[1] === 'api' && argv[2] === 'user') return answer('astrosteveo\n')
-    if (graphHas(argv, e.init?.stdin, 'updateProjectV2ItemFieldValue')) {
-      return answer(JSON.stringify({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: 'PVTI_43' } } } }))
-    }
-    if (argv[1] === 'issue' && argv[2] === 'view') {
-      const raw = ISSUES[0]
-      return answer(JSON.stringify({ number: raw?.number, title: raw?.title, labels: [], assignees: [], body: raw?.body, updatedAt: raw?.updatedAt }))
-    }
-    return answer('[]')
-  })
+  fakeGitHub(on, { repo: 'astrosteveo/claude-plugins', issues: ISSUES, project: true })
   on('session.id', async () => ({ value: 'session-1' }))
   on('ui.open', async () => ({ value: { isPlaced: true as const } }))
   on('ui.toast', async () => ({ value: undefined }))
@@ -53,7 +36,7 @@ const card = async ($: Engine, on: On) => {
   mock.store(on)
   mock.clock(on, { now: Date.parse('2026-10-05T10:00:00Z') })
   const gh = world(on)
-  await $.command.run({ ...RUN, args: 'refresh' })
+  await $.command.run(REFRESH)
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   await ui.press({ key: 'filter-all' })
   await ui.press({ key: 'issue-43' })

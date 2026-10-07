@@ -97,6 +97,15 @@ export const fakeGitHub = (on: On, options: Options = {}): GitHub => {
     // A project write goes through, and the pull requests' review threads are none open.
     if (argv[1] === 'api' && argv[2] === 'graphql') return json({ data: isMutation(argv, call.stdin) ? {} : { repository: { pullRequests: { nodes: [] } } } })
     if (argv[1] === 'pr' && argv[2] === 'list') return argv.includes('open') ? json(gh.prs) : ok('[]')
+    // One open issue, as `gh issue view --json` gives it: its node id, its comments (none), or the issue.
+    if (argv[1] === 'issue' && argv[2] === 'view') {
+      const raw = gh.issues.find(one => one.number === Number(argv[3]))
+      if (!raw) return fail(`GraphQL: Could not resolve to an issue or pull request with the number of ${argv[3]}. (repository.issue)`)
+      const fields = argv[argv.indexOf('--json') + 1]
+      if (fields === 'id') return json({ id: `I_${raw.number}` })
+      if (fields === 'comments') return json({ comments: [] })
+      return json({ number: raw.number, title: raw.title, url: raw.url ?? '', labels: raw.labels, assignees: raw.assignees ?? [], body: raw.body, updatedAt: raw.updatedAt })
+    }
     if (argv[1] === 'api') return ok(`${gh.login}\n`)
     return ok('[]')
   })
