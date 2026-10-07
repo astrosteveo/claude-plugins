@@ -1,5 +1,6 @@
 import type { ThemeKey } from 'claude-code'
-import type { Check, Ci, Issue, Label, Markers, PullRequest } from '../types'
+import type { Board, Check, Ci, Issue, Label, Markers, PullRequest } from '../types'
+import type { Group } from './filters'
 import { DEFAULT_MARKERS, isBug, isBugLabel } from './markers'
 
 // Why a pull request can't merge as it stands, from GitHub's merge state: conflicts with its base, or behind it.
@@ -26,6 +27,59 @@ export const wrappedLines = (widths: number[], width: number, gap = 1): number =
     used += (used > 0 ? gap : 0) + one
   }
   return lines
+}
+
+// A card above a row too near the pane's top would be pushed down over the row, so each row knows the lines free
+// above it in the window. They are at least these: each line of the board above the list, each heading and row one
+// line, an open card none. Counting short leaves a card smaller than its room, never bigger.
+export const roomAbove = (pane: {
+  now: Board
+  width: number
+  // The labels of the Issues heading's tabs and groupings.
+  tabs: string[]
+  groupings: string[]
+  // Whether the sparklines show, and the last refresh's failure.
+  trends: boolean
+  failure: string | null
+  sectionOpen: (key: string) => boolean
+  arming: boolean
+  runs: number
+  unknownTerms: number
+  triaging: boolean
+  triageFailed: boolean
+  shown: Issue[]
+  groups: Group[]
+  opened: string[]
+  offset: number
+}): ((number: number) => number) => {
+  const { now, width, sectionOpen, triaging, shown, groups, opened } = pane
+  const listed$ = triaging
+    ? shown.map(issue => issue.number)
+    : groups.flatMap(group => [null, ...(group.folded && !opened.includes(group.key) ? [] : group.issues.map(issue => issue.number))])
+  // The Issues heading wraps its buttons, each its label and four cells of brackets; the search field, of no known
+  // width, isn't counted.
+  const heading$ = wrappedLines(
+    [
+      cells('Issues'),
+      ...pane.tabs.map(label => cells(label) + 4),
+      cells('by'),
+      ...pane.groupings.map(label => cells(label) + 4),
+    ],
+    width,
+  )
+  const above$ =
+    1 +
+    heading$ +
+    (pane.trends ? 1 : 0) +
+    (pane.failure ? 1 : 0) +
+    (now.project?.update ? 1 : 0) +
+    (now.prs.length > 0 ? 1 + (sectionOpen('prs') ? now.prs.length : 0) : 0) +
+    ((now.milestones ?? []).length > 0 ? 1 + (sectionOpen('milestones') ? (now.milestones ?? []).length : 0) : 0) +
+    (pane.arming && now.prs.length > 0 ? 1 : 0) +
+    pane.runs +
+    (pane.unknownTerms > 0 ? 1 : 0) +
+    (triaging ? 1 + (pane.triageFailed ? 1 : 0) : 0)
+  return number => Math.max(0, above$ + listed$.indexOf(number) - pane.offset)
 }
 
 // What a row's hover card holds, given the lines free above the row: the title and how far along, then up to four open
