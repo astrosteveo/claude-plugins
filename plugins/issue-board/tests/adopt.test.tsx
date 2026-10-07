@@ -1,7 +1,7 @@
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { adoptText, isMutation, ownerOf, projectNumberOf, savedAdoptionOf, writeRefusal } from '../hooks/project'
+import { adoptText, isMutation, ownerOf, projectKeysOf, savedAdoptionOf, writeRefusal } from '../hooks/project'
 import { ADOPTED, PROJECT, graphPage, isIssuesQuery, settingsLog } from './graph'
 import { letThrough } from './engine'
 
@@ -181,7 +181,7 @@ const memory = (on: On, entries: Record<string, unknown> = {}): Map<string, unkn
   return kept
 }
 
-const WRITES_8 = { options: { writeProject: '8' } }
+const WRITES_8 = { options: { writeProjects: ['astrosteveo/8'] } }
 
 test('the pane and the band ask once before writing, naming the project, its owner, what is written and what it costs; yes adopts it', async ($, on) => {
   memory(on)
@@ -202,7 +202,7 @@ test('the pane and the band ask once before writing, naming the project, its own
   expect(set).toEqual([])
 
   await ui.press({ key: 'adopt-yes' })
-  expect(set).toEqual([{ key: 'issue-board.writeProject', value: '8' }])
+  expect(set).toEqual([{ key: 'issue-board.writeProjects', value: ['astrosteveo/8'] }])
   expect(await ui.find({ key: 'adopt-card' })).toBeUndefined()
 
   // Writes go through at once, to the adopted project, before Claude Code reloads the board with the new setting.
@@ -234,7 +234,7 @@ test('Keep read-only puts the prompt away for good and writes nothing', async ($
   await ui.unmount()
 })
 
-test('a writeProject that is not a project number leaves the board read-only', { options: { ...EVERYTHING.options, writeProject: 'eight' } }, async ($, on) => {
+test('a writeProjects entry that is not owner/number, or names the number under another owner, leaves the board read-only', { options: { ...EVERYTHING.options, writeProjects: ['8', 'astrosteveo/eight', 'acme/8'] } }, async ($, on) => {
   memory(on)
   settingsLog(on)
   const { mutations } = world(on)
@@ -244,7 +244,7 @@ test('a writeProject that is not a project number leaves the board read-only', {
   expect(mutations()).toEqual([])
 })
 
-test('with writeProject 8 the board writes to project 8, with no prompt, and the store has no say', { options: { ...EVERYTHING.options, writeProject: '8' } }, async ($, on) => {
+test('with astrosteveo/8 listed the board writes to project 8, with no prompt, and the store has no say', { options: { ...EVERYTHING.options, writeProjects: ['astrosteveo/8'] } }, async ($, on) => {
   // A store an earlier board left saying the project was released counts for nothing once the setting names one.
   memory(on, { [KEY]: { adopted: null } })
   const set = settingsLog(on)
@@ -258,14 +258,51 @@ test('with writeProject 8 the board writes to project 8, with no prompt, and the
   await ui.unmount()
 })
 
-test('with writeProject naming another project the board refuses its own, and says which it may write to', { options: { writeProject: '9' } }, async ($, on) => {
+test("a project another repo listed gives this repo's project nothing, and adopting here keeps it", { options: { writeProjects: ['acme/9'] } }, async ($, on) => {
   memory(on)
-  settingsLog(on)
+  const set = settingsLog(on)
   const { mutations } = world(on)
   await $.command.run(REFRESH)
   const update = await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, priority: 'P0' })
-  expect(update.deny).toMatch(/only reads Void Sector: the project it may write to for this repo is project 9\./)
+  expect(update.deny).toMatch(/only reads Void Sector: nobody has let it write there/)
   expect(mutations()).toEqual([])
+  // The pane still asks about this repo's project, and Let it write adds it beside the other repo's.
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'adopt-yes' })
+  expect(set).toEqual([{ key: 'issue-board.writeProjects', value: ['acme/9', 'astrosteveo/8'] }])
+  await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, priority: 'P0' })
+  expect(mutations()).toHaveLength(1)
+  await ui.unmount()
+})
+
+test("releasing this repo's project takes only it off the list, and leaves another repo's", { options: { writeProjects: ['acme/9', 'astrosteveo/8'] } }, async ($, on) => {
+  memory(on)
+  const set = settingsLog(on)
+  const { mutations } = world(on)
+  on('tool.check', async () => ({ decision: 'allow' as const }))
+  await $.command.run(REFRESH)
+  await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, priority: 'P0' })
+  expect(mutations()).toHaveLength(1)
+  await $.tool.call({ tool: 'mcp__issue-board__project_adopt', release: true })
+  expect(set).toEqual([{ key: 'issue-board.writeProjects', value: ['acme/9'] }])
+  const update = await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, priority: 'P1' })
+  expect(update.deny).toMatch(/only reads Void Sector/)
+  expect(mutations()).toHaveLength(1)
+})
+
+test("a project the repo's own settings grant can't be released from the board", { options: { writeProjects: ['astrosteveo/8'] } }, async ($, on) => {
+  memory(on)
+  const set = settingsLog(on)
+  world(on)
+  on('tool.check', async () => ({ decision: 'allow' as const }))
+  // This repo's .claude/settings.json lists the project; the person's own settings list nothing.
+  on('settings.read', async (_$, e) => ({
+    value: e.source === 'project' ? { pluginConfigs: { 'issue-board@astrosteveo-plugins': { options: { writeProjects: ['astrosteveo/8'] } } } } : {},
+  }))
+  await $.command.run(REFRESH)
+  const release = await $.tool.call({ tool: 'mcp__issue-board__project_adopt', release: true })
+  expect(release.deny).toBe("This repo's .claude/settings.json lets the board write to Void Sector, so it can't be released here. To release it, take it out of writeProjects in that file.")
+  expect(set).toEqual([])
 })
 
 test('a repo whose saved setup names the project has it moved into the setting once, and counts as adopted', EVERYTHING, async ($, on) => {
@@ -273,7 +310,7 @@ test('a repo whose saved setup names the project has it moved into the setting o
   const set = settingsLog(on)
   const { mutations } = world(on)
   await $.command.run(REFRESH)
-  expect(set).toEqual([{ key: 'issue-board.writeProject', value: '8' }])
+  expect(set).toEqual([{ key: 'issue-board.writeProjects', value: ['astrosteveo/8'] }])
   expect(kept.get(CHOICES)).toEqual({ adoptionMoved: true })
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   expect(await ui.find({ key: 'adopt-card' })).toBeUndefined()
@@ -300,7 +337,7 @@ test("an adoption an earlier board kept in the store moves to the setting once, 
   const set = settingsLog(on)
   const { mutations } = world(on)
   await $.command.run(REFRESH)
-  expect(set).toEqual([{ key: 'issue-board.writeProject', value: '8' }])
+  expect(set).toEqual([{ key: 'issue-board.writeProjects', value: ['astrosteveo/8'] }])
   await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, priority: 'P0' })
   expect(mutations()).toHaveLength(1)
   // Once moved, the store's copy is never read again: a release there from an older board changes nothing.
@@ -372,33 +409,35 @@ test('two sessions changing different choices keep both', async ($, on) => {
   await ui.unmount()
 })
 
-test('the write check refuses any project but the adopted one, and says why and how to adopt', () => {
-  const adopted = { number: 8, ...ADOPTED }
-  const roadmap = { number: 9, title: 'Roadmap' }
-  expect(writeRefusal(adopted, { number: 8, title: 'Void Sector' })).toBeNull()
-  expect(writeRefusal(null, roadmap)).toBe(
-    'The issue board only reads Roadmap: nobody has let it write there. To let it, press Let it write where the issues pane or the band asks, or run /issues setup, pick the project and press Apply.',
-  )
-  expect(writeRefusal(adopted, roadmap)).toBe('The issue board only reads Roadmap: the project it may write to for this repo is Void Sector. To switch, run /issues setup, pick Roadmap and press Apply.')
+test('the write check refuses any project the list lacks, by owner and number, and says why and how to adopt', () => {
+  const voidSector = { number: 8, title: 'Void Sector', url: PROJECT.url }
+  const roadmap = { number: 9, title: 'Roadmap', url: 'https://github.com/orgs/acme/projects/9' }
+  expect(writeRefusal(['astrosteveo/8'], voidSector)).toBeNull()
+  expect(writeRefusal(['acme/9', 'astrosteveo/8'], roadmap)).toBeNull()
+  const refused = 'The issue board only reads Roadmap: nobody has let it write there. To let it, press Let it write where the issues pane or the band asks, or run /issues setup, pick the project and press Apply.'
+  expect(writeRefusal([], roadmap)).toBe(refused)
+  // The same number under another owner is another project.
+  expect(writeRefusal(['astrosteveo/9'], roadmap)).toBe(refused)
   // Setup making a new project touches none the person has.
-  expect(writeRefusal(null, 'new')).toBeNull()
+  expect(writeRefusal([], 'new')).toBeNull()
 })
 
-test('the setting reads as a project number, and a saved adoption moves only to the project it named', () => {
-  expect(projectNumberOf('9')).toBe(9)
-  expect(projectNumberOf(' 12 ')).toBe(12)
-  expect(projectNumberOf(9)).toBe(9)
-  for (const none of ['', 'eight', '0', '-3', '9.5', undefined, true]) expect(projectNumberOf(none)).toBeNull()
+test('the setting reads as owner/number keys, and a saved adoption moves only to the project it named', () => {
+  expect(projectKeysOf(['astrosteveo/9', 'AstroSteveo/8', ' acme/12 '])).toEqual(['astrosteveo/9', 'astrosteveo/8', 'acme/12'])
+  expect(projectKeysOf(['astrosteveo/9', 'astrosteveo/9'])).toEqual(['astrosteveo/9'])
+  expect(projectKeysOf('astrosteveo/9, acme/3')).toEqual(['astrosteveo/9', 'acme/3'])
+  expect(projectKeysOf(['9', 'astrosteveo/0', 'astrosteveo/nine', '/9', 'a/b/9', 7])).toEqual([])
+  expect(projectKeysOf(undefined)).toEqual([])
 
-  const setup = { project: { id: 'PVT_8', number: 8 } }
-  const reads = [{ id: 'PVT_8', number: 8 }]
+  const setup = { project: { id: 'PVT_8' } }
+  const reads = [{ id: 'PVT_8', number: 8, url: PROJECT.url }]
   expect(savedAdoptionOf({}, reads)).toBeNull()
-  expect(savedAdoptionOf({ setup }, [])).toBe(8)
+  expect(savedAdoptionOf({ setup }, reads)).toBe('astrosteveo/8')
+  expect(savedAdoptionOf({ setup }, [])).toBeUndefined()
   expect(savedAdoptionOf({ setup, adopted: null }, reads)).toBeNull()
-  expect(savedAdoptionOf({ adopted: { id: 'PVT_8' } }, [])).toBeUndefined()
-  expect(savedAdoptionOf({ adopted: { id: 'PVT_8' } }, reads)).toBe(8)
+  expect(savedAdoptionOf({ adopted: { id: 'PVT_8' } }, reads)).toBe('astrosteveo/8')
   expect(savedAdoptionOf({ adopted: { id: 'PVT_9' } }, reads)).toBeNull()
-  expect(savedAdoptionOf({ setup, adopted: { id: 'PVT_9' } }, [{ id: 'PVT_9', number: 9 }])).toBe(9)
+  expect(savedAdoptionOf({ setup, adopted: { id: 'PVT_9' } }, [{ id: 'PVT_9', number: 9, url: 'https://github.com/orgs/acme/projects/9' }])).toBe('acme/9')
 })
 
 test('a mutation is told apart from a read, as a field or on stdin', () => {

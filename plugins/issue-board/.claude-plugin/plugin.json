@@ -128,11 +128,12 @@
       ],
       "default": "views"
     },
-    "writeProject": {
+    "writeProjects": {
       "type": "string",
-      "title": "Project the board may write to",
-      "description": "The number of the GitHub project the board may change, such as 9. It must be the project the board reads for the repo. Empty means the board only reads. Let it write, Apply in /issues setup and the project_adopt tool set it, and Release clears it.",
-      "default": ""
+      "multiple": true,
+      "title": "Projects the board may write to",
+      "description": "The GitHub projects the board may change, each as owner/number, such as astrosteveo/9. In a repo, the board writes only to the project it reads there, or one linked to it, and only when it is listed. Empty means the board only reads. Let it write, Apply in /issues setup and the project_adopt tool add a project, and Release removes it.",
+      "default": []
     }
   }
 }

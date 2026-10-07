@@ -135,7 +135,7 @@ export const graphPage = (issues: Raw[], argv: readonly string[] = [], project =
   })
 }
 
-// The board writes only to the project the writeProject setting names. A test that has it write to the fake project
+// The board writes only to a project the writeProjects setting lists. A test that has it write to the fake project
 // uses this store in place of `mock.store`: every repo's entry holds an adoption as an earlier board kept it, unless the
 // entry makes a choice of its own, and the board moves it into the setting once it has read the project. The choices
 // key is kept as set. A test's fake world and the test itself may both ask for it; the second call adds its entries to
