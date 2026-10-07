@@ -50,10 +50,11 @@ export type GitHub = {
   writes: Call[]
 }
 
-export type Options = Partial<Omit<GitHub, 'ran' | 'writes'>> & { routes?: Route[] }
+// `shapeProject` changes the project as each issues query reads it, for a project unlike the Void Sector one.
+export type Options = Partial<Omit<GitHub, 'ran' | 'writes'>> & { routes?: Route[]; shapeProject?: (project: Record<string, any>) => void }
 
 export const fakeGitHub = (on: On, options: Options = {}): GitHub => {
-  const { routes = [], ...given } = options
+  const { routes = [], shapeProject, ...given } = options
   const gh: GitHub = {
     repo: 'astrosteveo/void-sector',
     hasIssues: true,
@@ -85,7 +86,14 @@ export const fakeGitHub = (on: On, options: Options = {}): GitHub => {
       if (argv.includes(`If-None-Match: ${gh.etag}`)) return fail('gh: HTTP 304', 'HTTP/2.0 304 Not Modified\n')
       return ok(`HTTP/2.0 200 OK\nEtag: ${gh.etag}\n\n[]`)
     }
-    if (isIssuesQuery(argv)) return ok(graphPage(gh.issues, argv, gh.project, gh.types, gh.views, gh.labels))
+    if (isIssuesQuery(argv)) {
+      const page = graphPage(gh.issues, argv, gh.project, gh.types, gh.views, gh.labels)
+      if (!shapeProject) return ok(page)
+      const read = JSON.parse(page) as { data: { repository: { projectsV2?: { nodes: Record<string, any>[] } } } }
+      const linked = read.data.repository.projectsV2?.nodes[0]
+      if (linked) shapeProject(linked)
+      return ok(JSON.stringify(read))
+    }
     // A project write goes through, and the pull requests' review threads are none open.
     if (argv[1] === 'api' && argv[2] === 'graphql') return json({ data: isMutation(argv, call.stdin) ? {} : { repository: { pullRequests: { nodes: [] } } } })
     if (argv[1] === 'pr' && argv[2] === 'list') return argv.includes('open') ? json(gh.prs) : ok('[]')
