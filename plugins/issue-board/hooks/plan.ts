@@ -343,6 +343,18 @@ export const changeText = (change: PlanChange): string => {
   }
 }
 
+// A change split for its row on the card: the head goes on the row's button, which can't wrap, and the rest in text
+// beside it, which can. A label or view change says what it does to which label or view in the head, and its counts,
+// colors, markers and filters in the rest, so a long filter can't push the button past a narrow pane. Other changes
+// are short, and all head.
+export const cardParts = (change: PlanChange): { head: string; detail: string } => {
+  const full = changeText(change)
+  let head = full
+  if (change.kind === 'label') head = change.action === 'create' ? `new label ${change.name}` : change.action === 'delete' ? `delete label ${change.name}` : `label ${change.name}${change.rename ? ` → ${change.rename}` : ''}`
+  if (change.kind === 'view') head = !change.to ? `delete view ${viewNameOf(change)}` : !change.view ? `new ${change.to.layout} view ${change.to.name}` : `view ${change.view.name}`
+  return { head, detail: full.slice(head.length).replace(/^(?: · |: | )/, '') }
+}
+
 // A change with what it is on, for lists outside the card: `#340 Status → Ready`, `new label area:net`, `new table view
 // Bugs`.
 export const rowText = (change: PlanChange): string => (issueOf(change) === null ? changeText(change) : `#${issueOf(change)} ${changeText(change)}`)

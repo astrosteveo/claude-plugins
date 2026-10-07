@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { parseIssues } from '../hooks/parse'
-import { changeText, issueOf, kindsText, planAsk, planOf, rowText, rowsOf, sizeText, viewNoteOf } from '../hooks/plan'
+import { cardParts, changeText, issueOf, kindsText, planAsk, planOf, rowText, rowsOf, sizeText, viewNoteOf } from '../hooks/plan'
 import type { Project } from '../types'
 import { PRIORITIES, STATUSES, adoptedStore, graphPage, isIssuesQuery, optionId } from './graph'
 import type { RawView } from './graph'
@@ -451,11 +451,15 @@ test('a plan makes, renames, recolors and deletes labels, counts what a delete t
   expect(await ui.find({ text: /^Claude's plan · 4 changes to 4 labels$/ })).toBeDefined()
   expect(await ui.find({ text: /^The repo's labels$/ })).toBeDefined()
   expect((await ui.findAll({ type: 'Button', text: /^[☑☐] / })).map(one => one.text)).toEqual([
-    '☑ new label needs-info #1d76db “Needs an answer”',
-    '☑ label area:ui → area:hud · the saved Bugs marker follows',
-    '☑ label bug #d73a4a',
-    '☑ delete label wontfix · on 3 open and 2 closed issues · clears the saved Later marker',
+    '☑ new label needs-info',
+    '☑ label area:ui → area:hud',
+    '☑ label bug',
+    '☑ delete label wontfix',
   ])
+  // What each does beyond its name goes beside its button, where it can wrap.
+  for (const text of ['#1d76db “Needs an answer”', 'the saved Bugs marker follows', '#d73a4a', 'on 3 open and 2 closed issues · clears the saved Later marker']) {
+    expect(await ui.find({ type: 'Text', text }), text).toBeDefined()
+  }
 
   await ui.press({ key: 'plan-apply' })
   expect(gh.writes).toEqual([
@@ -496,7 +500,8 @@ test("a delete row says when it couldn't count the label's issues", async ($, on
   gh.engine.answer = 'no'
   await $.tool.call({ tool: TOOL, labels: [{ name: 'bug', reason: 'Gone.', delete: true }] })
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
-  expect(await ui.find({ key: 'plan-pick-label-1' })).toMatchObject({ text: "☑ delete label bug · couldn't count its issues" })
+  expect(await ui.find({ key: 'plan-pick-label-1' })).toMatchObject({ text: '☑ delete label bug' })
+  expect(await ui.find({ type: 'Text', text: "couldn't count its issues" })).toBeDefined()
   await ui.unmount()
 })
 
@@ -561,6 +566,13 @@ test('a plan creates, changes and deletes views, flags filter terms the board ca
     'delete view Old · label:old',
   ])
   expect(sizeText(changes)).toBe('4 changes to 1 issue and 3 views')
+  // On the card the button says which view, and the text beside it the rest.
+  expect(changes.map(cardParts)).toEqual([
+    { head: 'Status → Ready', detail: '' },
+    { head: 'new board view Sprint', detail: 'status:Ready sprint:@current' },
+    { head: 'view Bugs', detail: 'renamed Ready bugs, filter label:bug status:Ready' },
+    { head: 'delete view Old', detail: 'label:old' },
+  ])
   expect(sizeText([...changes, { kind: 'label', action: 'create', name: 'area:net' }])).toBe('5 changes to 1 issue, 1 label and 3 views')
   expect(sizeText(changes.slice(1))).toBe('3 changes to 3 views')
   // Label changes come first on the card, then the issues, then the views.
@@ -630,10 +642,12 @@ test('applying a plan writes the views through the project write check, and the 
   expect(await ui.find({ text: /^Claude's plan · 3 changes to 3 views$/ })).toBeDefined()
   expect(await ui.find({ text: /^Void Sector views$/ })).toBeDefined()
   expect((await ui.findAll({ type: 'Button', text: /^[☑☐] / })).map(one => one.text)).toEqual([
-    '☑ new board view Sprint · status:Ready sprint:@current',
-    '☑ view Bugs: renamed Ready bugs, filter label:bug status:Ready',
-    '☑ delete view Old · label:old',
+    '☑ new board view Sprint',
+    '☑ view Bugs',
+    '☑ delete view Old',
   ])
+  // The filters and what changes go beside the buttons, where they can wrap; a delete names the filter it takes.
+  for (const text of ['status:Ready sprint:@current', 'renamed Ready bugs, filter label:bug status:Ready', 'label:old']) expect(await ui.find({ type: 'Text', text }), text).toBeDefined()
   expect((await ui.findAll({ type: 'Text', text: /^⚠ / })).map(one => one.text)).toEqual([
     "⚠ The board can't apply sprint:@current, so its tab in /issues leaves that term out and shows more than GitHub does.",
   ])
