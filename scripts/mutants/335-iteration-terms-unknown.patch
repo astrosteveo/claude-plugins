@@ -2,16 +2,17 @@ Guards #335: a view filter's @current, @next and @previous on an iteration field
 Test: plugins/issue-board: @current, @next and @previous keep the issues in those iterations, and a range keeps the ones between
 Test: plugins/issue-board: a view's @current tab keeps the current iteration's issues, and the header shows it with the days left
 
+
 diff --git a/plugins/issue-board/hooks/filters.ts b/plugins/issue-board/hooks/filters.ts
-index 01a3853..1bf6464 100644
+index 01335dd..08957e1 100644
 --- a/plugins/issue-board/hooks/filters.ts
 +++ b/plugins/issue-board/hooks/filters.ts
-@@ -414,7 +414,7 @@ const termTest = (term: FilterTerm, project: Project | null | undefined, clock:
-   if (!own && !field) return null
+@@ -491,7 +491,7 @@ const termTest = (term: FilterTerm, project: Project | null | undefined, clock:
+   if (!own && !field && !dates) return null
    // An iteration field's `@current`, `@next` and `@previous` are the titles of the iterations they name now.
    const iteration = field?.kind === 'iteration' ? field : undefined
 -  const named = term.values.map(value => (iteration ? iterationTitlesOf(value, iteration, clock) : null))
 +  const named = term.values.map(value => (iteration && false ? iterationTitlesOf(value, iteration, clock) : null))
-   if (!term.values.every((value, index) => named[index] !== null || plainValue(value, own))) return null
-   return (issue, viewer) => {
-     const has = fieldValuesOf(issue, key, project)
+   // The issue's dates and a date or number field take comparisons and ranges. Their other values compare as text,
+   // except on the issue's dates, which hold nothing else.
+   const scale: Scale | null = dates || field?.kind === 'date' ? 'date' : field?.kind === 'number' ? 'number' : null

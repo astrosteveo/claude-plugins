@@ -363,9 +363,9 @@ export const parseFilter = (text: string): FilterTerm[] =>
     }
   })
 
-// A value the board compares as text. Ranges, comparisons, wildcards and `@` dates need more than the board knows, so
-// a term holding one is named as one it can't apply. `@me` is the person, for assignee. An iteration field's `@`
-// terms are iterationTitlesOf's.
+// A value the board compares as text. Ranges, comparisons, wildcards and `@` dates need more than text, so a term
+// holding one is named as one it can't apply, unless rangeTestOf takes it on a date or number field. `@me` is the
+// person, for assignee. An iteration field's `@` terms are iterationTitlesOf's.
 const plainValue = (value: string, key: string | undefined): boolean =>
   value.startsWith('@') ? value.toLowerCase() === '@me' && key === 'assignee' : !/^[<>]|\.\.|\*/.test(value)
 
@@ -429,13 +429,89 @@ export const currentIterationText = (project: Project | null | undefined, clock:
   return null
 }
 
+const DAY_MS = 86_400_000
+
+// A day as a count of days, so days compare as numbers: a project date field's `YYYY-MM-DD` is that day, and a time
+// such as an issue's `updatedAt` is the day it falls on in the person's own calendar, as GitHub's page has it in their
+// browser. Null for anything else.
+export const dayOf = (text: string): number | null => {
+  const plain = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text)
+  if (plain) return Date.UTC(Number(plain[1]), Number(plain[2]) - 1, Number(plain[3])) / DAY_MS
+  const time = /^\d{4}-\d{2}-\d{2}T/.test(text) ? Date.parse(text) : Number.NaN
+  if (Number.isNaN(time)) return null
+  const at = new Date(time)
+  return Date.UTC(at.getFullYear(), at.getMonth(), at.getDate()) / DAY_MS
+}
+
+// The kinds of value a filter can compare and take a range of.
+type Scale = 'date' | 'number'
+
+const TODAY = /^@today(?:([+-])(\d+)([dw])?)?$/i
+
+// One end of a comparison or range: a number on a number field; on a date field a day, `@today`, or `@today` moved
+// by days or weeks, such as `@today-7d` or `@today+2w`, on the board's clock. Null for a value that isn't one.
+const pointOf = (text: string, scale: Scale, clock: number): number | null => {
+  if (scale === 'number') return /^-?\d+(\.\d+)?$/.test(text) ? Number(text) : null
+  const today = TODAY.exec(text)
+  if (!today) return /^\d{4}-\d{2}-\d{2}$/.test(text) ? dayOf(text) : null
+  const now = new Date(clock)
+  const day = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) / DAY_MS
+  const by = Number(today[2] ?? 0) * (today[3]?.toLowerCase() === 'w' ? 7 : 1)
+  return today[1] === '-' ? day - by : day + by
+}
+
+// A field's value on the scale a term compares it on, or null when it has none there.
+const measureOf = (value: string, scale: Scale): number | null => {
+  if (scale === 'date') return dayOf(value)
+  const number = value.trim() === '' ? Number.NaN : Number(value)
+  return Number.isFinite(number) ? number : null
+}
+
+// The test one value of a date or number term puts to a field's value: `>`, `>=`, `<` or `<=` a point, a range `a..b`
+// that holds both ends, with `*` for an open end, or one point alone. Null for a value that isn't one of these.
+export const rangeTestOf = (value: string, scale: Scale, clock: number): ((had: string) => boolean) | null => {
+  const on = (keep: (had: number) => boolean) => (had: string) => {
+    const measure = measureOf(had, scale)
+    return measure !== null && keep(measure)
+  }
+  const compared = /^(>=|<=|>|<)(.+)$/.exec(value)
+  if (compared) {
+    const point = pointOf(compared[2] ?? '', scale, clock)
+    if (point === null) return null
+    if (compared[1] === '>') return on(had => had > point)
+    if (compared[1] === '>=') return on(had => had >= point)
+    if (compared[1] === '<') return on(had => had < point)
+    return on(had => had <= point)
+  }
+  const ends = value.split('..')
+  if (ends.length > 2) return null
+  if (ends.length === 2) {
+    const end = (text: string, open: number) => (text === '*' ? open : pointOf(text, scale, clock))
+    const from = end(ends[0] ?? '', Number.NEGATIVE_INFINITY)
+    const to = end(ends[1] ?? '', Number.POSITIVE_INFINITY)
+    if (from === null || to === null) return null
+    return on(had => had >= from && had <= to)
+  }
+  const point = pointOf(value, scale, clock)
+  return point === null ? null : on(had => had === point)
+}
+
+// The issue's own dates, which a filter writes as `created:`, `updated:` and `closed:`. The board holds open issues,
+// so none has a closed date.
+const ISSUE_DATES: Record<string, (issue: Issue) => string[]> = {
+  created: issue => (issue.createdAt ? [issue.createdAt] : []),
+  updated: issue => (issue.updatedAt ? [issue.updatedAt] : []),
+  closed: () => [],
+}
+
 // A test of one issue against a filter, with the login `@me` means.
 type IssueTest = (issue: Issue, viewer: string | null) => boolean
 
 // The board holds open issues only, so `is:open` and `is:issue` keep each of them, `is:closed` and `is:pr` none.
 const IS_KINDS: Record<string, boolean> = { open: true, closed: false, issue: true, pr: false }
 
-// The test for one term, or null for a term the board can't apply. `clock` places an iteration field's `@` terms.
+// The test for one term, or null for a term the board can't apply. `clock` places an iteration field's `@` terms and
+// `@today`.
 const termTest = (term: FilterTerm, project: Project | null | undefined, clock: number): IssueTest | null => {
   if (term.key === null) {
     const word = term.values[0] ?? ''
@@ -455,16 +531,23 @@ const termTest = (term: FilterTerm, project: Project | null | undefined, clock: 
     return issue => term.values.some(name => (fieldValuesOf(issue, name, project).length === 0) === empty)
   }
   const key = term.key
-  const own = issueKeyOf(key)
-  const field = own ? undefined : projectFieldOf(key, project)
-  if (!own && !field) return null
+  const dates = ISSUE_DATES[key]
+  const own = dates ? undefined : issueKeyOf(key)
+  const field = own || dates ? undefined : projectFieldOf(key, project)
+  if (!own && !field && !dates) return null
   // An iteration field's `@current`, `@next` and `@previous` are the titles of the iterations they name now.
   const iteration = field?.kind === 'iteration' ? field : undefined
   const named = term.values.map(value => (iteration ? iterationTitlesOf(value, iteration, clock) : null))
-  if (!term.values.every((value, index) => named[index] !== null || plainValue(value, own))) return null
+  // The issue's dates and a date or number field take comparisons and ranges. Their other values compare as text,
+  // except on the issue's dates, which hold nothing else.
+  const scale: Scale | null = dates || field?.kind === 'date' ? 'date' : field?.kind === 'number' ? 'number' : null
+  const ranges = term.values.map(value => (scale ? rangeTestOf(value, scale, clock) : null))
+  if (!term.values.every((value, index) => named[index] !== null || ranges[index] !== null || (!dates && plainValue(value, own)))) return null
   return (issue, viewer) => {
-    const has = fieldValuesOf(issue, key, project)
+    const has = dates ? dates(issue) : fieldValuesOf(issue, key, project)
     return term.values.some((value, index) => {
+      const range = ranges[index]
+      if (range) return has.some(range)
       const wanted = named[index] ?? [value.toLowerCase() === '@me' ? viewer : value]
       return wanted.some(one => one !== null && has.some(had => same(had, one)))
     })
@@ -475,8 +558,8 @@ const termTest = (term: FilterTerm, project: Project | null | undefined, clock: 
 // test, so the tab shows every issue the rest of the filter keeps: more than GitHub would, never fewer.
 export type ViewMatch = { test: IssueTest; unknown: string[] }
 
-// `clock` is the board's, for an iteration field's `@current`, `@next` and `@previous`. What the board can't apply
-// doesn't depend on it.
+// `clock` is the board's, for an iteration field's `@current`, `@next` and `@previous`, and for `@today`. What the
+// board can't apply doesn't depend on it.
 export const viewMatchOf = (filter: string, project: Project | null | undefined, clock: number = Date.now()): ViewMatch => {
   const tests: IssueTest[] = []
   const unknown: string[] = []

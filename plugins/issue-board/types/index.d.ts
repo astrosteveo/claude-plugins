@@ -11,6 +11,8 @@ export type Issue = {
   assignees: string[]
   checks: Check[]
   updatedAt: string
+  // When it was opened, for a view's `created:` term; absent on an issue read with `gh issue view`, or on an older board.
+  createdAt?: string
   // The issue's text as written; empty on a board saved between sessions, until it refreshes.
   body: string
   // What GraphQL adds, which `gh issue view` doesn't give: absent on an issue read that way, or on an older board.

@@ -1,0 +1,19 @@
+Guards #337: a view filter's date, number and range terms, such as updated:>@today-7d or points:>3, are named as terms the board can't apply, and the tab shows every issue.
+Test: plugins/issue-board: @today and @today with days or weeks compare with >, >=, < and <= on the issue dates and date fields
+Test: plugins/issue-board: a range a..b holds both ends, on number and date fields and the issue dates, with * for an open end
+Test: plugins/issue-board: a number field compares as numbers
+Test: plugins/issue-board: a view's date and number terms decide its tab, with no note
+
+diff --git a/plugins/issue-board/hooks/filters.ts b/plugins/issue-board/hooks/filters.ts
+index 01335dd..81aa581 100644
+--- a/plugins/issue-board/hooks/filters.ts
++++ b/plugins/issue-board/hooks/filters.ts
+@@ -495,7 +495,7 @@ const termTest = (term: FilterTerm, project: Project | null | undefined, clock:
+   // The issue's dates and a date or number field take comparisons and ranges. Their other values compare as text,
+   // except on the issue's dates, which hold nothing else.
+   const scale: Scale | null = dates || field?.kind === 'date' ? 'date' : field?.kind === 'number' ? 'number' : null
+-  const ranges = term.values.map(value => (scale ? rangeTestOf(value, scale, clock) : null))
++  const ranges = term.values.map(value => (scale && false ? rangeTestOf(value, scale, clock) : null))
+   if (!term.values.every((value, index) => named[index] !== null || ranges[index] !== null || (!dates && plainValue(value, own)))) return null
+   return (issue, viewer) => {
+     const has = dates ? dates(issue) : fieldValuesOf(issue, key, project)

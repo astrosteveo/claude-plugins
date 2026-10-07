@@ -54,7 +54,7 @@ export const issuesQuery = (withProject: boolean, fields: readonly string[] = []
     withProject ? PROJECTS : '',
     'issues(first: 100, states: OPEN, after: $after, orderBy: {field: UPDATED_AT, direction: DESC}) {',
     'pageInfo { hasNextPage endCursor }',
-    'nodes { id number title url body updatedAt',
+    'nodes { id number title url body updatedAt createdAt',
     'labels(first: 20) { nodes { name color } } assignees(first: 10) { nodes { login } } milestone { title }',
     'parent { number title subIssuesSummary { total completed } } subIssuesSummary { total completed } issueType { name }',
     'blockedBy(first: 10) { nodes { number state } }',

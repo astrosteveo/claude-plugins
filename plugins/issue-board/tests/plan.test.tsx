@@ -625,7 +625,7 @@ const PROJECT_VIEWS = [
 ]
 const VIEW_PLAN = {
   views: [
-    { reason: 'Ready work changed this week.', name: 'Sprint', layout: 'board', filter: 'status:Ready updated:>@today-7d' },
+    { reason: 'Ready work changed this week.', name: 'Sprint', layout: 'board', filter: 'status:Ready comments:>2' },
     { view: 'bugs', reason: 'Bugs that are ready.', name: 'Ready bugs', filter: 'label:bug status:Ready' },
     { view: 2, reason: 'Nobody uses it.', delete: true },
   ],
@@ -639,7 +639,7 @@ test('a plan creates, changes and deletes views, flags filter terms the board ca
   // The issues first, then the views in the plan's order. A delete names the view and its filter.
   expect(changes.map(rowText)).toEqual([
     '#340 Status → Ready',
-    'new board view Sprint · status:Ready updated:>@today-7d',
+    'new board view Sprint · status:Ready comments:>2',
     'view Bugs: renamed Ready bugs, filter label:bug status:Ready',
     'delete view Old · label:old',
   ])
@@ -647,7 +647,7 @@ test('a plan creates, changes and deletes views, flags filter terms the board ca
   // On the card the button says which view, and the text beside it the rest.
   expect(changes.map(cardParts)).toEqual([
     { head: 'Status → Ready', detail: '' },
-    { head: 'new board view Sprint', detail: 'status:Ready updated:>@today-7d' },
+    { head: 'new board view Sprint', detail: 'status:Ready comments:>2' },
     { head: 'view Bugs', detail: 'renamed Ready bugs, filter label:bug status:Ready' },
     { head: 'delete view Old', detail: 'label:old' },
   ])
@@ -662,7 +662,7 @@ test('a plan creates, changes and deletes views, flags filter terms the board ca
   // Only the new view's filter holds a term the board can't apply: `updated:` compares dates.
   expect(changes.map(viewNoteOf)).toEqual([
     null,
-    "The board can't apply updated:>@today-7d, so its tab in /issues leaves that term out and shows more than GitHub does.",
+    "The board can't apply comments:>2, so its tab in /issues leaves that term out and shows more than GitHub does.",
     null,
     null,
   ])
@@ -725,16 +725,16 @@ test('applying a plan writes the views through the project write check, and the 
     '☑ delete view Old',
   ])
   // The filters and what changes go beside the buttons, where they can wrap; a delete names the filter it takes.
-  for (const text of ['status:Ready updated:>@today-7d', 'renamed Ready bugs, filter label:bug status:Ready', 'label:old']) expect(await ui.find({ type: 'Text', text }), text).toBeDefined()
+  for (const text of ['status:Ready comments:>2', 'renamed Ready bugs, filter label:bug status:Ready', 'label:old']) expect(await ui.find({ type: 'Text', text }), text).toBeDefined()
   expect((await ui.findAll({ type: 'Text', text: /^⚠ / })).map(one => one.text)).toEqual([
-    "⚠ The board can't apply updated:>@today-7d, so its tab in /issues leaves that term out and shows more than GitHub does.",
+    "⚠ The board can't apply comments:>2, so its tab in /issues leaves that term out and shows more than GitHub does.",
   ])
 
   await ui.press({ key: 'plan-apply' })
   // A new view's filter goes in by a change straight after it is made; a change sends only what changes.
   expect(gh.writes).toEqual([
     'create view Sprint BOARD_LAYOUT in PVT_8',
-    'update view PVTV_4 {"filter":"status:Ready updated:>@today-7d"}',
+    'update view PVTV_4 {"filter":"status:Ready comments:>2"}',
     'update view PVTV_1 {"name":"Ready bugs","filter":"label:bug status:Ready"}',
     'delete view PVTV_2',
   ])
