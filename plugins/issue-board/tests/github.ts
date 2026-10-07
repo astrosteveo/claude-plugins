@@ -95,6 +95,9 @@ export const fakeGitHub = (on: On, options: Options = {}): GitHub => {
   return gh
 }
 
+// How many times the board read the open issues.
+export const issueReads = (gh: GitHub): number => gh.ran.filter(call => isIssuesQuery(call.argv)).length
+
 // The session the board runs in: its id, the folder and its repo, and a pane that opens where asked.
 export const session = (on: On, id = 'session-1'): void => {
   on('session.id', async () => ({ value: id }))

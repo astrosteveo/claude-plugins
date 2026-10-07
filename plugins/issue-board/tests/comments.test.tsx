@@ -2,10 +2,11 @@ import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { answerPrompt, commentsOf, mergeNoteOf, parsePrs, threadsOf } from '../hooks/parse'
-import { graphPage, isIssuesQuery } from './graph'
+import { fakeGitHub, ok } from './github'
+import type { Call } from './github'
+import { REFRESH, pane } from './ui'
 
-const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 140, placement: 'dock', scroll: { offset: 0, bodyRows: 80 }, view: {} } } as const
-const RUN = { command: 'issues', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
+const PANE = pane(140, 80)
 
 const pr = (number: number, mergeStateStatus: string, reviewRequests: unknown[] = []) => ({
   number,
@@ -66,33 +67,26 @@ test('comments read back, and Ask Claude to answer quotes the last one with how 
   )
 })
 
-// GitHub with one issue and three pull requests, and the commands that change something.
+// A read of an issue's comments.
+const readsComments = ({ argv }: Call) => argv[1] === 'issue' && argv[2] === 'view' && argv.includes('comments')
+
+// GitHub with one issue and three pull requests, its review threads and the issue's comments.
 const github = (on: On) => {
-  const state = { writes: [] as { argv: string[]; stdin?: string }[], commentReads: 0 }
-  on('process.run', async (_$, e) => {
-    const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
-    const argv = [...e.argv]
-    if (argv[0] === 'git') return answer('main\n')
-    if (isIssuesQuery(argv)) return answer(graphPage([{ number: 43, title: 'Edit issues from the board', labels: [], body: '- [ ] Edit', updatedAt: '2026-10-05T00:00:00Z' }]))
-    if (argv[1] === 'api' && argv[2] === 'graphql' && argv.some(arg => arg.includes('reviewThreads'))) return answer(THREADS)
-    if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/claude-plugins', hasIssuesEnabled: true }))
-    if (argv[1] === 'pr' && argv.includes('open')) return answer(JSON.stringify([pr(71, 'DIRTY', [{ login: 'alice' }]), pr(72, 'BEHIND'), pr(73, 'CLEAN')]))
-    if (argv[1] === 'issue' && argv[2] === 'view' && argv.includes('comments')) {
-      state.commentReads += 1
-      return answer(COMMENTS)
-    }
-    if (argv[1] === 'api' && argv[3] === 'POST' && argv[4]?.endsWith('/comments')) state.writes.push({ argv: argv.slice(1), ...(e.init?.stdin !== undefined ? { stdin: e.init.stdin } : {}) })
-    return answer(argv[1] === 'api' ? 'astrosteveo\n' : '[]')
+  const gh = fakeGitHub(on, {
+    repo: 'astrosteveo/claude-plugins',
+    issues: [{ number: 43, title: 'Edit issues from the board', labels: [], body: '- [ ] Edit', updatedAt: '2026-10-05T00:00:00Z' }],
+    prs: [pr(71, 'DIRTY', [{ login: 'alice' }]), pr(72, 'BEHIND'), pr(73, 'CLEAN')],
+    routes: [call => (call.argv.some(arg => arg.includes('reviewThreads')) ? ok(THREADS) : readsComments(call) ? ok(COMMENTS) : undefined)],
   })
   on('session.id', async () => ({ value: 'session-1' }))
   on('ui.open', async () => ({ value: { isPlaced: true as const } }))
-  return state
+  return gh
 }
 
 test("a pull request row says when it has conflicts or is behind, its open review threads, and who's asked to review", async ($, on) => {
   mock.store(on)
   github(on)
-  await $.command.run({ ...RUN, args: 'refresh' })
+  await $.command.run(REFRESH)
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   expect(await ui.find({ text: /^⚠ conflicts$/ })).toBeDefined()
   expect(await ui.find({ text: /^2 open threads$/ })).toBeDefined()
@@ -111,7 +105,7 @@ test('opening a card reads its latest comments; a reply posts and reads them aga
     sent.push(e.text)
     return { text: e.text }
   })
-  await $.command.run({ ...RUN, args: 'refresh' })
+  await $.command.run(REFRESH)
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   await ui.press({ key: 'filter-all' })
   await ui.press({ key: 'issue-43' })
@@ -122,11 +116,11 @@ test('opening a card reads its latest comments; a reply posts and reads them aga
   // The oldest of the four isn't shown.
   expect((await ui.findAll({ type: 'Markdown' })).map(one => one.props.text)).not.toContain('First.')
 
-  const reads = gh.commentReads
+  const reads = gh.ran.filter(readsComments).length
   await ui.input({ key: 'reply-43', text: 'Yes, it does.', kind: 'change' })
   await ui.input({ key: 'reply-43', text: 'Yes, it does.', kind: 'submit' })
-  expect(gh.writes).toEqual([{ argv: ['api', '-X', 'POST', 'repos/astrosteveo/claude-plugins/issues/43/comments', '--input', '-'], stdin: '{"body":"Yes, it does."}' }])
-  expect(gh.commentReads).toBeGreaterThan(reads)
+  expect(gh.writes).toEqual([{ argv: ['gh', 'api', '-X', 'POST', 'repos/astrosteveo/claude-plugins/issues/43/comments', '--input', '-'], stdin: '{"body":"Yes, it does."}' }])
+  expect(gh.ran.filter(readsComments).length).toBeGreaterThan(reads)
 
   await ui.press({ key: 'ask-43' })
   expect(sent.at(-1)).toMatch(/^Answer the latest comment on #43: Edit issues from the board\. @ghost wrote:\n\n> Does the reply field post here\?/)

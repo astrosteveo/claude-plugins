@@ -2,10 +2,9 @@ import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
 
+import { fakeGitHub, ok, session } from './github'
 import { graphPage, isIssuesQuery } from './graph'
-
-const REFRESH = { command: 'issues', args: 'refresh', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
-const REPO = { root: '/work/void-sector', remote: null, internal: false, name: null }
+import { REFRESH } from './ui'
 
 const issue = (number: number, updatedAt: string, body = `Issue ${number} needs doing.\n\n- [ ] Done`) => ({
   number,
@@ -24,19 +23,9 @@ const world = (on: On) => {
     bodies: new Map<number, string>(),
     prompts: [] as { text: string; context: readonly string[] }[],
   }
-  on('process.run', async (_$, e) => {
-    const argv = e.argv
-    const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
-    if (argv[0] === 'git') return answer('main\n')
-    if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true }))
-    if (isIssuesQuery(argv)) return answer(graphPage([...state.updated].map(([number, at]) => issue(number, at, state.bodies.get(number)))))
-    if (argv[1] === 'api' && argv[2] === 'graphql') return answer(JSON.stringify({ data: { repository: { pullRequests: { nodes: [] } } } }))
-    if (argv[1] === 'api') return answer('astrosteveo\n')
-    return answer('[]')
-  })
-  on('session.id', async () => ({ value: 'session-1' }))
-  on('session.repo', async () => ({ value: REPO }))
-  on('session.root', async () => ({ value: REPO.root }))
+  const issues = () => [...state.updated].map(([number, at]) => issue(number, at, state.bodies.get(number)))
+  fakeGitHub(on, { routes: [({ argv }) => (isIssuesQuery(argv) ? ok(graphPage(issues())) : undefined)] })
+  session(on)
   on('session.end', async (_$, e) => ({ sessionId: e.sessionId }))
   on('session.compact', async (_$, e) => ({ messages: e.messages }))
   on('prompt.submit', async (_$, e) => {
