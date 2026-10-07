@@ -85,6 +85,7 @@ import {
   closeOutPrompt,
   commentsOf,
   commandsOf,
+  copiesFor,
   draftBody,
   draftLines,
   draftPrompt,
@@ -101,7 +102,6 @@ import {
   isInbox,
   issueOfBranch,
   knownOf,
-  mentionText,
   mentionsOf,
   newsOf,
   nextOf,
@@ -1010,6 +1010,14 @@ let refreshing: Promise<void> | undefined
 // every plugin's state, and no `session.start` follows.
 let restarts = 0
 let restarted = false
+
+// The copies of issues and pull requests sent with a prompt in this session, by number, each with what it stood for
+// (copyKeyOf). Kept in memory, not in state or the store: a compaction or /clear empties it, as Claude no longer has
+// those copies, and a reload starting it over only means a copy goes once more.
+const sentCopies = new Map<number, string>()
+
+// How many `#123`s of one prompt the board looks at: past the copies it carries, the rest are named in one line.
+const MENTIONS_READ = 20
 
 // Reads GitHub into the board. A refresh asked for while one runs waits for that one. `seen`: the refresh follows
 // Claude's own gh write, so the issue it is on changed by its hand, not news.
@@ -3019,8 +3027,17 @@ export const register: Register = (on, options) => {
   on('session.end', { reason: ['clear', 'resume'] }, async ($, e, next) => {
     restarts += 1
     restarted = true
+    sentCopies.clear()
     return next(e)
   })
+
+  // A compaction of the main conversation that stands drops the copies earlier prompts carried, so the next prompt
+  // naming one sends it again. A precompute changes nothing yet, and a subagent's own compaction isn't this one.
+  on('session.compact', async ($, e, next) => {
+    const compacted = await next(e)
+    if (e.agentId === undefined && e.trigger !== 'precompute' && compacted.skip === undefined) sentCopies.clear()
+    return compacted
+  }).catch(($, e, next) => fallBack($, e, next, 'session.compact'))
 
   // The new session's SessionStart hooks run once its state is empty: the board fills it again.
   on('classic.SessionStart', async ($, e, next) => {
@@ -3184,6 +3201,7 @@ export const register: Register = (on, options) => {
     // The session started over and no SessionStart hook has run since: the first prompt fills the board again.
     if (restarted) void begin($)
     const added: string[] = []
+    let copied: [number, string][] = []
     // The person sends the start message Edit first filled: while it still names the issue, Start's steps run.
     const starting = await draftedStart($, e)
     if (starting?.listed) added.push(`Each open acceptance box of #${starting.issue.number} is a task in your task list too: mark it completed when it is done.`)
@@ -3198,15 +3216,18 @@ export const register: Register = (on, options) => {
         const note = await newsFor($, now)
         if (note) added.push(note)
         // A background task's notice quotes its command, which may name an issue nobody asked about.
-        for (const number of e.origin.kind === 'task-notification' || !settings.issueCopies ? [] : mentionsOf(e.text)) {
-          const copy = mentionText(now, number, Date.now())
-          if (copy) added.push(copy)
+        if (e.origin.kind !== 'task-notification' && settings.issueCopies) {
+          const copies = copiesFor(now, mentionsOf(e.text, MENTIONS_READ), sentCopies, Date.now())
+          added.push(...copies.context)
+          copied = copies.keys
         }
       }
     } catch (cause) {
       $.ui.log(`issue-board: couldn't add the board to the prompt: ${messageOf(cause)}`, { to: 'debug' })
     }
     const entered = await next(added.length > 0 ? { ...e, context: [...(e.context ?? []), ...added] } : e)
+    // A dropped prompt never reached Claude, so its copies count as unsent.
+    if (entered.drop === undefined) for (const [number, key] of copied) sentCopies.set(number, key)
     if (starting && entered.drop === undefined) {
       $.ui.toast(`Sent #${starting.issue.number} to Claude`)
       await claim($, starting.issue)
