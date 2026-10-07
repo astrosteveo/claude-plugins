@@ -98,7 +98,9 @@ The board finds the bug and Later labels by name. See
 `/issues` opens the pane. From the top:
 
 - **The header**: the repo, its open issues, bugs, pull requests and failing
-  CI, and when it last synced. A wide pane adds how many boxes are ticked,
+  CI, and when it last synced. When the project has an iteration field, it
+  also shows the current iteration and the days left in it, such as
+  `◷ Sprint 14 · 3d left`. The last day counts as one left. A wide pane adds how many boxes are ticked,
   and sparklines of issues closed and pull requests merged each week over 12
   weeks, such as `closed ▁▂▅▃▇█▁▂▅▃▇█ 41`.
 - **The project's status update**, when it has one, such as
@@ -174,13 +176,19 @@ copy, with no extra GitHub request. The board knows these terms:
 - Any project field by name, such as `area:Engine` or `"story points":3`. A
   hyphen can stand for a space: `story-points:3`.
 - `no:` and `has:` with any of those, such as `no:assignee` or `no:status`.
+- On an iteration field, `@current`, `@next` and `@previous`, and a range of
+  them such as `sprint:@current..@next`. The board works them out from each
+  iteration's start and length, on your own calendar. Between two iterations
+  there is no current one, so `@current` keeps nothing, and `@next` and
+  `@previous` are the iterations on either side of the gap.
 - `is:open` and `is:issue` keep every issue on the board. `is:closed` and
   `is:pr` keep none, since the board holds open issues.
 - `-` before any term to negate it, quotes around values with spaces, and
   comma lists for any of several values, such as `label:bug,docs`.
 - Plain words match the title, and a number matches the issue.
 
-A term it doesn't know, such as `updated:>@today-7d`, a range or a wildcard,
+A term it doesn't know, such as `updated:>@today-7d`, a range of numbers
+or dates, or a wildcard,
 is left out. The tab then shows a note naming the term, with **↗ Open the
 view** to see it on GitHub. The tab may list more than the view does, never
 less.

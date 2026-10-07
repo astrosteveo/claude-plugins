@@ -15,12 +15,15 @@ const ORDER = 'order: items(first: 100, query: $order, orderBy: {field: POSITION
 export const orderFilter = (owner: string, name: string): string => `is:open is:issue repo:${owner}/${name}`
 
 // The repo's projects with their fields and views, which needs gh to have the read:project permission. A field's kind
-// and its options or iterations are the project's, not each issue's, so reading them costs little; so do the views.
+// and its options or iterations are the project's, not each issue's, so reading them costs little; so do the views. An
+// iteration field's iterations come with their dates, and the completed ones too, so a view's `@current`, `@next` and
+// `@previous` can be worked out on the board's clock.
 const PROJECTS =
   'projectsV2(first: 5) { nodes { id number title url closed fields(first: 30) { nodes { ' +
   '... on ProjectV2Field { id name dataType } ' +
   '... on ProjectV2SingleSelectField { id name dataType options { id name } } ' +
-  '... on ProjectV2IterationField { id name dataType configuration { iterations { id title } } } } } ' +
+  '... on ProjectV2IterationField { id name dataType configuration { ' +
+  'iterations { id title startDate duration } completedIterations { id title startDate duration } } } } } ' +
   `statusUpdates(last: 1) { nodes { status body createdAt startDate targetDate } } workflows(first: 20) { nodes { name enabled } } ${VIEWS} ${ORDER} } }`
 // A field's value on an item, whatever the field's kind.
 const ANY_VALUE =
