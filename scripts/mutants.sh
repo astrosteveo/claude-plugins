@@ -22,7 +22,7 @@ cleanup() {
 trap cleanup EXIT
 
 # Prints the names of the failed tests in a test run's output, one per line, without the timing that follows them.
-# `claude plugin test` prints `(fail) name [1.2ms]` and `node --test` prints `✖ name (1.2ms)`.
+# `claude plugin test` prints `(fail) name [1.2ms]` and `node --test --test-reporter=spec` prints `✖ name (1.2ms)`. The reporter is set because Node 22 prints TAP when its output is not a terminal.
 failures() {
   sed -n -e 's/^(fail) \(.*\) \[[0-9.]*m\{0,1\}s\]$/\1/p' -e 's/^(fail) //p' \
     -e 's/^ *✖ \(.*\) ([0-9.]*m\{0,1\}s)$/\1/p' "$1" | sort -u
@@ -50,7 +50,7 @@ for patch in scripts/mutants/*.patch; do
   passed=yes
   for place in $(printf '%s\n' "$tests" | sed 's/: .*//' | sort -u); do
     case "$place" in
-      *.mjs | *.js) (cd "$tree" && node --test "$place") >"$root/$name.out" 2>&1 || passed=no ;;
+      *.mjs | *.js) (cd "$tree" && node --test --test-reporter=spec "$place") >"$root/$name.out" 2>&1 || passed=no ;;
       *) (cd "$tree" && claude plugin test "$place") >"$root/$name.out" 2>&1 || passed=no ;;
     esac
     failures "$root/$name.out" >>"$root/$name.failed"
