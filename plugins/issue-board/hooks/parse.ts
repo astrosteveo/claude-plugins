@@ -2054,6 +2054,27 @@ export const statusOnly = (changes: IssueChanges): boolean =>
   changes.projectAfter === undefined &&
   Object.keys(changes.fields ?? {}).length === 0
 
+// A change split by where it lands: the project's part, by name for an answer to say, and the repo's part. Status,
+// Priority, the project's other fields and its order live in the project; everything else is the repo's. A project the
+// board may not write to then skips the first part, and the second still goes through.
+export const projectPartOf = (changes: IssueChanges): { project: string[]; repo: IssueChanges } => {
+  const { status, priority, fields, projectAfter, ...repo } = changes
+  const project = [
+    ...(status ? ['Status'] : []),
+    ...(priority ? ['Priority'] : []),
+    ...Object.keys(fields ?? {}),
+    ...(projectAfter !== undefined ? ['place in the project'] : []),
+  ]
+  return { project, repo }
+}
+
+// Names as a sentence lists them: "Status, Priority and Estimate".
+export const namesText = (names: readonly string[]): string => (names.length < 2 ? (names[0] ?? '') : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`)
+
+// Whether the repo's part of a change has anything in it. confirmTransfer only qualifies a transfer, so alone it is
+// nothing.
+export const repoChangeOf = (repo: IssueChanges): boolean => Object.entries(repo).some(([key, value]) => key !== 'confirmTransfer' && value !== undefined)
+
 // An issue's or pull request's page on GitHub: the URL gh gave, or one made from the repo for a board saved without it.
 export const pageOf = (repo: string, kind: 'issues' | 'pull', item: { number: number; url: string }): string =>
   item.url || `https://github.com/${repo}/${kind}/${item.number}`

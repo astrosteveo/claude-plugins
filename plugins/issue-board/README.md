@@ -646,10 +646,12 @@ What stays the same without an adopted project:
   changes the `area:` label.
 - What doesn't happen: Start, triage's Accept and the moves a read makes
   leave the project's Status and Priority alone, and new issues aren't added
-  as items. Accept says it skipped them, and the issue stays in the Inbox. A tool asked to change the project, such as issue_update with a
-  Status or project_status posting an update, is refused, and the refusal
-  says why and how to adopt the project. `/issues check` and `/issues help`
-  list it under Off.
+  as items. Accept says it skipped them, and the issue stays in the Inbox. A tool asked to change only the project, such as issue_update with a
+  Status or project_status posting an update, is refused before it asks
+  you, and the refusal says why and how to adopt the project. A call that
+  changes the repo too, such as issue_update with labels and a Status, still
+  asks, makes the repo's changes, and says which project changes it skipped.
+  `/issues check` and `/issues help` list it under Off.
 
 Every project write goes through one check: your `writeProjects` and the
 repo's together. The prompt, setup and `project_adopt` use the same check. A

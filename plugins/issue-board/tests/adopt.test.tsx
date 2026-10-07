@@ -3,7 +3,8 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import { adoptText, grantsOf, isMutation, ownerOf, projectKeysOf, projectKeysText, savedAdoptionOf, writeRefusal } from '../hooks/project'
 import { ADOPTED, PROJECT, graphPage, isIssuesQuery, settingsLog } from './graph'
-import { letThrough } from './engine'
+import { letThrough, permissions } from './engine'
+import { namesText, projectPartOf, repoChangeOf } from '../hooks/parse'
 
 const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 120, placement: 'dock', scroll: { offset: 0, bodyRows: 80 }, view: {} } } as const
 const BAND = { component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120, scroll: { offset: 0, bodyRows: 10 }, view: {} } } as const
@@ -59,7 +60,7 @@ const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isSt
 
 // GitHub as the board sees it, answering every call, with each call kept. A GraphQL mutation is anything sent to
 // `gh api graphql` that says `mutation`, in its arguments or on stdin, whichever path in the board sent it.
-const world = (on: On) => {
+const world = (on: On, asks = false) => {
   const state = { issues: BEFORE as Record<string, unknown>[], prs: [PR] as unknown[], calls: [] as { argv: string[]; stdin: string }[], toasts: [] as string[] }
   on('process.run', async (_$, e) => {
     const argv = [...e.argv]
@@ -97,7 +98,8 @@ const world = (on: On) => {
     return ok('[]')
   })
   on('session.id', async () => ({ value: 'session-1' }))
-  letThrough(on)
+  // `asks` puts the engine's permission check beneath the write tools, to see which calls reach a prompt.
+  const engine = asks ? permissions(on) : (letThrough(on), null)
   on('session.repo', async () => ({ value: REPO }))
   on('session.root', async () => ({ value: REPO.root }))
   on('ui.open', async () => ({ value: { isPlaced: true as const } }))
@@ -116,7 +118,7 @@ const world = (on: On) => {
     },
   }))
   const mutations = () => state.calls.filter(call => call.argv.includes('graphql') && /\bmutation\b/.test(`${call.argv.join(' ')} ${call.stdin}`))
-  return { state, mutations }
+  return { state, mutations, engine }
 }
 
 test('a project nobody adopted gets no write from Start, triage, any board tool or a read, with every setting on', EVERYTHING, async ($, on) => {
@@ -140,14 +142,14 @@ test('a project nobody adopted gets no write from Start, triage, any board tool 
   // Every tool the board registers, each asked to change the project where it can.
   const tool = (name: string, input: Record<string, unknown>) => $.tool.call({ tool: `mcp__issue-board__${name}`, ...input })
   const update = await tool('issue_update', { number: 43, status: 'Done', priority: 'P0', fields: { Estimate: 3 } })
-  expect(update.deny).toMatch(/^Couldn't change #43: The issue board only reads Void Sector: nobody has let it write there\. To let it, press Let it write .*\/issues setup.*Apply\.$/)
+  expect(update.deny).toMatch(/^Couldn't set #43's Status, Priority and Estimate\. The issue board only reads Void Sector: nobody has let it write there\. To let it, press Let it write .*\/issues setup.*Apply\.$/)
   await tool('issue_update', { number: 43, fields: { Estimate: 3 } })
   await tool('issue_update', { number: 61, start: true })
   const created = await tool('issue_create', { title: 'New thing', body: '## Acceptance\n- [ ] Works', status: 'Ready', priority: 'P1' })
   expect(String(created.result)).toMatch(/only reads Void Sector/)
   await tool('issue_create', { title: 'Plain thing', body: 'Text' })
   const posted = await tool('project_status', { status: 'At risk', note: 'Slipping.' })
-  expect(posted.deny).toMatch(/^Couldn't post the status update: The issue board only reads Void Sector/)
+  expect(posted.deny).toMatch(/^Couldn't post the status update\. The issue board only reads Void Sector/)
   await tool('project_archive', { number: 60, confirm: true })
   await tool('project_archive', { doneBefore: '2026-10-01', confirm: true })
   await tool('tick', { number: 43, boxes: [1] })
@@ -168,6 +170,65 @@ test('a project nobody adopted gets no write from Start, triage, any board tool 
   // And /issues check says the project is read-only.
   expect((await $.command.run({ ...REFRESH, args: 'check' })).text).toMatch(/the board only reads Void Sector until you let it write there/)
   await ui.unmount()
+})
+
+test("a change splits into the project's part, by name, and the repo's", () => {
+  expect(projectPartOf({ status: 'Done', priority: 'P0', fields: { Estimate: 3 }, projectAfter: 0, addLabels: ['bug'] })).toEqual({
+    project: ['Status', 'Priority', 'Estimate', 'place in the project'],
+    repo: { addLabels: ['bug'] },
+  })
+  expect(repoChangeOf(projectPartOf({ status: 'Done' }).repo)).toBe(false)
+  expect(repoChangeOf({ confirmTransfer: true })).toBe(false)
+  expect(repoChangeOf({ comment: 'Seen it.' })).toBe(true)
+  expect(namesText(['Status'])).toBe('Status')
+  expect(namesText(['Status', 'Priority', 'Estimate'])).toBe('Status, Priority and Estimate')
+})
+
+test('on a project the board only reads, a write that is all project is refused before it asks; one that changes the repo too asks, and says what it skipped', async ($, on) => {
+  mock.store(on)
+  const { state, mutations, engine } = world(on, true)
+  if (!engine) throw new Error('the engine beneath the tools is missing')
+  await $.command.run(REFRESH)
+  // The test asks tool.check first, as the engine does beneath the tool, and the engine answers by that verdict.
+  const call = async (name: string, input: Record<string, unknown>) => {
+    const tool = `mcp__issue-board__${name}` as const
+    engine.verdict = (await $.tool.check({ tool, input })).decision
+    return $.tool.call({ tool, ...input })
+  }
+  const reason = 'The issue board only reads Void Sector: nobody has let it write there\\. To let it, press Let it write'
+  const projectOnly: [string, Record<string, unknown>, RegExp][] = [
+    ['issue_update', { number: 43, status: 'Done' }, new RegExp(`^Couldn't set #43's Status\\. ${reason}`)],
+    ['issue_update', { number: 43, priority: 'P0', fields: { Estimate: 3 } }, new RegExp(`^Couldn't set #43's Priority and Estimate\\. ${reason}`)],
+    ['issue_update', { number: 43, projectAfter: 0 }, new RegExp(`^Couldn't set #43's place in the project\\. ${reason}`)],
+    ['project_status', { status: 'At risk', note: 'Slipping.' }, new RegExp(`^Couldn't post the status update\\. ${reason}`)],
+    ['project_archive', { number: 60, confirm: true }, new RegExp(`^Couldn't archive\\. ${reason}`)],
+  ]
+  for (const [name, input, refusal] of projectOnly) {
+    engine.asked = []
+    const answer = await call(name, input)
+    expect(answer.deny).toMatch(refusal)
+    // The person would have been asked, had the call gone on: nobody was.
+    expect(engine.verdict).toBe('ask')
+    expect(engine.asked).toEqual([])
+  }
+
+  // Labels and a comment are the repo's: the call asks, makes them, and says the Status was skipped.
+  engine.asked = []
+  const mixed = await call('issue_update', { number: 43, addLabels: ['bug'], comment: 'Seen it.', status: 'Done' })
+  expect(engine.asked).toEqual(['mcp__issue-board__issue_update'])
+  expect(String(mixed.result)).toMatch(new RegExp(`^#43 labelled bug.*\\nSkipped its Status: ${reason}`, 's'))
+  expect(state.calls.some(one => one.argv.join(' ').startsWith('gh issue edit 43 --add-label bug'))).toBe(true)
+
+  // Listing what an archive would take still answers, and says the archive would be refused.
+  const listed = await call('project_archive', { number: 60 })
+  expect(String(listed.result)).toMatch(new RegExp(`Call again with confirm: true to archive\\.\\nThe archive itself would be refused: ${reason}`))
+
+  // A capture never needs the project, and a change with no project part goes through as before.
+  const captured = await call('capture', { title: 'Hangar flickers', body: 'Seen while docking.' })
+  expect(captured.deny).toBeUndefined()
+  const labelled = await call('issue_update', { number: 43, addLabels: ['bug'] })
+  expect(String(labelled.result)).toMatch(/^#43 labelled bug\.$/)
+  expect(mutations()).toEqual([])
 })
 
 // A store that keeps what it is given, as one machine's store would for every session on it.
