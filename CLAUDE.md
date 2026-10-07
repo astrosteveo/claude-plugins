@@ -53,6 +53,10 @@ entries the same.
     new issues from tool input), `epics.ts`, `workers.ts` (background agents and handoff), `news.ts` (mentions,
     copies, news on an issue, alerts, runs), and `access.ts`, `markers.ts`, `plan.ts`, `project.ts`, `settings.ts`,
     `setup.ts`, `stats.ts` and `tools.ts`.
+- Drawing moved out of `register.tsx` lives in `hooks/views/`, one `.tsx` file per piece. In issue-board these are
+  `parts.tsx` (`partsOf`, the small parts rows are built from), `issue-row.tsx`, `pr-row.tsx` and `peek.tsx`. A view is
+  `(elements, data, handlers) => tree`: the surface's element table, plain data, and handlers. Views take handlers
+  rather than `$`. A handler that calls `$` is built in `register.tsx`, inside the hook that draws, and passed in.
 - `types/index.d.ts` is the plugin's state contract: every `$.state` atom (`atom({ plugin, key })`) is declared there
   under the plugin's name, and `claude plugin validate` holds the module's keys to it. Add a key there when adding an
   atom. Shared value types (`Issue`, `Board`, `Worker`…) live there too.
