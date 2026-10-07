@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 
 import type { Issue } from '../types'
-import { BUG_LABELS, DEFAULT_MARKERS, LATER_LABELS, guessMarkers, isBug, isFuture, markerAskOf, markerKey, markerText, markersOf } from '../hooks/markers'
+import { BUG_LABELS, DEFAULT_MARKERS, LATER_LABELS, guessMarkers, isBug, isFuture, markerAskOf, markerKey, markerOptionsOf, markerText, markersOf } from '../hooks/markers'
 import { chipsOf, matches, summary } from '../hooks/parse'
 import { stepsOf } from '../hooks/setup'
 import { graphPage, isIssuesQuery } from './graph'
@@ -126,6 +126,29 @@ test('the markers decide bugs, Later, the badge chip and the count, and only a g
   const facts = { repo: { id: 'R', name: 'astrosteveo/void-sector', ownerId: 'O', hasIssues: true, permission: 'ADMIN' }, projects: [], issues: [], suggested: [], hasTemplate: true }
   expect(stepsOf({ ...facts, labels: ['defect'] }, null, '').some(step => step.id === 'bug')).toBe(false)
   expect(stepsOf({ ...facts, labels: ['enhancement'] }, null, '').some(step => step.id === 'bug')).toBe(true)
+})
+
+test('/issues labels keeps offering a saved marker the repo no longer has, and leaves out the area labels', () => {
+  const repo = { issues: [], labels: ['enhancement', 'Bug', 'area:ui'], issueTypes: ['Task'] }
+  // The saved Bugs and Later labels are gone from the repo, so they are added back, sorted with the rest.
+  expect(markerOptionsOf(repo, { bug: { label: 'defect' }, later: 'someday' })).toEqual({ types: ['Task'], labels: ['Bug', 'defect', 'enhancement', 'someday'] })
+  // One the repo still has, in another case, isn't added twice.
+  expect(markerOptionsOf(repo, { bug: { label: 'bug' }, later: 'someday' }).labels).toEqual(['Bug', 'enhancement', 'someday'])
+  // A saved issue type the repo lost stays among the types.
+  expect(markerOptionsOf(repo, { bug: { type: 'Bug' }, later: 'someday' })).toEqual({ types: ['Task', 'Bug'], labels: ['Bug', 'enhancement', 'someday'] })
+  // Before the board read the repo's labels, the ones on its open issues are offered.
+  expect(markerOptionsOf({ issues: [issue(1, ['wontfix', 'area:net'])] }, { bug: { label: 'defect' }, later: 'future' }).labels).toEqual(['defect', 'future', 'wontfix'])
+})
+
+test('/issues labels shows a saved Bugs label the repo lost as the pick, so Save keeps it', async ($, on) => {
+  const { kept } = world(on, [raw(1, ['enhancement'])], ['enhancement', 'someday'], [], { markers: { bug: { label: 'kind:bug' }, later: 'someday' } })
+  await $.command.run(RUN)
+  await $.command.run({ ...RUN, args: 'labels' })
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  expect(await ui.find({ key: 'labels-bug-kind:bug' })).toMatchObject({ props: { variant: 'primary' } })
+  await ui.press({ key: 'labels-save' })
+  expect((kept.get(CHOICES) as Record<string, unknown>).markers).toEqual({ bug: { label: 'kind:bug' }, later: 'someday' })
+  await ui.unmount()
 })
 
 test('a guessed label shows once in the band and /issues check, and Looks right saves it locally without writing to GitHub', async ($, on) => {

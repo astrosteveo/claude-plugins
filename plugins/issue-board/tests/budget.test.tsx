@@ -148,6 +148,12 @@ test('each gh command counts as REST or GraphQL, and stats add up calls, points 
   expect(text).not.toContain('Per-hour rates show')
   expect(text).toMatch(/^GitHub calls: 4, 2\.0 an hour \(REST 1, REST 304 2, GraphQL 1\)$/m)
   expect(text).toMatch(/^- full read: REST 1, REST 304 0, GraphQL 1\n- poll: REST 0, REST 304 2, GraphQL 0$/m)
+  // A cause with no calls has no line.
+  expect(text).not.toMatch(/^- write:/m)
+  countCall(stats, 'write', 'graphql')
+  countCall(stats, 'tool', 'rest')
+  // The write line goes after the poll, before the tool.
+  expect(statsText(stats, Date.parse('2026-10-04T12:00:00Z'))).toMatch(/^- poll: REST 0, REST 304 2, GraphQL 0\n- write: REST 0, REST 304 0, GraphQL 1\n- tool: REST 1, REST 304 0, GraphQL 0$/m)
   expect(text).toMatch(/^GraphQL points: 2, 1\.0 an hour\. 4,990 left until \d\d:\d\d\.$/m)
   expect(text).toMatch(/^Context added: 4,250 characters, 425 a prompt over 10 prompts, 2,125 an hour\n- working note: 4,000\n- issue copies: 250$/m)
   expect(text).toMatch(/^Tool definitions: none registered\.$/m)
@@ -277,6 +283,8 @@ test('the budget: a refresh, the capture note, a Start, an issue_update, a captu
   expect(start.context).toBeLessThanOrEqual(600)
   expect(start.text).toMatch(/^- working note: \d+$/m)
   expect(start.text).toMatch(/^- start prompts: \d+$/m)
+  // Start's own writes, the Status move and the assignment, count as writes: no tool or setup made them.
+  expect(start.text).toMatch(/^- write: REST 0, REST 304 0, GraphQL 2$/m)
   // The working note goes once: a later request carries it again without adding to the count.
   const again = await measure(() => $.prompt.compose(COMPOSE))
   expect(again.context).toBe(0)
