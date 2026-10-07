@@ -306,7 +306,8 @@ While Claude is on it:
   Claude writes it again. A body that doesn't name the issue goes through,
   with a reminder. A body read from a file goes through unchecked.
 - Ticking an issue's last box switches its open pull request from `Refs #N` to
-  `Closes #N`, and unticking one switches it back, with one write. The pull
+  `Closes #N`, and unticking one switches it back. The board reads the pull
+  request's body fresh first, so an edit made on GitHub meanwhile is kept. The pull
   request is the one that names the issue and is on a branch named for it, on
   the branch checked out here, or a background agent's on it. With two such
   pull requests, the board changes neither.

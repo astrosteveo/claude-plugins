@@ -38,6 +38,7 @@ const world = (on: On) => {
       return json({ data: {} })
     }
     if (argv[1] === 'api' && argv.includes('{body, updated_at}')) return json({ body: issue.body, updated_at: issue.updatedAt })
+    if (argv[1] === 'api' && argv[2] === 'repos/astrosteveo/void-sector/pulls/335' && argv.includes('{body}')) return json({ body: pr.body })
     if (argv[1] === 'api' && argv[2] === '-X' && argv[3] === 'PATCH') {
       const body = (JSON.parse(stdin ?? '{}') as { body?: string }).body ?? issue.body
       return json({ title: issue.title, body, updated_at: '2026-10-04T10:00:00Z' })
@@ -279,10 +280,11 @@ test('the budget: a refresh, the capture note, a Start, an issue_update, a captu
   expect(calls(ticked)).toEqual({ rest: 2, rest304: 0, graphql: 0 })
   expect(ticked.ran.slice(0, 2)).toEqual(['api repos/astrosteveo/void-sector/issues/315 --jq {body, updated_at}', 'api -X PATCH repos/astrosteveo/void-sector/issues/315 --input -'])
 
-  // A tick of the last box: the same, and one REST write that switches its pull request's `Refs #315` to `Closes #315`.
+  // A tick of the last box: the same, then its pull request's body read fresh over REST and written with `Refs #315`
+  // switched to `Closes #315`.
   const completed = await measure(() => $.tool.call({ tool: 'mcp__issue-board__tick', number: 315, boxes: [1, 2] }))
-  expect(calls(completed)).toEqual({ rest: 3, rest304: 0, graphql: 0 })
-  expect(completed.ran[2]).toBe('api -X PATCH repos/astrosteveo/void-sector/pulls/335 --input -')
+  expect(calls(completed)).toEqual({ rest: 4, rest304: 0, graphql: 0 })
+  expect(completed.ran.slice(2, 4)).toEqual(['api repos/astrosteveo/void-sector/pulls/335 --jq {body}', 'api -X PATCH repos/astrosteveo/void-sector/pulls/335 --input -'])
 
   // A comment from issue_update: one REST post, then the refresh that follows it.
   const commented = await measure(() => $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 315, comment: 'Seen it.' }))

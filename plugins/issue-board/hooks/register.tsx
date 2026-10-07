@@ -1641,18 +1641,21 @@ const tick = ($: EngineInterface, number: number, boxes: number[], done: boolean
 
 // When a tick ticks an issue's last box, or opens one again, its open pull request follows: `Refs #N` becomes
 // `Closes #N`, so merging it closes the issue, or back, so merging leaves it open. A pull request's keyword is otherwise
-// decided once, as it is opened. One REST write, of the body as the board last read it; the board reads the open pull
-// requests on every refresh, and again after Claude's own gh. Answers what it changed, as a sentence for the tick's text.
+// decided once, as it is opened. The body is read fresh just before the write, so an edit made on GitHub since the
+// board's last read isn't lost; this happens only when a tick finishes an issue or opens it again, so the read is
+// cheap. One REST read, and one write when the keyword changes. Answers what it changed, as a sentence for the tick's
+// text.
 const followKeyword = async ($: EngineInterface, repo: string, number: number, before: Check[], after: Check[]): Promise<string> => {
   if (!settings.closesWhenTicked) return ''
   const closes = completionFlip(before, after)
   if (closes === null) return ''
   const own = { branch: await read($, branch), working: (await read($, working))?.number ?? null }
   const pr = prOfIssue((await read($, board))?.prs ?? [], number, own, await read($, workers))
-  const body = pr?.body === undefined ? null : switchKeyword(pr.body, number, closes)
-  if (!pr || body === null) return ''
+  if (!pr) return ''
+  const fresh = JSON.parse(await gh($, ['api', `repos/${repo}/pulls/${pr.number}`, '--jq', '{body}'])) as { body: string | null }
+  const body = switchKeyword(fresh.body ?? '', number, closes)
+  if (body === null) return ''
   await gh($, ['api', '-X', 'PATCH', `repos/${repo}/pulls/${pr.number}`, '--input', '-'], JSON.stringify({ body }))
-  await update($, board, was => was && { ...was, prs: was.prs.map(one => (one.number === pr.number ? { ...one, body } : one)) })
   return ` Pull request #${pr.number} now says \`${closes ? 'Closes' : 'Refs'} #${number}\`.`
 }
 

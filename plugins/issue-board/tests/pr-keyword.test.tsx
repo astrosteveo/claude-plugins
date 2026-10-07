@@ -111,6 +111,8 @@ const world = (on: On, body = KESSIK.body) => {
       state.body = (JSON.parse(stdin ?? '{}') as { body: string }).body
       return json({ title: KESSIK.title, body: state.body, updated_at: '2026-10-04T10:00:00Z' })
     }
+    // #335's body as GitHub has it now, read just before a switch.
+    if (argv[1] === 'api' && argv[2] === 'repos/astrosteveo/void-sector/pulls/335' && argv.includes('{body}')) return json({ body: state.prBody })
     if (argv[1] === 'api' && argv[3] === 'PATCH' && /\/pulls\/335$/.test(argv[4] ?? '')) {
       state.prBody = (JSON.parse(stdin ?? '{}') as { body: string }).body
       state.prWrites.push(state.prBody)
@@ -167,7 +169,7 @@ test('with the rule off, a pull request is opened as Claude writes it', { option
   expect(await $.tool.check({ tool: 'Bash', input: { command: create('Glides in.') } })).toEqual({ decision: 'allow' })
 })
 
-test("ticking an issue's last box switches its pull request to Closes, and unticking one switches it back, one write each", async ($, on) => {
+test("ticking an issue's last box switches its pull request to Closes, and unticking one switches it back, read fresh and written once each", async ($, on) => {
   const { gh, state, put } = world(on)
   await $.command.run(REFRESH)
   put()
@@ -182,10 +184,23 @@ test("ticking an issue's last box switches its pull request to Closes, and untic
   const last = await $.tool.call({ tool: 'mcp__issue-board__tick', number: 315, boxes: [3] })
   expect(String(last.result)).toBe('Ticked box 3. #315 has 3/3 ticked. Pull request #335 now says `Closes #315`.')
   expect(state.prWrites).toEqual(['Glides in.\n\nCloses #315'])
-  expect(gh.ran.slice(mark).map(line).filter(call => call.includes('pulls/335'))).toEqual(['gh api -X PATCH repos/astrosteveo/void-sector/pulls/335 --input -'])
+  expect(gh.ran.slice(mark).map(line).filter(call => call.includes('pulls/335'))).toEqual([
+    'gh api repos/astrosteveo/void-sector/pulls/335 --jq {body}',
+    'gh api -X PATCH repos/astrosteveo/void-sector/pulls/335 --input -',
+  ])
 
-  // Unticking one switches it back, from the body the board now holds.
+  // Someone edits the pull request on GitHub, and the board hasn't read it since. Unticking one switches it back, from
+  // the body read fresh, so the edit is kept.
+  state.prBody = 'Glides in, and lands.\n\nCloses #315'
   const back = await $.tool.call({ tool: 'mcp__issue-board__tick', number: 315, boxes: [1], done: false })
   expect(String(back.result)).toBe('Unticked box 1. #315 has 2/3 ticked. Pull request #335 now says `Refs #315`.')
-  expect(state.prWrites).toEqual(['Glides in.\n\nCloses #315', 'Glides in.\n\nRefs #315'])
+  expect(state.prWrites).toEqual(['Glides in.\n\nCloses #315', 'Glides in, and lands.\n\nRefs #315'])
+
+  // A body someone already switched on GitHub is read, and not written again.
+  state.prBody = 'Closes #315'
+  const kept = gh.ran.length
+  const again = await $.tool.call({ tool: 'mcp__issue-board__tick', number: 315, boxes: [1] })
+  expect(String(again.result)).toBe('Ticked box 1. #315 has 3/3 ticked.')
+  expect(gh.ran.slice(kept).map(line).filter(call => call.includes('pulls/335'))).toEqual(['gh api repos/astrosteveo/void-sector/pulls/335 --jq {body}'])
+  expect(state.prWrites).toHaveLength(2)
 })
