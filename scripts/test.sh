@@ -9,6 +9,8 @@ echo "Checking userConfig fields"
 node --test scripts/config-rows.test.mjs || status=1
 # issue-board's setting titles in settings.ts must match plugin.json, which the test kit can't read either.
 node --test scripts/settings-titles.test.mjs || status=1
+# mutants.sh must warn when it tests a commit that the working tree has moved on from.
+node --test scripts/mutants.test.mjs || status=1
 for plugin in plugins/*/; do
   plugin=${plugin%/}
   [ -n "$(find "$plugin" -path "$plugin/node_modules" -prune -o \( -name '*.test.ts' -o -name '*.test.tsx' \) -print -quit)" ] || continue

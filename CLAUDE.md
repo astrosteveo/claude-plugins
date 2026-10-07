@@ -14,7 +14,7 @@ element prop.
 sh scripts/validate.sh                      # strict `claude plugin validate` on the marketplace and every plugin, and every gating hook has a .catch (what CI runs)
 sh scripts/test.sh                          # run every plugin's tests (what CI runs after validate.sh)
 sh scripts/typecheck.sh                     # type-check every plugin against the installed Claude Code (CI runs it last)
-sh scripts/mutants.sh                       # put each fixed bug in scripts/mutants/ back and check the tests catch it (about a minute)
+sh scripts/mutants.sh                       # put each fixed bug in scripts/mutants/ back and check the tests catch it (about a minute); tests the last commit, so commit first
 claude plugin test plugins/issue-board      # run one plugin's *.test.ts(x); there is no per-test filter
 claude plugin validate --json plugins/issue-board   # what the module hooks and calls, state keys, gating hooks and `.catch`
 npx -p typescript@7 tsc -p plugins/issue-board      # type-check; needs .claude-plugin/types/, see below
@@ -107,7 +107,10 @@ folder such as `plugins/issue-board`, run with `claude plugin test`, or a test f
 `(fail)` or `✖`. `scripts/mutants.sh` applies each patch to a clean worktree, runs each named place once, and needs
 every named test among the failures. It reports `SURVIVED` when nothing fails, `WRONG KILL` when the run fails but not
 through a named test (a patch that breaks loading, or trips some other test), `NO TEST` when the header names none,
-and `STALE` when a patch no longer applies; any of them fails the run. Make a patch by changing the code in a scratch
+and `STALE` when a patch no longer applies; any of them fails the run. It tests the last commit, not uncommitted
+changes: each clean worktree is made from HEAD. When a file a patch touches, or the place its tests live, has
+uncommitted changes, it prints a warning and notes it beside that patch's verdict; commit and run it again before
+trusting the result. Make a patch by changing the code in a scratch
 worktree and saving `git diff` below the header. Remake a stale one the same way against the current code.
 
 ## The call budget
