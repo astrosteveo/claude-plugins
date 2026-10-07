@@ -19,10 +19,11 @@ const REFRESH = { command: 'issues', args: 'refresh', origin: { kind: 'composer'
 const REPO = { root: '/work/void-sector', remote: null, internal: false, name: null }
 const PROJECT = { id: 'PVT_8', number: 8, title: 'Void Sector', url: '', status: { id: 'F_status', options: STATUSES.map((name, index) => ({ id: `S${index}`, name })) }, priority: { id: 'F_priority', options: PRIORITIES.map((name, index) => ({ id: `P${index}`, name })) } }
 
-// The Void Sector project: #340 sits in the Inbox, #341 isn't in the project yet, and #315 is Ready.
-const world = (on: On, answer: string) => {
-  // These tests have the board write to the project, which the person let it do.
-  adoptedStore(on)
+// The Void Sector project: #340 sits in the Inbox, #341 isn't in the project yet, and #315 is Ready. Most tests have the
+// board write to the project, which the person let it do; `adopted` false leaves it read-only.
+const world = (on: On, answer: string, adopted = true) => {
+  if (adopted) adoptedStore(on)
+  else mock.store(on)
   const state = {
     planned: { 340: { status: 'Inbox' }, 315: { status: 'Ready', priority: 'P1' } } as Record<number, { status?: string; priority?: string }>,
     issues: [raw(340, 'Saves drop the hangar', ['area:simulation']), raw(341, 'The map key hides the legend'), raw(315, 'Lay Kessik out for play', ['area:simulation'])],
@@ -30,6 +31,7 @@ const world = (on: On, answer: string) => {
     edits: [] as string[][],
     asked: [] as string[],
     blocks: [] as (readonly { text: string; cache?: true }[] | undefined)[],
+    toasts: [] as string[],
   }
   on('process.run', async (_$, e) => {
     const argv = e.argv
@@ -64,6 +66,10 @@ const world = (on: On, answer: string) => {
   on('session.repo', async () => ({ value: REPO }))
   on('session.root', async () => ({ value: REPO.root }))
   on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('ui.toast', async (_$, e) => {
+    state.toasts.push(e.text)
+    return { value: undefined }
+  })
   return state
 }
 
@@ -175,5 +181,30 @@ test('a changed area replaces the old one, and an answer that fails says so and 
   await ui.press({ key: 'triage-340-accept' })
   expect(gh.edits).toEqual([['gh', 'issue', 'edit', '340', '--add-label', 'area:interface', '--remove-label', 'area:simulation']])
   expect(gh.planned[340]).toEqual({ status: 'Ready', priority: 'P1' })
+  await ui.unmount()
+})
+
+test('Accept on a project the board only reads still changes the area labels, and says the Status and Priority were skipped', async ($, on) => {
+  const gh = world(on, SUGGESTED, false)
+  await $.command.run(REFRESH)
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'filter-inbox' })
+  const mutations = () => gh.fields.filter(one => /^\s*mutation\b/.test(one.query ?? ''))
+
+  // #341 takes its area label, a repo write; the project gets nothing, and the toast says why.
+  await ui.press({ key: 'triage-341-accept' })
+  expect(gh.edits).toEqual([['gh', 'issue', 'edit', '341', '--add-label', 'area:interface']])
+  expect(mutations()).toEqual([])
+  expect(gh.planned[341]).toBeUndefined()
+  expect(gh.toasts.at(-1)).toMatch(/^#341 labelled area:interface\. Skipped its Status and Priority: The issue board only reads Void Sector: nobody has let it write there\. To let it, /)
+  // It stays in the Inbox, with the person's picks.
+  expect(await ui.find({ key: 'triage-341-accept' })).toBeDefined()
+
+  // #340 already has its area label, so nothing changes at all, and the toast says so.
+  await ui.press({ key: 'triage-340-accept' })
+  expect(gh.edits.length).toBe(1)
+  expect(mutations()).toEqual([])
+  expect(gh.planned[340]).toEqual({ status: 'Inbox' })
+  expect(gh.toasts.at(-1)).toMatch(/^Nothing changed on #340\. Skipped its Status and Priority: The issue board only reads Void Sector/)
   await ui.unmount()
 })
