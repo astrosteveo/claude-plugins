@@ -229,9 +229,9 @@ export type Triage = {
   failed: string | null
 }
 
-// One change in a plan Claude proposes with project_plan. `kind` says what it changes; each kind changes one thing on
-// one issue, as issue_update would. Later kinds, such as the repo's labels or the project's views, add their own members
-// here.
+// One change in a plan Claude proposes with project_plan. `kind` says what it changes; each issue kind changes one
+// thing on one issue, as issue_update would. A `label` change is the repo's, with no issue. Later kinds, such as the
+// project's views, add their own members here.
 export type PlanChange =
   | { kind: 'status' | 'priority'; number: number; value: string }
   | { kind: 'field'; number: number; field: string; value: string | number | null }
@@ -240,6 +240,21 @@ export type PlanChange =
   | { kind: 'parent'; number: number; value: number | null }
   // A place in the project's own order: straight after the issue `after`, or at the top for null.
   | { kind: 'order'; number: number; after: number | null }
+  | LabelChange
+
+// A change to one of the repo's labels, which belongs to no issue. `edit` renames, recolors or redescribes it. A delete
+// says how many open and closed issues carry it, null when it couldn't count; `markers` names the saved Bugs and Later
+// markers that go by the label, which a rename moves and a delete clears.
+export type LabelChange = {
+  kind: 'label'
+  action: 'create' | 'edit' | 'delete'
+  name: string
+  rename?: string
+  color?: string
+  description?: string
+  uses?: { open: number; closed: number } | null
+  markers?: ('bug' | 'later')[]
+}
 
 // A row of the plan card: the change, Claude's reason for it, whether it is ticked to apply, and why it failed the last
 // time it was applied.

@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { parseIssues } from '../hooks/parse'
-import { changeText, kindsText, planAsk, planOf } from '../hooks/plan'
+import { changeText, issueOf, kindsText, planAsk, planOf, sizeText } from '../hooks/plan'
 import type { Project } from '../types'
 import { PRIORITIES, STATUSES, adoptedStore, graphPage, isIssuesQuery, optionId } from './graph'
 import { permissions } from './engine'
@@ -48,6 +48,10 @@ const world = (on: On, adopted = true) => {
     reads: 0,
     failEdit: 0,
     toasts: [] as string[],
+    // The repo's labels, which label writes change, and how many open and closed issues search finds with each.
+    labels: ['bug', 'area:ui', 'wontfix'],
+    uses: { wontfix: { open: 3, closed: 2 } } as Record<string, { open: number; closed: number }>,
+    failSearch: false,
   }
   on('process.run', async (_$, e) => {
     const argv = [...e.argv]
@@ -56,7 +60,7 @@ const world = (on: On, adopted = true) => {
     if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true }))
     if (isIssuesQuery(argv)) {
       state.reads += 1
-      return answer(graphPage(state.issues.map(one => ({ ...one, ...state.planned[one.number] })), argv, true))
+      return answer(graphPage(state.issues.map(one => ({ ...one, ...state.planned[one.number] })), argv, true, [], {}, state.labels))
     }
     if (argv[1] === 'api' && argv[2] === 'graphql' && argv.includes('--input')) {
       const asked = JSON.parse(e.init?.stdin ?? '{}') as { query: string; variables: Record<string, unknown> }
@@ -81,6 +85,25 @@ const world = (on: On, adopted = true) => {
       state.writes.push(`#${number} ${args.field === 'F_status' ? 'Status' : 'Priority'} ${name}`)
       state.planned[number] = { ...state.planned[number], ...(args.field === 'F_status' ? { status: name } : { priority: name }) }
       return answer(JSON.stringify({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: args.item } } } }))
+    }
+    if (argv[1] === 'api' && argv.includes('search/issues')) {
+      if (state.failSearch) return answer('', 1, 'API rate limit exceeded')
+      const q = argv[argv.indexOf('-f') + 1] ?? ''
+      const label = /label:"(.*)"/.exec(q)?.[1] ?? ''
+      return answer(`${state.uses[label]?.[q.includes('state:open') ? 'open' : 'closed'] ?? 0}\n`)
+    }
+    if (argv[1] === 'api' && argv[2] === '-X' && /\/labels(\/|$)/.test(argv[4] ?? '')) {
+      const name = decodeURIComponent(argv[4]?.split('/labels/')[1] ?? '')
+      const fields = argv.flatMap((arg, index) => (argv[index - 1] === '-f' ? [arg] : []))
+      state.writes.push(`label ${argv[3]} ${name}${name ? ' ' : ''}${fields.join(' ')}`.trim())
+      const renamed = fields.find(one => one.startsWith('new_name='))?.slice('new_name='.length)
+      if (argv[3] === 'POST') state.labels = [...state.labels, fields[0]?.slice('name='.length) ?? '']
+      if (argv[3] === 'DELETE') state.labels = state.labels.filter(one => one !== name)
+      if (renamed) {
+        state.labels = state.labels.map(one => (one === name ? renamed : one))
+        state.issues = state.issues.map(one => ({ ...one, labels: one.labels.map(label => (label.name === name ? { ...label, name: renamed } : label)) }))
+      }
+      return answer('{}')
     }
     if (argv[1] === 'api' && argv[2]?.includes('/milestones')) return answer(JSON.stringify([{ number: 3, title: 'Launch', state: 'open', due_on: null, open_issues: 0, closed_issues: 0 }]))
     if (argv[1] === 'api' && argv[2]?.endsWith('/labels?per_page=100')) return answer(JSON.stringify([{ name: 'bug' }, { name: 'area:ui' }]))
@@ -150,7 +173,7 @@ test('a plan is checked whole: every problem is listed at once, and a valid plan
       'Entry 9 has no issue number.',
     ],
   })
-  expect(planOf({}, context)).toEqual({ problems: ['Give issues: a list of changes, each with an issue number and a reason.'] })
+  expect(planOf({}, context)).toEqual({ problems: ['Give issues or labels: lists of changes, each with a reason.'] })
   expect(planOf({ issues: [{ number: 340, reason: 'a', status: 'Ready' }, { number: 340, reason: 'b', status: 'Backlog' }] }, context)).toEqual({
     problems: ["#340's Status is in the plan twice."],
   })
@@ -167,7 +190,7 @@ test('a plan is checked whole: every problem is listed at once, and a valid plan
   )
   if (!('changes' in made)) throw new Error(made.problems.join('\n'))
   // Grouped by issue, in the order the issues first come, each with its entry's reason; option names as the project has them.
-  expect(made.changes.map(({ change, reason }) => `#${change.number} ${changeText(change)} (${reason})`)).toEqual([
+  expect(made.changes.map(({ change, reason }) => `#${issueOf(change)} ${changeText(change)} (${reason})`)).toEqual([
     '#340 Status → Ready (Saves break.)',
     '#340 Priority → P0 (Saves break.)',
     '#340 labels +bug (Saves break.)',
@@ -326,4 +349,148 @@ test('a project nobody let the board write to refuses a plan that changes it, be
   expect(answer.deny).toMatch(/^The plan wasn't made\. Fix this and call again:\n- The issue board only reads Void Sector: nobody has let it write there\./)
   expect(gh.engine.asked).toEqual([])
   expect(gh.writes).toEqual([])
+})
+
+test("a plan's label changes are checked against the repo's labels, come first, and say what they do to a saved marker", () => {
+  const context = { issues: ISSUES, project: PROJECT, milestones: MILESTONES, refusal: null, labels: ['bug', 'area:ui', 'wontfix'], markers: { bug: { label: 'bug' }, later: 'wontfix' } }
+  const refused = planOf(
+    {
+      labels: [
+        { name: 'Bug', reason: 'Have it.', create: true },
+        { name: 'nope', reason: 'Gone.', delete: true },
+        { name: 'area:ui', reason: 'Clash.', rename: 'BUG' },
+        { name: 'wontfix', reason: 'Red.', color: 'red' },
+        { name: 'wontfix', reason: 'Again.', delete: true },
+        { name: 'bug', reason: 'Both.', delete: true, color: 'ffffff' },
+        { name: 'area:ui', reason: 'Nothing.' },
+        { name: 'area:net', create: true, owner: 'me' },
+        { reason: 'Which?' },
+      ],
+    },
+    context,
+  )
+  expect(refused).toEqual({
+    problems: [
+      'The repo already has a label called bug.',
+      'The repo has no label called nope.',
+      'Label wontfix: color takes six hex digits, such as d73a4a, not red.',
+      'Label bug: a delete changes nothing else.',
+      'Label area:ui changes nothing.',
+      'Label area:net has no reason.',
+      "Label area:net: a plan can't change its owner.",
+      'Label 9 has no name.',
+      'Label wontfix is in the plan twice.',
+      'Label bug is in the plan twice.',
+      'Label area:ui is in the plan twice.',
+    ],
+  })
+
+  const made = planOf(
+    {
+      issues: [{ number: 340, reason: 'Networking.', addLabels: ['area:net'] }],
+      labels: [
+        { name: 'area:net', reason: 'A new area.', create: true, color: '#1D76DB', description: 'Networking' },
+        { name: 'BUG', reason: 'Our word.', rename: 'defect' },
+        { name: 'area:ui', reason: 'Match the rest.', color: 'c5def5' },
+        { name: 'wontfix', reason: 'Unused.', delete: true },
+      ],
+    },
+    context,
+  )
+  if (!('changes' in made)) throw new Error(made.problems.join('\n'))
+  // The labels come first, so #340 can take area:net; names are as the repo has them.
+  expect(made.changes.map(({ change }) => changeText(change))).toEqual([
+    'new label area:net #1d76db “Networking”',
+    'label bug → defect · the saved Bugs marker follows',
+    'label area:ui #c5def5',
+    'delete label wontfix · clears the saved Later marker',
+    'labels +area:net',
+  ])
+  const changes = made.changes.map(one => one.change)
+  expect(sizeText(changes)).toBe('5 changes to 1 issue and 4 labels')
+  expect(sizeText(changes.slice(0, 2))).toBe('2 changes to 2 labels')
+  expect(kindsText(changes)).toBe('repo labels 4 · labels 1')
+  // A delete's count of the issues that carry the label, once the board has it.
+  const wontfix = changes[3]
+  if (wontfix?.kind !== 'label') throw new Error('no delete')
+  expect(changeText({ ...wontfix, markers: undefined, uses: { open: 3, closed: 2 } })).toBe('delete label wontfix · on 3 open and 2 closed issues')
+  expect(changeText({ ...wontfix, markers: undefined, uses: { open: 0, closed: 1 } })).toBe('delete label wontfix · on 0 open and 1 closed issue')
+  expect(changeText({ ...wontfix, markers: undefined, uses: null })).toBe("delete label wontfix · couldn't count its issues")
+  // Label changes don't touch the project, so a project the board only reads doesn't stop them.
+  expect('changes' in planOf({ labels: [{ name: 'wontfix', reason: 'Unused.', delete: true }] }, { ...context, refusal: 'The issue board only reads Void Sector.' })).toBe(true)
+})
+
+const LABELS = {
+  labels: [
+    { name: 'needs-info', reason: 'Waiting on the reporter.', create: true, color: '1d76db', description: 'Needs an answer' },
+    { name: 'area:ui', reason: 'A clearer name.', rename: 'area:hud' },
+    { name: 'bug', reason: 'Match GitHub.', color: 'd73a4a' },
+    { name: 'wontfix', reason: 'Nobody uses it.', delete: true },
+  ],
+}
+const CHOICES = `choices:${REPO.root}`
+
+test('a plan makes, renames, recolors and deletes labels, counts what a delete touches, and moves or clears the saved markers', async ($, on) => {
+  const store = adoptedStore(on, { [CHOICES]: { markers: { bug: { label: 'area:ui' }, later: 'wontfix' } } })
+  const gh = world(on)
+  await $.command.run(REFRESH)
+
+  expect(await $.tool.check({ tool: TOOL, input: LABELS })).toMatchObject({ reason: expect.stringMatching(/^Apply Claude's plan: 4 changes to 4 labels\?\nrepo labels 4\n/) })
+  gh.engine.verdict = 'ask'
+  gh.engine.answer = 'no'
+  await $.tool.call({ tool: TOOL, ...LABELS })
+  expect(gh.writes).toEqual([])
+
+  // The card shows the labels under their own heading, the delete with its count, and the markers that follow.
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  expect(await ui.find({ text: /^Claude's plan · 4 changes to 4 labels$/ })).toBeDefined()
+  expect(await ui.find({ text: /^The repo's labels$/ })).toBeDefined()
+  expect((await ui.findAll({ type: 'Button', text: /^[☑☐] / })).map(one => one.text)).toEqual([
+    '☑ new label needs-info #1d76db “Needs an answer”',
+    '☑ label area:ui → area:hud · the saved Bugs marker follows',
+    '☑ label bug #d73a4a',
+    '☑ delete label wontfix · on 3 open and 2 closed issues · clears the saved Later marker',
+  ])
+
+  await ui.press({ key: 'plan-apply' })
+  expect(gh.writes).toEqual([
+    'label POST name=needs-info color=1d76db description=Needs an answer',
+    'label PATCH area:ui new_name=area:hud',
+    'label PATCH bug color=d73a4a',
+    'label DELETE wontfix',
+  ])
+  expect(gh.toasts.at(-1)).toBe('Applied the plan: 4 changes.')
+  expect((store.get(CHOICES) as { markers: unknown }).markers).toEqual({ bug: { label: 'area:hud' } })
+  expect(await ui.find({ key: 'plan-card' })).toBeUndefined()
+
+  // The board read the repo again: /issues labels offers the new label and the renamed one the Bugs marker goes by,
+  // and not the deleted one.
+  await $.command.run({ ...REFRESH, args: 'labels' })
+  expect(await ui.find({ key: 'labels-bug-needs-info' })).toBeDefined()
+  expect(await ui.find({ key: 'labels-bug-area:hud' })).toMatchObject({ props: { variant: 'primary' } })
+  expect(await ui.find({ key: 'labels-bug-wontfix' })).toBeUndefined()
+  expect(await ui.find({ key: 'labels-later-wontfix' })).toBeUndefined()
+  await ui.press({ key: 'labels-cancel' })
+  // #341 carries the renamed label, which the saved Bugs marker now goes by, so it is the one bug.
+  expect(await ui.find({ key: 'filter-bugs' })).toMatchObject({ text: 'Bugs 1' })
+  await ui.press({ key: 'filter-bugs' })
+  await ui.press({ key: 'fold-status:Backlog' })
+  expect(await ui.find({ key: 'issue-341' })).toBeDefined()
+  await ui.unmount()
+  expect(gh.labels).toEqual(['bug', 'area:hud', 'needs-info'])
+})
+
+test("a delete row says when it couldn't count the label's issues", async ($, on) => {
+  const gh = world(on)
+  gh.failSearch = true
+  await $.command.run(REFRESH)
+  gh.engine.verdict = 'ask'
+  gh.engine.answer = 'yes'
+  const answer = await $.tool.call({ tool: TOOL, labels: [{ name: 'wontfix', reason: 'Nobody uses it.', delete: true }] })
+  expect(String(answer.result)).toBe('Applied the plan: 1 change.\nDeleted the label wontfix.')
+  gh.engine.answer = 'no'
+  await $.tool.call({ tool: TOOL, labels: [{ name: 'bug', reason: 'Gone.', delete: true }] })
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  expect(await ui.find({ key: 'plan-pick-label-1' })).toMatchObject({ text: "☑ delete label bug · couldn't count its issues" })
+  await ui.unmount()
 })
