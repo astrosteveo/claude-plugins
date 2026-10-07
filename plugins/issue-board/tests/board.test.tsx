@@ -101,7 +101,8 @@ test("a preview line holding an emoji keeps the card's width, so nothing shows t
   await $.command.run({ command: 'issues', args: 'refresh', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   const preview = (await ui.findAll({ type: 'Box' })).find(box => box.props.position === 'absolute')
-  const lines = (await ui.findAll({ type: 'Text' })).filter(text => text.props.wrap === 'truncate-end')
+  // The card's lines, which are cut rather than wrapped; the repo's name in the header is cut too, but isn't one.
+  const lines = (await ui.findAll({ type: 'Text' })).filter(text => text.props.wrap === 'truncate-end' && !text.text.startsWith('◆ '))
   expect(lines.some(line => line.text.includes('⛔'))).toBe(true)
   // Each line fills the card's inside exactly: its width less the two border cells.
   expect(lines.map(line => cells(line.text))).toEqual(lines.map(() => Number(preview?.props.width) - 2))
