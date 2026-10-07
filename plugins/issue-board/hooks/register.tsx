@@ -2561,8 +2561,8 @@ const told = new Set<string>()
 // A background agent ended: the board reads GitHub, where it may have opened a pull request, then a line in the
 // conversation tells the person how it ended, with what it said and its pull request. When something other than
 // Claude's own Agent tool call started it, Claude gets the same as a prompt of the board's, so it can follow up; when
-// Claude started it, Claude Code already gives Claude its result, and a second message would only repeat it. Once an
-// agent.
+// Claude started it, Claude Code already gives Claude its result, and a second message would only repeat it. An agent
+// the board spawned itself gets no task notification from Claude Code, so the hand-off keeps the start of its answer.
 const handOff = async ($: EngineInterface, agentId: string, status: Ended, answer: string | null): Promise<void> => {
   if (told.has(agentId)) return
   told.add(agentId)

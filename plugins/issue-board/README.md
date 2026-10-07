@@ -120,7 +120,8 @@ GitHub. The card shows the latest three comments, a field to reply, and
   merging or force-pushing. The row shows the agent: `⚙ working`,
   `waiting`, `done`, `failed` or `stopped`. When it ends, the conversation
   says so, with its last answer and pull request, and Claude is handed the
-  same so it can follow up. It asks for permission as any background agent
+  same so it can follow up. Claude gets the first 1,000 characters of the
+  answer; the pull request holds the rest. It asks for permission as any background agent
   does. When the start is refused or fails, a toast says why and the button
   comes back.
 - On an epic's card, both Starts act on its first ready sub-issue, as

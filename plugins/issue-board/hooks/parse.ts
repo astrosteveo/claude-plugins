@@ -1974,6 +1974,11 @@ export const endedLine = (issue: { number: number; title?: string }, status: End
   return `The background agent on ${named(issue)} ${ENDED[status]}.${said ? ` ${fit(said, 600)}` : ''}${link}`
 }
 
+// How much of a background agent's last answer the hand-off keeps. Claude Code sends Claude no task notification for
+// an agent a plugin spawned, so the hand-off is the only place Claude reads the answer. The pull request and the
+// issue's ticked boxes hold the detail, so the start of the answer is enough to follow up on.
+export const HANDOFF_ANSWER = 1000
+
 // What Claude reads when a background agent ends, so it can follow up without the person passing anything on.
 // In `background` start mode, a finished agent's pull request is Claude's to review and see through.
 export const handoffPrompt = (
@@ -1986,7 +1991,9 @@ export const handoffPrompt = (
   [
     `The background agent that Start in background set on ${named(issue)} ${ENDED[status]}.`,
     pr ? `Its pull request: #${pr.number}${pr.url ? ` ${pr.url}` : ''}` : 'The board sees no pull request for the issue.',
-    answer?.trim() ? `Its last answer:\n${fit(answer.trim(), 4000)}` : 'It gave no answer.',
+    answer?.trim()
+      ? `Its last answer${cells(answer.trim()) > HANDOFF_ANSWER ? ', cut short' : ''}:\n${fit(answer.trim(), HANDOFF_ANSWER)}`
+      : 'It gave no answer.',
     status === 'completed' && mode === 'background' && pr
       ? `Review pull request #${pr.number}, run the repository's tests and checks on its branch, and watch its CI. Then merge it, if the person's rules let you merge, or tell the person in a few sentences what is left.`
       : status === 'completed'
