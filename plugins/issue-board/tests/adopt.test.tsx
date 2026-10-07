@@ -2,21 +2,22 @@ import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { adoptText, grantsOf, isMutation, ownerOf, projectKeysOf, projectKeysText, writeRefusal } from '../hooks/project'
-import { PROJECT, graphPage, isIssuesQuery, graphArg } from './graph'
-import { ADOPTED, settingsLog } from './github'
-import { letThrough, permissions } from './engine'
 import { namesText, projectPartOf, repoChangeOf } from '../hooks/parse'
+import { letThrough, permissions } from './engine'
+import { ADOPTED, fakeGitHub, json, memoryStore, ok, session, settingsLog } from './github'
+import type { Route } from './github'
+import { PROJECT, graphArg, isIssuesQuery } from './graph'
+import type { Raw } from './graph'
+import { REFRESH, REPO, band, pane } from './ui'
 
-const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 120, placement: 'dock', scroll: { offset: 0, bodyRows: 80 }, view: {} } } as const
-const BAND = { component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120, scroll: { offset: 0, bodyRows: 10 }, view: {} } } as const
-const REFRESH = { command: 'issues', args: 'refresh', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
-const REPO = { root: '/work/void-sector', remote: null, internal: false, name: null }
+const PANE = pane(120, 80)
+const BAND = band(120)
 const KEY = `repo:${REPO.root}`
 const CHOICES = `choices:${REPO.root}`
 // Every setting that has the board change the project by itself, on.
 const EVERYTHING = { options: { autoMove: true, claimOnStart: true } }
 
-const raw = (number: number, title: string, more: Record<string, unknown> = {}) => ({
+const raw = (number: number, title: string, more: Partial<Raw> = {}): Raw => ({
   number,
   title,
   url: `https://github.com/astrosteveo/void-sector/issues/${number}`,
@@ -57,59 +58,40 @@ const PR = {
   closingIssuesReferences: [],
 }
 
-const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
-
 // GitHub as the board sees it, answering every call, with each call kept. A GraphQL mutation is anything sent to
 // `gh api graphql` that says `mutation`, in its arguments or on stdin, whichever path in the board sent it.
 const world = (on: On, asks = false) => {
-  const state = { issues: BEFORE as Record<string, unknown>[], prs: [PR] as unknown[], calls: [] as { argv: string[]; stdin: string }[], toasts: [] as string[] }
-  on('process.run', async (_$, e) => {
-    const argv = [...e.argv]
-    state.calls.push({ argv, stdin: e.init?.stdin ?? '' })
-    if (argv[0] === 'git') return ok('main\n')
-    if (isIssuesQuery(argv)) return ok(graphPage(state.issues as never, argv, true))
-    if (argv[1] === 'repo') return ok(JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true }))
-    if (argv[1] === 'api' && argv[2] === 'graphql') {
-      const text = `${argv.join(' ')} ${e.init?.stdin ?? ''}`
-      if (text.includes('addProjectV2ItemById')) return ok(JSON.stringify({ data: { addProjectV2ItemById: { item: { id: 'PVTI_new' } } } }))
-      if (text.includes('fieldValues')) return ok(JSON.stringify({ data: { node: { fieldValues: { nodes: [] } } } }))
-      if (text.includes('projectItems')) return ok(JSON.stringify({ data: { node: { projectItems: { nodes: [] } } } }))
-      if (text.includes('reviewThreads')) return ok(JSON.stringify({ data: { repository: { pullRequests: { nodes: [] } } } }))
-      return ok(JSON.stringify({ data: {} }))
+  // The project's item reads and its REST read, the merge of pull request #70 and the close of #60, a filed issue, and
+  // each issue's body over REST, as a tick or an epic's close reads it and the PATCH that writes it.
+  const route: Route = ({ argv, stdin }) => {
+    if (argv[1] === 'api' && argv[2] === 'graphql' && !isIssuesQuery(argv)) {
+      const text = `${argv.join(' ')} ${stdin ?? ''}`
+      if (text.includes('addProjectV2ItemById')) return json({ data: { addProjectV2ItemById: { item: { id: 'PVTI_new' } } } })
+      if (text.includes('fieldValues')) return json({ data: { node: { fieldValues: { nodes: [] } } } })
+      if (text.includes('projectItems')) return json({ data: { node: { projectItems: { nodes: [] } } } })
+      return undefined
     }
-    if (argv[1] === 'pr' && argv.includes('open')) return ok(JSON.stringify(state.prs))
-    if (argv[1] === 'api' && /\/pulls\/70$/.test(argv[2] ?? '')) return ok('2026-10-05T11:00:00Z\n')
-    if (argv[1] === 'api' && /\/issues\/60$/.test(argv[2] ?? '')) return ok(JSON.stringify({ state: 'closed', state_reason: 'completed' }))
-    if (argv[1] === 'api' && argv[2] === 'users/astrosteveo/projectsV2/8/fields?per_page=50') return ok(JSON.stringify([{ id: 111, name: 'Status' }]))
-    if (argv[1] === 'api' && argv[2]?.startsWith('users/astrosteveo/projectsV2/8/items')) {
-      return ok(JSON.stringify([{ node_id: 'PVTI_60', archived_at: null, content_type: 'Issue', content: { number: 60, title: 'Shuttle', state: 'closed', state_reason: 'completed', closed_at: '2026-09-01T10:00:00Z' }, fields: [{ name: 'Status', value: { name: { raw: 'Done' } } }] }]))
+    if (argv[1] !== 'api') return undefined
+    if (/\/pulls\/70$/.test(argv[2] ?? '')) return ok('2026-10-05T11:00:00Z\n')
+    if (/\/issues\/60$/.test(argv[2] ?? '')) return json({ state: 'closed', state_reason: 'completed' })
+    if (argv[2] === 'users/astrosteveo/projectsV2/8/fields?per_page=50') return json([{ id: 111, name: 'Status' }])
+    if (argv[2]?.startsWith('users/astrosteveo/projectsV2/8/items')) {
+      return json([{ node_id: 'PVTI_60', archived_at: null, content_type: 'Issue', content: { number: 60, title: 'Shuttle', state: 'closed', state_reason: 'completed', closed_at: '2026-09-01T10:00:00Z' }, fields: [{ name: 'Status', value: { name: { raw: 'Done' } } }] }])
     }
-    if (argv[1] === 'api' && argv[2] === '-X' && argv[3] === 'POST' && /\/issues$/.test(argv[4] ?? '')) {
-      return ok(JSON.stringify({ number: 80, id: 9080, node_id: 'I_80', html_url: 'https://github.com/astrosteveo/void-sector/issues/80', updated_at: '2026-10-05T10:00:00Z', labels: [], assignees: [] }))
+    if (argv[2] === '-X' && argv[3] === 'POST' && /\/issues$/.test(argv[4] ?? '')) {
+      return json({ number: 80, id: 9080, node_id: 'I_80', html_url: 'https://github.com/astrosteveo/void-sector/issues/80', updated_at: '2026-10-05T10:00:00Z', labels: [], assignees: [] })
     }
-    if (argv[1] === 'api' && argv[2]?.includes('/milestones')) return ok('[]')
-    // An issue's body over REST, as a tick or an epic's close reads it, and the PATCH that writes it.
     const rest = /\/issues\/(\d+)$/.exec((argv[2] === '-X' ? argv[4] : argv[2]) ?? '')
-    if (argv[1] === 'api' && rest && (argv.includes('{body, updated_at}') || argv[3] === 'PATCH')) {
-      const found = (state.issues.find(one => one.number === Number(rest[1])) ?? BEFORE.find(one => one.number === Number(rest[1]))) as Record<string, unknown> | undefined
-      return ok(JSON.stringify({ title: found?.title ?? '', body: found?.body ?? '', updated_at: '2026-10-05T10:00:00Z' }))
+    if (rest && (argv.includes('{body, updated_at}') || argv[3] === 'PATCH')) {
+      const found = state.issues.find(one => one.number === Number(rest[1])) ?? BEFORE.find(one => one.number === Number(rest[1]))
+      return json({ title: found?.title ?? '', body: found?.body ?? '', updated_at: '2026-10-05T10:00:00Z' })
     }
-    if (argv[1] === 'api') return ok('astrosteveo\n')
-    if (argv[1] === 'issue' && argv[2] === 'view') {
-      const found = (state.issues.find(one => one.number === Number(argv[3])) ?? BEFORE.find(one => one.number === Number(argv[3]))) as Record<string, unknown> | undefined
-      if (argv.includes('id')) return ok(JSON.stringify({ id: `I_${argv[3]}` }))
-      return ok(JSON.stringify({ ...found, labels: [], assignees: [] }))
-    }
-    if (argv[1] === 'label') return ok(JSON.stringify([{ name: 'bug' }]))
-    if (argv[1] === 'issue' && (argv[2] === 'edit' || argv[2] === 'close')) return ok('')
-    return ok('[]')
-  })
-  on('session.id', async () => ({ value: 'session-1' }))
+    return undefined
+  }
+  const state = Object.assign(fakeGitHub(on, { issues: BEFORE, prs: [PR], project: true, routes: [route] }), { toasts: [] as string[] })
+  session(on)
   // `asks` puts the engine's permission check beneath the write tools, to see which calls reach a prompt.
   const engine = asks ? permissions(on) : (letThrough(on), null)
-  on('session.repo', async () => ({ value: REPO }))
-  on('session.root', async () => ({ value: REPO.root }))
-  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
   on('ui.toast', async (_$, e) => {
     state.toasts.push(e.text)
     return { value: undefined }
@@ -124,7 +106,7 @@ const world = (on: On, asks = false) => {
       usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
     },
   }))
-  const mutations = () => state.calls.filter(call => call.argv.includes('graphql') && /\bmutation\b/.test(`${call.argv.join(' ')} ${call.stdin}`))
+  const mutations = () => state.ran.filter(call => call.argv.includes('graphql') && /\bmutation\b/.test(`${call.argv.join(' ')} ${call.stdin ?? ''}`))
   return { state, mutations, engine }
 }
 
@@ -138,7 +120,7 @@ test('a project nobody adopted gets no write from Start, triage, any board tool 
   await ui.press({ key: 'filter-all' })
   await ui.press({ key: 'issue-43' })
   await ui.press({ key: 'start-43' })
-  expect(state.calls.some(call => call.argv.join(' ') === 'gh issue edit 43 --add-assignee @me')).toBe(true)
+  expect(state.ran.some(call => call.argv.join(' ') === 'gh issue edit 43 --add-assignee @me')).toBe(true)
   expect(mutations()).toEqual([])
 
   // Triage's Accept.
@@ -173,7 +155,7 @@ test('a project nobody adopted gets no write from Start, triage, any board tool 
 
   expect(mutations()).toEqual([])
   // The epic still closes, which is the issue's own change, not the project's.
-  expect(state.calls.some(call => call.argv.join(' ') === 'gh issue close 35 --reason completed')).toBe(true)
+  expect(state.ran.some(call => call.argv.join(' ') === 'gh issue close 35 --reason completed')).toBe(true)
   // And /issues check says the project is read-only.
   expect((await $.command.run({ ...REFRESH, args: 'check' })).text).toMatch(/the board only reads Void Sector until you let it write there/)
   await ui.unmount()
@@ -224,7 +206,7 @@ test('on a project the board only reads, a write that is all project is refused 
   const mixed = await call('issue_update', { number: 43, addLabels: ['bug'], comment: 'Seen it.', status: 'Done' })
   expect(engine.asked).toEqual(['mcp__issue-board__issue_update'])
   expect(String(mixed.result)).toMatch(new RegExp(`^#43 labelled bug.*\\nSkipped its Status: ${reason}`, 's'))
-  expect(state.calls.some(one => one.argv.join(' ').startsWith('gh issue edit 43 --add-label bug'))).toBe(true)
+  expect(state.ran.some(one => one.argv.join(' ').startsWith('gh issue edit 43 --add-label bug'))).toBe(true)
 
   // Listing what an archive would take still answers, and says the archive would be refused.
   const listed = await call('project_archive', { number: 60 })
@@ -238,21 +220,10 @@ test('on a project the board only reads, a write that is all project is refused 
   expect(mutations()).toEqual([])
 })
 
-// A store that keeps what it is given, as one machine's store would for every session on it.
-const memory = (on: On, entries: Record<string, unknown> = {}): Map<string, unknown> => {
-  const kept = new Map<string, unknown>(Object.entries(entries))
-  on('store.get', async (_$, e) => ({ value: kept.get(e.key) }))
-  on('store.set', async (_$, e) => {
-    kept.set(e.key, e.value)
-    return { value: undefined }
-  })
-  return kept
-}
-
 const WRITES_8 = { options: { writeProjects: 'astrosteveo/8' } }
 
 test('the pane and the band ask once before writing, naming the project, its owner, what is written and what it costs; yes adopts it', async ($, on) => {
-  memory(on)
+  memoryStore(on)
   const set = settingsLog(on)
   const { mutations } = world(on)
   await $.command.run(REFRESH)
@@ -280,7 +251,7 @@ test('the pane and the band ask once before writing, naming the project, its own
 })
 
 test('Keep read-only puts the prompt away for good and writes nothing', async ($, on) => {
-  const kept = memory(on)
+  const kept = memoryStore(on)
   const set = settingsLog(on)
   const { mutations } = world(on)
   // What the engine draws in the band when the board has nothing to say.
@@ -303,7 +274,7 @@ test('Keep read-only puts the prompt away for good and writes nothing', async ($
 })
 
 test('a writeProjects entry that is not owner/number, or names the number under another owner, leaves the board read-only', { options: { ...EVERYTHING.options, writeProjects: '8, astrosteveo/eight, acme/8' } }, async ($, on) => {
-  memory(on)
+  memoryStore(on)
   settingsLog(on)
   const { mutations } = world(on)
   await $.command.run(REFRESH)
@@ -314,7 +285,7 @@ test('a writeProjects entry that is not owner/number, or names the number under 
 
 test('with astrosteveo/8 listed the board writes to project 8, with no prompt, and the store has no say', { options: { ...EVERYTHING.options, writeProjects: 'astrosteveo/8' } }, async ($, on) => {
   // A store an earlier board left saying the project was released counts for nothing once the setting names one.
-  memory(on, { [KEY]: { adopted: null } })
+  memoryStore(on, { [KEY]: { adopted: null } })
   const set = settingsLog(on)
   const { mutations } = world(on)
   await $.command.run(REFRESH)
@@ -327,7 +298,7 @@ test('with astrosteveo/8 listed the board writes to project 8, with no prompt, a
 })
 
 test("a project another repo listed gives this repo's project nothing, and adopting here keeps it", { options: { writeProjects: 'acme/9' } }, async ($, on) => {
-  memory(on)
+  memoryStore(on)
   const set = settingsLog(on)
   const { mutations } = world(on)
   await $.command.run(REFRESH)
@@ -344,7 +315,7 @@ test("a project another repo listed gives this repo's project nothing, and adopt
 })
 
 test("releasing this repo's project takes only it off the list, and leaves another repo's", { options: { writeProjects: 'acme/9, astrosteveo/8' } }, async ($, on) => {
-  memory(on)
+  memoryStore(on)
   const set = settingsLog(on)
   const { mutations } = world(on)
   on('tool.check', async () => ({ decision: 'allow' as const }))
@@ -359,7 +330,7 @@ test("releasing this repo's project takes only it off the list, and leaves anoth
 })
 
 test("a project the repo's own settings grant needs no prompt, takes writes, and can't be released from the board", async ($, on) => {
-  memory(on)
+  memoryStore(on)
   const set = settingsLog(on)
   const { mutations } = world(on)
   on('tool.check', async () => ({ decision: 'allow' as const }))
@@ -390,7 +361,7 @@ test("a project the repo's own settings grant needs no prompt, takes writes, and
 })
 
 test("adopting beside a repo's grant keeps the person's own entries and copies none of the repo's", async ($, on) => {
-  memory(on)
+  memoryStore(on)
   const set = settingsLog(on)
   const { mutations } = world(on)
   on('tool.check', async () => ({ decision: 'allow' as const }))
@@ -414,7 +385,7 @@ test("adopting beside a repo's grant keeps the person's own entries and copies n
 
 test('what an earlier board left in the shared entry grants nothing and chooses nothing', async ($, on) => {
   // An adoption, a setup that names the project, and choices, as boards before 0.62 kept them.
-  memory(on, {
+  memoryStore(on, {
     [KEY]: { adopted: ADOPTED, setup: { project: { id: PROJECT.id, number: 8, title: PROJECT.title }, status: null, priority: null, at: 0 }, declined: [PROJECT.id] },
   })
   const set = settingsLog(on)
@@ -433,7 +404,7 @@ test('what an earlier board left in the shared entry grants nothing and chooses 
 const CHOSEN = { declined: ['PVT_9'], statuses: { PVT_8: { ready: 'S0', done: 'S2' } }, guessSeen: ['PVT_8:ready=S0'] }
 
 test("the shared entry holds only the cached board, and saving it leaves the person's choices alone", WRITES_8, async ($, on) => {
-  const kept = memory(on, { [CHOICES]: CHOSEN })
+  const kept = memoryStore(on, { [CHOICES]: CHOSEN })
   settingsLog(on)
   world(on)
   await $.command.run(REFRESH)
@@ -443,7 +414,7 @@ test("the shared entry holds only the cached board, and saving it leaves the per
 })
 
 test('two sessions changing different choices keep both', async ($, on) => {
-  const kept = memory(on)
+  const kept = memoryStore(on)
   settingsLog(on)
   world(on)
   await $.command.run(REFRESH)

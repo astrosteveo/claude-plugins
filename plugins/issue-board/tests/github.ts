@@ -106,6 +106,8 @@ export const fakeGitHub = (on: On, options: Options = {}): GitHub => {
       if (fields === 'comments') return json({ comments: [] })
       return json({ number: raw.number, title: raw.title, url: raw.url ?? '', labels: raw.labels, assignees: raw.assignees ?? [], body: raw.body, updatedAt: raw.updatedAt })
     }
+    // No milestones, and no issues closed lately, over REST.
+    if (argv[1] === 'api' && (argv[2]?.includes('/milestones') || argv[2]?.includes('/issues?state=closed'))) return ok('[]')
     if (argv[1] === 'api') return ok(`${gh.login}\n`)
     return ok('[]')
   })
