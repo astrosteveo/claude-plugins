@@ -28,8 +28,8 @@
     {
       "name": "ask",
       "source": "./plugins/ask",
-      "description": "Ask Claude a side question or for prompt ideas; it answers in a pane, in the background, and nothing lands in the chat.",
-      "version": "0.1.2",
+      "description": "Ask Claude a side question in a pane, and get Claude's own pick, remembered answers and a decision log when Claude asks you.",
+      "version": "0.2.0",
       "author": {
         "name": "astrosteveo"
       },

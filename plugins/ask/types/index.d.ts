@@ -12,8 +12,57 @@ export type Ask = {
   askedAt: number
 }
 
+// One question as AskUserQuestion takes it.
+export type Choice = { label: string; description: string; preview?: string }
+export type Question = { question: string; header: string; options: Choice[]; multiSelect: boolean }
+
+// Claude's take on one question: the option it would pick, how sure it is,
+// why, and each option said in plain words.
+export type Take = {
+  pick: string
+  confidence: number
+  why: string
+  plain: string
+  notes: Record<string, string>
+}
+
+// The take for one open dialog, keyed by its tool_use_id. `takes` lines up
+// with the dialog's questions; a question the reply skipped is null.
+export type Advice =
+  | { status: 'thinking' }
+  | { status: 'ready'; takes: (Take | null)[] }
+  | { status: 'failed'; error: string }
+
+// An answer to give again, without asking, in the project it was saved in.
+export type Remembered = { key: string; root: string; question: string; answer: string; at: number }
+
+// One answered question, for the decision log.
+export type Decision = {
+  root: string
+  header: string
+  question: string
+  answer: string
+  pick?: string
+  confidence?: number
+  source: 'you' | 'remembered'
+  at: number
+}
+
+// The answers the band offers to remember, from the last dialog.
+export type Offer = { root: string; items: { key: string; question: string; answer: string }[] }
+
 declare module 'claude-code' {
   interface PluginState {
-    ask: { asks: Ask[]; draft: string }
+    ask: {
+      asks: Ask[]
+      draft: string
+      // Claude's take on each open AskUserQuestion dialog.
+      advice: StateFamily<Advice | null>
+      offer: Offer | null
+      log: Decision[]
+      remembered: Remembered[]
+      // What the /decisions pane's search box holds.
+      search: string
+    }
   }
 }
