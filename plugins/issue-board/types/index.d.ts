@@ -224,6 +224,24 @@ export type Triage = {
   failed: string | null
 }
 
+// One change in a plan Claude proposes with project_plan. `kind` says what it changes; each kind changes one thing on
+// one issue, as issue_update would. Later kinds, such as an item's place in the project or the repo's labels, add their
+// own members here.
+export type PlanChange =
+  | { kind: 'status' | 'priority'; number: number; value: string }
+  | { kind: 'field'; number: number; field: string; value: string | number | null }
+  | { kind: 'labels' | 'assignees'; number: number; add: string[]; remove: string[] }
+  | { kind: 'milestone'; number: number; value: string | null }
+  | { kind: 'parent'; number: number; value: number | null }
+
+// A row of the plan card: the change, Claude's reason for it, whether it is ticked to apply, and why it failed the last
+// time it was applied.
+export type PlanRow = { id: string; change: PlanChange; reason: string; picked: boolean; failed: string | null }
+
+// The plan waiting on the person. `id` tells a plan from the one that replaced it; `applying` holds Apply while its
+// writes are under way; `note` says how the last Apply went.
+export type Plan = { id: number; rows: PlanRow[]; applying: boolean; note: string | null }
+
 // How the pane groups the issues: by the project's Status, by the epic they are sub-issues of, or by `area:` label.
 // `view` is the field the tab's project view groups by, when that isn't Status.
 export type GroupBy = 'status' | 'epic' | 'area' | 'view'
@@ -381,6 +399,8 @@ declare module 'claude-code' {
       statusPicks: StatusPicks | null
       // The guessed Status mappings the person answered in the band, by guessKey, so each shows once.
       guessSeen: string[]
+      // The plan Claude proposed with project_plan, until it is applied or discarded; a new one replaces it.
+      plan: Plan | null
     }
   }
 }

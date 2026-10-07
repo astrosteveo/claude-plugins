@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentSpawnResult, Caught, EngineInterface, HookFailure, ModelForkResult, Register, ThemeKey, Timer, ToolCallResult, UiCopyArgs } from 'claude-code'
 
-import type { Adopted, Adoption, Alert, Board, BoxTask, BuiltInFilter, Check, Comment, Draft, DraftEdit, EpicNote, GroupBy, Issue, Known, Launch, Problem, Project, ProjectField, Role, Roles, StatusPicks, StatusUpdate, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
+import type { Adopted, Adoption, Alert, Board, BoxTask, BuiltInFilter, Check, Comment, Draft, DraftEdit, EpicNote, GroupBy, Issue, Known, Launch, Plan, PlanRow, Problem, Project, ProjectField, Role, Roles, StatusPicks, StatusUpdate, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
 import type { Ended, FilterSource, IssueChanges, NewIssue, PrRule, StartMode, Switches, Tab } from './parse'
 import type { Linked } from './project'
 import { authOf, problemsOf, problemsText, repoOf } from './access'
@@ -46,6 +46,8 @@ import {
   writeRefusal,
 } from './project'
 import type { Grants } from './project'
+import { appliedText, changeText, issueChangesOf, kindsText, planAsk, planOf, problemsOfPlan, rowsOf, sizeText } from './plan'
+import type { Planned } from './plan'
 import {
   CREATE_FIELD,
   CREATE_PROJECT,
@@ -284,6 +286,7 @@ const MILESTONE_TOOL = 'mcp__issue-board__milestone'
 const ARCHIVE_TOOL = 'mcp__issue-board__project_archive'
 const STATUS_TOOL = 'mcp__issue-board__project_status'
 const ADOPT_TOOL = 'mcp__issue-board__project_adopt'
+const PLAN_TOOL = 'mcp__issue-board__project_plan'
 // Permission modes that settle a plugin's ask without showing it to the person: auto has a classifier decide.
 // Adopting a project needs the person to read its warning, so project_adopt is refused in them.
 const UNSEEN_MODES = new Set(['auto'])
@@ -401,6 +404,8 @@ const adoption = atom({ plugin: 'issue-board', key: 'adoption' } as const, { ado
 // `/issues statuses` while it shows, and the guessed Status mappings the person answered, as the store last said.
 const statusPicks = atom({ plugin: 'issue-board', key: 'statusPicks' } as const, null)
 const guessSeen = atom({ plugin: 'issue-board', key: 'guessSeen' } as const, [])
+// The plan Claude proposed, shown as a card in the pane until it is applied or discarded.
+const proposal = atom({ plugin: 'issue-board', key: 'plan' } as const, null)
 
 // Whether a tool's calls may be allowed without asking: an organization can set a ceiling, the most permissive verdict
 // a call of the tool may reach. None set, they may.
@@ -2866,8 +2871,9 @@ const offBoard = async ($: EngineInterface, number: number): Promise<Target> => 
 }
 
 // Makes a change to an issue, from its card or from Claude's issue_update tool: Status and Priority in the project,
-// then the gh edit, comment and close, then the board read again so it shows. Answers what it did.
-const applyChanges = async ($: EngineInterface, number: number, changes: IssueChanges): Promise<string> => {
+// then the gh edit, comment and close, then the board read again so it shows. Answers what it did. A plan makes many
+// changes and reads the board once after them all, so it passes `refresh` false.
+const applyChanges = async ($: EngineInterface, number: number, changes: IssueChanges, refresh$ = true): Promise<string> => {
   const issue = (await read($, board))?.issues.find(one => one.number === number)
   const fields = changes.fields && Object.keys(changes.fields).length > 0 ? changes.fields : null
   // A closed issue is set through its item in the project all the same. Its Status or Priority may already be what was
@@ -2909,7 +2915,7 @@ const applyChanges = async ($: EngineInterface, number: number, changes: IssueCh
   if (repo && changes.duplicateOf) await closeAsDuplicate($, repo, number, changes.duplicateOf)
   if (repo && changes.addBlockedBy?.length) await block($, repo, number, changes.addBlockedBy, true)
   if (repo && changes.removeBlockedBy?.length) await block($, repo, number, changes.removeBlockedBy, false)
-  await refreshAfter($)
+  if (refresh$) await refreshAfter($)
   const left = { ...changes }
   for (const field of skipped) delete left[field]
   const done = changesText(number, left)
@@ -2925,6 +2931,64 @@ const change = async ($: EngineInterface, number: number, changes: IssueChanges)
     const message = messageOf(cause)
     $.ui.toast(`Couldn't change #${number}: ${message}`)
     if (ACCESS_ERROR.test(message)) void checkAccess($, message)
+  }
+}
+
+// The plan project_plan's input asks for, checked against the board as it is now. A plan that changes the project is
+// refused here, before anything is asked, when the board may not write to it; each write checks again as it goes.
+const planFor = async ($: EngineInterface, input: unknown): Promise<Planned> => {
+  const now = await read($, board)
+  if (!now) return { problems: ["The issue board hasn't read GitHub yet; refresh it and try again."] }
+  const refusal = now.project ? writeRefusal((await grantsNow($)).all, now.project) : null
+  return planOf(input, { issues: now.issues, project: now.project, milestones: now.milestones, refusal })
+}
+
+// Puts a plan on the pane's card, every row ticked, in place of any plan before it. Answers its id, which tells it from
+// the plan that may replace it while the permission prompt waits.
+const propose = async ($: EngineInterface, changes: Extract<Planned, { changes: unknown }>['changes']): Promise<number> => {
+  const id = ((await read($, proposal))?.id ?? 0) + 1
+  await update($, proposal, () => ({ id, rows: rowsOf(changes), applying: false, note: null }))
+  return id
+}
+
+// Applies the plan's ticked rows in order, each the way issue_update makes that change, through the project write check
+// for the project's fields. The board is read once, after them all. Rows that went through leave the card, as do rows
+// left unticked; a row that failed stays, ticked, with why, and the card says how it went. Answers what happened.
+const applyPlan = async ($: EngineInterface, id: number): Promise<string> => {
+  const now = await read($, proposal)
+  if (!now || now.id !== id) return 'That plan is gone: it was applied, discarded or replaced meanwhile.'
+  if (now.applying) return 'That plan is being applied already.'
+  const chosen = now.rows.filter(row => row.picked)
+  if (chosen.length === 0) return 'No change of the plan is ticked, so nothing was applied.'
+  const mine = (was: Plan | null): was is Plan => was !== null && was.id === id
+  await update($, proposal, was => (mine(was) ? { ...was, applying: true, note: null } : was))
+  const done: string[] = []
+  const failed: { row: PlanRow; message: string }[] = []
+  try {
+    for (const row of chosen) {
+      try {
+        done.push(await applyChanges($, row.change.number, issueChangesOf(row.change), false))
+      } catch (cause) {
+        failed.push({ row, message: messageOf(cause) })
+      }
+    }
+    await refreshAfter($)
+  } finally {
+    await update($, proposal, was => (mine(was) && was.applying ? { ...was, applying: false } : was))
+  }
+  const text = appliedText(done, failed)
+  await update($, proposal, was => (mine(was) ? (failed.length === 0 ? null : { ...was, rows: failed.map(({ row, message }) => ({ ...row, failed: message })), note: text.split('\n')[0] ?? null }) : was))
+  const access$ = failed.find(one => ACCESS_ERROR.test(one.message))
+  if (access$) void checkAccess($, access$.message)
+  return text
+}
+
+// Apply on the plan card: the person's own press, so it asks nothing more. A toast says how it went.
+const applyFromCard = async ($: EngineInterface, id: number): Promise<void> => {
+  try {
+    $.ui.toast((await applyPlan($, id)).split('\n')[0] ?? '')
+  } catch (cause) {
+    $.ui.toast(`Couldn't apply the plan: ${messageOf(cause)}`)
   }
 }
 
@@ -3219,6 +3283,39 @@ export const register: Register = (on, options) => {
           doneBefore: { type: 'string', description: 'YYYY-MM-DD.' },
           confirm: { type: 'boolean' },
         },
+      },
+    })
+    await registerTool($, {
+      name: 'project_plan',
+      description:
+        'Proposes many issue changes as one plan, each with a reason, refused whole if any is invalid. ' +
+        'The person approves it once, or applies some of it in /issues. A new plan replaces the last.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          issues: {
+            type: 'array',
+            description: 'Fields as in issue_update.',
+            items: {
+              type: 'object',
+              properties: {
+                number: { type: 'integer' },
+                reason: { type: 'string' },
+                status: { type: 'string' },
+                priority: { type: 'string' },
+                fields: { type: 'object', additionalProperties: { type: ['string', 'number', 'null'] } },
+                addLabels: { type: 'array', items: { type: 'string' } },
+                removeLabels: { type: 'array', items: { type: 'string' } },
+                assign: { type: 'array', items: { type: 'string' } },
+                unassign: { type: 'array', items: { type: 'string' } },
+                milestone: { type: 'string' },
+                parent: { type: 'integer', minimum: 0 },
+              },
+              required: ['number', 'reason'],
+            },
+          },
+        },
+        required: ['issues'],
       },
     })
     await registerTool($, {
@@ -3700,6 +3797,33 @@ export const register: Register = (on, options) => {
     }),
   ).catch(($, _e, next) => toolFailed($, next, 'issue_update'))
 
+  // Claude proposing a plan. An invalid plan is refused with every problem, and nothing is shown or asked. A valid one
+  // goes on the pane's card at once, then the call asks, once, with the plan summed up; a yes applies its ticked rows.
+  // A no leaves it on the card, for the person to apply some of it or discard it.
+  on('tool.call', { tool: PLAN_TOOL }, async ($, e, next) =>
+    asTool(async () => {
+      const planned = await planFor($, e)
+      if ('problems' in planned) return { deny: problemsOfPlan(planned.problems) }
+      const id = await propose($, planned.changes)
+      return askThenAct(e, next, async () => {
+        try {
+          return { result: await applyPlan($, id) }
+        } catch (cause) {
+          return { deny: `Couldn't apply the plan: ${messageOf(cause)}` }
+        }
+      })
+    }),
+  ).catch(($, _e, next) => toolFailed($, next, 'project_plan'))
+
+  // A plan's permission prompt says what it would change: its size and its changes by kind. A rule that allows or denies
+  // still stands, as does an organization's ceiling; an invalid plan keeps the verdict, as the call refuses it anyway.
+  on('tool.check', { tool: PLAN_TOOL }, async ($, e, next) => {
+    const verdict = await next(e)
+    if (verdict.decision !== 'ask') return verdict
+    const planned = await planFor($, e.input)
+    return 'problems' in planned ? verdict : { ...verdict, reason: planAsk(planned.changes.map(one => one.change)) }
+  }).catch(($, e, next) => fallBack($, e, next, 'tool.check on project_plan'))
+
   // Claude filing an issue. Claude Code asks first, as for any tool that changes something.
   on('tool.call', { tool: CREATE_TOOL }, async ($, e, next) =>
     asTool(async () => {
@@ -3956,6 +4080,7 @@ export const register: Register = (on, options) => {
     const working$ = await read($, workers)
     const launches = await read($, launching)
     const adopting = await read($, adoption)
+    const proposed = await read($, proposal)
     // The issue Start sent Claude in this session: its Start says so rather than starting it again.
     const startedHere = doing?.started && doing.sessionId !== undefined && doing.sessionId === (await $.session.id().catch(() => undefined)) ? doing.number : null
     const clock = Date.now()
@@ -4674,6 +4799,65 @@ export const register: Register = (on, options) => {
           )}
         </Box>
       )
+    )
+
+    // The plan Claude proposed with project_plan: a row per change, grouped by issue, each with a box to tick and
+    // Claude's reason. Apply writes the ticked rows; Discard drops the plan. A row that failed stays, saying why.
+    const planRows = proposed?.rows ?? []
+    const planTicked = planRows.filter(row => row.picked).length
+    const planIssues = [...new Set(planRows.map(row => row.change.number))]
+    const pickRow = (id: string) => () => void update($, proposal, was => was && { ...was, rows: was.rows.map(row => (row.id === id ? { ...row, picked: !row.picked } : row)) })
+    const planCard = proposed && planRows.length > 0 && (
+      <Box key="plan-card" flexDirection="column" borderStyle="round" borderColor="suggestion" paddingX={1} marginTop={1}>
+        <Text color="suggestion" bold>{`Claude's plan · ${sizeText(planRows.map(row => row.change))}`}</Text>
+        <Text dimColor wrap="wrap">
+          {kindsText(planRows.map(row => row.change))}
+        </Text>
+        {planIssues.map(number => (
+          <Box key={`plan-issue-${number}`} flexDirection="column" marginTop={1}>
+            <Text wrap="truncate-end">
+              <Text color="claude" bold>{`#${number} `}</Text>
+              {now.issues.find(one => one.number === number)?.title ?? ''}
+            </Text>
+            {planRows
+              .filter(row => row.change.number === number)
+              .map(row => (
+                <Box key={`plan-row-${row.id}`} flexDirection="column">
+                  <Box flexDirection="row" gap={1}>
+                    <Button key={`plan-pick-${row.id}`} variant={row.picked ? 'primary' : undefined} dimColor={!row.picked} onPress={pickRow(row.id)}>
+                      {`${row.picked ? '☑' : '☐'} ${changeText(row.change)}`}
+                    </Button>
+                    <Text dimColor wrap="wrap">
+                      {row.reason}
+                    </Text>
+                  </Box>
+                  {row.failed && <Text color="error" wrap="wrap">{`✗ ${row.failed}`}</Text>}
+                </Box>
+              ))}
+          </Box>
+        ))}
+        {proposed.note && (
+          <Box marginTop={1}>
+            <Text color="warning" wrap="wrap">
+              {proposed.note}
+            </Text>
+          </Box>
+        )}
+        {proposed.applying ? (
+          <Box marginTop={1}>
+            <Text color="warning">◌ Applying the plan…</Text>
+          </Box>
+        ) : (
+          <Box flexDirection="row" gap={1} marginTop={1} flexWrap="wrap">
+            <Button key="plan-apply" variant="primary" dimColor={planTicked === 0} onPress={() => void applyFromCard($, proposed.id)}>
+              {`✓ Apply ${planTicked} of ${planRows.length}`}
+            </Button>
+            <Button key="plan-discard" dimColor onPress={() => void update($, proposal, () => null)}>
+              Discard
+            </Button>
+          </Box>
+        )}
+      </Box>
     )
 
     // A pull request on one row: CI, number, title, a review mark and whether it is this branch's, then Finish & merge.
@@ -5467,6 +5651,7 @@ export const register: Register = (on, options) => {
             {updateLine(project.update, clock)}
           </Text>
         )}
+        {planCard}
         {statusesCard}
         {setupPlan}
         {trends}
@@ -5741,7 +5926,10 @@ export const register: Register = (on, options) => {
     // Which Status is which, when the board found it by common names and the person hasn't answered: once per guess.
     const guess = guessOf(now?.project)
     const guessed = now?.project && guess.length > 0 && !(await read($, guessSeen)).includes(guessKey(now.project, guess)) ? now.project : null
-    if (problems.length === 0 && alerts.length === 0 && offers.length === 0 && agents.length === 0 && notes.length === 0 && !unadopted && !guessed) return next(e)
+    // A plan Claude proposed that waits on the person: the band points at the pane, where its card is.
+    const waiting = await read($, proposal)
+    const planned = waiting && waiting.rows.length > 0 && !waiting.applying ? waiting : null
+    if (problems.length === 0 && alerts.length === 0 && offers.length === 0 && agents.length === 0 && notes.length === 0 && !unadopted && !guessed && !planned) return next(e)
 
     const { Box, Text, Button, Link } = $.ui.resolve(e)
     const width = e.props.bodyColumns
@@ -5938,6 +6126,27 @@ export const register: Register = (on, options) => {
       )
     }
 
+    // `✦ PLAN Claude's plan: 5 changes to 3 issues · Status 3 · Priority 2`. Review opens the pane at the plan's card.
+    const planLine = (one: Plan) => {
+      const changes = one.rows.map(row => row.change)
+      const head = `Claude's plan: ${sizeText(changes)}`
+      const tail = ` · ${kindsText(changes)}`
+      return (
+        <Box key="plan-row" flexDirection="row" gap={1}>
+          <Text color="suggestion" inverse bold>
+            {' ✦ PLAN '}
+          </Text>
+          <Text wrap="truncate-end">
+            <Text>{fit(head, Math.max(16, width - 22))}</Text>
+            <Text dimColor>{fit(tail, Math.max(0, width - 22 - cells(head)))}</Text>
+          </Text>
+          <Button key="plan-review" variant="primary" onPress={() => void $.ui.open(OPEN)}>
+            Review
+          </Button>
+        </Box>
+      )
+    }
+
     // `? STATUS Status: Todo is Ready, Doing is In progress, Shipped is Done`. Looks right saves it; Change opens
     // /issues statuses; ✕ leaves it a guess, unasked.
     const guessLine = (project: Project) => {
@@ -6001,6 +6210,7 @@ export const register: Register = (on, options) => {
       <Box flexDirection="column">
         {problems.slice(0, 2).map(problemLine)}
         {unadopted && adoptLine(unadopted)}
+        {planned && planLine(planned)}
         {guessed && guessLine(guessed)}
         {alerts.slice(0, 3).map(line)}
         {offers.slice(0, 3).map(offerLine)}
