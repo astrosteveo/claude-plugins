@@ -54,7 +54,7 @@ import {
   writeRefusal,
 } from './project'
 import type { Grants } from './project'
-import { appliedText, cardParts, groupOf, issueChangesOf, kindsText, planAsk, planOf, problemsOfPlan, rowsOf, sizeText, viewDoneText, viewNoteOf } from './plan'
+import { appliedText, cardParts, groupOf, issueChangesOf, kindsText, planAsk, planOf, problemsOfPlan, rowsOf, rowsToMake, sizeText, viewDoneText, viewNoteOf } from './plan'
 import type { Planned } from './plan'
 import {
   CREATE_FIELD,
@@ -1476,6 +1476,9 @@ const readGitHub = async ($: EngineInterface, seen: boolean): Promise<void> => {
 // A new read of the board, this session's or another's: it goes on the board, and what follows from the change does.
 const land = async ($: EngineInterface, before: Board | null, next: Board, seen: boolean): Promise<void> => {
   await update($, board, () => next)
+  // A plan whose every change the board now shows as made, as when Claude made them another way, leaves the card. One
+  // being applied is left to its Apply.
+  await update($, proposal, was => (was && !was.applying && rowsToMake(was.rows, next).length === 0 ? null : was))
   // Merge all's confirm waits on pull requests that are all gone now.
   if (next.prs.length === 0) await update($, confirming, () => false)
   const green = wentGreen(before, next)
@@ -3166,14 +3169,23 @@ const propose = async ($: EngineInterface, changes: Extract<Planned, { changes: 
 
 // Applies the plan's ticked rows in order, each the way issue_update makes that change, through the project write check
 // for the project's fields. The board is read once, after them all. Rows that went through leave the card, as do rows
-// left unticked; a row that failed stays, ticked, with why, and the card says how it went. Answers what happened.
+// left unticked; a row that failed stays, ticked, with why, and the card says how it went. A ticked row the board shows
+// as made already, as when Claude made it another way after proposing the plan, is skipped and named. Answers what
+// happened.
 const applyPlan = async ($: EngineInterface, id: number): Promise<string> => {
   const now = await read($, proposal)
   if (!now || now.id !== id) return 'That plan is gone: it was applied, discarded or replaced meanwhile.'
   if (now.applying) return 'That plan is being applied already.'
-  const chosen = now.rows.filter(row => row.picked)
-  if (chosen.length === 0) return 'No change of the plan is ticked, so nothing was applied.'
+  const picked = now.rows.filter(row => row.picked)
+  if (picked.length === 0) return 'No change of the plan is ticked, so nothing was applied.'
   const mine = (was: Plan | null): was is Plan => was !== null && was.id === id
+  const current = await read($, board)
+  const chosen = current ? rowsToMake(picked, current) : picked
+  const skipped = picked.filter(row => !chosen.includes(row))
+  if (chosen.length === 0) {
+    await update($, proposal, was => (mine(was) ? null : was))
+    return appliedText([], [], skipped)
+  }
   await update($, proposal, was => (mine(was) ? { ...was, applying: true, note: null } : was))
   const done: string[] = []
   const failed: { row: PlanRow; message: string }[] = []
@@ -3192,7 +3204,7 @@ const applyPlan = async ($: EngineInterface, id: number): Promise<string> => {
   } finally {
     await update($, proposal, was => (mine(was) && was.applying ? { ...was, applying: false } : was))
   }
-  const text = appliedText(done, failed)
+  const text = appliedText(done, failed, skipped)
   await update($, proposal, was => (mine(was) ? (failed.length === 0 ? null : { ...was, rows: failed.map(({ row, message }) => ({ ...row, failed: message })), note: text.split('\n')[0] ?? null }) : was))
   const access$ = failed.find(one => ACCESS_ERROR.test(one.message))
   if (access$) void checkAccess($, access$.message)
@@ -5060,8 +5072,9 @@ export const register: Register = (on, options) => {
     )
 
     // The plan Claude proposed with project_plan: a row per change, grouped by issue, each with a box to tick and
-    // Claude's reason. Apply writes the ticked rows; Discard drops the plan. A row that failed stays, saying why.
-    const planRows = proposed?.rows ?? []
+    // Claude's reason. Apply writes the ticked rows; Discard drops the plan. A row that failed stays, saying why. A row
+    // the board shows as made already, as when Claude made it another way, isn't drawn.
+    const planRows = proposed ? rowsToMake(proposed.rows, now) : []
     const planTicked = planRows.filter(row => row.picked).length
     // The rows grouped: the repo's labels first, then each issue, then the project's views.
     const planGroups = [...new Set(planRows.map(row => groupOf(row.change)))]
@@ -6239,8 +6252,10 @@ export const register: Register = (on, options) => {
     const guess = guessOf(now?.project)
     const guessed = now?.project && guess.length > 0 && !(await read($, guessSeen)).includes(guessKey(now.project, guess)) ? now.project : null
     // A plan Claude proposed that waits on the person: the band points at the pane, where its card is.
+    // Only the rows the board doesn't show as made already count.
     const waiting = await read($, proposal)
-    const planned = waiting && waiting.rows.length > 0 && !waiting.applying ? waiting : null
+    const waitingRows = waiting && now ? rowsToMake(waiting.rows, now) : (waiting?.rows ?? [])
+    const planned = waiting && waitingRows.length > 0 && !waiting.applying ? { ...waiting, rows: waitingRows } : null
     // Which labels Bugs and Later go by, when the board found them by the repo's names and the person hasn't answered.
     const markerAsk = markerAskOf(now, await read($, chosenMarkers))
     const marked = Object.keys(markerAsk).length > 0 && !(await read($, guessSeen)).includes(markerKey(markerAsk))
