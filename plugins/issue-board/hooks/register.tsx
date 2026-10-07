@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { AgentSpawnResult, Caught, EngineInterface, HookFailure, ModelForkResult, Register, RenderChildren, ThemeKey, Timer, ToolCallResult, UiCopyArgs } from 'claude-code'
+import type { AgentSpawnResult, ButtonProps, Caught, ElementTable, EngineInterface, HookFailure, ModelForkResult, Register, RenderChildren, ThemeKey, Timer, ToolCallResult, UiCopyArgs } from 'claude-code'
 
 import type { Adopted, Adoption, Alert, Armed, Board, FieldValues, BoxTask, BuiltInFilter, Check, Comment, EpicNote, GroupBy, Issue, Known, LabelChange, Launch, ViewChange, Markers, Milestone, Plan, PlanRow, Problem, Project, Role, Roles, StatusUpdate, PullRequest, RunWatch, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
 import type { Ended, IssueChanges, NewIssue, Tab } from './parse'
@@ -3224,6 +3224,26 @@ const registerTool = ($: EngineInterface, tool: Parameters<EngineInterface['tool
   return $.tool.register(tool)
 }
 
+// The small pieces the pane's and the band's rows are built from, made with the surface's own elements.
+const partsOf = ({ Box, Text, Button, Link }: Pick<ElementTable, 'Box' | 'Text' | 'Button' | 'Link'>) => ({
+  // A link in a row stays on one line: squeezed, it ends in an ellipsis rather than breaking down the pane a letter a
+  // line. A click still opens the whole address.
+  link: (href: string, label = '↗ GitHub') => (
+    <Text wrap="truncate-end">
+      <Link href={href} label={label} />
+    </Text>
+  ),
+  // A part of a one-line row that keeps its width: a number, a badge, a count or a button. A row short of room
+  // squeezes only the part left to shrink, which cuts its text, rather than breaking `#252` into `#25` over `2`.
+  keep: (part: RenderChildren) => <Box flexShrink={0}>{part}</Box>,
+  // One option of a set, the chosen one drawn as the primary and the others dim. `extra` carries a tab's hotkey.
+  choice: (key: string, label: string, chosen: boolean, onPress: ButtonProps['onPress'], extra: Pick<ButtonProps, 'hotkey'> = {}) => (
+    <Button key={key} {...extra} variant={chosen ? 'primary' : undefined} dimColor={!chosen} onPress={onPress}>
+      {label}
+    </Button>
+  ),
+})
+
 export const register: Register = (on, options) => {
   settings = settingsOf(options)
   on('session.start', async ($, e, next) => {
@@ -3956,7 +3976,9 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button, Link } = $.ui.resolve(e)
+    const elements = $.ui.resolve(e)
+    const { Box, Text, Button, Link } = elements
+    const { link, keep, choice } = partsOf(elements)
     const problems = (await read($, access))?.problems ?? []
     const width = Math.max(40, e.props.bodyColumns)
     const roomy = width >= 72
@@ -3992,20 +4014,9 @@ export const register: Register = (on, options) => {
     // The issue Start sent Claude in this session: its Start says so rather than starting it again.
     const startedHere = doing?.started && doing.sessionId !== undefined && doing.sessionId === (await $.session.id().catch(() => undefined)) ? doing.number : null
     const clock = Date.now()
-    const elements = $.ui.resolve(e)
     // The mobile app draws no text field: its table hands out one that draws nothing.
     const Input = 'Input' in elements && e.surface !== 'mobile' ? elements.Input : undefined
     const Markdown = elements.Markdown
-    // A link in a row stays on one line: squeezed, it ends in an ellipsis rather than breaking down the pane a letter a
-    // line. A click still opens the whole address.
-    const link = (href: string, label = '↗ GitHub') => (
-      <Text wrap="truncate-end">
-        <Link href={href} label={label} />
-      </Text>
-    )
-    // A part of a one-line row that keeps its width: a number, a badge, a count or a button. A row short of room
-    // squeezes only the part left to shrink, which cuts its text, rather than breaking `#252` into `#25` over `2`.
-    const keep = (part: RenderChildren) => <Box flexShrink={0}>{part}</Box>
 
     // Start: the issue is the one Claude is on, and Claude gets it. Its button says so from the press on.
     const start = (issue: Issue) =>
@@ -4179,16 +4190,12 @@ export const register: Register = (on, options) => {
         </Text>
         {ROLE_ORDER.map(role => {
           const pick = mapping.picks[role] ?? null
-          const choice = (key: string, label: string, id: string | null) => (
-            <Button key={`statuses-${role}-${key}`} variant={pick === id ? 'primary' : undefined} dimColor={pick !== id} onPress={pickStatus(role, id)}>
-              {label}
-            </Button>
-          )
+          const option = (key: string, label: string, id: string | null) => choice(`statuses-${role}-${key}`, label, pick === id, pickStatus(role, id))
           return (
             <Box key={`statuses-${role}`} flexDirection="row" gap={1} flexWrap="wrap">
               <Text dimColor>{`${ROLE_NAMES[role]}${role === 'backlog' ? ' (folds)' : ''}`}</Text>
-              {mapping.options.map(option => choice(option.id, option.name, option.id))}
-              {choice('none', 'none', null)}
+              {mapping.options.map(one => option(one.id, one.name, one.id))}
+              {option('none', 'none', null)}
             </Box>
           )
         })}
@@ -4219,34 +4226,17 @@ export const register: Register = (on, options) => {
         </Text>
         <Box key="labels-bug" flexDirection="row" gap={1} flexWrap="wrap">
           <Text dimColor>Bugs</Text>
-          {marking.types.map(type => {
-            const isPick = 'type' in marking.picks.bug && marking.picks.bug.type === type
-            return (
-              <Button key={`labels-bug-type-${type}`} variant={isPick ? 'primary' : undefined} dimColor={!isPick} onPress={pickMarker({ bug: { type } })}>
-                {`${type} type`}
-              </Button>
-            )
-          })}
-          {marking.labels.map(label => {
-            const isPick = 'label' in marking.picks.bug && marking.picks.bug.label === label
-            return (
-              <Button key={`labels-bug-${label}`} variant={isPick ? 'primary' : undefined} dimColor={!isPick} onPress={pickMarker({ bug: { label } })}>
-                {label}
-              </Button>
-            )
-          })}
+          {marking.types.map(type =>
+            choice(`labels-bug-type-${type}`, `${type} type`, 'type' in marking.picks.bug && marking.picks.bug.type === type, pickMarker({ bug: { type } })),
+          )}
+          {marking.labels.map(label =>
+            choice(`labels-bug-${label}`, label, 'label' in marking.picks.bug && marking.picks.bug.label === label, pickMarker({ bug: { label } })),
+          )}
         </Box>
         {marking.later && (
           <Box key="labels-later" flexDirection="row" gap={1} flexWrap="wrap">
             <Text dimColor>Later</Text>
-            {marking.labels.map(label => {
-              const isPick = marking.picks.later === label
-              return (
-                <Button key={`labels-later-${label}`} variant={isPick ? 'primary' : undefined} dimColor={!isPick} onPress={pickMarker({ later: label })}>
-                  {label}
-                </Button>
-              )
-            })}
+            {marking.labels.map(label => choice(`labels-later-${label}`, label, marking.picks.later === label, pickMarker({ later: label })))}
           </Box>
         )}
         <Box flexDirection="row" gap={1} marginTop={1}>
@@ -4300,16 +4290,9 @@ export const register: Register = (on, options) => {
               {facts.projects.length === 0 && <Text>{`none is linked to ${facts.repo.name}`}</Text>}
               {facts.projects.length === 1 && chosenProject && <Text bold>{`${chosenProject.title} (#${chosenProject.number})`}</Text>}
               {facts.projects.length > 1 &&
-                facts.projects.map(one => (
-                  <Button
-                    key={`setup-project-${one.number}`}
-                    variant={one.id === planned.chosen ? 'primary' : undefined}
-                    dimColor={one.id !== planned.chosen}
-                    onPress={planned.phase === 'ready' ? choose(one.id) : () => undefined}
-                  >
-                    {`${one.title} #${one.number}`}
-                  </Button>
-                ))}
+                facts.projects.map(one =>
+                  choice(`setup-project-${one.number}`, `${one.title} #${one.number}`, one.id === planned.chosen, planned.phase === 'ready' ? choose(one.id) : () => undefined),
+                )}
               {chosenProject && link(chosenProject.url)}
             </Box>
             {facts.adopted !== undefined && (
@@ -4372,17 +4355,14 @@ export const register: Register = (on, options) => {
                   const own = ROLE_NAMES[role]
                   const pick = planned.roles[role]
                   const ready = planned.phase === 'ready'
-                  const choice = (key: string, label: string, name: string | null) => (
-                    <Button key={`setup-role-${role}-${key}`} variant={pick === name ? 'primary' : undefined} dimColor={pick !== name} onPress={ready ? pickRole(role, name) : () => undefined}>
-                      {label}
-                    </Button>
-                  )
+                  const option = (key: string, label: string, name: string | null) =>
+                    choice(`setup-role-${role}-${key}`, label, pick === name, ready ? pickRole(role, name) : () => undefined)
                   return (
                     <Box key={`setup-role-${role}`} flexDirection="row" gap={1} flexWrap="wrap">
                       <Text dimColor>{`${own}${role === 'backlog' ? ' (folds)' : ''}`}</Text>
-                      {options.map(name => choice(name, name, name))}
-                      {!options.some(name => name.toLowerCase() === own.toLowerCase()) && choice('add', `＋ ${own}`, own)}
-                      {choice('none', 'none', null)}
+                      {options.map(name => option(name, name, name))}
+                      {!options.some(name => name.toLowerCase() === own.toLowerCase()) && option('add', `＋ ${own}`, own)}
+                      {option('none', 'none', null)}
                     </Box>
                   )
                 })}
@@ -4568,17 +4548,7 @@ export const register: Register = (on, options) => {
         <Text bold color="claude">
           Issues
         </Text>
-        {tabs.map(one => (
-          <Button
-            key={`filter-${one.id}`}
-            hotkey={one.hotkey}
-            variant={one.id === shownTab ? 'primary' : undefined}
-            dimColor={one.id !== shownTab}
-            onPress={() => void pickTab($, one, project)}
-          >
-            {tabLabel(one)}
-          </Button>
-        ))}
+        {tabs.map(one => choice(`filter-${one.id}`, tabLabel(one), one.id === shownTab, () => void pickTab($, one, project), { hotkey: one.hotkey }))}
         {Input && (
           <Input
             key="search"
@@ -4591,16 +4561,7 @@ export const register: Register = (on, options) => {
           />
         )}
         <Text dimColor>by</Text>
-        {groupings.map(one => (
-          <Button
-            key={`group-${one.id}`}
-            variant={one.id === grouping ? 'primary' : undefined}
-            dimColor={one.id !== grouping}
-            onPress={() => void update($, groupBy, () => one.id)}
-          >
-            {one.label}
-          </Button>
-        ))}
+        {groupings.map(one => choice(`group-${one.id}`, one.label, one.id === grouping, () => void update($, groupBy, () => one.id)))}
       </Box>
     )
 
@@ -4637,9 +4598,7 @@ export const register: Register = (on, options) => {
               .map(row => (
                 <Box key={`plan-row-${row.id}`} flexDirection="column">
                   <Box flexDirection="row" gap={1} flexWrap="wrap">
-                    <Button key={`plan-pick-${row.id}`} variant={row.picked ? 'primary' : undefined} dimColor={!row.picked} onPress={pickRow(row.id)}>
-                      {`${row.picked ? '☑' : '☐'} ${cardParts(row.change).head}`}
-                    </Button>
+                    {choice(`plan-pick-${row.id}`, `${row.picked ? '☑' : '☐'} ${cardParts(row.change).head}`, row.picked, pickRow(row.id))}
                     {cardParts(row.change).detail && <Text wrap="wrap">{cardParts(row.change).detail}</Text>}
                     <Text dimColor wrap="wrap">
                       {row.reason}
@@ -4891,11 +4850,6 @@ export const register: Register = (on, options) => {
       const otherTarget = triageTarget(project, other)
       const choosing = (edit: { priority?: string; area?: string | null }) => () =>
         void update($, triage, was => ({ ...was, picks: [...was.picks.filter(one => one.number !== issue.number), { ...was.picks.find(one => one.number === issue.number), number: issue.number, ...edit }] }))
-      const option = (key: string, label: string, chosen: boolean, onPress: () => void) => (
-        <Button key={key} variant={chosen ? 'primary' : undefined} dimColor={!chosen} onPress={onPress}>
-          {label}
-        </Button>
-      )
       const age = ago(issue.updatedAt, clock)
       return (
         <Box key={`triage-${issue.number}`} flexDirection="column" marginTop={1}>
@@ -4909,10 +4863,10 @@ export const register: Register = (on, options) => {
             <Text dimColor>{age}</Text>
           </Box>
           <Box flexDirection="row" gap={1} flexWrap="wrap" paddingLeft={2}>
-            {(project?.priority?.options ?? []).map(one => option(`triage-${issue.number}-priority-${one.name}`, one.name, one.name === priority, choosing({ priority: one.name })))}
+            {(project?.priority?.options ?? []).map(one => choice(`triage-${issue.number}-priority-${one.name}`, one.name, one.name === priority, choosing({ priority: one.name })))}
             <Text dimColor>·</Text>
-            {areaNames.map(name => option(`triage-${issue.number}-area-${name}`, name, name === area, choosing({ area: name })))}
-            {option(`triage-${issue.number}-area-none`, 'no area', area === null, choosing({ area: null }))}
+            {areaNames.map(name => choice(`triage-${issue.number}-area-${name}`, name, name === area, choosing({ area: name })))}
+            {choice(`triage-${issue.number}-area-none`, 'no area', area === null, choosing({ area: null }))}
             <Text dimColor>·</Text>
             <Button key={`triage-${issue.number}-accept`} variant="primary" onPress={() => void acceptTriage($, issue, { priority, area }, status)}>
               {target ? `✓ Accept → ${target}` : '✓ Accept'}
@@ -5016,16 +4970,9 @@ export const register: Register = (on, options) => {
     const picker = (issue: Issue, field: 'status' | 'priority', label: string, options: { id: string; name: string }[], value: string | null | undefined) => (
       <Box key={`${field}-${issue.number}`} flexDirection="row" gap={1} flexWrap="wrap">
         <Text dimColor>{label}</Text>
-        {options.map(option => (
-          <Button
-            key={`${field}-${issue.number}-${option.id}`}
-            variant={option.name === value ? 'primary' : undefined}
-            dimColor={option.name !== value}
-            onPress={() => void (option.name === value ? undefined : pick($, issue, field, option.name))}
-          >
-            {option.name}
-          </Button>
-        ))}
+        {options.map(option =>
+          choice(`${field}-${issue.number}-${option.id}`, option.name, option.name === value, () => void (option.name === value ? undefined : pick($, issue, field, option.name))),
+        )}
       </Box>
     )
 
@@ -5099,11 +5046,7 @@ export const register: Register = (on, options) => {
             {row('Labels')}
             {labels.map(name => {
               const has = issue.labels.some(label => label.name === name)
-              return (
-                <Button key={`label-${n}-${name}`} variant={has ? 'primary' : undefined} dimColor={!has} onPress={() => void change($, n, has ? { removeLabels: [name] } : { addLabels: [name] })}>
-                  {name}
-                </Button>
-              )
+              return choice(`label-${n}-${name}`, name, has, () => void change($, n, has ? { removeLabels: [name] } : { addLabels: [name] }))
             })}
             {Input && (
               // A label the repo hasn't got yet is made, then put on the issue; Claude Code doesn't ask, as the person typed it.
@@ -5124,16 +5067,7 @@ export const register: Register = (on, options) => {
           {more && ((now.issueTypes ?? []).length > 0 && (
             <Box key={`type-row-${n}`} flexDirection="row" gap={1} flexWrap="wrap">
               {row('Type')}
-              {(now.issueTypes ?? []).map(name => (
-                <Button
-                  key={`type-${n}-${name}`}
-                  variant={name === issue.type ? 'primary' : undefined}
-                  dimColor={name !== issue.type}
-                  onPress={() => void change($, n, { type: name === issue.type ? null : name })}
-                >
-                  {name}
-                </Button>
-              ))}
+              {(now.issueTypes ?? []).map(name => choice(`type-${n}-${name}`, name, name === issue.type, () => void change($, n, { type: name === issue.type ? null : name })))}
             </Box>
           ))}
           {/* Where it sits. */}
@@ -5168,11 +5102,7 @@ export const register: Register = (on, options) => {
               {offered && offered.milestones.length === 0 && <Text dimColor>none in this repo</Text>}
               {(offered?.milestones ?? []).map(title => {
                 const has = issue.milestone === title
-                return (
-                  <Button key={`milestone-${n}-${title}`} variant={has ? 'primary' : undefined} dimColor={!has} onPress={() => void change($, n, { milestone: has ? null : title })}>
-                    {title}
-                  </Button>
-                )
+                return choice(`milestone-${n}-${title}`, title, has, () => void change($, n, { milestone: has ? null : title }))
               })}
             </Box>
           )}
@@ -5183,16 +5113,9 @@ export const register: Register = (on, options) => {
               <Box key={`field-row-${key}`} flexDirection="row" gap={1} flexWrap="wrap">
                 {row(fit(field.name, 9))}
                 {field.kind === 'select' || field.kind === 'iteration'
-                  ? (field.options ?? []).map(option => (
-                      <Button
-                        key={`field-${key}-${option.id}`}
-                        variant={option.name === now$ ? 'primary' : undefined}
-                        dimColor={option.name !== now$}
-                        onPress={() => void change($, n, { fields: { [field.name]: option.name === now$ ? null : option.name } })}
-                      >
-                        {option.name}
-                      </Button>
-                    ))
+                  ? (field.options ?? []).map(option =>
+                      choice(`field-${key}-${option.id}`, option.name, option.name === now$, () => void change($, n, { fields: { [field.name]: option.name === now$ ? null : option.name } })),
+                    )
                   : Input && (
                       <Input
                         key={`field-${key}`}
@@ -5488,9 +5411,7 @@ export const register: Register = (on, options) => {
             ) : (
               [startButton, backgroundButton, draftButton, draftBackgroundButton]
             )}
-            <Button key={`edit-${issue.number}`} variant={changing === issue.number ? 'primary' : undefined} dimColor={changing !== issue.number} onPress={openEditor(issue.number)}>
-              ⚙ Change
-            </Button>
+            {choice(`edit-${issue.number}`, '⚙ Change', changing === issue.number, openEditor(issue.number))}
             {link(pageOf(now.repo, 'issues', issue))}
             <Button key={`close-${issue.number}`} dimColor hotkey={hotkeys ? 'x' : undefined} onPress={toggle(issue.number)}>
               Collapse
@@ -5790,16 +5711,11 @@ export const register: Register = (on, options) => {
     if (problems.length === 0 && alerts.length === 0 && offers.length === 0 && notes.length === 0 && !unadopted && !guessed && !marked && !planned && caught === 0)
       return next(e)
 
-    const { Box, Text, Button, Link } = $.ui.resolve(e)
-    const width = e.props.bodyColumns
-    // A link on one line, as in the pane: an ellipsis where the row is short of room.
-    const link = (href: string, label = '↗ GitHub') => (
-      <Text wrap="truncate-end">
-        <Link href={href} label={label} />
-      </Text>
-    )
+    const elements = $.ui.resolve(e)
+    const { Box, Text, Button } = elements
     // Each line keeps its badge, number and buttons whole, as the pane's rows do; its text is cut to what is left.
-    const keep = (part: RenderChildren) => <Box flexShrink={0}>{part}</Box>
+    const { link, keep } = partsOf(elements)
+    const width = e.props.bodyColumns
     const clock = Date.now()
     const repo = now?.repo ?? ''
     const dismiss = (alert: Alert) => async () => {
@@ -5810,224 +5726,164 @@ export const register: Register = (on, options) => {
     // A button that hands Claude a pull request: into the prompt box while Claude is busy, sent otherwise.
     const hand = (text: string) => (e.props.isWorking ? $.prompt.fill({ text }) : submit($, 'other prompts', { text, asUser: true }))
 
+    // One line of the band: `<badge> #<number> <text> <buttons> ✕`. The badge, number, buttons and ✕ keep their width;
+    // the text is cut to what is left.
+    const bandRow = (row: {
+      key?: string
+      badge: string
+      color: ThemeKey
+      number?: { value: number; color: ThemeKey }
+      text: RenderChildren
+      actions?: RenderChildren[]
+      dismiss?: { key: string; onPress: () => void }
+    }) => (
+      <Box key={row.key} flexDirection="row" gap={1}>
+        {keep(
+          <Text color={row.color} inverse bold>
+            {` ${row.badge} `}
+          </Text>,
+        )}
+        {row.number && keep(<Text color={row.number.color} bold>{`#${row.number.value}`}</Text>)}
+        <Text wrap="truncate-end">{row.text}</Text>
+        {(row.actions ?? []).map(part => part && keep(part))}
+        {row.dismiss &&
+          keep(
+            <Button key={row.dismiss.key} dimColor onPress={row.dismiss.onPress}>
+              ✕
+            </Button>,
+          )}
+      </Box>
+    )
+
     const line = (alert: Alert) => {
+      const gone = { key: `dismiss-${alert.key}`, onPress: () => void dismiss(alert)() }
       switch (alert.kind) {
         case 'ci': {
           const { pr } = alert
           const names = pr.failing ?? []
-          return (
-            <Box flexDirection="row" gap={1}>
-              {keep(
-                <Text color="error" inverse bold>
-                  {' ✗ CI '}
-                </Text>,
-              )}
-              {keep(<Text color="suggestion" bold>{`#${pr.number}`}</Text>)}
-              <Text wrap="truncate-end">
-                <Text>{fit(pr.title, Math.max(12, width - 44))}</Text>
-                <Text dimColor>{` ${names.length > 0 ? fit(names.join(', '), 24) : 'failing'} on ${fit(pr.branch, 20)}`}</Text>
-              </Text>
-              {keep(
-                <Button key={`fix-${pr.number}`} variant="primary" onPress={() => void hand(fixPrompt(pr))}>
-                  Fix
-                </Button>,
-              )}
-              {keep(link(pageOf(repo, 'pull', pr)))}
-              {keep(
-                <Button key={`dismiss-${alert.key}`} dimColor onPress={() => void dismiss(alert)()}>
-                  ✕
-                </Button>,
-              )}
-            </Box>
-          )
+          return bandRow({
+            badge: '✗ CI',
+            color: 'error',
+            number: { value: pr.number, color: 'suggestion' },
+            text: [
+              <Text>{fit(pr.title, Math.max(12, width - 44))}</Text>,
+              <Text dimColor>{` ${names.length > 0 ? fit(names.join(', '), 24) : 'failing'} on ${fit(pr.branch, 20)}`}</Text>,
+            ],
+            actions: [
+              <Button key={`fix-${pr.number}`} variant="primary" onPress={() => void hand(fixPrompt(pr))}>
+                Fix
+              </Button>,
+              link(pageOf(repo, 'pull', pr)),
+            ],
+            dismiss: gone,
+          })
         }
         case 'pass': {
           const { pr } = alert
-          return (
-            <Box flexDirection="row" gap={1}>
-              {keep(
-                <Text color="success" inverse bold>
-                  {' ✓ CI '}
-                </Text>,
-              )}
-              {keep(<Text color="suggestion" bold>{`#${pr.number}`}</Text>)}
-              <Text wrap="truncate-end">
-                <Text>{fit(pr.title, Math.max(12, width - 57))}</Text>
-                <Text dimColor>{` passed on ${fit(pr.branch, 20)}`}</Text>
-              </Text>
-              {keep(
-                <Button key={`merge-${pr.number}`} variant="primary" onPress={() => void hand(closeOutPrompt(pr))}>
-                  Finish & merge
-                </Button>,
-              )}
-              {keep(link(pageOf(repo, 'pull', pr)))}
-              {keep(
-                <Button key={`dismiss-${alert.key}`} dimColor onPress={() => void dismiss(alert)()}>
-                  ✕
-                </Button>,
-              )}
-            </Box>
-          )
+          return bandRow({
+            badge: '✓ CI',
+            color: 'success',
+            number: { value: pr.number, color: 'suggestion' },
+            text: [<Text>{fit(pr.title, Math.max(12, width - 57))}</Text>, <Text dimColor>{` passed on ${fit(pr.branch, 20)}`}</Text>],
+            actions: [
+              <Button key={`merge-${pr.number}`} variant="primary" onPress={() => void hand(closeOutPrompt(pr))}>
+                Finish & merge
+              </Button>,
+              link(pageOf(repo, 'pull', pr)),
+            ],
+            dismiss: gone,
+          })
         }
         case 'activity': {
           const { issue } = alert
-          return (
-            <Box flexDirection="row" gap={1}>
-              {keep(
-                <Text color="warning" inverse bold>
-                  {' ● NEW '}
-                </Text>,
-              )}
-              {keep(<Text color="claude" bold>{`#${issue.number}`}</Text>)}
-              <Text wrap="truncate-end">
-                <Text>{fit(issue.title, Math.max(12, width - 44))}</Text>
-                <Text dimColor>{` changed ${agoText(issue.updatedAt, clock)}`}</Text>
-              </Text>
-              {keep(link(pageOf(repo, 'issues', issue)))}
-              {keep(
-                <Button key={`dismiss-${alert.key}`} dimColor onPress={() => void dismiss(alert)()}>
-                  ✕
-                </Button>,
-              )}
-            </Box>
-          )
+          return bandRow({
+            badge: '● NEW',
+            color: 'warning',
+            number: { value: issue.number, color: 'claude' },
+            text: [<Text>{fit(issue.title, Math.max(12, width - 44))}</Text>, <Text dimColor>{` changed ${agoText(issue.updatedAt, clock)}`}</Text>],
+            actions: [link(pageOf(repo, 'issues', issue))],
+            dismiss: gone,
+          })
         }
         case 'closed':
-          return (
-            <Box flexDirection="row" gap={1}>
-              {keep(
-                <Text color="success" inverse bold>
-                  {' ✓ DONE '}
-                </Text>,
-              )}
-              {keep(<Text color="claude" bold>{`#${alert.working.number}`}</Text>)}
-              <Text wrap="truncate-end">
-                <Text>{fit(alert.working.title, Math.max(12, width - 30))}</Text>
-                <Text dimColor> is closed</Text>
-              </Text>
-              {keep(
-                <Button key={`dismiss-${alert.key}`} dimColor onPress={() => void dismiss(alert)()}>
-                  ✕
-                </Button>,
-              )}
-            </Box>
-          )
+          return bandRow({
+            badge: '✓ DONE',
+            color: 'success',
+            number: { value: alert.working.number, color: 'claude' },
+            text: [<Text>{fit(alert.working.title, Math.max(12, width - 30))}</Text>, <Text dimColor> is closed</Text>],
+            dismiss: gone,
+          })
       }
     }
 
-    const offerLine = ({ task, box }: { task: BoxTask; box: number }) => (
-      <Box key={`offer-${task.id}`} flexDirection="row" gap={1}>
-        {keep(
-          <Text color="success" inverse bold>
-            {' ☑ TICK? '}
-          </Text>,
-        )}
-        {keep(<Text color="claude" bold>{`#${task.number}`}</Text>)}
-        <Text wrap="truncate-end">
-          <Text dimColor>{`box ${box} `}</Text>
-          <Text>{fit(task.text, Math.max(12, width - 52))}</Text>
-          <Text dimColor> is done</Text>
-        </Text>
-        {keep(
+    const offerLine = ({ task, box }: { task: BoxTask; box: number }) =>
+      bandRow({
+        key: `offer-${task.id}`,
+        badge: '☑ TICK?',
+        color: 'success',
+        number: { value: task.number, color: 'claude' },
+        text: [<Text dimColor>{`box ${box} `}</Text>, <Text>{fit(task.text, Math.max(12, width - 52))}</Text>, <Text dimColor> is done</Text>],
+        actions: [
           <Button key={`tick-task-${task.id}`} variant="primary" onPress={() => void tickTask($, task)}>
             {`Tick box ${box}`}
           </Button>,
-        )}
-        {keep(
-          <Button key={`skip-task-${task.id}`} dimColor onPress={() => void update($, tasks, list => list.filter(one => one.id !== task.id))}>
-            ✕
-          </Button>,
-        )}
-      </Box>
-    )
+        ],
+        dismiss: { key: `skip-task-${task.id}`, onPress: () => void update($, tasks, list => list.filter(one => one.id !== task.id)) },
+      })
 
     // An epic the board moved on, or that has a sub-issue open again: `◆ EPIC #35 <title> · <what happened>`.
     const epicLine = (note: EpicNote) => {
       const tail = ` · ${note.text}`
-      return (
-        <Box key={`epic-row-${note.key}`} flexDirection="row" gap={1}>
-          {keep(
-            <Text color="warning" inverse bold>
-              {' ◆ EPIC '}
-            </Text>,
-          )}
-          {keep(<Text color="claude" bold>{`#${note.epic}`}</Text>)}
-          <Text wrap="truncate-end">
-            <Text>{fit(note.title, Math.max(12, width - cells(tail) - 30))}</Text>
-            <Text dimColor>{tail}</Text>
-          </Text>
-          {keep(link(pageOf(repo, 'issues', { number: note.epic, url: '' })))}
-          {keep(
-            <Button key={`dismiss-${note.key}`} dimColor onPress={() => void update($, epicNotes, list => list.filter(one => one.key !== note.key))}>
-              ✕
-            </Button>,
-          )}
-        </Box>
-      )
+      return bandRow({
+        key: `epic-row-${note.key}`,
+        badge: '◆ EPIC',
+        color: 'warning',
+        number: { value: note.epic, color: 'claude' },
+        text: [<Text>{fit(note.title, Math.max(12, width - cells(tail) - 30))}</Text>, <Text dimColor>{tail}</Text>],
+        actions: [link(pageOf(repo, 'issues', { number: note.epic, url: '' }))],
+        dismiss: { key: `dismiss-${note.key}`, onPress: () => void update($, epicNotes, list => list.filter(one => one.key !== note.key)) },
+      })
     }
 
     // Something missing: what it is, the command or page that fixes it, and a look again once it's done.
     const problemLine = (problem: Problem) => {
       const how = problem.command ? `run ${problem.command}` : problem.fix
-      return (
-        <Box key={`problem-row-${problem.id}`} flexDirection="row" gap={1}>
-          {keep(
-            <Text color={problem.blocks ? 'error' : 'warning'} inverse bold>
-              {' ⚠ SETUP '}
-            </Text>,
-          )}
-          <Text wrap="truncate-end">
-            <Text>{fit(problem.title, Math.max(16, width - 64))}</Text>
-            <Text dimColor>{` · ${fit(how, 32)}`}</Text>
-          </Text>
-          {problem.command &&
-            keep(
-              <Button key={`copy-fix-${problem.id}`} variant="primary" onPress={press => void copyFix($, problem, press.surface)}>
-                Copy command
-              </Button>,
-            )}
-          {problem.url && !problem.command && keep(link(problem.url, '↗ Open page'))}
-          {keep(
-            <Button key={`recheck-${problem.id}`} dimColor onPress={() => void recheck($)}>
-              Check again
-            </Button>,
-          )}
-          {keep(
-            <Button key={`dismiss-${accessKey(problem)}`} dimColor onPress={() => void dismissProblem($, problem)}>
-              ✕
-            </Button>,
-          )}
-        </Box>
-      )
+      return bandRow({
+        key: `problem-row-${problem.id}`,
+        badge: '⚠ SETUP',
+        color: problem.blocks ? 'error' : 'warning',
+        text: [<Text>{fit(problem.title, Math.max(16, width - 64))}</Text>, <Text dimColor>{` · ${fit(how, 32)}`}</Text>],
+        actions: [
+          problem.command && (
+            <Button key={`copy-fix-${problem.id}`} variant="primary" onPress={press => void copyFix($, problem, press.surface)}>
+              Copy command
+            </Button>
+          ),
+          problem.url && !problem.command && link(problem.url, '↗ Open page'),
+          <Button key={`recheck-${problem.id}`} dimColor onPress={() => void recheck($)}>
+            Check again
+          </Button>,
+        ],
+        dismiss: { key: `dismiss-${accessKey(problem)}`, onPress: () => void dismissProblem($, problem) },
+      })
     }
 
     // `⚠ PROJECT Let the board write to <title>, owned by <owner>? · it only reads it until you say yes`. Review opens the
     // pane, where the warning says what it would write; ✕ keeps it read-only.
     const adoptLine = (project: Project) => {
       const tail = ' · it only reads it until you say yes'
-      return (
-        <Box key="adopt-row" flexDirection="row" gap={1}>
-          {keep(
-            <Text color="warning" inverse bold>
-              {' ⚠ PROJECT '}
-            </Text>,
-          )}
-          <Text wrap="truncate-end">
-            <Text>{fit(adoptText(project, settings.refresh).title, Math.max(16, width - cells(tail) - 26))}</Text>
-            <Text dimColor>{tail}</Text>
-          </Text>
-          {keep(
-            <Button key="adopt-review" variant="primary" onPress={() => void $.ui.open(OPEN)}>
-              Review
-            </Button>,
-          )}
-          {keep(
-            <Button key="adopt-dismiss" dimColor onPress={() => void declineFromPrompt($, project)}>
-              ✕
-            </Button>,
-          )}
-        </Box>
-      )
+      return bandRow({
+        key: 'adopt-row',
+        badge: '⚠ PROJECT',
+        color: 'warning',
+        text: [<Text>{fit(adoptText(project, settings.refresh).title, Math.max(16, width - cells(tail) - 26))}</Text>, <Text dimColor>{tail}</Text>],
+        actions: [
+          <Button key="adopt-review" variant="primary" onPress={() => void $.ui.open(OPEN)}>
+            Review
+          </Button>,
+        ],
+        dismiss: { key: 'adopt-dismiss', onPress: () => void declineFromPrompt($, project) },
+      })
     }
 
     // `✦ PLAN Claude's plan: 5 changes to 3 issues · Status 3 · Priority 2`. Review opens the pane at the plan's card.
@@ -6035,112 +5891,60 @@ export const register: Register = (on, options) => {
       const changes = one.rows.map(row => row.change)
       const head = `Claude's plan: ${sizeText(changes)}`
       const tail = ` · ${kindsText(changes)}`
-      return (
-        <Box key="plan-row" flexDirection="row" gap={1}>
-          {keep(
-            <Text color="suggestion" inverse bold>
-              {' ✦ PLAN '}
-            </Text>,
-          )}
-          <Text wrap="truncate-end">
-            <Text>{fit(head, Math.max(16, width - 22))}</Text>
-            <Text dimColor>{fit(tail, Math.max(0, width - 22 - cells(head)))}</Text>
-          </Text>
-          {keep(
-            <Button key="plan-review" variant="primary" onPress={() => void $.ui.open(OPEN)}>
-              Review
-            </Button>,
-          )}
-        </Box>
-      )
+      return bandRow({
+        key: 'plan-row',
+        badge: '✦ PLAN',
+        color: 'suggestion',
+        text: [<Text>{fit(head, Math.max(16, width - 22))}</Text>, <Text dimColor>{fit(tail, Math.max(0, width - 22 - cells(head)))}</Text>],
+        actions: [
+          <Button key="plan-review" variant="primary" onPress={() => void $.ui.open(OPEN)}>
+            Review
+          </Button>,
+        ],
+      })
     }
 
-    // `? STATUS Status: Todo is Ready, Doing is In progress, Shipped is Done`. Looks right saves it; Change opens
-    // /issues statuses; ✕ leaves it a guess, unasked.
-    const guessLine = (project: Project) => {
-      const key = guessKey(project, guess)
-      return (
-        <Box key="guess-row" flexDirection="row" gap={1}>
-          {keep(
-            <Text color="suggestion" inverse bold>
-              {' ? STATUS '}
-            </Text>,
-          )}
-          <Text wrap="truncate-end">{fit(guessText(guess), Math.max(16, width - 44))}</Text>
-          {keep(
-            <Button key="guess-yes" variant="primary" onPress={() => void confirmGuess($, project)}>
-              Looks right
-            </Button>,
-          )}
-          {keep(
-            <Button key="guess-change" dimColor onPress={() => void seeGuess($, key).then(() => openStatuses($))}>
-              Change
-            </Button>,
-          )}
-          {keep(
-            <Button key="guess-dismiss" dimColor onPress={() => void seeGuess($, key)}>
-              ✕
-            </Button>,
-          )}
-        </Box>
-      )
-    }
-
-    // `? LABELS Bugs: the Bug issue type · Later: the label someday`. Looks right saves it; Change opens /issues labels;
-    // ✕ leaves it a guess, unasked.
-    const markerLine = () => {
-      const key = markerKey(markerAsk)
-      return (
-        <Box key="labels-row" flexDirection="row" gap={1}>
-          {keep(
-            <Text color="suggestion" inverse bold>
-              {' ? LABELS '}
-            </Text>,
-          )}
-          <Text wrap="truncate-end">{fit(markerText(markerAsk), Math.max(16, width - 44))}</Text>
-          {keep(
-            <Button key="labels-yes" variant="primary" onPress={() => void confirmMarkers($, markerAsk)}>
-              Looks right
-            </Button>,
-          )}
-          {keep(
-            <Button key="labels-change" dimColor onPress={() => void seeGuess($, key).then(() => openMarkers($))}>
-              Change
-            </Button>,
-          )}
-          {keep(
-            <Button key="labels-dismiss" dimColor onPress={() => void seeGuess($, key)}>
-              ✕
-            </Button>,
-          )}
-        </Box>
-      )
-    }
+    // A guess the board asks the person to look at: Looks right saves it; Change opens the card that picks it; ✕ leaves
+    // it a guess, unasked. `id` names its row and buttons, `seen` the guess.
+    const askLine = (id: 'guess' | 'labels', badge: string, text: string, seen: string, confirm: () => Promise<unknown>, change: () => Promise<unknown>) =>
+      bandRow({
+        key: `${id}-row`,
+        badge,
+        color: 'suggestion',
+        text: fit(text, Math.max(16, width - 44)),
+        actions: [
+          <Button key={`${id}-yes`} variant="primary" onPress={() => void confirm()}>
+            Looks right
+          </Button>,
+          <Button key={`${id}-change`} dimColor onPress={() => void seeGuess($, seen).then(change)}>
+            Change
+          </Button>,
+        ],
+        dismiss: { key: `${id}-dismiss`, onPress: () => void seeGuess($, seen) },
+      })
+    // `? STATUS Status: Todo is Ready, Doing is In progress, Shipped is Done`, changed in /issues statuses.
+    const guessLine = (project: Project) =>
+      askLine('guess', '? STATUS', guessText(guess), guessKey(project, guess), () => confirmGuess($, project), () => openStatuses($))
+    // `? LABELS Bugs: the Bug issue type · Later: the label someday`, changed in /issues labels.
+    const markerLine = () =>
+      askLine('labels', '? LABELS', markerText(markerAsk), markerKey(markerAsk), () => confirmMarkers($, markerAsk), () => openMarkers($))
 
     // `✚ INBOX 3 captured to the Inbox`. Open Inbox opens the pane at the Inbox tab, which ends the count; ✕ ends it too.
     const capturedLine = () => {
       const project = now?.project ?? null
       const tab = inboxTabOf(filtersFor(project), project)
-      return (
-        <Box key="captured-row" flexDirection="row" gap={1}>
-          {keep(
-            <Text color="suggestion" inverse bold>
-              {' ✚ INBOX '}
-            </Text>,
-          )}
-          <Text wrap="truncate-end">{fit(`${caught} captured to the Inbox`, Math.max(16, width - 32))}</Text>
-          {keep(
-            <Button key="captured-open" variant="primary" onPress={() => void openInbox($)}>
-              {tab ? 'Open Inbox' : 'Open issues'}
-            </Button>,
-          )}
-          {keep(
-            <Button key="captured-dismiss" dimColor onPress={() => void update($, captured, () => 0)}>
-              ✕
-            </Button>,
-          )}
-        </Box>
-      )
+      return bandRow({
+        key: 'captured-row',
+        badge: '✚ INBOX',
+        color: 'suggestion',
+        text: fit(`${caught} captured to the Inbox`, Math.max(16, width - 32)),
+        actions: [
+          <Button key="captured-open" variant="primary" onPress={() => void openInbox($)}>
+            {tab ? 'Open Inbox' : 'Open issues'}
+          </Button>,
+        ],
+        dismiss: { key: 'captured-dismiss', onPress: () => void update($, captured, () => 0) },
+      })
     }
 
     return (
