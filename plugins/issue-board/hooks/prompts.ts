@@ -1,5 +1,5 @@
 import type { ModelTextBlock } from 'claude-code'
-import type { Board, BuiltInFilter, Comment, Flagged, Issue, Markers, Project, PullRequest, Suggestion, Working } from '../types'
+import type { Board, BuiltInFilter, Check, Comment, Flagged, Issue, Markers, Project, PullRequest, Suggestion, Worker, Working } from '../types'
 import { TOOLS, WORKER } from './tools'
 import { NOW_COUNT, nowNames, priorityRank, roleOf } from './project'
 import { offText } from './settings'
@@ -238,25 +238,31 @@ export const boardText = (board: Board, issues: Issue[], label: string, clock: n
   ].join('\n')
 }
 
-// The PR rule's sentences for an issue: `Closes` only when every box is ticked, else `Refs`. None with the rule off,
-// which leaves it to the repository's own rules.
-const prRuleText = (number: number, closesWhenTicked: boolean): string[] =>
-  closesWhenTicked
-    ? [
-        `When you open a pull request for #${number}, write \`Closes #${number}\` in its body only if every acceptance box of #${number} is ticked by then.`,
-        `Otherwise write \`Refs #${number}\`, so the issue stays open for what is left. If the repository's contributing guidelines say otherwise, follow them.`,
-      ]
-    : []
+// The line a pull request's text gains for the issue Claude is on, through the engine's `attribution.text` for `pr`:
+// `Closes #N` when every acceptance box is ticked, as the board last read them, so merging closes the issue; `Refs #N`
+// while a box is open, so the issue stays open for what is left. Some repos keep an issue open for verification, and
+// say `Refs` until then. Nothing with the rule off, which leaves it to the repository's own rules. Nothing either while
+// a background worker is on another issue: the engine composes the same text for the worker's pull request and says
+// nothing of whose it is, and the worker's prompt carries its own rule.
+export const prKeyword = (issue: { number: number; checks: Check[] } | null, others: Worker[], closesWhenTicked: boolean): string => {
+  if (!closesWhenTicked || !issue) return ''
+  if (others.some(worker => worker.number !== issue.number && !WORKER_ENDED.includes(worker.status))) return ''
+  const step = progress(issue.checks)
+  return `${step.done === step.total ? 'Closes' : 'Refs'} #${issue.number}`
+}
+
+// A worker in one of these states writes no more pull requests.
+const WORKER_ENDED: Worker['status'][] = ['completed', 'failed', 'killed']
 
 // The system prompt's section while Claude works on an issue the person started this session. It names the issue and
-// nothing that changes as the work goes on, so the prompt cache holds until the person starts another. `Closes` only
-// when the pull request finishes the issue: some repos keep an issue open for verification, and say `Refs` until then.
-export const workingSection = (working: Working, closesWhenTicked: boolean): string =>
+// nothing that changes as the work goes on, so the prompt cache holds until the person starts another. Whether a pull
+// request says `Closes` or `Refs` changes as boxes are ticked, so it isn't here: prKeyword puts it in the pull request's
+// own text.
+export const workingSection = (working: Working): string =>
   [
     `The person is working on GitHub issue #${working.number}: ${working.title}. They handed it to you from the issue board.`,
     `When you finish and check an acceptance box of #${working.number}, tick it with the mcp__issue-board__tick tool.`,
     `Change it with the mcp__issue-board__issue_update tool; moving its Status needs no permission.`,
-    ...prRuleText(working.number, closesWhenTicked),
   ].join(' ')
 
 // What Claude does when a background agent it handed an issue to ends, in `background` start mode. It follows the

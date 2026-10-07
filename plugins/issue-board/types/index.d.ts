@@ -51,8 +51,18 @@ export type Role = 'inbox' | 'ready' | 'backlog' | 'started' | 'verification' | 
 export type Roles = Partial<Record<Role, string>>
 
 // A field of the project beyond Status and Priority, by its kind. `options` are a single-select field's options, or an
-// iteration field's iterations, by title.
-export type ProjectField = { id: string; name: string; kind: 'text' | 'number' | 'date' | 'iteration' | 'select'; options?: { id: string; name: string }[] }
+// iteration field's iterations, by title. `iterations` are an iteration field's iterations with their dates, the
+// completed ones too, for the `@current`, `@next` and `@previous` filter terms; absent on an older board.
+export type ProjectField = {
+  id: string
+  name: string
+  kind: 'text' | 'number' | 'date' | 'iteration' | 'select'
+  options?: { id: string; name: string }[]
+  iterations?: Iteration[]
+}
+
+// An iteration of an iteration field: its title, the day it starts (YYYY-MM-DD) and how many days it lasts.
+export type Iteration = { id: string; title: string; start: string; days: number }
 
 // What names a GitHub Project: its node id, its number in its owner's projects, its title and its page.
 export type ProjectRef = { id: string; number: number; title: string; url: string }

@@ -1,4 +1,4 @@
-import type { Board, BuiltInFilter, Ci, Filter, GroupBy, Issue, Markers, Project, ProjectField, ProjectView, Role } from '../types'
+import type { Board, BuiltInFilter, Ci, Filter, GroupBy, Issue, Iteration, Markers, Project, ProjectField, ProjectView, Role } from '../types'
 import { DEFAULT_MARKERS, isBug, isFuture, same } from './markers'
 import { isLater, isNow, isRole, priorityRank, roleOf } from './project'
 
@@ -317,10 +317,71 @@ export const parseFilter = (text: string): FilterTerm[] =>
     }
   })
 
-// A value the board compares as text. Ranges, comparisons, wildcards and `@` dates or iterations need more than the
-// board knows, so a term holding one is named as one it can't apply. `@me` is the person, for assignee.
+// A value the board compares as text. Ranges, comparisons, wildcards and `@` dates need more than the board knows, so
+// a term holding one is named as one it can't apply. `@me` is the person, for assignee. An iteration field's `@`
+// terms are iterationTitlesOf's.
 const plainValue = (value: string, key: string | undefined): boolean =>
   value.startsWith('@') ? value.toLowerCase() === '@me' && key === 'assignee' : !/^[<>]|\.\.|\*/.test(value)
+
+// An iteration with the times it runs over: from the local midnight it starts at to the one after its last day. The
+// person's own calendar decides the day, as GitHub's page does in their browser.
+type Span = { title: string; from: number; to: number }
+const spanOf = (iteration: Iteration): Span | null => {
+  const [year, month, day] = iteration.start.split('-').map(Number)
+  if (year === undefined || month === undefined || day === undefined || [year, month, day].some(Number.isNaN)) return null
+  return { title: iteration.title, from: new Date(year, month - 1, day).getTime(), to: new Date(year, month - 1, day + iteration.days).getTime() }
+}
+
+// The current, next and previous iterations of a field at `clock`. The current one runs over the clock; the next is the
+// first to start after it, and the previous the last to end before it. Between two iterations there is no current one,
+// and the next and previous are the ones either side of the gap.
+export const iterationsAt = (field: ProjectField | undefined, clock: number): { current?: Span; next?: Span; previous?: Span } => {
+  const spans = (field?.iterations ?? []).flatMap(one => spanOf(one) ?? []).sort((a, b) => a.from - b.from)
+  return {
+    current: spans.find(span => span.from <= clock && clock < span.to),
+    next: spans.find(span => span.from > clock),
+    previous: spans.filter(span => span.to <= clock).at(-1),
+  }
+}
+
+const ITERATION_TERM = /^@(current|next|previous)$/i
+
+// The titles of the iterations an iteration field's `@current`, `@next` or `@previous` names at `clock`, or a range
+// of them such as `@current..@next`; null for a value that isn't one. A term with no such iteration names none, so it
+// keeps no issue. A range keeps the iterations that start from its first end to its last. An end with no iteration is
+// the clock for `@current`, so `@current..@next` between two iterations keeps the next one, and is open for the others.
+export const iterationTitlesOf = (value: string, field: ProjectField | undefined, clock: number): string[] | null => {
+  const ends = value.split('..')
+  if (ends.length > 2 || !ends.every(end => ITERATION_TERM.test(end))) return null
+  const spans = (field?.iterations ?? []).flatMap(one => spanOf(one) ?? [])
+  const at = iterationsAt(field, clock)
+  const which = (end: string) => end.slice(1).toLowerCase() as 'current' | 'next' | 'previous'
+  if (ends.length === 1) {
+    const one = at[which(value)]
+    return one ? [one.title] : []
+  }
+  const point = (end: string, missing: number) => {
+    const name = which(end)
+    return at[name]?.from ?? (name === 'current' ? clock : missing)
+  }
+  const from = point(ends[0] ?? '', Number.NEGATIVE_INFINITY)
+  const to = point(ends[1] ?? '', Number.POSITIVE_INFINITY)
+  return spans.filter(span => span.from >= from && span.from <= to).map(span => span.title)
+}
+
+// The current iteration and the days left in it, such as `Sprint 14 · 3d left`, for the pane's header: the first
+// iteration field's that has one. Null when no iteration field has a current iteration. The last day counts as one left.
+export const currentIterationText = (project: Project | null | undefined, clock: number): string | null => {
+  for (const field of project?.fields ?? []) {
+    if (field.kind !== 'iteration') continue
+    const current = iterationsAt(field, clock).current
+    if (!current) continue
+    const now = new Date(clock)
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+    return `${current.title} · ${Math.round((current.to - today) / 86_400_000)}d left`
+  }
+  return null
+}
 
 // A test of one issue against a filter, with the login `@me` means.
 type IssueTest = (issue: Issue, viewer: string | null) => boolean
@@ -328,8 +389,8 @@ type IssueTest = (issue: Issue, viewer: string | null) => boolean
 // The board holds open issues only, so `is:open` and `is:issue` keep each of them, `is:closed` and `is:pr` none.
 const IS_KINDS: Record<string, boolean> = { open: true, closed: false, issue: true, pr: false }
 
-// The test for one term, or null for a term the board can't apply.
-const termTest = (term: FilterTerm, project: Project | null | undefined): IssueTest | null => {
+// The test for one term, or null for a term the board can't apply. `clock` places an iteration field's `@` terms.
+const termTest = (term: FilterTerm, project: Project | null | undefined, clock: number): IssueTest | null => {
   if (term.key === null) {
     const word = term.values[0] ?? ''
     if (word === '') return null
@@ -349,13 +410,17 @@ const termTest = (term: FilterTerm, project: Project | null | undefined): IssueT
   }
   const key = term.key
   const own = issueKeyOf(key)
-  if (!own && !projectFieldOf(key, project)) return null
-  if (!term.values.every(value => plainValue(value, own))) return null
+  const field = own ? undefined : projectFieldOf(key, project)
+  if (!own && !field) return null
+  // An iteration field's `@current`, `@next` and `@previous` are the titles of the iterations they name now.
+  const iteration = field?.kind === 'iteration' ? field : undefined
+  const named = term.values.map(value => (iteration ? iterationTitlesOf(value, iteration, clock) : null))
+  if (!term.values.every((value, index) => named[index] !== null || plainValue(value, own))) return null
   return (issue, viewer) => {
     const has = fieldValuesOf(issue, key, project)
-    return term.values.some(value => {
-      const wanted = value.toLowerCase() === '@me' ? viewer : value
-      return wanted !== null && has.some(one => same(one, wanted))
+    return term.values.some((value, index) => {
+      const wanted = named[index] ?? [value.toLowerCase() === '@me' ? viewer : value]
+      return wanted.some(one => one !== null && has.some(had => same(had, one)))
     })
   }
 }
@@ -364,11 +429,13 @@ const termTest = (term: FilterTerm, project: Project | null | undefined): IssueT
 // test, so the tab shows every issue the rest of the filter keeps: more than GitHub would, never fewer.
 export type ViewMatch = { test: IssueTest; unknown: string[] }
 
-export const viewMatchOf = (filter: string, project: Project | null | undefined): ViewMatch => {
+// `clock` is the board's, for an iteration field's `@current`, `@next` and `@previous`. What the board can't apply
+// doesn't depend on it.
+export const viewMatchOf = (filter: string, project: Project | null | undefined, clock: number = Date.now()): ViewMatch => {
   const tests: IssueTest[] = []
   const unknown: string[] = []
   for (const term of parseFilter(filter)) {
-    const test = termTest(term, project)
+    const test = termTest(term, project, clock)
     if (!test) unknown.push(term.raw)
     else tests.push(term.negate ? (issue, viewer) => !test(issue, viewer) : test)
   }
@@ -443,8 +510,8 @@ export const tabsOf = (project: Project | null | undefined): Tab[] => {
 export const tabOf = (tabs: Tab[], chosen: Filter): Tab => tabs.find(tab => tab.id === chosen) ?? tabs[0] ?? { id: 'all', name: 'All', hotkey: '5' }
 
 // Whether an issue belongs under a tab: its view's filter, or its built-in filter. Made once a tab, then used per issue.
-export const tabTest = (tab: Tab, project: Project | null | undefined, markers: Markers = DEFAULT_MARKERS): IssueTest => {
-  if (tab.view) return viewMatchOf(tab.view.filter, project).test
+export const tabTest = (tab: Tab, project: Project | null | undefined, markers: Markers = DEFAULT_MARKERS, clock: number = Date.now()): IssueTest => {
+  if (tab.view) return viewMatchOf(tab.view.filter, project, clock).test
   const id = tab.id as BuiltInFilter
   return (issue, viewer) => matches(id, issue, viewer, project ?? null, markers)
 }
@@ -499,14 +566,33 @@ const GROUPINGS: { id: GroupBy; label: string }[] = [
 ]
 
 // What the pane lists under the Issues heading: the tab shown, how it groups, and the issues under it.
-export const listOf = ({ now, chosen, picked, typed, who, open, marks }: { now: Board; chosen: Filter; picked: GroupBy | null; typed: string; who: string | null; open: number | null; marks: Markers }) => {
+// `clock` is the board's, which places a view's `@current` iteration.
+export const listOf = ({
+  now,
+  chosen,
+  picked,
+  typed,
+  who,
+  open,
+  marks,
+  clock,
+}: {
+  now: Board
+  chosen: Filter
+  picked: GroupBy | null
+  typed: string
+  who: string | null
+  open: number | null
+  marks: Markers
+  clock: number
+}) => {
   // Without a project the board works from labels: Active and Future, grouped by area.
   const project = now.project ?? null
   // The tabs: the project's views with filters, then All and Closed; or the built-in filters. A tab chosen that is no
   // longer there, such as Now once the views are the tabs, gives way to the first.
   const tabs = tabsOf(project)
   const tab = tabOf(tabs, chosen)
-  const tabTests = new Map(tabs.map(one => [one.id, tabTest(one, project, marks)] as const))
+  const tabTests = new Map(tabs.map(one => [one.id, tabTest(one, project, marks, clock)] as const))
   const inTab = (one: Tab, issue: Issue) => tabTests.get(one.id)?.(issue, who) ?? false
   // A view's tab groups as the view does, when the board can: Status, epic, or another field it read. The grouping
   // named for the view's field shows among the others while its tab does.
@@ -525,6 +611,6 @@ export const listOf = ({ now, chosen, picked, typed, who, open, marks }: { now: 
   const tabLabel = (one: Tab) => (one.id === 'closed' ? one.name : `${one.name} ${now.issues.filter(issue => inTab(one, issue)).length}`)
   const groups = triaging ? [] : groupsOf(shown, grouping, project, viewField, marks)
   // The terms of the view's filter the board can't apply, for the note under the heading.
-  const unknownTerms = tab.view ? viewMatchOf(tab.view.filter, project).unknown : []
+  const unknownTerms = tab.view ? viewMatchOf(tab.view.filter, project, clock).unknown : []
   return { project, tabs, tab, kept, shown, triaging, grouping, groupings, tabLabel, groups, unknownTerms }
 }

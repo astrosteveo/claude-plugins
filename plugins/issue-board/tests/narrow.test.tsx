@@ -92,7 +92,21 @@ const PRS = [
   pr(249, 'Keep links and box marks on screen in a narrow pane', 'FAILURE', { body: 'Refs #1234', additions: 12, deletions: 3 }),
 ]
 
-const VIEWS = { views: [{ name: 'Bugs this sprint', number: 2, layout: 'TABLE_LAYOUT' as const, filter: 'label:bug' }, { name: 'Roadmap', number: 3, layout: 'ROADMAP_LAYOUT' as const, filter: null }] }
+// The day `days` from today, as YYYY-MM-DD, so the Cycle field always has a current iteration for the header's note.
+const dayFromToday = (days: number): string => {
+  const now = new Date()
+  const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() + days)
+  return `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`
+}
+const CYCLE = { id: 'F_cycle', name: 'Cycle', dataType: 'ITERATION', configuration: { iterations: [{ id: 'C14', title: 'Cycle 14 of the hangar overhaul', startDate: dayFromToday(-3), duration: 14 }] } }
+
+const VIEWS = {
+  views: [
+    { name: 'Bugs this sprint', number: 2, layout: 'TABLE_LAYOUT' as const, filter: 'label:bug' },
+    { name: 'Roadmap', number: 3, layout: 'ROADMAP_LAYOUT' as const, filter: null },
+  ],
+  fields: [CYCLE],
+}
 
 const WIDTHS = [40, 60, 80, 120]
 
