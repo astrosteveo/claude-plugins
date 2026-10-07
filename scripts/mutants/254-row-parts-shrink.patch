@@ -1,4 +1,6 @@
 Guards #254: a row's number, badge, link and counts never split across lines. Those parts may shrink.
+Test: plugins/issue-board: no number, link, count, badge or key hint splits across lines in the pane or the band, from 40 to 120 columns
+Test: plugins/issue-board: a pull request's row keeps its number, badge, linked issue and counts whole, and cuts the title, narrow and wide
 
 diff --git a/plugins/issue-board/hooks/register.tsx b/plugins/issue-board/hooks/register.tsx
 index 47ad2f7..287ef18 100644
