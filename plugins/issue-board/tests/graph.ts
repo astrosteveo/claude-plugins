@@ -22,7 +22,28 @@ type Raw = {
   comments?: number
   // Its issue type, in a repo that has types.
   type?: string
+  // Its values in other project fields, by field name, for the views that filter or group by them.
+  fields?: Record<string, string>
 }
+
+// A project view as GitHub answers it, and the project's extra fields a test adds for its views.
+export type RawView = { name: string; number: number; layout: 'TABLE_LAYOUT' | 'BOARD_LAYOUT' | 'ROADMAP_LAYOUT'; filter: string | null; groupBy?: string; columns?: string }
+export type Views = { views?: RawView[]; fields?: { id: string; name: string; dataType: string; options?: { id: string; name: string }[] }[] }
+
+// The extra field values the query asks each item for, by alias: `f0` is the first field named, and so on.
+const aliasesOf = (argv: readonly string[]): [string, string][] => {
+  const query = argv.find(arg => arg.startsWith('query=')) ?? ''
+  return [...query.matchAll(/(f\d+): fieldValueByName\(name: ("(?:[^"\\]|\\.)*")\)/g)].map(found => [found[1] ?? '', JSON.parse(found[2] ?? '""') as string])
+}
+
+const viewNode = (view: RawView) => ({
+  name: view.name,
+  number: view.number,
+  layout: view.layout,
+  filter: view.filter,
+  groupByFields: { nodes: view.groupBy ? [{ name: view.groupBy }] : [] },
+  verticalGroupByFields: { nodes: view.columns ? [{ name: view.columns }] : [] },
+})
 
 const option = (prefix: string) => (name: string, index: number) => ({ id: `${prefix}${index}`, name })
 
@@ -57,7 +78,7 @@ export const optionId = (name: string): string => {
   return status >= 0 ? `S${status}` : `P${PRIORITIES.indexOf(name)}`
 }
 
-const node = (raw: Raw, project: boolean) => ({
+const node = (raw: Raw, project: boolean, aliases: [string, string][] = []) => ({
   id: `I_${raw.number}`,
   number: raw.number,
   title: raw.title,
@@ -77,8 +98,16 @@ const node = (raw: Raw, project: boolean) => ({
     ? {
         projectItems: {
           nodes:
-            raw.status || raw.priority
-              ? [{ id: `PVTI_${raw.number}`, project: { id: PROJECT.id }, status: raw.status ? { name: raw.status } : null, priority: raw.priority ? { name: raw.priority } : null }]
+            raw.status || raw.priority || raw.fields
+              ? [
+                  {
+                    id: `PVTI_${raw.number}`,
+                    project: { id: PROJECT.id },
+                    status: raw.status ? { name: raw.status } : null,
+                    priority: raw.priority ? { name: raw.priority } : null,
+                    ...Object.fromEntries(aliases.map(([alias, name]) => [alias, raw.fields?.[name] ? { name: raw.fields[name] } : null])),
+                  },
+                ]
               : [],
         },
       }
@@ -90,15 +119,17 @@ export const isIssuesQuery = (argv: readonly string[]): boolean => argv[1] === '
 export const asksProject = (argv: readonly string[]): boolean => argv.some(arg => arg.includes('projectsV2'))
 
 // One page of the answer; the project only when the query asked for it and the test gives one.
-export const graphPage = (issues: Raw[], argv: readonly string[] = [], project = false, types: string[] = []): string => {
+export const graphPage = (issues: Raw[], argv: readonly string[] = [], project = false, types: string[] = [], views: Views = {}): string => {
   const withProject = project && asksProject(argv)
+  const aliases = aliasesOf(argv)
+  const linked = { ...PROJECT, fields: { nodes: [...PROJECT.fields.nodes, ...(views.fields ?? [])] }, views: { nodes: (views.views ?? []).map(viewNode) } }
   return JSON.stringify({
     data: {
       rateLimit: { cost: 1, remaining: 4999, resetAt: '2026-10-04T11:00:00Z' },
       repository: {
         issueTypes: types.length > 0 ? { nodes: types.map(name => ({ name })) } : null,
-        ...(withProject ? { projectsV2: { nodes: [PROJECT] } } : {}),
-        issues: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: issues.map(raw => node(raw, withProject)) },
+        ...(withProject ? { projectsV2: { nodes: [linked] } } : {}),
+        issues: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: issues.map(raw => node(raw, withProject, aliases)) },
       },
     },
   })

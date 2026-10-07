@@ -1,22 +1,36 @@
 import type { Adopted, Field, Issue, Project, Role, Roles } from '../types'
 
-// The repo's projects with their fields, which needs gh to have the read:project permission. A field's kind and its
-// options or iterations are the project's, not each issue's, so reading them costs little.
+// A view's grouping field: the rows' groups on a table, the columns on a board.
+const GROUP_FIELD = '(first: 1) { nodes { ... on ProjectV2FieldCommon { name } } }'
+// The project's views in the order GitHub shows them, which become the pane's tabs.
+const VIEWS = `views(first: 20, orderBy: {field: POSITION, direction: ASC}) { nodes { name number layout filter groupByFields${GROUP_FIELD} verticalGroupByFields${GROUP_FIELD} } }`
+
+// The repo's projects with their fields and views, which needs gh to have the read:project permission. A field's kind
+// and its options or iterations are the project's, not each issue's, so reading them costs little; so do the views.
 const PROJECTS =
   'projectsV2(first: 5) { nodes { id number title url closed fields(first: 30) { nodes { ' +
   '... on ProjectV2Field { id name dataType } ' +
   '... on ProjectV2SingleSelectField { id name dataType options { id name } } ' +
   '... on ProjectV2IterationField { id name dataType configuration { iterations { id title } } } } } ' +
-  'statusUpdates(last: 1) { nodes { status body createdAt startDate targetDate } } workflows(first: 20) { nodes { name enabled } } } }'
-// Each issue's items in those projects, with the Status and Priority set on them.
-const ITEMS =
+  `statusUpdates(last: 1) { nodes { status body createdAt startDate targetDate } } workflows(first: 20) { nodes { name enabled } } ${VIEWS} } }`
+// A field's value on an item, whatever the field's kind.
+const ANY_VALUE =
+  '{ ... on ProjectV2ItemFieldSingleSelectValue { name } ... on ProjectV2ItemFieldIterationValue { title } ... on ProjectV2ItemFieldTextValue { text } ' +
+  '... on ProjectV2ItemFieldNumberValue { number } ... on ProjectV2ItemFieldDateValue { date } }'
+// Each issue's items in those projects, with the Status and Priority set on them, and the other fields named in
+// `fields` as `f0`, `f1`…: the fields the project's views filter or group by. One value by name costs no more than
+// Status does, where reading every field of every item would multiply the read's cost.
+const itemsOf = (fields: readonly string[]): string =>
   'projectItems(first: 10) { nodes { id project { id } ' +
   'status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name } } ' +
-  'priority: fieldValueByName(name: "Priority") { ... on ProjectV2ItemFieldSingleSelectValue { name } } } }'
+  'priority: fieldValueByName(name: "Priority") { ... on ProjectV2ItemFieldSingleSelectValue { name } } ' +
+  fields.map((name, index) => `f${index}: fieldValueByName(name: ${JSON.stringify(name)}) ${ANY_VALUE} `).join('') +
+  '} }'
 
-// The open issues as the board reads them, 100 a page, newest change first; with the project's fields and each issue's
-// item when `withProject`, which a token without read:project would have GitHub refuse.
-export const issuesQuery = (withProject: boolean): string =>
+// The open issues as the board reads them, 100 a page, newest change first; with the project's fields and views and each
+// issue's item when `withProject`, which a token without read:project would have GitHub refuse. `fields` are the extra
+// field values to read on each item, in the order the answer's `f0`, `f1`… follow.
+export const issuesQuery = (withProject: boolean, fields: readonly string[] = []): string =>
   [
     'query($owner: String!, $name: String!, $after: String) { rateLimit { cost remaining resetAt } repository(owner: $owner, name: $name) {',
     'issueTypes(first: 20) { nodes { name } }',
@@ -29,7 +43,7 @@ export const issuesQuery = (withProject: boolean): string =>
     'blockedBy(first: 10) { nodes { number state } }',
     'closedByPullRequestsReferences(first: 5, includeClosedPrs: false) { nodes { number } }',
     'comments { totalCount }',
-    withProject ? ITEMS : '',
+    withProject ? itemsOf(fields) : '',
     '} } } }',
   ]
     .filter(Boolean)
