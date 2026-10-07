@@ -396,6 +396,14 @@ export const sortIssues = (issues: Issue[], project: Project | null = null, read
   )
 }
 
+// A group's rows: the issues the project holds in the project's own order, the order a person sets by dragging rows on
+// GitHub, then the rest in the board's order. A board read without the project's order has no positions, and is all in
+// the board's order.
+export const projectOrder = (issues: Issue[], project: Project | null = null): Issue[] => {
+  const placed = issues.filter(issue => issue.position !== undefined).sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+  return [...placed, ...sortIssues(issues.filter(issue => issue.position === undefined), project)]
+}
+
 // The sub-issue an epic's Next starts: the first open one nothing blocks, in the order the epic lists them.
 export const nextOf = (issues: Issue[], epic: number, project: Project | null = null): Issue | undefined =>
   sortIssues(
@@ -423,18 +431,19 @@ export const noReadyText = (epic: number): string => `Epic #${epic} has no ready
 export type Group = { key: string; title: string; issues: Issue[]; folded: boolean; epic?: { number: number; total: number; completed: number } }
 
 // The issues in groups: by the project's Status in the project's order, by the epic they are sub-issues of, or by
-// `area:` label. Issues that don't fit a group come last, under No status, No epic or other.
+// `area:` label. Issues that don't fit a group come last, under No status, No epic or other. Rows follow the project's
+// own order, except an epic's sub-issues, which keep the epic's order.
 export const groupsOf = (issues: Issue[], by: GroupBy, project: Project | null = null, field: string | null = null): Group[] => {
   if (by === 'view' && field) return groupsByField(issues, field, project)
   if (by === 'status' && project) {
     const named = (project.status?.options ?? []).map(option => ({
       key: `status:${option.name}`,
       title: option.name,
-      issues: sortIssues(issues.filter(issue => issue.status === option.name), project),
+      issues: projectOrder(issues.filter(issue => issue.status === option.name), project),
       folded: isRole(project, option.name, 'backlog'),
     }))
     const known = new Set(named.map(group => group.title))
-    const rest = sortIssues(issues.filter(issue => !issue.status || !known.has(issue.status)), project)
+    const rest = projectOrder(issues.filter(issue => !issue.status || !known.has(issue.status)), project)
     return [...named, { key: 'status:none', title: 'No status', issues: rest, folded: false }].filter(group => group.issues.length > 0)
   }
   if (by === 'epic') {
@@ -455,10 +464,10 @@ export const groupsOf = (issues: Issue[], by: GroupBy, project: Project | null =
         epic: { number: parent.number, total: parent.total, completed: parent.completed },
       }))
     // An open epic is its group's heading, so it isn't listed again under No epic.
-    const rest = sortIssues(issues.filter(issue => !issue.parent && !parents.has(issue.number)), project)
+    const rest = projectOrder(issues.filter(issue => !issue.parent && !parents.has(issue.number)), project)
     return [...epics, { key: 'epic:none', title: 'No epic', issues: rest, folded: false }].filter(group => group.issues.length > 0)
   }
-  return byArea(issues).map(([area, list]) => ({ key: `area:${area}`, title: area, issues: project ? sortIssues(list, project) : list, folded: false }))
+  return byArea(issues).map(([area, list]) => ({ key: `area:${area}`, title: area, issues: project ? projectOrder(list, project) : list, folded: false }))
 }
 
 // The issues grouped by a field a project view groups by, such as Area or Sprint: the field's options in the project's
@@ -470,13 +479,13 @@ const groupsByField = (issues: Issue[], name: string, project: Project | null): 
   const named = [...options, ...others].map(value => ({
     key: `field:${name}:${value}`,
     title: value,
-    issues: sortIssues(
+    issues: projectOrder(
       issues.filter(issue => same(valueOf(issue), value)),
       project,
     ),
     folded: false,
   }))
-  const rest = sortIssues(
+  const rest = projectOrder(
     issues.filter(issue => valueOf(issue) === ''),
     project,
   )
@@ -733,6 +742,7 @@ type RawProject = {
   statusUpdates?: RawNodes<RawUpdate>
   workflows?: RawNodes<{ name: string; enabled: boolean }>
   views?: RawNodes<RawView>
+  order?: RawNodes<{ id: string }>
 }
 type RawGroup = RawNodes<{ name?: string }>
 type RawView = { name: string; number: number; layout?: string; filter?: string | null; groupByFields?: RawGroup; verticalGroupByFields?: RawGroup }
@@ -824,6 +834,8 @@ export const parseGraph = (pages: string[], preferred?: string, fields: readonly
       }
     : null
   const issues = parsed.flatMap(page => (page.data?.repository?.issues?.nodes ?? []).filter((one): one is RawGraphIssue => one !== null))
+  // Each item's place in the project's own order, by item id.
+  const positions = new Map(nodesOf(linked?.order).map((one, index) => [one.id, index]))
   return {
     types: nodesOf(parsed[0]?.data?.repository?.issueTypes).map(one => one.name),
     project,
@@ -857,6 +869,7 @@ export const parseGraph = (pages: string[], preferred?: string, fields: readonly
         ...(typeof raw.comments?.totalCount === 'number' ? { comments: raw.comments.totalCount } : {}),
         ...(raw.issueType ? { type: raw.issueType.name } : {}),
         ...(values.length > 0 ? { fields: Object.fromEntries(values) } : {}),
+        ...(item && positions.has(item.id) ? { position: positions.get(item.id) } : {}),
       }
     }),
   }
@@ -1426,6 +1439,8 @@ export type IssueChanges = {
   // A place among its epic's sub-issues: just before or just after a sibling, by number.
   moveBefore?: number
   moveAfter?: number
+  // A place in the project's own order: straight after this issue, by number, or at the top for 0.
+  projectAfter?: number
   // Pinned to the top of the repo's issues, or not; its conversation locked, with GitHub's reason or none, or unlocked;
   // and the repo it moves to, `owner/name`, the same owner's.
   pin?: boolean
@@ -1489,6 +1504,7 @@ export const changesText = (number: number, changes: IssueChanges): string => {
     changes.duplicateOf ? `closed as a duplicate of #${changes.duplicateOf}` : '',
     changes.type === null ? 'its type taken off' : changes.type ? `typed ${changes.type}` : '',
     changes.moveBefore ? `moved before #${changes.moveBefore}` : changes.moveAfter ? `moved after #${changes.moveAfter}` : '',
+    changes.projectAfter === 0 ? "moved to the top of the project's order" : changes.projectAfter ? `moved after #${changes.projectAfter} in the project's order` : '',
     changes.pin === true ? 'pinned' : changes.pin === false ? 'unpinned' : '',
     changes.lock === false ? 'unlocked' : changes.lock ? `locked${typeof changes.lock === 'string' ? ` as ${changes.lock.replace('_', ' ')}` : ''}` : '',
     changes.transferTo ? `moved to ${changes.transferTo}` : '',
@@ -1689,6 +1705,33 @@ export const reordered = (order: number[], number: number, beside: number, befor
   const at = rest.indexOf(beside)
   if (at < 0) return [...rest, number]
   return [...rest.slice(0, before ? at : at + 1), number, ...rest.slice(before ? at : at + 1)]
+}
+
+// A move in the project's own order: the issue's item, and the item it goes straight after, or null for the top of the
+// project. GitHub only places an item after another, so before an issue is after the one above it among the issues the
+// board holds in the project's order; before the first of those is the top. `beside` of null is the top too. A string
+// says why it can't move.
+export type ProjectMove = { item: string; after: { number: number; item: string } | null }
+export const projectMoveOf = (issues: Issue[], number: number, beside: number | null, before: boolean): ProjectMove | string => {
+  const issue = issues.find(one => one.number === number)
+  if (!issue) return `#${number} isn't an open issue on the board`
+  if (!issue.item) return `#${number} isn't in the project yet; set its Status first`
+  if (beside === null) return { item: issue.item, after: null }
+  if (beside === number) return `#${number} can't move beside itself`
+  const ordered = issues.filter(one => one.position !== undefined && one.number !== number).sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+  const at = ordered.findIndex(one => one.number === beside)
+  if (at < 0) return `#${beside} isn't an open issue the board has in the project's order`
+  const after = before ? ordered[at - 1] : ordered[at]
+  return { item: issue.item, after: after?.item ? { number: after.number, item: after.item } : null }
+}
+
+// The issues with one moved in the project's order straight after another, or to the top for null, and every place
+// counted again from 0, so the pane shows the move before the next read confirms it.
+export const placedAfter = (issues: Issue[], number: number, after: number | null): Issue[] => {
+  const ordered = issues.filter(one => one.position !== undefined && one.number !== number).sort((a, b) => (a.position ?? 0) - (b.position ?? 0)).map(one => one.number)
+  const at = after === null ? 0 : ordered.indexOf(after) + 1
+  const order = [...ordered.slice(0, at), number, ...ordered.slice(at)]
+  return issues.map(one => (order.includes(one.number) ? { ...one, position: order.indexOf(one.number) } : one))
 }
 
 // The labels asked for that the repo hasn't got, by name, ignoring case, each once.
@@ -1918,6 +1961,7 @@ export const statusOnly = (changes: IssueChanges): boolean =>
   changes.type === undefined &&
   !changes.moveBefore &&
   !changes.moveAfter &&
+  changes.projectAfter === undefined &&
   Object.keys(changes.fields ?? {}).length === 0
 
 // An issue's or pull request's page on GitHub: the URL gh gave, or one made from the repo for a board saved without it.
