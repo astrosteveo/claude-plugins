@@ -2,7 +2,7 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "issue-board",
   "displayName": "Issue Board",
-  "version": "0.70.2",
+  "version": "0.71.1",
   "description": "The repository's open GitHub issues and pull requests in a pane and under the prompt, with acceptance progress and CI, and a button that hands an issue to Claude.",
   "author": {
     "name": "astrosteveo"
@@ -19,22 +19,10 @@
   ],
   "types": "./types/index.d.ts",
   "userConfig": {
-    "moveToDone": {
+    "autoMove": {
       "type": "boolean",
-      "title": "Move closed issues to Done",
-      "description": "When an issue closes as completed, move it to Done in the project. It changes the shared project from your session.",
-      "default": false
-    },
-    "moveToVerification": {
-      "type": "boolean",
-      "title": "Move to Verification on a Refs merge",
-      "description": "When a pull request that refers to an issue with Refs merges, move the issue to Verification in the project. It changes the shared project from your session.",
-      "default": false
-    },
-    "advanceEpics": {
-      "type": "boolean",
-      "title": "Move epics with their sub-issues",
-      "description": "Starting a sub-issue moves its epic to In progress. When the last sub-issue closes, the epic's \"Every sub-issue is closed\" box is ticked, and the epic closes and moves to Done, or moves to Verification while other boxes are open. It changes the shared project from your session.",
+      "title": "Move issues on their own",
+      "description": "Move closed issues to Done, an issue a pull request names with Refs to Verification when it merges, and epics with their sub-issues: In progress when one starts, and closed or at Verification when the last one closes. Each move needs its Status role; set a role to none in /issues statuses to skip that move. It changes the shared project from your session.",
       "default": false
     },
     "claimOnStart": {
@@ -46,7 +34,7 @@
     "startMode": {
       "type": "string",
       "title": "Where Start works",
-      "description": "main starts an issue in this chat. background makes Start in background the first button, on s, and the working note tells Claude to hand issues to background workers and then review, check and merge or report their pull requests. The main-chat Start moves to b.",
+      "description": "main starts an issue in this chat. background makes Start in background the first button, on s, and the system prompt tells Claude to hand issues to background workers and then review, check and merge or report their pull requests. The main-chat Start moves to b.",
       "options": [
         "main",
         "background"
@@ -59,16 +47,11 @@
       "description": "While Claude works on an issue you started, the system prompt names it and says how to tick its boxes and change it.",
       "default": true
     },
-    "prRule": {
-      "type": "string",
-      "title": "Working note's pull request rule",
-      "description": "How the working note tells Claude to name the issue in a pull request: closes-when-ticked writes Closes only when every box is ticked and Refs otherwise, always-closes always writes Closes, none says nothing. The background agent follows it too.",
-      "options": [
-        "closes-when-ticked",
-        "always-closes",
-        "none"
-      ],
-      "default": "none"
+    "closesWhenTicked": {
+      "type": "boolean",
+      "title": "Closes only when every box is ticked",
+      "description": "The working note and the background agent tell Claude to write Closes #N in a pull request only when every box of the issue is ticked, and Refs #N otherwise. Off, they say nothing about it. Moves to Verification on a Refs merge rely on it.",
+      "default": true
     },
     "capture": {
       "type": "boolean",
@@ -82,12 +65,6 @@
       "description": "A prompt that names #123 carries the board's copy of that issue or pull request, unseen.",
       "default": true
     },
-    "hashSuggestions": {
-      "type": "boolean",
-      "title": "Suggest issues after #",
-      "description": "Typing # in the prompt box offers the board's open issues and pull requests, by number or title.",
-      "default": true
-    },
     "suggestNextStep": {
       "type": "boolean",
       "title": "Suggest the next step",
@@ -98,24 +75,12 @@
       "type": "boolean",
       "title": "Follow the branch",
       "description": "Checking out a branch named for an issue, such as fix/315-glide, makes it the issue Claude is on.",
-      "default": false
-    },
-    "nowCount": {
-      "type": "number",
-      "title": "Priorities that count as Now",
-      "description": "How many of the project's first Priority options the Now filter shows, and triage sends to Ready. The rest are Later.",
-      "default": 2
+      "default": true
     },
     "band": {
       "type": "boolean",
       "title": "Band above the prompt",
       "description": "The band above the prompt raises what needs you: setup problems, failing or passing CI, news on your issue, boxes to tick, plans to approve, epic notes, a project to adopt, guesses to confirm, and captures to the Inbox.",
-      "default": true
-    },
-    "hintSummary": {
-      "type": "boolean",
-      "title": "Summary under the prompt",
-      "description": "The line under the prompt ends with the board in a few words, such as 2 issues · 1 bug. A problem the check found still shows.",
       "default": true
     },
     "refresh": {
@@ -129,16 +94,6 @@
         "manual"
       ],
       "default": "5"
-    },
-    "filters": {
-      "type": "string",
-      "title": "Where the pane's tabs come from",
-      "description": "views makes each of the project's table and board views that has a filter a tab, then All and Closed. board keeps the board's own tabs: Now, Later, Bugs, Mine, All, Inbox and Closed. A project without filtered views always gets the board's own.",
-      "options": [
-        "views",
-        "board"
-      ],
-      "default": "views"
     },
     "writeProjects": {
       "type": "string",

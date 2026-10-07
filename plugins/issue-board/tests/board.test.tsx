@@ -569,14 +569,3 @@ test("while Claude Code's PR footer is on, the hint's tail leaves out the branch
 
   await hint.unmount()
 })
-
-test('with its summary turned off, the hint under the prompt keeps its own text', { options: { hintSummary: false } }, async ($, on) => {
-  quiet(on)
-  on('ui.render', { component: 'PromptHint' }, async ($$, e) => {
-    const { Text } = $$.ui.resolve(e)
-    return <Text>{e.props.tail ? `${e.props.hint} · ${e.props.tail}` : e.props.hint}</Text>
-  })
-  const hint = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...HINT })
-  await $.command.run(REFRESH)
-  expect(await hint.drawn()).toMatchObject({ type: 'Text', children: ['? for shortcuts'] })
-})

@@ -312,7 +312,7 @@ test("the next prompt notes what changed on the issue Claude is on, but not Clau
   expect(lastContext(gh)).toBe('')
 })
 
-test('a turn that ran git reads GitHub again and suggests the next step; a checkout of fix/289-… makes #289 the issue', { options: { suggestNextStep: true, followBranch: true } }, async ($, on) => {
+test('a turn that ran git reads GitHub again and suggests the next step; a checkout of fix/289-… makes #289 the issue', { options: { suggestNextStep: true } }, async ($, on) => {
   mock.store(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   const gh = world(on)
@@ -368,7 +368,7 @@ test('a turn that ran git reads GitHub again and suggests the next step; a check
   await working.unmount()
 })
 
-test("by default the note names the issue with no PR rule, the prompt box keeps Claude Code's suggestion, and a branch names no issue", async ($, on) => {
+test("with the PR rule and following the branch off, the note has no PR rule, the prompt box keeps Claude Code's suggestion, and a branch names no issue", { options: { closesWhenTicked: false, followBranch: false } }, async ($, on) => {
   mock.store(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   const gh = world(on)
@@ -396,7 +396,7 @@ test("by default the note names the issue with no PR rule, the prompt box keeps 
   expect((await $.prompt.compose(COMPOSE)).sections.at(-1)?.text).toBe(note)
 })
 
-test('with its PR rule set, the note says Closes only when every box is ticked', { options: { prRule: 'closes-when-ticked' } }, async ($, on) => {
+test('by default the note says Closes only when every box is ticked', async ($, on) => {
   mock.store(on)
   world(on)
   await $.command.run(REFRESH)

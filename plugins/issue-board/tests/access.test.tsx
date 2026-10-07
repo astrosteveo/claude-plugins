@@ -222,7 +222,7 @@ test("offline in a GitHub repository, nothing is missing and the check says it c
 })
 
 // Every setting on, so nothing the board does is off.
-const ALL_ON = { moveToDone: true, moveToVerification: true, advanceEpics: true, prRule: 'closes-when-ticked', suggestNextStep: true, followBranch: true }
+const ALL_ON = { autoMove: true, suggestNextStep: true }
 
 test('/issues check says who gh is and what access it has when nothing is missing', { options: ALL_ON }, async ($, on) => {
   mock.store(on)

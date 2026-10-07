@@ -118,7 +118,8 @@ test("the tabs are the project's filtered table and board views in order, then A
     view(4, 'Dates', 'label:bug', { layout: 'roadmap' }),
     view(5, 'Mine', 'assignee:@me'),
   ]
-  const project = { ...PROJECT, views }
+  // A project without an Inbox, so no built-in Inbox follows the views.
+  const project = { ...PROJECT, views, roles: {} }
   expect(tabsOf(project).map(tab => [tab.hotkey, tab.name, tab.id])).toEqual([
     ['1', 'Ready', 'view:2'],
     ['2', 'Bugs', 'view:3'],
@@ -127,13 +128,19 @@ test("the tabs are the project's filtered table and board views in order, then A
     ['5', 'Closed', 'closed'],
   ])
   // Seven views at most, so All and Closed stay on 8 and 9.
-  const many = { ...PROJECT, views: Array.from({ length: 10 }, (_, index) => view(index + 1, `V${index + 1}`, 'label:bug')) }
+  const many = { ...PROJECT, roles: {}, views: Array.from({ length: 10 }, (_, index) => view(index + 1, `V${index + 1}`, 'label:bug')) }
   expect(tabsOf(many).map(tab => tab.hotkey + tab.name)).toEqual(['1V1', '2V2', '3V3', '4V4', '5V5', '6V6', '7V7', '8All', '9Closed'])
-  // The board's own filters: chosen by the setting, without views, or when the only view is GitHub's unfiltered default.
-  const builtIn = ['1 Now', '2 Later', '3 Bugs', '4 Mine', '5 All', '6 Inbox', '7 Closed']
+  // With an Inbox, the built-in Inbox follows the views, unless a view keeps just the Inbox. It takes a key, so one
+  // view fewer fits.
   const names = (tabs: { hotkey: string; name: string }[]) => tabs.map(tab => `${tab.hotkey} ${tab.name}`)
   const withRoles = { ...project, roles: { inbox: 'S0' } }
-  expect(names(tabsOf(withRoles, 'board'))).toEqual(builtIn)
+  const inbox = PROJECT.status?.options.find(one => one.id === 'S0')?.name ?? ''
+  expect(names(tabsOf(withRoles))).toEqual(['1 Ready', '2 Bugs', '3 Mine', '4 Inbox', '5 All', '6 Closed'])
+  expect(tabsOf(withRoles).find(tab => tab.name === 'Inbox')?.id).toBe('inbox')
+  expect(names(tabsOf({ ...withRoles, views: [...views, view(6, 'Triage', `status:${inbox} is:open`)] }))).toEqual(['1 Ready', '2 Bugs', '3 Mine', '4 Triage', '5 All', '6 Closed'])
+  expect(names(tabsOf({ ...many, roles: { inbox: 'S0' } }))).toEqual(['1 V1', '2 V2', '3 V3', '4 V4', '5 V5', '6 V6', '7 Inbox', '8 All', '9 Closed'])
+  // The board's own filters: without views, or when the only view is GitHub's unfiltered default.
+  const builtIn = ['1 Now', '2 Later', '3 Bugs', '4 Mine', '5 All', '6 Inbox', '7 Closed']
   expect(names(tabsOf({ ...withRoles, views: [] }))).toEqual(builtIn)
   expect(names(tabsOf({ ...withRoles, views: [view(1, 'View 1', '')] }))).toEqual(builtIn)
   expect(names(tabsOf(null))).toEqual(['1 Active', '2 Future', '3 Bugs', '4 Mine', '5 All', '7 Closed'])
@@ -142,7 +149,7 @@ test("the tabs are the project's filtered table and board views in order, then A
   // removed lands on the first built-in filter.
   expect(tabOf(tabsOf(project), 'active').id).toBe('view:2')
   expect(tabOf(tabsOf(project), 'all').id).toBe('all')
-  expect(tabOf(tabsOf(withRoles, 'board'), 'view:3').id).toBe('active')
+  expect(tabOf(tabsOf({ ...withRoles, views: [] }), 'view:3').id).toBe('active')
 })
 
 test("a view's grouping and the fields its filter names are what the board reads and groups by", () => {
@@ -245,8 +252,9 @@ test("the pane's tabs are the project's views, each with the issues its filter k
     ['2', 'Open bugs 1'],
     ['3', 'My work 1'],
     ['4', 'Recent docs 1'],
-    ['5', 'All 3'],
-    ['6', 'Closed'],
+    ['5', 'Inbox 0'],
+    ['6', 'All 3'],
+    ['7', 'Closed'],
   ])
   // The first view's tab shows first.
   expect(await ui.find({ key: 'filter-view:2' })).toMatchObject({ props: { variant: 'primary' } })
@@ -277,7 +285,7 @@ test("the pane's tabs are the project's views, each with the issues its filter k
 
   // /issues help names the tabs in use.
   const help = String((await $.command.run({ ...REFRESH, args: 'help' })).text)
-  expect(help).toContain("Filters, from the project's views: 1 Ready, 2 Open bugs, 3 My work, 4 Recent docs, 5 All, 6 Closed.")
+  expect(help).toContain("Filters, from the project's views: 1 Ready, 2 Open bugs, 3 My work, 4 Recent docs, 5 Inbox, 6 All, 7 Closed.")
 })
 
 test("a project whose only view is GitHub's unfiltered default keeps the built-in tabs", async ($, on) => {
@@ -293,13 +301,3 @@ test("a project whose only view is GitHub's unfiltered default keeps the built-i
   expect(help).toContain('Filters: 1 Now, 2 Later, 3 Bugs, 4 Mine, 5 All, 6 Inbox, 7 Closed.')
 })
 
-test('with the filters setting on board, the built-in tabs show even where the project has views', { options: { filters: 'board' } }, async ($, on) => {
-  const asked = world(on, VIEWS)
-  await $.command.run(REFRESH)
-  // Nothing reads the views' fields either.
-  expect(asked.length).toBe(1)
-  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
-  expect(await ui.find({ key: 'filter-active' })).toBeDefined()
-  expect(await ui.find({ key: 'filter-view:2' })).toBeUndefined()
-  await ui.unmount()
-})

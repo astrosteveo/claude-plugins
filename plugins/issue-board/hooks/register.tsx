@@ -2,7 +2,9 @@ import { atom, read, update } from 'claude-code'
 import type { AgentSpawnResult, Caught, EngineInterface, HookFailure, ModelForkResult, Register, RenderChildren, ThemeKey, Timer, ToolCallResult, UiCopyArgs } from 'claude-code'
 
 import type { Adopted, Adoption, Alert, Armed, Board, FieldValues, BoxTask, BuiltInFilter, Check, Comment, EpicNote, GroupBy, Issue, Known, LabelChange, Launch, ViewChange, Markers, Milestone, Plan, PlanRow, Problem, Project, Role, Roles, StatusUpdate, PullRequest, RunWatch, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
-import type { Ended, FilterSource, IssueChanges, NewIssue, PrRule, StartMode, Switches, Tab } from './parse'
+import type { Ended, IssueChanges, NewIssue, Tab } from './parse'
+import type { Settings } from './settings'
+import { featuresOff, offText, settingsOf, switchesOf, withOldKeys } from './settings'
 import { TOOL_SPECS, WORKER } from './tools'
 import type { Linked } from './project'
 import { authOf, problemsOf, problemsText, repoOf } from './access'
@@ -78,8 +80,6 @@ import {
 } from './setup'
 import {
   ACTIVE,
-  PR_RULES,
-  START_MODES,
   THREADS_QUERY,
   WEEKS,
   absorbed,
@@ -225,9 +225,7 @@ import {
   hintFit,
   openedText,
   SUBCOMMANDS,
-  featuresOff,
   helpText,
-  offText,
   movedText,
   unmovedText,
   epicChanges,
@@ -248,56 +246,7 @@ const PANE = 'issue-board'
 // This plugin's name, as `next.origin` gives it for a `$` call of its own.
 const PLUGIN = 'issue-board'
 
-// The person's settings, from the manifest's userConfig. What changes the shared project by itself is off for a new
-// install; Start's own changes are on, since the person pressed Start. Of what the board adds to Claude's prompts, the
-// working note, the capture section and the copies of issues a prompt names are on, but the note's PR rule is this
-// repo's own, so it is none; the next-step suggestion and following the branch change how Claude Code behaves, so they
-// are off. Start works in the main chat unless the person asks for background workers.
-type Settings = {
-  moveToDone: boolean
-  moveToVerification: boolean
-  advanceEpics: boolean
-  claimOnStart: boolean
-  startMode: StartMode
-  workingNote: boolean
-  prRule: PrRule
-  // Whether the system prompt tells Claude to capture work it finds to the Inbox.
-  capture: boolean
-  issueCopies: boolean
-  hashSuggestions: boolean
-  suggestNextStep: boolean
-  followBranch: boolean
-  nowCount: number
-  band: boolean
-  hintSummary: boolean
-  refreshMinutes: number | null
-  // Where the pane's tabs come from: the project's views, or the board's own filters.
-  filters: FilterSource
-  // The projects the board may write to, as owner/number.
-  writeProjects: string[]
-}
-const settingsOf = (options: Readonly<Record<string, unknown>> | undefined): Settings => ({
-  moveToDone: options?.moveToDone === true,
-  moveToVerification: options?.moveToVerification === true,
-  advanceEpics: options?.advanceEpics === true,
-  claimOnStart: options?.claimOnStart !== false,
-  startMode: START_MODES.find(mode => mode === options?.startMode) ?? 'main',
-  workingNote: options?.workingNote !== false,
-  prRule: PR_RULES.find(rule => rule === options?.prRule) ?? 'none',
-  capture: options?.capture !== false,
-  issueCopies: options?.issueCopies !== false,
-  hashSuggestions: options?.hashSuggestions !== false,
-  suggestNextStep: options?.suggestNextStep === true,
-  followBranch: options?.followBranch === true,
-  // How many of the first Priority options count as Now.
-  nowCount: typeof options?.nowCount === 'number' && options.nowCount >= 0 ? Math.floor(options.nowCount) : 2,
-  band: options?.band !== false,
-  hintSummary: options?.hintSummary !== false,
-  // How often the board looks at GitHub by itself, in minutes; null for only when asked.
-  refreshMinutes: options?.refresh === 'manual' ? null : options?.refresh === '15' ? 15 : options?.refresh === '60' ? 60 : 5,
-  filters: options?.filters === 'board' ? 'board' : 'views',
-  writeProjects: projectKeysOf(options?.writeProjects),
-})
+// The person's settings, from the manifest's userConfig, with what an older board's keys said. See settings.ts.
 let settings: Settings = settingsOf(undefined)
 // While a pull request's CI runs, the board looks again this often, so its pass or failure shows soon after.
 const WATCH_MS = 30 * 1000
@@ -389,26 +338,9 @@ const markersNow = async ($: EngineInterface, now: Board | null | undefined): Pr
 // a call of the tool may reach. None set, they may.
 const mayAllow = (ceiling: 'allow' | 'ask' | 'deny' | undefined): boolean => ceiling === undefined || ceiling === 'allow'
 
-// What the settings turn off, for /issues check and /issues help.
-const switchesOf = (now: Settings): Switches => ({
-  moveToDone: now.moveToDone,
-  moveToVerification: now.moveToVerification,
-  advanceEpics: now.advanceEpics,
-  claimOnStart: now.claimOnStart,
-  workingNote: now.workingNote,
-  prRule: now.prRule !== 'none',
-  capture: now.capture,
-  issueCopies: now.issueCopies,
-  hashSuggestions: now.hashSuggestions,
-  suggestNextStep: now.suggestNextStep,
-  followBranch: now.followBranch,
-  band: now.band,
-  hintSummary: now.hintSummary,
-  refresh: now.refreshMinutes !== null,
-})
-
-// The pane's tabs as it offers them: the project's views with filters, then All and Closed; or else the built-in filters.
-const filtersFor = (project: Project | null | undefined): Tab[] => tabsOf(project, settings.filters)
+// The pane's tabs as it offers them: the project's views with filters, then Inbox, All and Closed; or else the built-in
+// filters.
+const filtersFor = (project: Project | null | undefined): Tab[] => tabsOf(project)
 
 const GROUPINGS: { id: GroupBy; label: string }[] = [
   { id: 'status', label: 'Status' },
@@ -567,9 +499,9 @@ const checkAccess = ($: EngineInterface, message?: string): Promise<Problem[]> =
     const problems = onGitHub ? problemsOf({ installed, auth, repo, ...(said ? { message: said } : {}) }) : []
     // The project's "Item closed" workflow marks every closed issue Done, which the board does only for completed ones.
     // A limit, not a blocker: it can be waved off. It only counts when the board moves closed issues to Done itself:
-    // with moveToDone off, or a project it may not write to, turning the workflow off would leave Done empty.
+    // with autoMove off, or a project it may not write to, turning the workflow off would leave Done empty.
     const project = (await read($, board))?.project
-    if (project?.closesToDone && settings.moveToDone && (await mayWrite($, project))) {
+    if (project?.closesToDone && settings.autoMove && (await mayWrite($, project))) {
       problems.push({
         id: 'item-closed',
         title: `${project.title}'s Item closed workflow is on`,
@@ -651,10 +583,10 @@ const followBranch = async ($: EngineInterface, name: string | null): Promise<vo
 let timer: Timer | undefined
 const schedule = async ($: EngineInterface, now: Board | null): Promise<void> => {
   timer?.cancel()
-  if (settings.refreshMinutes === null) return
+  if (settings.refresh === null) return
   const watching = now?.prs.some(pr => pr.ci === 'pending') ?? false
   const clock = await nowOf($)
-  const wait = pausedUntil > clock ? pausedUntil - clock + 5_000 : watching ? WATCH_MS : settings.refreshMinutes * 60 * 1000
+  const wait = pausedUntil > clock ? pausedUntil - clock + 5_000 : watching ? WATCH_MS : settings.refresh * 60 * 1000
   timer = $.clock.after(wait, () => void poll($))
 }
 
@@ -829,17 +761,26 @@ const adoptedNow = async ($: EngineInterface): Promise<Adopted | null> => {
   return found && grants.repo.includes(found.key) ? { ...found, granted: true } : found
 }
 
-// The writeProjects values one settings file holds, under either name Claude Code keys the board by. Empty when it
-// holds none, or can't be read.
-const grantsIn = async ($: EngineInterface, source: 'user' | 'project' | 'local'): Promise<string[]> => {
+// The board's options one settings file holds, under each name Claude Code keys the board by. Empty when it holds
+// none, or can't be read.
+const storedIn = async ($: EngineInterface, source: 'user' | 'project' | 'local'): Promise<Record<string, unknown>[]> => {
   try {
     const configs = ((await $.settings.read({ source })) as { pluginConfigs?: Record<string, { options?: Record<string, unknown> }> }).pluginConfigs ?? {}
-    return Object.entries(configs).flatMap(([name, config]) => (name === 'issue-board' || name.startsWith('issue-board@') ? projectKeysOf(config.options?.writeProjects) : []))
+    return Object.entries(configs).flatMap(([name, config]) => (name === 'issue-board' || name.startsWith('issue-board@') ? [config.options ?? {}] : []))
   } catch {
-    // A source that can't be read grants nothing the board could tell.
+    // A source that can't be read holds nothing the board could tell.
     return []
   }
 }
+
+// The writeProjects values one settings file holds. Empty when it holds none, or can't be read.
+const grantsIn = async ($: EngineInterface, source: 'user' | 'project' | 'local'): Promise<string[]> =>
+  (await storedIn($, source)).flatMap(options => projectKeysOf(options.writeProjects))
+
+// The board's options as the settings files hold them, a later source over an earlier one, as Claude Code merges them.
+// Unlike the options the board is loaded with, they keep keys plugin.json no longer declares, which withOldKeys reads.
+const storedOptions = async ($: EngineInterface): Promise<Record<string, unknown>> =>
+  Object.assign({}, ...(await storedIn($, 'user')), ...(await storedIn($, 'project')), ...(await storedIn($, 'local')))
 
 // The one answer to which projects the board may write to, for the write gate, the prompt, setup and project_adopt
 // alike. The repo's own .claude/settings.json and settings.local.json count, read straight from the files: Claude Code
@@ -957,7 +898,7 @@ const boardRefusal = async ($: EngineInterface, known?: Pick<Board, 'project'> |
 // What the pane and the band ask about the project the board reads, or null: nothing once the board may write to it, or
 // once the person kept it read-only.
 const adoptAsk = (project: Project, now: Adoption): { title: string; lines: string[] } | null =>
-  (now.adopted && now.adopted.key === projectKeyOf(project)) || now.declined.includes(project.id) ? null : adoptText(project, settings.refreshMinutes)
+  (now.adopted && now.adopted.key === projectKeyOf(project)) || now.declined.includes(project.id) ? null : adoptText(project, settings.refresh)
 
 // Let it write, on the prompt.
 const adoptFromPrompt = async ($: EngineInterface, project: Project): Promise<void> => {
@@ -1208,18 +1149,18 @@ const fetchIssues = async ($: EngineInterface, nameWithOwner: string): Promise<{
     // The project's views may filter or group by fields beyond Status and Priority. Their values are read with the
     // issues, named from the views the last read found. When the views now name a field that read didn't ask for, as on
     // the first read or after a view changed, the issues are read once more with it.
-    const wanted = settings.filters === 'views' ? viewFieldsOf(parsed.project) : []
+    const wanted = viewFieldsOf(parsed.project)
     if (withProject && wanted.some(field => !fields.includes(field))) return pull(true, wanted)
     // The board goes by the roles saved for the project it reads, by setup or /issues statuses, or else by the names,
-    // which is a guess for the band to confirm; and by the person's count of Now priorities.
+    // which is a guess for the band to confirm.
     if (!parsed.project) return parsed
     const roles = kept.statuses?.[parsed.project.id]
-    return { ...parsed, project: { ...parsed.project, roles: rolesFor(parsed.project.status, roles), guessed: roles === undefined, nowCount: settings.nowCount } }
+    return { ...parsed, project: { ...parsed.project, roles: rolesFor(parsed.project.status, roles), guessed: roles === undefined } }
   }
   const unread = projectRefusal !== undefined || ((await read($, access))?.problems.some(problem => problem.id === 'scope-project') ?? false)
   if (!unread) {
     try {
-      const last = settings.filters === 'views' ? viewFieldsOf((await read($, board))?.project) : []
+      const last = viewFieldsOf((await read($, board))?.project)
       return await pull(true, last)
     } catch (cause) {
       const message = messageOf(cause)
@@ -1422,7 +1363,7 @@ let moved: string[] = []
 const moveToVerification = async ($: EngineInterface, before: Board | null, next: Board): Promise<void> => {
   const project = next.project
   const verify = roleOf(project, 'verification')
-  if (!settings.moveToVerification || !project?.status || !verify || !(await mayWrite($, project))) return
+  if (!settings.autoMove || !project?.status || !verify || !(await mayWrite($, project))) return
   const merged = new Map<number, boolean>()
   const verified: number[] = []
   const failed: { number: number; message: string }[] = []
@@ -1451,7 +1392,7 @@ const moveToDone = async ($: EngineInterface, before: Board | null, next: Board)
   const project = next.project
   const done = roleOf(project, 'done')
   // Turned off, the board neither moves closed issues nor asks GitHub how they closed.
-  if (!settings.moveToDone || !project?.status || !done || !(await mayWrite($, project))) return
+  if (!settings.autoMove || !project?.status || !done || !(await mayWrite($, project))) return
   const done$: number[] = []
   const failed: { number: number; message: string }[] = []
   for (const left of leftForDone(before, next)) {
@@ -1476,7 +1417,7 @@ const moveToDone = async ($: EngineInterface, before: Board | null, next: Board)
 // is left, and the band and the next prompt say why. A sub-issue open again under an epic is only noted: reopening an
 // epic or moving it back is a person's call.
 const advanceEpics = async ($: EngineInterface, before: Board | null, next: Board): Promise<void> => {
-  if (!settings.advanceEpics) return
+  if (!settings.autoMove) return
   const { finished, reopened, orphaned } = epicChanges(before, next)
   const titleOf = (number: number) => next.issues.find(one => one.number === number)?.title ?? next.issues.find(one => one.parent?.number === number)?.parent?.title ?? ''
   const at = await nowOf($)
@@ -1692,7 +1633,7 @@ const claim = async ($: EngineInterface, issue: Issue): Promise<void> => {
 // A sub-issue started: its epic, still waiting in the Inbox, Backlog or Ready, moves to In progress with it, so the
 // project shows the epic under way. An epic further along stays where it is.
 const startEpic = async ($: EngineInterface, issue: Issue): Promise<void> => {
-  if (!settings.advanceEpics) return
+  if (!settings.autoMove) return
   const now = await read($, board)
   const epic = now ? epicToStart(now.issues, issue, now.project) : undefined
   const started = startedOf(now?.project)
@@ -3287,6 +3228,8 @@ export const register: Register = (on, options) => {
   settings = settingsOf(options)
   on('session.start', async ($, e, next) => {
     stats.startedAt = await nowOf($)
+    // Before the background agent is registered, as its prompt follows closesWhenTicked.
+    settings = withOldKeys(settings, await storedOptions($))
     await $.command.register({
       name: 'issues',
       description: 'Show open issues and pull requests in a pane',
@@ -3301,7 +3244,7 @@ export const register: Register = (on, options) => {
       .register({
         name: 'worker',
         description: workerDescription,
-        prompt: workerPrompt(settings.prRule),
+        prompt: workerPrompt(settings.closesWhenTicked),
         isolation: 'worktree',
         background: true,
       })
@@ -3599,10 +3542,8 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => fallBack($, e, next, 'session.receive'))
 
   // Typing `#` in the prompt box offers the board's open issues and pull requests, from the board already in state, so
-  // it costs no gh call. The rows go after any that plugins beneath gave. With no board yet, or with the setting off,
-  // nothing is added.
+  // it costs no gh call. The rows go after any that plugins beneath gave. With no board yet, nothing is added.
   on('prompt.autocomplete', { token: /^#/ }, async ($, e, next) => {
-    if (!settings.hashSuggestions) return next(e)
     const now = await read($, board)
     if (!now) return next(e)
     const given = await next(e)
@@ -3908,7 +3849,7 @@ export const register: Register = (on, options) => {
     }
     const plan = await adoptPlan($, e.input)
     if ('refusal' in plan) return { decision: 'deny' as const, reason: plan.refusal }
-    return { decision: 'ask' as const, reason: 'release' in plan ? releaseReason(plan.release) : adoptReason(plan.adopt, settings.refreshMinutes) }
+    return { decision: 'ask' as const, reason: 'release' in plan ? releaseReason(plan.release) : adoptReason(plan.adopt, settings.refresh) }
   }).catch(($, _e, next) => adoptCheckFailed($, next))
 
   // The permission mode, which each prompt's classic hook carries, for project_adopt's and project_plan's checks.
@@ -3996,16 +3937,16 @@ export const register: Register = (on, options) => {
 
   // While Claude works on an issue the person started in this session, the system prompt names it, so compaction
   // doesn't lose it. The section changes only when the person starts another, to keep the prompt cache. In background
-  // start mode, a fixed section before it tells Claude to hand issues to workers and see their pull requests through.
+  // start mode, a fixed section before it tells Claude to hand issues to workers and see their pull requests through,
+  // with the working note on or off.
   // While the capture setting is on, a fixed section first tells Claude to capture work it finds rather than list it.
   on('prompt.compose', async ($, e, next) => {
     const composed = await next(e)
     const capturing = settings.capture ? [{ id: 'issue-board:capture', text: captureSection(), scope: 'session' as const }] : []
-    const orchestrating =
-      settings.workingNote && settings.startMode === 'background' ? [{ id: 'issue-board:orchestrator', text: orchestratorSection(), scope: 'session' as const }] : []
+    const orchestrating = settings.startMode === 'background' ? [{ id: 'issue-board:orchestrator', text: orchestratorSection(), scope: 'session' as const }] : []
     const now = settings.workingNote ? await read($, working) : null
     const mine = !!now?.sessionId && now.sessionId === (await $.session.id().catch(() => undefined))
-    const doing = now && mine ? [{ id: 'issue-board:working', text: workingSection(now, settings.prRule), scope: 'session' as const }] : []
+    const doing = now && mine ? [{ id: 'issue-board:working', text: workingSection(now, settings.closesWhenTicked), scope: 'session' as const }] : []
     if (capturing.length === 0 && orchestrating.length === 0 && doing.length === 0) return composed
     for (const section of capturing) countSection(section.id, section.text, 'capture note')
     for (const section of orchestrating) countSection(section.id, section.text, 'orchestrator note')
@@ -4339,7 +4280,7 @@ export const register: Register = (on, options) => {
         return { ...was, roles, steps: stepsOf(was.facts, was.chosen, was.areas, roles) }
       })
     const manual = facts ? automationsOff(chosenProject) : []
-    const unwanted = facts && planned && 'roles' in planned ? automationsOn(chosenProject, settings.moveToDone && planned.roles.done !== null) : []
+    const unwanted = facts && planned && 'roles' in planned ? automationsOn(chosenProject, settings.autoMove && planned.roles.done !== null) : []
     const setupPlan = planned && (
       <Box key="setup-plan" flexDirection="column" borderStyle="round" borderColor="suggestion" paddingX={1} marginTop={1}>
         <Text color="suggestion" bold>
@@ -5805,8 +5746,7 @@ export const register: Register = (on, options) => {
     const gone = await read($, dismissed)
     const loud = ((await read($, access))?.problems ?? []).filter(problem => problem.blocks || !gone.includes(accessKey(problem)))
     const note = loud.length > 0 ? `issue board ${loud.some(problem => problem.blocks) ? 'needs setup' : 'is limited'} (/issues check)` : undefined
-    // Turned off, the summary goes, but a problem the check found still says so.
-    const text = [settings.hintSummary && now && summary(now.issues, now.prs, await markersNow($, now), await footerBranch($)), note].filter(Boolean).join(' · ')
+    const text = [now && summary(now.issues, now.prs, await markersNow($, now), await footerBranch($)), note].filter(Boolean).join(' · ')
     if (!text) return next(e)
 
     return next({ ...e, props: { ...e.props, tail: e.props.tail ? `${e.props.tail} · ${text}` : text } })
@@ -6073,7 +6013,7 @@ export const register: Register = (on, options) => {
             </Text>,
           )}
           <Text wrap="truncate-end">
-            <Text>{fit(adoptText(project, settings.refreshMinutes).title, Math.max(16, width - cells(tail) - 26))}</Text>
+            <Text>{fit(adoptText(project, settings.refresh).title, Math.max(16, width - cells(tail) - 26))}</Text>
             <Text dimColor>{tail}</Text>
           </Text>
           {keep(
