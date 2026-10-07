@@ -254,6 +254,71 @@ export const prKeyword = (issue: { number: number; checks: Check[] } | null, oth
 // A worker in one of these states writes no more pull requests.
 const WORKER_ENDED: Worker['status'][] = ['completed', 'failed', 'killed']
 
+// A shell command that opens or edits a pull request through gh.
+export const PR_WRITE = /\bgh\s+pr\s+(?:create|edit)\b/
+
+// The text of a `gh pr create` or `gh pr edit` command that holds the pull request's body, or null when it sets none or
+// reads it from a file the board can't see. A body given with --body or -b, or on stdin with `--body-file -`, such as
+// from a heredoc, is somewhere in the command, so the whole command is that text: a title rarely says `Closes #N`.
+export const prBodyText = (command: string): string | null => {
+  if (!PR_WRITE.test(command)) return null
+  const file = /(?:--body-file|-F)(?:\s+|=)(['"]?)([^\s'"]+)\1/.exec(command)
+  if (file) return file[2] === '-' || file[2] === '/dev/stdin' ? command : null
+  return /(?:^|\s)(?:--body|-b)(?:\s|=)/.test(command) ? command : null
+}
+
+// The closing keyword a pull request's body gives #N, as written (`Closes`, `fixes`…), or `Refs` when it only refers
+// to it. Null when it names #N with neither. A closing keyword anywhere wins, as GitHub then closes the issue.
+export const keywordFor = (body: string, number: number): { closes: boolean; word: string } | null => {
+  const target = `(?:[\\w.-]+/[\\w.-]+)?#${number}(?!\\d)`
+  const closing = new RegExp(`\\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\b:?\\s+${target}`, 'i').exec(body)
+  if (closing) return { closes: true, word: closing[1] ?? 'Closes' }
+  const refs = new RegExp(`\\b(refs?)\\b:?\\s+${target}`, 'i').exec(body)
+  return refs ? { closes: false, word: refs[1] ?? 'Refs' } : null
+}
+
+// What the board says of a pull request's body for the issue its session is on, as it is opened or edited: a deny
+// when its keyword disagrees with the issue's boxes, naming the right one; a reminder when it names the issue with no
+// keyword; null when it is right, or with the rule off, or with no issue. Claude reads a deny and writes it again.
+export const prKeywordCheck = (
+  body: string,
+  issue: { number: number; checks: Check[] } | null,
+  closesWhenTicked: boolean,
+): { deny: string } | { remind: string } | null => {
+  if (!closesWhenTicked || !issue) return null
+  const step = progress(issue.checks)
+  const open = step.total - step.done
+  const right = `${open === 0 ? 'Closes' : 'Refs'} #${issue.number}`
+  const found = keywordFor(body, issue.number)
+  if (!found) return { remind: `The pull request doesn't say which issue it is for: add \`${right}\` to its body.` }
+  if (found.closes === (open === 0)) return null
+  const wrote = `${found.word} #${issue.number}`
+  return open === 0
+    ? { deny: `#${issue.number} has every box ticked: write \`${right}\`, not \`${wrote}\`.` }
+    : { deny: `#${issue.number} has ${open} open ${open === 1 ? 'box' : 'boxes'}: write \`${right}\`, not \`${wrote}\`.` }
+}
+
+// Whether a tick moved an issue across the line between some boxes open and every box ticked: true when it became
+// complete, false when a box opened again, null when neither, so its pull request's keyword stays.
+export const completionFlip = (before: Check[], after: Check[]): boolean | null => {
+  const was = progress(before)
+  const now = progress(after)
+  const done = (step: Progress) => step.done === step.total
+  return done(was) === done(now) ? null : done(now)
+}
+
+// A pull request's body with its keyword for #N switched to `Closes #N` or `Refs #N`, or null when it says no keyword
+// for #N or already says the right one. Only the first mention is changed; a closing keyword anywhere closes the issue,
+// so each one becomes `Refs`.
+export const switchKeyword = (body: string, number: number, closes: boolean): string | null => {
+  const found = keywordFor(body, number)
+  if (!found || found.closes === closes) return null
+  const target = `((?:[\\w.-]+/[\\w.-]+)?#${number})(?!\\d)`
+  return closes
+    ? body.replace(new RegExp(`\\brefs?\\b(:?\\s+)${target}`, 'i'), 'Closes$1$2')
+    : body.replace(new RegExp(`\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\b(:?\\s+)${target}`, 'gi'), 'Refs$1$2')
+}
+
 // The system prompt's section while Claude works on an issue the person started this session. It names the issue and
 // nothing that changes as the work goes on, so the prompt cache holds until the person starts another. Whether a pull
 // request says `Closes` or `Refs` changes as boxes are ticked, so it isn't here: prKeyword puts it in the pull request's

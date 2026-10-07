@@ -313,9 +313,23 @@ While Claude is on it:
   working note, so the note stays the same as boxes get ticked. While a
   background agent runs on another issue, the line is left out, since the
   agent's pull request would read the same text; the agent's own prompt
-  carries the rule instead. **Closes only when every box is ticked**
-  (`closesWhenTicked`) turns this off, and leaves it to the repo's own
-  rules. Moves to Verification on a Refs merge rely on it.
+  carries the rule instead.
+- When Claude or a background agent runs `gh pr create` or `gh pr edit` with
+  a body, the board checks the body's keyword against the boxes of that
+  session's issue: the agent's own issue for a background agent, the issue
+  this session is on otherwise. A wrong one is refused with the right one,
+  such as "#315 has 2 open boxes: write `Refs #315`, not `Closes #315`.", and
+  Claude writes it again. A body that doesn't name the issue goes through,
+  with a reminder. A body read from a file goes through unchecked.
+- Ticking an issue's last box switches its open pull request from `Refs #N` to
+  `Closes #N`, and unticking one switches it back. The board reads the pull
+  request's body fresh first, so an edit made on GitHub meanwhile is kept. The pull
+  request is the one that names the issue and is on a branch named for it, on
+  the branch checked out here, or a background agent's on it. With two such
+  pull requests, the board changes neither.
+- **Closes only when every box is ticked** (`closesWhenTicked`) turns all
+  three off, and leaves it to the repo's own rules. Moves to Verification on a
+  Refs merge rely on it.
 - The next prompt carries what changed on GitHub since: boxes, new comments,
   CI on its pull request, or the issue closed. Claude's own changes aren't
   news. This has no setting. Press `✕` on the row to stop it.
@@ -732,7 +746,7 @@ brackets is what `.claude/settings.json` takes.
 | Where Start works (`startMode`) | `main` | `main` starts an issue in this chat. `background` makes Start in background the first button, and tells Claude in the system prompt to work as an orchestrator. See [Where Start works](#where-start-works). |
 | **In Claude's prompts and the prompt box** | | |
 | Working note in the system prompt (`workingNote`) | on | While Claude is on an issue you started, a note names it and says how to tick its boxes. |
-| Closes only when every box is ticked (`closesWhenTicked`) | on | A pull request for the issue Claude is on, and the background agent's, says `Closes #N` only when every box is ticked, and `Refs #N` otherwise. Off, the board says nothing about it. See [The issue Claude is on](#the-issue-claude-is-on). |
+| Closes only when every box is ticked (`closesWhenTicked`) | on | A pull request for the issue Claude is on, and the background agent's, says `Closes #N` only when every box is ticked, and `Refs #N` otherwise: the board adds the line, refuses a wrong one where the pull request is opened, and switches it when the last box is ticked or unticked. Off, the board says nothing about it. See [The issue Claude is on](#the-issue-claude-is-on). |
 | Capture section in the system prompt (`capture`) | on | Tells Claude to capture work it finds to the Inbox. Off, the section goes, and the tool and `/issues new` stay. |
 | Copies of issues a prompt names (`issueCopies`) | on | A prompt that names `#123` carries the board's copy of it, unseen. |
 | Suggest the next step (`suggestNextStep`) | off | After Claude's turn, the prompt box suggests the board's next step in place of Claude Code's own. |
