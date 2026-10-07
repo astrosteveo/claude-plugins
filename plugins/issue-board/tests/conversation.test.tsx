@@ -2,31 +2,17 @@ import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { absorbed, issueOfBranch, knownOf, mentionsOf, newsOf, nextStepOf, parseIssues, parsePrs, writesGitHub } from '../hooks/parse'
-import { graphPage, isIssuesQuery } from './graph'
 import { letThrough } from './engine'
+import { ASTEROIDS, KESSIK, fakeGitHub, issueReads, json, ok, session } from './github'
+import type { Route } from './github'
+import { graphPage, isIssuesQuery } from './graph'
+import { COMPOSE, REFRESH, band, engineBand, pane } from './ui'
 
 const BODY = '## Acceptance\n\n- [x] Layout in place\n- [ ] Old saves load\n- [ ] Goldens regenerated\n'
 
-const issue = (body: string, comments = 0) => ({
-  number: 315,
-  title: 'Lay Kessik out for play',
-  url: 'https://github.com/astrosteveo/void-sector/issues/315',
-  labels: [{ name: 'area:simulation', color: '0e8a16' }],
-  assignees: [{ login: 'astrosteveo' }],
-  body: `Kessik needs a layout.\n\n${body}`,
-  updatedAt: '2026-10-03T20:00:00Z',
-  comments,
-})
+const issue = (body: string, comments = 0) => ({ ...KESSIK, labels: [{ name: 'area:simulation', color: '0e8a16' }], body: `Kessik needs a layout.\n\n${body}`, comments })
 
-const other = {
-  number: 289,
-  title: "Asteroids didn't draw",
-  url: 'https://github.com/astrosteveo/void-sector/issues/289',
-  labels: [{ name: 'bug', color: 'd73a4a' }],
-  assignees: [],
-  body: '- [ ] Asteroids draw',
-  updatedAt: '2026-10-02T20:00:00Z',
-}
+const other = { ...ASTEROIDS, body: '- [ ] Asteroids draw' }
 
 const pr = (ci: 'pass' | 'pending' | 'fail', sha = 'abc123') => ({
   number: 335,
@@ -46,64 +32,38 @@ const pr = (ci: 'pass' | 'pending' | 'fail', sha = 'abc123') => ({
   closingIssuesReferences: [],
 })
 
-const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} } } as const
-const BAND = { component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 10 }, view: {} } } as const
-const REFRESH = { command: 'issues', args: 'refresh', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
-const REPO = { root: '/work/void-sector', remote: null, internal: false, name: null }
-const COMPOSE = { model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: ['terminal'], tools: [], outputStyle: null, traits: [] } as const
+const PANE = pane(100, 40)
+const BAND = band(100)
 const TURN = { answer: 'Done.', durationMs: 1000, isAborted: false, turnId: 'turn-1', reason: 'answer' } as const
 
 // GitHub, git and the session as the board and Claude see them: what the tests change, and what was asked of each.
 const world = (on: On) => {
-  const state = {
+  // #315's body and comments, which the issues query and its card read.
+  const route: Route = ({ argv, stdin }) => {
+    if (isIssuesQuery(argv)) return ok(graphPage([issue(state.body, state.comments.length), other]))
+    // #315's body over REST: read with when it last changed, and written with a PATCH, which answers the issue as it is.
+    if (argv[1] === 'api' && argv.includes('{body, updated_at}')) return json({ body: issue(state.body).body, updated_at: issue(state.body).updatedAt })
+    if (argv[1] === 'api' && argv[3] === 'PATCH') {
+      state.body = ((JSON.parse(stdin ?? '{}') as { body?: string }).body ?? '').replace(/^Kessik needs a layout\.\n\n/, '')
+      state.edits.push(state.body)
+      const now = issue(state.body)
+      return json({ title: now.title, body: now.body, updated_at: now.updatedAt })
+    }
+    if (argv[1] === 'issue' && argv[2] === 'view') return json(argv.includes('comments') ? { comments: state.comments } : issue(state.body))
+    return undefined
+  }
+  const state = Object.assign(fakeGitHub(on, { routes: [route] }), {
     body: BODY,
     comments: [] as { author: { login: string }; body: string; createdAt: string }[],
-    prs: [] as unknown[],
-    branch: 'main',
     edits: [] as string[],
-    issueReads: 0,
     tasks: [] as { subject: string; description: string }[],
     prompts: [] as { text: string; context: readonly string[] }[],
     suggested: [] as string[],
     commands: [] as string[],
-  }
-  on('process.run', async (_$, e) => {
-    const argv = e.argv
-    const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
-    if (argv[0] === 'git') return answer(`${state.branch}\n`)
-    if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true }))
-    if (isIssuesQuery(argv)) {
-      state.issueReads += 1
-      return answer(graphPage([issue(state.body, state.comments.length), other]))
-    }
-    if (argv[1] === 'api' && argv[2] === 'graphql') return answer(JSON.stringify({ data: { repository: { pullRequests: { nodes: [] } } } }))
-    // #43's body over REST: read with when it last changed, and written with a PATCH, which answers the issue as it is.
-    if (argv[1] === 'api' && argv.includes('{body, updated_at}')) return answer(JSON.stringify({ body: issue(state.body).body, updated_at: issue(state.body).updatedAt }))
-    if (argv[1] === 'api' && argv[3] === 'PATCH') {
-      state.body = ((JSON.parse(e.init?.stdin ?? '{}') as { body?: string }).body ?? '').replace(/^Kessik needs a layout\.\n\n/, '')
-      state.edits.push(state.body)
-      const now = issue(state.body)
-      return answer(JSON.stringify({ title: now.title, body: now.body, updated_at: now.updatedAt }))
-    }
-    if (argv[1] === 'api') return answer('astrosteveo\n')
-    if (argv[1] === 'issue' && argv[2] === 'edit') return answer('')
-    if (argv[1] === 'issue' && argv[2] === 'view') {
-      const fields = argv[argv.indexOf('--json') + 1]
-      if (fields === 'comments') return answer(JSON.stringify({ comments: state.comments }))
-      return answer(JSON.stringify(fields === 'body' ? { body: issue(state.body).body } : issue(state.body)))
-    }
-    if (argv.includes('closed') || argv.includes('merged')) return answer('[]')
-    return answer(JSON.stringify(state.prs))
   })
-  on('session.id', async () => ({ value: 'session-1' }))
+  session(on)
   letThrough(on)
-  on('session.repo', async () => ({ value: REPO }))
-  on('session.root', async () => ({ value: REPO.root }))
-  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
-  on('ui.render', { component: 'AbovePrompt' }, async ($$, e) => {
-    const { Box } = $$.ui.resolve(e)
-    return <Box key="engine" />
-  })
+  engineBand(on)
   on('prompt.submit', async (_$, e) => {
     state.prompts.push({ text: e.text, context: e.context ?? [] })
     return { text: e.text, ...(e.context ? { context: e.context } : {}) }
@@ -323,12 +283,12 @@ test('a turn that ran git reads GitHub again and suggests the next step; a check
   await pane.press({ key: 'issue-315' })
   await pane.press({ key: 'start-315' })
   await pane.unmount()
-  const reads = gh.issueReads
+  const reads = issueReads(gh)
 
   // A turn without git or gh reads nothing, but still suggests the step due.
   await $.turn.complete(TURN)
   await clock.settle()
-  expect(gh.issueReads).toBe(reads)
+  expect(issueReads(gh)).toBe(reads)
   expect(gh.suggested.at(-1)).toBe('Open a PR for #315')
 
   // The engine's own guess gives way to it.
@@ -338,25 +298,25 @@ test('a turn that ran git reads GitHub again and suggests the next step; a check
 
   await $.tool.call({ tool: 'Bash', command: 'git commit -am "Lay Kessik out"' })
   await clock.settle()
-  expect(gh.issueReads).toBe(reads)
+  expect(issueReads(gh)).toBe(reads)
   await $.turn.complete(TURN)
   await clock.settle()
-  expect(gh.issueReads).toBe(reads + 1)
+  expect(issueReads(gh)).toBe(reads + 1)
 
   // A push reads GitHub straight away, so the turn's end needn't.
   gh.prs = [pr('pending')]
   await $.tool.call({ tool: 'Bash', command: 'git push -u origin fix/315-glide' })
   await clock.settle()
-  expect(gh.issueReads).toBe(reads + 2)
+  expect(issueReads(gh)).toBe(reads + 2)
   await $.turn.complete(TURN)
   await clock.settle()
-  expect(gh.issueReads).toBe(reads + 2)
+  expect(issueReads(gh)).toBe(reads + 2)
   await $.tool.call({ tool: 'Bash', command: 'gh project item-edit --id PVTI_315 --field-id F --single-select-option-id S' })
   await clock.settle()
-  expect(gh.issueReads).toBe(reads + 3)
+  expect(issueReads(gh)).toBe(reads + 3)
   await $.tool.call({ tool: 'Bash', command: 'gh api repos/astrosteveo/void-sector/pulls' })
   await clock.settle()
-  expect(gh.issueReads).toBe(reads + 3)
+  expect(issueReads(gh)).toBe(reads + 3)
 
   // A branch named for #289 makes it the issue Claude is on, in the system prompt too.
   await $.tool.call({ tool: 'Bash', command: 'git checkout -b fix/289-asteroids' })
