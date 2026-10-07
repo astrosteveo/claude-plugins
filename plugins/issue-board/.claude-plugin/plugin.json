@@ -76,6 +76,12 @@
       "description": "A prompt that names #123 carries the board's copy of that issue or pull request, unseen.",
       "default": true
     },
+    "hashSuggestions": {
+      "type": "boolean",
+      "title": "Suggest issues after #",
+      "description": "Typing # in the prompt box offers the board's open issues and pull requests, by number or title.",
+      "default": true
+    },
     "suggestNextStep": {
       "type": "boolean",
       "title": "Suggest the next step",

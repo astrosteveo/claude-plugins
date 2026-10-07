@@ -1,4 +1,5 @@
-import type { PromptAutocompleteInput, PromptAutocompleteResult } from 'claude-code'
+import type { On, PromptAutocompleteInput, PromptAutocompleteResult } from 'claude-code'
+import type { Engine } from 'claude-code/testing'
 import { expect, test } from 'claude-code/testing'
 
 import { HASH_ROWS, hashRows, parseGraph, parsePrs } from '../hooks/parse'
@@ -77,17 +78,24 @@ test('without a project, issues go newest first and pull requests before them', 
 
 const REFRESH = { command: 'issues', args: 'refresh', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
 
-test('typing # offers the board, and nothing before there is one', async ($, on) => {
+type Autocomplete = (e: PromptAutocompleteInput) => Promise<PromptAutocompleteResult>
+
+// The prompt box as the person left it, with the token at the cursor, raised as the engine raises it.
+const typed = (text: string): PromptAutocompleteInput => ({ text, cursor: text.length, token: text.split(' ').at(-1) ?? text, start: text.lastIndexOf(' ') + 1 })
+
+// gh answering with the board's issues, and a plugin beneath with a row of its own, so the board's rows go after it.
+// The test kit's typings in v2.1.292 leave `autocomplete` off the test's `$.prompt`, though the engine carries it.
+const promptBox = ($: Engine, on: On): Autocomplete => {
   on('process.run', async (_$, e) => {
     const stdout = isIssuesQuery(e.argv) ? graphPage(ISSUES) : e.argv[1] === 'repo' ? JSON.stringify({ nameWithOwner: 'astrosteveo/claude-plugins', hasIssuesEnabled: true }) : '[]'
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
-  // A plugin beneath with a row of its own: the board's rows go after it.
   on('prompt.autocomplete', async () => ({ suggestions: [{ text: '#beneath' }] }))
-  // The prompt box as the person left it, with the token at the cursor, raised as the engine raises it. The test kit's
-  // typings in v2.1.292 leave `autocomplete` off the test's `$.prompt`, though the engine carries it.
-  const autocomplete = ($.prompt as unknown as { autocomplete: (e: PromptAutocompleteInput) => Promise<PromptAutocompleteResult> }).autocomplete
-  const typed = (text: string): PromptAutocompleteInput => ({ text, cursor: text.length, token: text.split(' ').at(-1) ?? text, start: text.lastIndexOf(' ') + 1 })
+  return ($.prompt as unknown as { autocomplete: Autocomplete }).autocomplete
+}
+
+test('typing # offers the board, and nothing before there is one', async ($, on) => {
+  const autocomplete = promptBox($, on)
 
   // No board yet: only what was beneath.
   expect(await autocomplete(typed('look at #12'))).toEqual({ suggestions: [{ text: '#beneath' }] })
@@ -99,4 +107,10 @@ test('typing # offers the board, and nothing before there is one', async ($, on)
 
   // A token that doesn't start with # isn't the board's.
   expect(await autocomplete(typed('look at 12'))).toEqual({ suggestions: [{ text: '#beneath' }] })
+})
+
+test('with # suggestions turned off, typing # offers only what was beneath', { options: { hashSuggestions: false } }, async ($, on) => {
+  const autocomplete = promptBox($, on)
+  await $.command.run(REFRESH)
+  expect(await autocomplete(typed('look at #12'))).toEqual({ suggestions: [{ text: '#beneath' }] })
 })

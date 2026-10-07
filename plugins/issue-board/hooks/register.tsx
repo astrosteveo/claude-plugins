@@ -248,6 +248,7 @@ type Settings = {
   workingNote: boolean
   prRule: PrRule
   issueCopies: boolean
+  hashSuggestions: boolean
   suggestNextStep: boolean
   followBranch: boolean
   nowCount: number
@@ -268,6 +269,7 @@ const settingsOf = (options: Readonly<Record<string, unknown>> | undefined): Set
   workingNote: options?.workingNote !== false,
   prRule: PR_RULES.find(rule => rule === options?.prRule) ?? 'none',
   issueCopies: options?.issueCopies !== false,
+  hashSuggestions: options?.hashSuggestions !== false,
   suggestNextStep: options?.suggestNextStep === true,
   followBranch: options?.followBranch === true,
   // How many of the first Priority options count as Now.
@@ -442,6 +444,7 @@ const switchesOf = (now: Settings): Switches => ({
   workingNote: now.workingNote,
   prRule: now.prRule !== 'none',
   issueCopies: now.issueCopies,
+  hashSuggestions: now.hashSuggestions,
   suggestNextStep: now.suggestNextStep,
   followBranch: now.followBranch,
   band: now.band,
@@ -3902,8 +3905,10 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => fallBack($, e, next, 'session.receive'))
 
   // Typing `#` in the prompt box offers the board's open issues and pull requests, from the board already in state, so
-  // it costs no gh call. The rows go after any that plugins beneath gave. With no board yet, nothing is added.
+  // it costs no gh call. The rows go after any that plugins beneath gave. With no board yet, or with the setting off,
+  // nothing is added.
   on('prompt.autocomplete', { token: /^#/ }, async ($, e, next) => {
+    if (!settings.hashSuggestions) return next(e)
     const now = await read($, board)
     if (!now) return next(e)
     const given = await next(e)
