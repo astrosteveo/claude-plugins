@@ -22,6 +22,9 @@ npx -p typescript tsc -p plugins/issue-board        # type-check; needs .claude-
 
 CI (`.github/workflows/validate.yml`) runs `validate.sh`, then `test.sh`, then `typecheck.sh`. A second workflow,
 `mutants.yml`, runs `mutants.sh` on pull requests that touch hooks, tests, `plugin.json` or `scripts/`, and weekly.
+Both install the Claude Code version pinned in `.github/claude-code-version`, so a Claude Code release can't turn CI
+red with no change here. `validate.yml` also runs weekly against the latest Claude Code, and by hand with `latest`
+ticked. When that run fails, fix the plugins for the new release. Once it passes, bump the pin in its own PR.
 
 The marketplace is registered from this local checkout, so the installed plugins are whatever is checked out here.
 After changing a plugin, or after merging and pulling `main`, the person runs `/reload-plugins` to load it.

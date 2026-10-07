@@ -11,3 +11,6 @@ __pycache__/
 
 # Claude Code worktrees, made per session
 .claude/worktrees/
+
+# Each person's own Claude Code settings for this repo
+.claude/settings.local.json
