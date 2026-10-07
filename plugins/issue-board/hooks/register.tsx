@@ -6213,9 +6213,9 @@ export const register: Register = (on, options) => {
     return next({ ...e, props: { ...e.props, tail: e.props.tail ? `${e.props.tail} · ${text}` : text } })
   })
 
-  // The band above the prompt is for what needs the person now (something to fix, merge, tick or look at) and the work
-  // going on out of sight, in background agents. It shows nothing otherwise. The main session's progress (the issue
-  // Claude is on, CI running) is the pane's: the band doesn't repeat it. Every line is one row at any width.
+  // The band above the prompt is for what needs the person now (something to fix, merge, tick or look at). It shows
+  // nothing otherwise. The main session's progress (the issue Claude is on, CI running) is the pane's, and Claude Code
+  // lists running background agents itself, so the band repeats neither. Every line is one row at any width.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     // Turned off, the band draws nothing of the board's; the pane still shows what needs the person.
     if (e.props.hasSurvey || !settings.band) return next(e)
@@ -6230,8 +6230,6 @@ export const register: Register = (on, options) => {
       const at = issue && boxOf(issue, task)
       return at && !at.done ? [{ task, box: at.box }] : []
     })
-    // Background agents still at work. One that ended drops out: the conversation line and Claude's handoff say so.
-    const agents = (await read($, workers)).filter(one => ACTIVE.includes(one.status))
     // What the board noticed about epics: why one moved to Verification, or a sub-issue open again under one. A line
     // past its age limit goes here too, since a quiet board may not read again for a while.
     const notes = now ? liveEpicNotes(await read($, epicNotes), now, await nowOf($)) : []
@@ -6248,7 +6246,7 @@ export const register: Register = (on, options) => {
     const marked = Object.keys(markerAsk).length > 0 && !(await read($, guessSeen)).includes(markerKey(markerAsk))
     // Issues captured to the Inbox since the person last opened it.
     const caught = await read($, captured)
-    if (problems.length === 0 && alerts.length === 0 && offers.length === 0 && agents.length === 0 && notes.length === 0 && !unadopted && !guessed && !marked && !planned && caught === 0)
+    if (problems.length === 0 && alerts.length === 0 && offers.length === 0 && notes.length === 0 && !unadopted && !guessed && !marked && !planned && caught === 0)
       return next(e)
 
     const { Box, Text, Button, Link } = $.ui.resolve(e)
@@ -6604,42 +6602,6 @@ export const register: Register = (on, options) => {
       )
     }
 
-    // A background agent at work: `⚙ #90 <title> · working · ━━━━━━ 0/4`, the bar only when the issue has boxes.
-    const agentLine = (worker: Worker) => {
-      const issue = now?.issues.find(one => one.number === worker.number)
-      const step = issue ? progress(issue.checks) : { done: 0, total: 0 }
-      const badge = workerBadge(worker.status)
-      const word = badge.text.replace(/^⚙ /, '')
-      const [filled, empty] = step.total > 0 ? bar(step, 6) : ['', '']
-      const count = step.total > 0 ? ` ${step.done}/${step.total}` : ''
-      const tail = ` · ${word}${step.total > 0 ? ` · ${filled}${empty}${count}` : ''}`
-      const head = `⚙ #${worker.number} `
-      const title = fit(issue?.title ?? worker.title ?? '', Math.max(0, width - cells(head) - cells(tail) - 1))
-      return (
-        <Box key={`agent-row-${worker.agentId}`} flexDirection="row">
-          <Text wrap="truncate-end">
-            <Text color={badge.color} bold>
-              ⚙
-            </Text>
-            <Text color="claude" bold>{` #${worker.number} `}</Text>
-            <Text>{title}</Text>
-            <Text dimColor>{' · '}</Text>
-            <Text color={badge.color}>{word}</Text>
-            {step.total > 0 && (
-              <Text>
-                <Text dimColor>{' · '}</Text>
-                <Text color={tone(step)}>{filled}</Text>
-                <Text color="inactive" dimColor>
-                  {empty}
-                </Text>
-                <Text dimColor>{count}</Text>
-              </Text>
-            )}
-          </Text>
-        </Box>
-      )
-    }
-
     return (
       <Box flexDirection="column">
         {problems.slice(0, 2).map(problemLine)}
@@ -6649,7 +6611,6 @@ export const register: Register = (on, options) => {
         {marked && markerLine()}
         {alerts.slice(0, 3).map(line)}
         {offers.slice(0, 3).map(offerLine)}
-        {agents.slice(0, 3).map(agentLine)}
         {caught > 0 && capturedLine()}
         {/* Epic lines come last: they report what happened, and the lines above ask for something now. */}
         {notes.slice(-2).map(epicLine)}

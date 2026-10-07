@@ -14,7 +14,7 @@ const issue = (body: string) => ({
 })
 
 const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 120, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } } as const
-const band = (bodyColumns: number) => ({ component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns, scroll: { offset: 0, bodyRows: 10 }, view: {} } }) as const
+const BAND = { component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120, scroll: { offset: 0, bodyRows: 10 }, view: {} } } as const
 const REFRESH = { command: 'issues', args: 'refresh', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
 const COMPOSE = { model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: ['terminal'], tools: [], outputStyle: null, traits: [] } as const
 const REPO = { root: '/work/void-sector', remote: null, internal: false, name: null }
@@ -94,7 +94,7 @@ test("a background agent's checkout in its own worktree doesn't make its issue t
   await pane.unmount()
 })
 
-test('the band has a line for each background agent at work, which goes when it ends; ▶ marks only the main session\'s issue', async ($, on) => {
+test("the band has no line for a background agent, since Claude Code lists them; ▶ marks only the main session's issue", async ($, on) => {
   mock.store(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   const gh = world(on)
@@ -102,7 +102,7 @@ test('the band has a line for each background agent at work, which goes when it 
   await $.command.run(REFRESH)
   await clock.settle()
 
-  const wide = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...band(120) })
+  const wide = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...BAND })
   expect(await wide.find({ key: 'engine' })).toBeDefined()
 
   // The main session moves to #90's branch, then Claude hands #90 to a background agent.
@@ -115,37 +115,9 @@ test('the band has a line for each background agent at work, which goes when it 
   expect(await pane.find({ text: /^▶ $/ })).toBeUndefined()
   expect(await pane.find({ text: /^⚙ working$/ })).toBeDefined()
 
-  expect(await wide.find({ key: 'engine' })).toBeUndefined()
-  expect(await wide.find({ key: 'agent-row-agent-1' })).toBeDefined()
-  expect(await wide.find({ text: /^ #90 $/ })).toBeDefined()
-  expect(await wide.find({ text: /^working$/ })).toBeDefined()
-  expect(await wide.find({ text: /^ 0\/4$/ })).toBeDefined()
-  expect(await wide.find({ text: /^Tell the background agent which issue it is on, in so many words$/ })).toBeDefined()
-
-  // One row at any width: a narrow band cuts the title to fit.
-  const narrow = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...band(44) })
-  const title = await narrow.find({ text: /^Tell/ })
-  expect(title?.text).toMatch(/…$/)
-  expect([...(title?.text ?? '')].length).toBeLessThan(20)
-  await narrow.unmount()
-
-  // Waiting on something: the line says so.
-  gh.status = 'waiting'
-  await clock.advance(10_000)
-  expect(await wide.find({ text: /^waiting$/ })).toBeDefined()
-
-  // An issue with no boxes has no bar.
-  gh.body = 'No list here.'
-  await $.command.run(REFRESH)
-  await clock.settle()
-  expect(await wide.find({ text: /\d\/\d/ })).toBeUndefined()
-  expect(await wide.find({ key: 'agent-row-agent-1' })).toBeDefined()
-
-  // It ends: the conversation is told, and the band has nothing more to say.
-  await $.turn.complete({ answer: 'Opened PR #91.', durationMs: 1, isAborted: false, turnId: 't', agentId: 'agent-1', reason: 'answer' })
-  await clock.settle()
-  expect(await wide.find({ key: 'agent-row-agent-1' })).toBeUndefined()
+  // The band leaves the agent to Claude Code's own list and draws nothing of the board's.
   expect(await wide.find({ key: 'engine' })).toBeDefined()
+  expect(await wide.find({ text: /^ #90 $/ })).toBeUndefined()
 
   await pane.unmount()
   await wide.unmount()
