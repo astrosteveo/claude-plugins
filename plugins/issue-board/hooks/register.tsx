@@ -168,6 +168,7 @@ import {
   wentGreen,
   wrappedLines,
   workerBadge,
+  workerOnLine,
   workerIssueOf,
   workerPrOf,
   workerPrompt,
@@ -5829,6 +5830,9 @@ export const register: Register = (on, options) => {
         if (!filled.isFilled) return
         await update($, drafted, () => (background ? null : target.number))
       }
+      // A background agent at work on what Start would start, whether Start in background set it going or Claude
+      // dispatched it: the card shows it in place of every start button, so the issue isn't started a second time.
+      const busy = working$.find(one => one.number === goes.number && ACTIVE.includes(one.status))
       const startButton = launches.some(one => one.number === goes.number && one.how === 'start') ? (
         <Text key={`starting-${issue.number}`} color="claude">
           ▶ Starting…
@@ -5843,7 +5847,7 @@ export const register: Register = (on, options) => {
         </Button>
       )
       const backgroundButton =
-        working$.some(one => one.number === goes.number && ACTIVE.includes(one.status)) || startedHere === goes.number ? null : launches.some(one => one.number === goes.number && one.how === 'background') ? (
+        startedHere === goes.number ? null : launches.some(one => one.number === goes.number && one.how === 'background') ? (
           <Text key={`starting-background-${issue.number}`} color="claude">
             ⚙ Starting in background…
           </Text>
@@ -5960,7 +5964,15 @@ export const register: Register = (on, options) => {
             </Box>
           )}
           <Box flexDirection="row" gap={1} marginTop={1} flexWrap="wrap">
-            {inBackground ? [backgroundButton, startButton, draftBackgroundButton, draftButton] : [startButton, backgroundButton, draftButton, draftBackgroundButton]}
+            {busy ? (
+              <Text key={`worker-on-${issue.number}`} color={workerBadge(busy.status).color}>
+                {workerOnLine(busy.status, ago(new Date(busy.startedAt).toISOString(), clock), goes.number === issue.number ? undefined : goes.number)}
+              </Text>
+            ) : inBackground ? (
+              [backgroundButton, startButton, draftBackgroundButton, draftButton]
+            ) : (
+              [startButton, backgroundButton, draftButton, draftBackgroundButton]
+            )}
             <Button key={`edit-${issue.number}`} variant={changing === issue.number ? 'primary' : undefined} dimColor={changing !== issue.number} onPress={openEditor(issue.number)}>
               ⚙ Change
             </Button>
