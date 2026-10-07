@@ -29,7 +29,9 @@ export type Raw = {
 
 // A project view as GitHub answers it, and the project's extra fields a test adds for its views.
 export type RawView = { name: string; number: number; layout: 'TABLE_LAYOUT' | 'BOARD_LAYOUT' | 'ROADMAP_LAYOUT'; filter: string | null; groupBy?: string; columns?: string }
-export type Views = { views?: RawView[]; fields?: { id: string; name: string; dataType: string; options?: { id: string; name: string }[] }[] }
+export type Views = { views?: RawView[]; fields?: { id: string; name: string; dataType: string; options?: { id: string; name: string }[]; configuration?: { iterations?: RawIteration[]; completedIterations?: RawIteration[] } }[] }
+// An iteration as GitHub answers it, with the day it starts and how many days it lasts.
+export type RawIteration = { id: string; title: string; startDate: string; duration: number }
 
 // The extra field values the query asks each item for, by alias: `f0` is the first field named, and so on.
 const aliasesOf = (argv: readonly string[]): [string, string][] => {

@@ -125,6 +125,7 @@ import {
   hashRows,
   isInbox,
   listOf,
+  currentIterationText,
   noReadyText,
   startTargetOf,
   triageTarget,
@@ -4081,7 +4082,7 @@ export const register: Register = (on, options) => {
     }
 
     const marks = await markersNow($, now)
-    const { project, tabs, tab, kept, shown, triaging, grouping, groupings, tabLabel, groups, unknownTerms } = listOf({ now, chosen, picked, typed, who, open, marks })
+    const { project, tabs, tab, kept, shown, triaging, grouping, groupings, tabLabel, groups, unknownTerms } = listOf({ now, chosen, picked, typed, who, open, marks, clock })
     const shownTab = tab.id
     const closedNow = shownTab === 'closed' ? await read($, recent) : null
     const fieldValues = await read($, values)
@@ -4173,7 +4174,7 @@ export const register: Register = (on, options) => {
 
     return (
       <Box flexDirection="column">
-        {headerView(els, { repo: now.repo, busy, fetchedAt: now.fetchedAt, clock, totals }, headerHandlers)}
+        {headerView(els, { repo: now.repo, busy, fetchedAt: now.fetchedAt, clock, totals, iteration: currentIterationText(project, clock) }, headerHandlers)}
         {projectUpdate(els, { update: project?.update, clock })}
         {planCard(els, { proposed, now }, planHandlers)}
         {statusesNote}

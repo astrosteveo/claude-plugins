@@ -170,7 +170,9 @@ export const issuesOf = (closing: { number: number }[], body: string): number[] 
 export type RawNodes<T> = { nodes?: (T | null)[] | null } | null | undefined
 // A project field as a GraphQL fragment answers it. `options` are a single-select field's; setup reads them with their
 // colors and descriptions, the board with only their ids and names.
-export type RawField<O = { id: string; name: string }> = { id?: string; name?: string; dataType?: string; options?: O[]; configuration?: { iterations?: { id: string; title: string }[] } | null }
+export type RawField<O = { id: string; name: string }> = { id?: string; name?: string; dataType?: string; options?: O[]; configuration?: { iterations?: RawIteration[]; completedIterations?: RawIteration[] } | null }
+// An iteration as GitHub answers it. A read that asks only for its id and title has no dates.
+type RawIteration = { id: string; title: string; startDate?: string; duration?: number }
 // What the board's read and setup both ask of a project.
 export type RawProjectBase<O = { id: string; name: string }> = {
   id: string
@@ -189,7 +191,14 @@ const fieldsOf = (project: RawProject): ProjectField[] =>
     const kind = one.dataType ? KINDS[one.dataType] : one.options ? 'select' : undefined
     if (!one.id || !one.name || !kind) return []
     const options = kind === 'iteration' ? (one.configuration?.iterations ?? []).map(it => ({ id: it.id, name: it.title })) : one.options
-    return [{ id: one.id, name: one.name, kind, ...(options ? { options } : {}) }]
+    // The iterations with their dates, the completed ones too, for the `@current`, `@next` and `@previous` terms.
+    const iterations =
+      kind === 'iteration'
+        ? [...(one.configuration?.iterations ?? []), ...(one.configuration?.completedIterations ?? [])].flatMap(it =>
+            it.startDate && typeof it.duration === 'number' ? [{ id: it.id, title: it.title, start: it.startDate, days: it.duration }] : [],
+          )
+        : []
+    return [{ id: one.id, name: one.name, kind, ...(options ? { options } : {}), ...(iterations.length > 0 ? { iterations } : {}) }]
   })
 type RawUpdate = { status?: string | null; body?: string | null; createdAt: string; startDate?: string | null; targetDate?: string | null }
 type RawProject = RawProjectBase & {

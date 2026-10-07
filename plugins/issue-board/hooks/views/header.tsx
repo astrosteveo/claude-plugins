@@ -24,6 +24,8 @@ export type HeaderData = {
     // Room for the ticked meter.
     wide: boolean
   } | null
+  // The project's current iteration and the days left in it, such as `Sprint 14 · 3d left`; absent without one.
+  iteration?: string | null
 }
 
 export type HeaderHandlers = {
@@ -82,6 +84,12 @@ export const header = (elements: Elements, data: HeaderData, handlers: HeaderHan
         {stat('▲', bugs > 0 ? 'error' : 'inactive', bugs, bugs === 1 ? 'bug' : 'bugs')}
         {stat('⇄', 'suggestion', prs, prs === 1 ? 'PR' : 'PRs')}
         {failing > 0 && stat('✗', 'error', failing, 'failing')}
+        {data.iteration && (
+          <Text wrap="truncate-end">
+            <Text color="suggestion">◷</Text>
+            <Text dimColor>{` ${data.iteration}`}</Text>
+          </Text>
+        )}
         {wide && overall.total > 0 && (
           <Text>
             {meter(overall.done, overall.total, 6)}
