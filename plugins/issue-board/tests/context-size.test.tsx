@@ -1,6 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { captureSection, orchestratorSection, workerPrompt, workingSection } from '../hooks/parse'
+import { captureSection, orchestratorSection, workingSection } from '../hooks/prompts'
+import { workerPrompt } from '../hooks/workers'
 import { fail, fakeGitHub } from './github'
 import { REPO } from './ui'
 

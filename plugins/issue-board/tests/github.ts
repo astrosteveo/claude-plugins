@@ -1,6 +1,6 @@
 import type { On } from 'claude-code'
 
-import { writesGitHub } from '../hooks/parse'
+import { writesGitHub } from '../hooks/news'
 import { isMutation } from '../hooks/project'
 import { PROJECT, graphPage, isIssuesQuery } from './graph'
 import type { Raw, Views } from './graph'

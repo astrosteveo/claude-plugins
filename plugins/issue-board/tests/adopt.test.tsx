@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { adoptText, grantsOf, isMutation, ownerOf, projectKeysOf, projectKeysText, writeRefusal } from '../hooks/project'
-import { namesText, projectPartOf, repoChangeOf } from '../hooks/parse'
+import { namesText, projectPartOf, repoChangeOf } from '../hooks/changes'
 import { letThrough, permissions } from './engine'
 import { ADOPTED, fakeGitHub, json, memoryStore, ok, session, settingsLog } from './github'
 import type { Route } from './github'

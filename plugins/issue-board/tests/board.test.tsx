@@ -1,6 +1,9 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { ago, agoText, bar, cells, checksOf, ciOf, filterKeys, fit, hintFit, issuesOf, openedText, pad, peekPlace, proseOf, rowRoom, spark, summary, weekly, wrappedLines } from '../hooks/parse'
+import { checksOf } from '../hooks/boxes'
+import { ciOf, issuesOf, proseOf } from '../hooks/github'
+import { ago, agoText, bar, cells, filterKeys, fit, hintFit, pad, peekPlace, rowRoom, spark, summary, weekly, wrappedLines } from '../hooks/layout'
+import { openedText } from '../hooks/prompts'
 import { ASTEROIDS, KESSIK, fakeGitHub, json, pr335 } from './github'
 import type { Call } from './github'
 import { HINT, REFRESH, RUN, engineHint, pane } from './ui'

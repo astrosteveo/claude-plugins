@@ -1,7 +1,9 @@
 import type { TestBody } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { groupsOf, isInbox, leftForDone, leftForVerification, toArchive } from '../hooks/parse'
+import { leftForDone, leftForVerification } from '../hooks/epics'
+import { groupsOf, isInbox } from '../hooks/filters'
+import { toArchive } from '../hooks/rest'
 import { isLater, isNow, roleOf, rolesFor } from '../hooks/project'
 import { addsAsTodo, areasOf, automationsOff, automationsOn, mergeStatuses, picksFor, rolesOf, stepsOf, suggestAreas, suggestRoles } from '../hooks/setup'
 import type { Board, Issue, Project, SetupFacts } from '../types'

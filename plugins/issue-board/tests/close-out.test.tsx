@@ -1,6 +1,8 @@
 import { expect, test } from 'claude-code/testing'
 
-import { closeOutAllPrompt, closeOutPrompt, closeOutRisk, parsePrs, workerOfPr } from '../hooks/parse'
+import { parsePrs } from '../hooks/github'
+import { closeOutAllPrompt, closeOutPrompt } from '../hooks/prompts'
+import { closeOutRisk, workerOfPr } from '../hooks/workers'
 import type { Worker } from '../types'
 import { fakeGitHub, heldState } from './github'
 import { REFRESH, pane } from './ui'

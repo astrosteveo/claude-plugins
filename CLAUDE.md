@@ -42,10 +42,17 @@ entries the same.
 - Every hook at a gating site (`tool.call`, `tool.check`, `prompt.submit`, `ui.close`…) ends in `.catch`, written as a
   function literal that calls `fallBack` (the site's default, `next(e)`, plus a debug log line) or, for the board's own
   tools, `toolFailed` (a deny that names the error). The engine only follows `$` into functions declared in
-  `register.tsx`, so helpers that take `$` live there, not in `parse.ts`.
-- Pure logic lives in sibling `.ts` files and is imported by `register.tsx`: `parse.ts` in both plugins, in
-  issue-board `access.ts`, `markers.ts`, `plan.ts`, `project.ts`, `setup.ts` and `stats.ts`, and in ask `decide.ts`. Tests call these directly. Put new layout or text logic there when it can be tested
-  without mounting a pane.
+  `register.tsx`, so helpers that take `$` live there, not in the pure files below.
+- Pure logic lives in sibling `.ts` files and is imported by `register.tsx`. Tests call these directly. Put new layout
+  or text logic there when it can be tested without mounting a pane. Each file is imported by name; there is no barrel.
+  - ask: `parse.ts` and `decide.ts`.
+  - issue-board, by topic: `github.ts` (reading gh's issues, pull requests, CI, comments and the project graph),
+    `rest.ts` (REST answers: search, project items, milestones, labels), `filters.ts` (filters, view tabs, sorting and
+    grouping, `#` rows), `layout.ts` (cell widths, fitting, badges, glyphs, times), `prompts.ts` (what the board hands
+    Claude, the system prompt's sections, help text), `boxes.ts` (acceptance boxes), `changes.ts` (issue edits and
+    new issues from tool input), `epics.ts`, `workers.ts` (background agents and handoff), `news.ts` (mentions,
+    copies, news on an issue, alerts, runs), and `access.ts`, `markers.ts`, `plan.ts`, `project.ts`, `settings.ts`,
+    `setup.ts`, `stats.ts` and `tools.ts`.
 - `types/index.d.ts` is the plugin's state contract: every `$.state` atom (`atom({ plugin, key })`) is declared there
   under the plugin's name, and `claude plugin validate` holds the module's keys to it. Add a key there when adding an
   atom. Shared value types (`Issue`, `Board`, `Worker`…) live there too.

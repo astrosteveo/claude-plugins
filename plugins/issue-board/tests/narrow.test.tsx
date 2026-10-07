@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { FINISH, FINISH_SHORT, prRowRoom } from '../hooks/parse'
+import { FINISH, FINISH_SHORT, prRowRoom } from '../hooks/layout'
 import type { Board, EpicNote, Plan, Worker } from '../types'
 import { fakeGitHub, heldState, json, session } from './github'
 import { assertNoSplitAtoms, breaks, splitAtoms } from './narrow'

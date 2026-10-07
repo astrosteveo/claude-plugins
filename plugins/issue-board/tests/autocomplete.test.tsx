@@ -2,7 +2,8 @@ import type { On, PromptAutocompleteInput, PromptAutocompleteResult } from 'clau
 import type { Engine } from 'claude-code/testing'
 import { expect, test } from 'claude-code/testing'
 
-import { HASH_ROWS, hashRows, parseGraph, parsePrs } from '../hooks/parse'
+import { HASH_ROWS, hashRows } from '../hooks/filters'
+import { parseGraph, parsePrs } from '../hooks/github'
 import type { Board } from '../types'
 import { fakeGitHub } from './github'
 import { graphPage } from './graph'

@@ -1,7 +1,9 @@
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { absorbed, issueOfBranch, knownOf, mentionsOf, newsOf, nextStepOf, parseIssues, parsePrs, writesGitHub } from '../hooks/parse'
+import { parseIssues, parsePrs } from '../hooks/github'
+import { absorbed, knownOf, mentionsOf, newsOf, nextStepOf, writesGitHub } from '../hooks/news'
+import { issueOfBranch } from '../hooks/workers'
 import { letThrough } from './engine'
 import { ASTEROIDS, KESSIK, fakeGitHub, issueReads, json, ok, pr335, session } from './github'
 import type { Route } from './github'

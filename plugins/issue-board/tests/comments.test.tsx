@@ -1,7 +1,9 @@
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { answerPrompt, commentsOf, mergeNoteOf, parsePrs, threadsOf } from '../hooks/parse'
+import { commentsOf, parsePrs, threadsOf } from '../hooks/github'
+import { mergeNoteOf } from '../hooks/layout'
+import { answerPrompt } from '../hooks/prompts'
 import { fakeGitHub, ok, session } from './github'
 import type { Call } from './github'
 import { REFRESH, pane } from './ui'

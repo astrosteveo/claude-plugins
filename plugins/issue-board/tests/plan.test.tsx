@@ -1,7 +1,7 @@
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { parseIssues } from '../hooks/parse'
+import { parseIssues } from '../hooks/github'
 import { PLAN_LIMIT, alreadyTrue, cardParts, changeText, kindsText, planAsk, planOf, rowText, rowsOf, sizeText, viewDoneText, viewNoteOf } from '../hooks/plan'
 import type { PlanChange, Project } from '../types'
 import { permissions } from './engine'
