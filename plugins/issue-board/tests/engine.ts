@@ -3,7 +3,7 @@ import type { On } from 'claude-code'
 // The board's tools that change something. Each asks, then acts: it calls next(e) first, and the engine beneath runs
 // the permission check. A test has no engine beneath the plugins, so it answers for it here.
 
-export const WRITE_TOOLS = ['tick', 'issue_update', 'issue_create', 'milestone', 'project_status', 'project_archive', 'project_adopt', 'project_plan'].map(name => `mcp__issue-board__${name}` as const)
+export const WRITE_TOOLS = ['tick', 'issue_update', 'issue_create', 'capture', 'milestone', 'project_status', 'project_archive', 'project_adopt', 'project_plan'].map(name => `mcp__issue-board__${name}` as const)
 
 // What the engine answers beneath a plugin's tool once the permission check let the call through: no hook served it.
 export const approved = (tool: string) => {

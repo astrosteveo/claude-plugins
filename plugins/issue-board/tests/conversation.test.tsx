@@ -405,7 +405,7 @@ test('with its PR rule set, the note says Closes only when every box is ticked',
   expect((await $.prompt.compose(COMPOSE)).sections.at(-1)?.text).toMatch(/write `Closes #315` in its body only if every acceptance box of #315 is ticked by then\. Otherwise write `Refs #315`/)
 })
 
-test('with the working note and issue copies turned off, the system prompt and a prompt naming #315 carry nothing of the board', { options: { workingNote: false, issueCopies: false } }, async ($, on) => {
+test('with the working note, capture and issue copies turned off, the system prompt and a prompt naming #315 carry nothing of the board', { options: { workingNote: false, capture: false, issueCopies: false } }, async ($, on) => {
   mock.store(on)
   const gh = world(on)
   gh.prs = [pr('pass')]

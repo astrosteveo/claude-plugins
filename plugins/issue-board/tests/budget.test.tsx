@@ -2,6 +2,7 @@ import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
+import { captureSection } from '../hooks/parse'
 import { countCall, countContext, countPoints, countPrompt, defineTool, kindOf, loadTool, newStats, statsText } from '../hooks/stats'
 import { adoptedStore, graphPage, isIssuesQuery } from './graph'
 import { letThrough } from './engine'
@@ -67,9 +68,14 @@ const world = (on: On) => {
     }
     if (argv[1] === 'api' && argv[2] === 'graphql') {
       if (argv.some(arg => arg.includes('reviewThreads'))) return answer(JSON.stringify({ data: { repository: { pullRequests: { nodes: [] } } } }))
+      if (argv.some(arg => arg.includes('addProjectV2ItemById'))) return answer(JSON.stringify({ data: { addProjectV2ItemById: { item: { id: 'PVTI_340' } } } }))
       return answer(JSON.stringify({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: 'PVTI_315' } } } }))
     }
     if (argv[1] === 'api' && argv[2]?.includes('/milestones')) return answer('[]')
+    if (argv[1] === 'api' && argv[2]?.includes('/issues?state=closed')) return answer('[]')
+    if (argv[1] === 'api' && argv[2] === '-X' && argv[3] === 'POST' && /\/issues$/.test(argv[4] ?? '')) {
+      return answer(JSON.stringify({ number: 340, id: 9340, node_id: 'I_340', html_url: '', updated_at: '2026-10-04T10:00:00Z', labels: [], assignees: [] }))
+    }
     if (argv[1] === 'api') return answer('astrosteveo\n')
     if (argv[1] === 'issue' && argv[2] === 'view') return answer(JSON.stringify({ id: 'I_315', body: issue.body, comments: [] }))
     if (argv[1] === 'issue' && argv[2] === 'list') return answer('[]')
@@ -192,12 +198,12 @@ test('a board tool loads when Claude Code lists it in front, when ToolSearch fin
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   world(on)
   on('tool.describe', async (_$, e) => ({ description: e.description, ...(e.isDeferred ? { isDeferred: true } : {}) }))
-  on('tool.call', { tool: 'ToolSearch' }, async (_$, e) => ({ result: { matches: ['mcp__issue-board__tick'], query: e.query, total_deferred_tools: 9 }, text: 'tick' }))
+  on('tool.call', { tool: 'ToolSearch' }, async (_$, e) => ({ result: { matches: ['mcp__issue-board__tick'], query: e.query, total_deferred_tools: 10 }, text: 'tick' }))
   await $.session.start({ cwd: REPO.root, surface: 'terminal', isInteractive: true })
   await clock.settle()
   const tools = async () => /^Tool definitions: ([\d,]+) characters for (\d+) tools, loaded when a tool is first used; (.*)\.$/m.exec((await spent($)).text)
   const atLoad = await tools()
-  expect(atLoad?.[2]).toBe('9')
+  expect(atLoad?.[2]).toBe('10')
   expect(atLoad?.[3]).toBe('none loaded yet')
   expect((await spent($)).text).not.toMatch(/^- tool definitions:/m)
   const provider = { plugin: 'issue-board', tier: 'user' } as const
@@ -227,7 +233,7 @@ test('context added counts per prompt Claude received', async ($, on) => {
   expect((await spent($)).text).toMatch(/^Context added: [\d,]+ characters, [\d,]+ a prompt over 2 prompts$/m)
 })
 
-test('the budget: a refresh, a Start, an issue_update and an idle hour', async ($, on) => {
+test('the budget: a refresh, the capture note, a Start, an issue_update, a capture and an idle hour', async ($, on) => {
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   const gh = world(on)
   await $.session.start({ cwd: REPO.root, surface: 'terminal', isInteractive: true })
@@ -249,6 +255,12 @@ test('the budget: a refresh, a Start, an issue_update and an idle hour', async (
   expect(calls(refresh)).toEqual({ rest: 1, rest304: 1, graphql: 3 })
   expect(refresh.points).toBe(1)
   expect(refresh.text).toMatch(/^Last full read, under a minute ago: REST 1, REST 304 0, GraphQL 3; 1 points\.$/m)
+
+  // The capture section goes into the system prompt once, at the first request, and costs no GitHub call.
+  const note = await measure(() => $.prompt.compose(COMPOSE))
+  expect(calls(note)).toEqual({ rest: 0, rest304: 0, graphql: 0 })
+  expect(note.context).toBe(captureSection().length)
+  expect(note.text).toMatch(/^- capture note: \d+$/m)
 
   // Start: the Status move, the assignment and a fresh look at the issue. It adds the start message and the working
   // note to Claude's context, and nothing else.
@@ -275,12 +287,19 @@ test('the budget: a refresh, a Start, an issue_update and an idle hour', async (
   expect(update.text).toMatch(/^- tool: REST 0, REST 304 0, GraphQL 1$/m)
   expect(update.text).toMatch(/^- tool results: \d+$/m)
 
+  // A capture: the closed issues of the last 30 days to compare with and the issue itself over REST, then adding it to
+  // the project and setting its Status over GraphQL. No full read follows: it goes on the board at once.
+  const captured = await measure(() => $.tool.call({ tool: 'mcp__issue-board__capture', title: 'Hangar lights flicker', body: 'Seen while testing.' }))
+  expect(calls(captured)).toEqual({ rest: 2, rest304: 0, graphql: 2 })
+  // The tool line counts since the board loaded: the issue_update before it, and the capture.
+  expect(captured.text).toMatch(/^- tool: REST 2, REST 304 0, GraphQL 3$/m)
+
   // A plan of two changes, approved at its prompt: each change's own write, then one refresh for them both, not one each.
   const plan = await measure(() =>
     $.tool.call({ tool: 'mcp__issue-board__project_plan', issues: [{ number: 315, reason: 'Back to planned.', status: 'Backlog', priority: 'P1' }] }),
   )
   expect(calls(plan)).toEqual({ rest: 1, rest304: 1, graphql: 5 })
-  expect(plan.text).toMatch(/^- tool: REST 0, REST 304 0, GraphQL 3$/m)
+  expect(plan.text).toMatch(/^- tool: REST 2, REST 304 0, GraphQL 5$/m)
 
   // An idle hour: a cheap check every five minutes, which answers 304 while nothing changed, and a full read every
   // fifteen. Nothing goes into Claude's context.

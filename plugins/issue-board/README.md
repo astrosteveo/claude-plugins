@@ -257,8 +257,9 @@ cut.
 **The band above the prompt** speaks up only for what needs you: CI that
 fails (**Fix** hands it to Claude), CI that passes (**Finish & merge**), news
 on the issue you started, its closing, a task Claude finished whose box is
-still open (**Tick box N**), and background agents at work. `✕` waves an
-alert off until it happens again.
+still open (**Tick box N**), background agents at work, and how many issues
+were captured to the Inbox since you last opened it. `✕` waves an alert off
+until it happens again.
 
 ## Pull requests and CI
 
@@ -288,13 +289,33 @@ While CI runs on your branch, a `◷` row shows its progress, such as
 
 ## File and plan issues
 
-- `/issues new <what>` drafts an issue from the conversation: a title, a
-  body with an `## Acceptance` list, and labels the repo uses. It waits at
-  the top of the pane. **✎ Edit** (`e`) changes it, **Create issue** (`c`)
-  files it into the project's Inbox, and **Discard** drops it.
-- `/issues new epic <what>` drafts a parent and the sub-issues that finish
-  it, and files them together. The parent gets an "Every sub-issue is
-  closed" box.
+Work found in conversation doesn't stay in the chat. It goes to the Inbox,
+and the Inbox is where you review new work: its triage sets each issue's
+Priority, area and Status, as for any other issue.
+
+- **Claude captures as it goes.** While the **Capture section in the system
+  prompt** setting is on, which it is by default, the system prompt tells
+  Claude to file work it finds but won't do this turn, such as a follow-up,
+  a bug noticed in passing or an idea, with its `capture` tool, rather than
+  list it in its answer. Claude Code doesn't ask first. A rule that denies
+  `capture` still stands.
+- **No duplicates.** Before filing, capture compares the title with the
+  open issues and with the ones closed in the last 30 days. When one is the
+  same work, it comments there instead, and says so.
+- **You see it.** Each capture shows a toast, and the band shows a
+  `✚ INBOX` line, such as `3 captured to the Inbox`, until you open the
+  Inbox. **Open Inbox** opens the pane at the Inbox tab: the built-in one,
+  or a project view whose filter is the Inbox, such as `status:Inbox` or
+  `no:status`. `✕` puts the line away.
+- `/issues new <what>` has Claude write an issue from the conversation, a
+  title, a body with an `## Acceptance` list, and labels the repo uses, and
+  captures it to the Inbox at once.
+- `/issues new epic <what>` captures a parent and the sub-issues that finish
+  it, each under the parent. The parent gets an "Every sub-issue is closed"
+  box.
+
+To file an issue with a Status, Priority or other fields set, ask Claude:
+its `issue_create` tool takes them all.
 
 **⚙ Change** on a card opens its editor. Each change is made on GitHub at
 once. Its rows go by what they're for:
@@ -401,7 +422,7 @@ told to deal with the sub-issues first.
 
 ## What Claude can do
 
-The board gives Claude nine tools:
+The board gives Claude ten tools:
 
 - `issues` reads: the board's list, one issue in full with its boxes,
   fields and latest ten comments, any issue by number even closed, a search
@@ -420,6 +441,10 @@ The board gives Claude nine tools:
   sub-issue is closed. It sets the Status,
   Priority and fields of a closed issue too, such as one a merge just
   closed, and says when one is already at the Status asked for.
+- `capture` files work found in conversation to the Inbox, with a body
+  that says why it came up, labels and an epic, or comments on an open
+  issue, or one closed in the last 30 days, that is the same work. It never
+  asks for permission. See [File and plan issues](#file-and-plan-issues).
 - `issue_create` files an issue, or an epic with its sub-issues, with
   labels, assignees, milestone, epic, type, blocked-by links, Status and
   Priority. A label the repo hasn't got is made first.
@@ -439,9 +464,9 @@ The board gives Claude nine tools:
 Each tool that changes something goes through Claude Code's permission
 check before it touches GitHub, as any tool does. If you say no, or a rule
 denies it, nothing changes. Some calls don't ask, because they are part of
-work you started or change nothing: ticking boxes, moving the Status of
-your issue, `start`, listing what an archive would take, and reading the
-status update. A rule that denies them still stands, and so does an
+work you started, change nothing, or only add to the Inbox: ticking boxes,
+moving the Status of your issue, `start`, capturing, listing what an
+archive would take, and reading the status update. A rule that denies them still stands, and so does an
 organization's rule that requires asking. A transfer from a public repo to
 a private one, which GitHub won't undo, needs a second, confirmed call.
 
@@ -513,7 +538,8 @@ the card for you to apply.
 - `/issues` opens the pane.
 - `/issues help` lists what the board does.
 - `/issues refresh` reads GitHub again and replies with the summary.
-- `/issues new <what>` and `/issues new epic <what>` draft issues.
+- `/issues new <what>` and `/issues new epic <what>` capture issues to the
+  Inbox; see [File and plan issues](#file-and-plan-issues).
 - `/issues statuses` picks which Status option plays each part; see
   [Which Status is which](#which-status-is-which).
 - `/issues labels` picks the label or issue type Bugs goes by, and the label
@@ -661,6 +687,7 @@ In Claude's prompts and the prompt box:
 |---|---|---|
 | While Claude is on an issue you started, a note in the system prompt names it and says how to tick its boxes. In `background` start mode it also tells Claude to work as an orchestrator. | Working note in the system prompt (`workingNote`) | on |
 | The note tells Claude how to name the issue in a pull request: `closes-when-ticked` (`Closes #N` only when every box is ticked, `Refs #N` otherwise), `always-closes`, or `none`. Start in background follows it too. | Working note's pull request rule (`prRule`) | `none` |
+| A short, fixed section in the system prompt tells Claude to capture work it finds to the Inbox with the `capture` tool, rather than list it in chat. Off, the section goes; the tool and `/issues new` stay. | Capture section in the system prompt (`capture`) | on |
 | A prompt that names `#123` carries the board's copy of it, unseen. | Copies of issues a prompt names (`issueCopies`) | on |
 | Typing `#` in the prompt box offers the board's open issues and pull requests, by number or title. | Suggest issues after # (`hashSuggestions`) | on |
 | After Claude's turn, the prompt box suggests the board's next step in place of Claude Code's own. | Suggest the next step (`suggestNextStep`) | off |
@@ -670,7 +697,7 @@ On screen, and how often it reads GitHub:
 
 | What | Setting | Default |
 |---|---|---|
-| The band above the prompt raises what needs you: CI, news on your issue, boxes to tick, background agents. | Band above the prompt (`band`) | on |
+| The band above the prompt raises what needs you: CI, news on your issue, boxes to tick, background agents, captures to the Inbox. | Band above the prompt (`band`) | on |
 | The line under the prompt ends with the board in a few words. A problem the check found shows either way. | Summary under the prompt (`hintSummary`) | on |
 | The board looks at GitHub every 5, 15 or 60 minutes, or `manual`: only on `/issues refresh`, `r`, and after Claude's turns that ran git or gh. While a pull request's CI runs it still looks every 30 seconds, unless set to `manual`. | How often the board reads GitHub (`refresh`) | `5` |
 
@@ -679,7 +706,8 @@ Two more have no setting:
 - The next prompt notes what changed on GitHub to the issue Claude is on.
   Press `✕` on its row to stop tracking it.
 - Claude Code doesn't ask before the board's reads, ticking boxes, moving the
-  Status of the issue you started, or listing what an archive would take.
+  Status of the issue you started, capturing to the Inbox, or listing what an
+  archive would take.
   Every other change the board's tools make asks first, as any tool does,
   and a no changes nothing. See
   [What Claude can do](#what-claude-can-do).
@@ -731,9 +759,9 @@ since a rate scaled up from a few seconds says little.
 - **GraphQL points**, added up from the issues query's own rate limit
   answer, with what is left and when it resets.
 - **Context**: the characters the board adds to Claude's context, by
-  source, and per prompt Claude received. The working and orchestrator
-  notes count when they first go into the system prompt and when they
-  change. Issue copies, moved lines, news, the prompts the board sends, and
+  source, and per prompt Claude received. The working, orchestrator and
+  capture notes count when they first go into the system prompt and when
+  they change. Issue copies, moved lines, news, the prompts the board sends, and
   its tools' answers count each time.
 - **Tool definitions**, on their own line: the size of all the board's
   tools, and how many are loaded so far. Claude Code defers the board's
@@ -750,6 +778,7 @@ The tests hold the board to a budget, so a change that adds calls fails CI:
 | A refresh | 1 | 1 | 3 |
 | Start | 0 | 0 | 3 |
 | `issue_update` setting a Priority, with the refresh after it | 1 | 1 | 4 |
+| A capture: the closed issues to compare with, the issue, its project item and Status | 2 | 0 | 2 |
 | Setup's Apply on a fresh repo, with the refresh after it | 7 | 0 | 16 |
 | An idle hour, at the 5-minute setting | 4 | 12 | 14 |
 

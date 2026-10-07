@@ -74,12 +74,12 @@ test('in main start mode, Start comes first on s and starts here, and the system
     ['draft-43', 'e', null],
     ['draft-background-43', undefined, null],
   ])
-  expect((await $.prompt.compose(COMPOSE)).sections.map(section => section.id)).toEqual(['intro'])
+  expect((await $.prompt.compose(COMPOSE)).sections.map(section => section.id)).toEqual(['intro', 'issue-board:capture'])
   await ui.press({ key: 'start-43' })
   expect(gh.sent).toHaveLength(1)
   expect(gh.sent[0]).toMatch(/^Let's start on #43: Edit issues from the board\./)
   // Started here, the system prompt names the issue and nothing else of the board.
-  expect((await $.prompt.compose(COMPOSE)).sections.map(section => section.id)).toEqual(['intro', 'issue-board:working'])
+  expect((await $.prompt.compose(COMPOSE)).sections.map(section => section.id)).toEqual(['intro', 'issue-board:capture', 'issue-board:working'])
   await ui.unmount()
 })
 
@@ -110,12 +110,12 @@ test('in background start mode, Start in background comes first on s, and the ma
 test('in background start mode, the system prompt tells Claude to orchestrate', { options: { startMode: 'background' } }, async ($, on) => {
   const { ui } = await card($, on)
   const sections = (await $.prompt.compose(COMPOSE)).sections
-  expect(sections.map(section => section.id)).toEqual(['intro', 'issue-board:orchestrator'])
+  expect(sections.map(section => section.id)).toEqual(['intro', 'issue-board:capture', 'issue-board:orchestrator'])
   expect(sections.at(-1)?.text).toBe(orchestratorSection())
   await ui.unmount()
 })
 
-test('with the working note off, background start mode adds nothing to the system prompt', { options: { startMode: 'background', workingNote: false } }, async ($, on) => {
+test('with the working note and capture off, background start mode adds nothing to the system prompt', { options: { startMode: 'background', workingNote: false, capture: false } }, async ($, on) => {
   const { ui } = await card($, on)
   expect((await $.prompt.compose(COMPOSE)).sections.map(section => section.id)).toEqual(['intro'])
   await ui.unmount()

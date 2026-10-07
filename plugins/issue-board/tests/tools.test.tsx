@@ -3,14 +3,17 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import {
   alertsOf,
+  captureSection,
   draftPrompt,
   fixPrompt,
   matches,
   parseDraft,
   parseIssues,
   parsePrs,
+  sameWorkOf,
   searched,
   tickBody,
+  titleLikeness,
   wentGreen,
   workerPrompt,
   workingSection,
@@ -97,7 +100,6 @@ const world = (on: On) => {
     prs: [pr('pass')] as unknown[],
     branch: 'fix/planet-glide',
     edits: [] as string[],
-    created: [] as { argv: string[]; stdin?: string }[],
     prLists: 0,
     project: false,
     // The project's own names for its Status options, S0 to S5, in place of the board's.
@@ -132,6 +134,8 @@ const world = (on: On) => {
       290: Array.from({ length: 12 }, (_, index) => ({ user: { login: index % 2 ? 'alice' : 'astrosteveo' }, body: `Note ${index + 1}.`, created_at: '2026-10-04T09:00:00Z' })),
     } as Record<number, unknown[]>,
     commentReads: [] as string[],
+    // Comments posted over REST, as [issue, body].
+    commented: [] as [number, string][],
     // The repo's milestones as REST has them, and what each POST or PATCH to them sent.
     milestones: [{ number: 3, title: 'Launch', state: 'open', due_on: '2026-10-20T00:00:00Z', description: '', open_issues: 2, closed_issues: 5 }] as Record<string, unknown>[],
     milestoneWrites: [] as string[],
@@ -239,6 +243,11 @@ const world = (on: On) => {
       state.linked.push([Number(/issues\/(\d+)\//.exec(argv[4] ?? '')?.[1]), argv[argv.length - 1]?.split('=')[1] ?? ''])
       return answer('{}')
     }
+    const posted = /^repos\/[^/]+\/[^/]+\/issues\/(\d+)\/comments$/.exec(argv[4] ?? '')
+    if (argv[1] === 'api' && argv[2] === '-X' && argv[3] === 'POST' && posted) {
+      state.commented.push([Number(posted[1]), (JSON.parse(e.init?.stdin ?? '{}') as { body: string }).body])
+      return answer('{}')
+    }
     const thread = /^repos\/[^/]+\/[^/]+\/issues\/(\d+)\/comments\?per_page=100&page=(\d+)$/.exec(argv[2] ?? '')
     if (argv[1] === 'api' && thread) {
       state.commentReads.push(`${thread[1]} page ${thread[2]}`)
@@ -308,10 +317,6 @@ const world = (on: On) => {
       state.body = e.init?.stdin ?? ''
       state.edits.push(state.body)
       return answer('')
-    }
-    if (argv[1] === 'issue' && argv[2] === 'create') {
-      state.created.push({ argv: [...argv], stdin: e.init?.stdin })
-      return answer('https://github.com/astrosteveo/void-sector/issues/340\n')
     }
     if (argv[1] === 'issue' && argv[2] === 'view') {
       const fields = argv[argv.indexOf('--json') + 1]
@@ -443,7 +448,7 @@ test('Start names the issue in the system prompt; the pane searches, filters Min
   })
   on('prompt.compose', async () => ({ sections: [{ id: 'intro', text: 'You are Claude Code.', scope: 'shared' as const }] }))
   await $.command.run(REFRESH)
-  expect((await $.prompt.compose(COMPOSE)).sections.map(section => section.id)).toEqual(['intro'])
+  expect((await $.prompt.compose(COMPOSE)).sections.map(section => section.id)).toEqual(['intro', 'issue-board:capture'])
 
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   // The row marks this branch's pull request; its details say so in words, and which issue it is for.
@@ -471,7 +476,7 @@ test('Start names the issue in the system prompt; the pane searches, filters Min
   await ui.press({ key: 'start-315' })
   expect(sent.at(-1)).toMatch(/^Let's start on #315/)
   const sections = (await $.prompt.compose(COMPOSE)).sections
-  expect(sections.map(section => section.id)).toEqual(['intro', 'issue-board:working'])
+  expect(sections.map(section => section.id)).toEqual(['intro', 'issue-board:capture', 'issue-board:working'])
   expect(sections.at(-1)?.text).toMatch(/^The person is working on GitHub issue #315: Lay Kessik out for play\./)
   // Its own row starts with ▶, and no separate line says so. The row shows its pull request with CI, and its boxes as a
   // short bar and a count.
@@ -490,7 +495,7 @@ test('Start names the issue in the system prompt; the pane searches, filters Min
   expect((await ui.find({ key: 'row-315' }))?.text).toMatch(/^ {2}#315 /)
   expect((await ui.findAll({ type: 'Text' })).filter(text => text.text === '▶ ')).toHaveLength(0)
   expect(await ui.find({ key: 'stop-315' })).toBeUndefined()
-  expect((await $.prompt.compose(COMPOSE)).sections.map(section => section.id)).toEqual(['intro'])
+  expect((await $.prompt.compose(COMPOSE)).sections.map(section => section.id)).toEqual(['intro', 'issue-board:capture'])
   await ui.unmount()
 })
 
@@ -535,11 +540,164 @@ test('the band says when CI passes and offers Merge; the issue Claude is on is i
   await band.unmount()
 })
 
-test('/issues new drafts an issue from the conversation and files it on request, into the project at Inbox', async ($, on) => {
-  adoptedStore(on)
+const CAPTURE = 'mcp__issue-board__capture'
+
+test('capture files work to the Inbox without a prompt, with a toast, and the band counts it until the Inbox tab opens', async ($, on) => {
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   const gh = world(on)
   gh.project = true
+  on('ui.render', { component: 'AbovePrompt' }, async ($$, e) => {
+    const { Box } = $$.ui.resolve(e)
+    return <Box key="engine" />
+  })
+  const toasts: string[] = []
+  on('ui.toast', async (_$, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  await $.command.run(REFRESH)
+
+  // No rule: the board's check lets it through, and nobody is asked.
+  gh.engine.beneath = 'ask'
+  gh.engine.answer = 'no'
+  gh.engine.asked = []
+  const input = { title: 'Hangar lights flicker after a jump', body: 'Seen while laying out #315: the lights flicker for a second.', labels: ['bug'], epic: 315 }
+  gh.engine.verdict = (await $.tool.check({ tool: CAPTURE, input })).decision
+  expect(gh.engine.verdict).toBe('allow')
+  const answer = await $.tool.call({ tool: CAPTURE, ...input })
+  expect(gh.engine.asked).toEqual([])
+  expect(String(answer.result)).toBe(
+    'Captured to the Inbox for the person to triage. Filed #340: “Hangar lights flicker after a jump”, labelled bug, under #315, in Void Sector, Inbox.',
+  )
+  expect(gh.filed.at(-1)).toEqual({ title: input.title, body: input.body, labels: ['bug'], assignees: [] })
+  expect(gh.linked).toEqual([[315, '9340']])
+  expect(gh.planned[340]).toEqual({ status: 'Inbox' })
+  expect(toasts).toContain('Captured #340 to the Inbox')
+  expect(toasts).not.toContain('Filed #340')
+
+  // The band counts what was captured, and Open Inbox opens the pane at the Inbox tab, which ends the count.
+  const band = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...BAND })
+  expect(await band.find({ text: '1 captured to the Inbox' })).toBeDefined()
+  await $.tool.call({ tool: CAPTURE, title: 'Docking ring creaks on approach', body: 'Heard in the same test run.' })
+  expect(await band.find({ text: '2 captured to the Inbox' })).toBeDefined()
+  expect(await band.find({ key: 'captured-open' })).toMatchObject({ text: 'Open Inbox' })
+  await band.press({ key: 'captured-open' })
+  expect(await band.find({ key: 'captured-row' })).toBeUndefined()
+  const pane = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  expect(await pane.find({ key: 'issue-340' })).toBeDefined()
+
+  // Choosing the Inbox tab in the pane ends the count too.
+  await pane.press({ key: 'filter-all' })
+  await $.tool.call({ tool: CAPTURE, title: 'Map legend overlaps the key', body: 'Noticed on a small screen.' })
+  expect(await band.find({ text: '1 captured to the Inbox' })).toBeDefined()
+  await pane.press({ key: 'filter-inbox' })
+  expect(await band.find({ key: 'captured-row' })).toBeUndefined()
+
+  // A rule that denies it still stands, and nothing is filed.
+  gh.engine.beneath = 'deny'
+  const filed = gh.filed.length
+  gh.engine.verdict = (await $.tool.check({ tool: CAPTURE, input: { title: 'Another thing', body: 'Why.' } })).decision
+  expect(gh.engine.verdict).toBe('deny')
+  await $.tool.call({ tool: CAPTURE, title: 'Another thing', body: 'Why.' })
+  expect(gh.filed).toHaveLength(filed)
+
+  // Without a body that says why, nothing is filed either.
+  gh.engine.beneath = 'ask'
+  gh.engine.verdict = 'allow'
+  expect((await $.tool.call({ tool: CAPTURE, title: 'No reason' })).deny).toBe('Say in body what the work is and why it came up.')
+  expect(gh.filed).toHaveLength(filed)
+  await pane.unmount()
+  await band.unmount()
+  await clock.settle()
+})
+
+test('a capture that is the same work as an open issue, or one closed in the last 30 days, comments there instead', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
+  const gh = world(on)
+  gh.project = true
+  const toasts: string[] = []
+  on('ui.toast', async (_$, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  await $.command.run(REFRESH)
+
+  // #315 is open on the board: the same words in another order are the same work.
+  const open = await $.tool.call({ tool: CAPTURE, title: 'Lay out Kessik for play', body: 'It came up again while testing saves.' })
+  expect(String(open.result)).toBe('Not filed: #315 “Lay Kessik out for play” looks like the same work, so this went there as a comment instead.')
+  expect(gh.commented).toEqual([[315, 'Captured again from a conversation: **Lay out Kessik for play**\n\nIt came up again while testing saves.']])
+  expect(toasts).toContain('Added to #315 as a comment: it looks like the same work')
+
+  // #290 closed the day before: still the same work.
+  const closed = await $.tool.call({ tool: CAPTURE, title: 'Dock the shuttles', body: 'The shuttle still drifts.' })
+  expect(String(closed.result)).toBe('Not filed: #290 “Dock the shuttle”, closed lately, looks like the same work, so this went there as a comment instead.')
+  expect(gh.commented.at(-1)?.[0]).toBe(290)
+  expect(gh.filed).toEqual([])
+
+  // Different work is filed.
+  await $.tool.call({ tool: CAPTURE, title: 'Asteroid belt draws too dense', body: 'Seen near Kessik.' })
+  expect(gh.filed.map(one => one.title)).toEqual(['Asteroid belt draws too dense'])
+  await clock.settle()
+})
+
+test('an issue closed more than 30 days before a capture is not the same work', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-10T10:00:00Z') })
+  const gh = world(on)
+  gh.project = true
+  on('ui.toast', async () => ({ value: undefined }))
+  await $.command.run(REFRESH)
+  const filed = await $.tool.call({ tool: CAPTURE, title: 'Dock the shuttles', body: 'The shuttle still drifts.' })
+  expect(String(filed.result)).toMatch(/^Captured to the Inbox for the person to triage\. Filed #340: “Dock the shuttles”/)
+  expect(gh.commented).toEqual([])
+  await clock.settle()
+})
+
+test('titles count as the same work when most of their words match', () => {
+  expect(titleLikeness('Lay Kessik out for play', 'Lay out Kessik for play')).toBe(1)
+  expect(titleLikeness('Saves drop the hangar', 'The hangar drops from saves')).toBe(1)
+  expect(titleLikeness('Saves drop the hangar', 'Asteroids draw late')).toBe(0)
+  const issues = [{ number: 1, title: 'Dock the shuttle' }, { number: 2, title: 'Dock the shuttle at night in a storm' }]
+  expect(sameWorkOf('Dock the shuttles', issues)?.number).toBe(1)
+  expect(sameWorkOf('Refuel at a station', issues)).toBeNull()
+})
+
+test('the system prompt has the fixed capture section while the setting is on', async ($, on) => {
+  adoptedStore(on)
+  world(on)
+  on('prompt.compose', async () => ({ sections: [{ id: 'intro', text: 'You are Claude Code.', scope: 'shared' as const }] }))
+  await $.command.run(REFRESH)
+  const first = (await $.prompt.compose(COMPOSE)).sections
+  expect(first.map(section => section.id)).toEqual(['intro', 'issue-board:capture'])
+  expect(first[1]).toEqual({ id: 'issue-board:capture', text: captureSection(), scope: 'session' })
+  // Two or three sentences, and the same text on every request.
+  expect(captureSection().split(/\.\s/).length).toBeLessThanOrEqual(3)
+  expect((await $.prompt.compose(COMPOSE)).sections[1]?.text).toBe(first[1]?.text)
+})
+
+test('with the capture setting off, the system prompt has no capture section, and /issues check says so', { options: { capture: false } }, async ($, on) => {
+  adoptedStore(on)
+  world(on)
+  on('prompt.compose', async () => ({ sections: [{ id: 'intro', text: 'You are Claude Code.', scope: 'shared' as const }] }))
+  await $.command.run(REFRESH)
+  expect((await $.prompt.compose(COMPOSE)).sections.map(section => section.id)).toEqual(['intro'])
+  const said = String((await $.command.run({ ...REFRESH, args: 'check' })).text)
+  expect(said).toContain('- The capture section in the system prompt: turned off in /config by Capture section in the system prompt (capture).')
+  await $.command.run(REFRESH)
+})
+
+test('/issues new captures an issue from the conversation straight to the Inbox', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
+  const gh = world(on)
+  gh.project = true
+  on('ui.render', { component: 'AbovePrompt' }, async ($$, e) => {
+    const { Box } = $$.ui.resolve(e)
+    return <Box key="engine" />
+  })
+  const toasts: string[] = []
+  on('ui.toast', async (_$, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
   const asked: string[] = []
   on('model.fork', async (_$, e) => {
     asked.push(e.prompt)
@@ -549,27 +707,16 @@ test('/issues new drafts an issue from the conversation and files it on request,
   await $.command.run(REFRESH)
 
   const reply = await $.command.run({ ...REFRESH, args: 'new the hangar vanishing on load' })
-  expect(reply.text).toMatch(/^Drafting an issue/)
+  expect(reply.text).toMatch(/^Capturing an issue from the conversation to the Inbox\./)
   await clock.settle()
-  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   expect(asked.at(-1)).toMatch(/about: the hangar vanishing on load\./)
-  expect(await ui.find({ text: /New issue · draft/ })).toBeDefined()
-  expect(await ui.find({ text: /^Saves drop the hangar$/ })).toBeDefined()
-
-  await ui.press({ key: 'draft-file' })
-  expect(gh.created).toEqual([
-    {
-      argv: ['gh', 'issue', 'create', '--title', 'Saves drop the hangar', '--body-file', '-', '--label', 'enhancement'],
-      stdin: 'Loading loses it.\n\n## Acceptance\n- [ ] Hangar loads',
-    },
-  ])
-  // Added to the project, then set to Inbox, whatever the project's own automation would set.
-  expect(gh.fields.map(one => [one.content ?? one.item, one.option ?? null])).toEqual([
-    ['I_340', null],
-    ['PVTI_340', optionId('Inbox')],
-  ])
-  expect(await ui.find({ text: /New issue · draft/ })).toBeUndefined()
-  await ui.unmount()
+  // Filed over REST with the labels the repo has, then into the project at Inbox; no card to check first.
+  expect(gh.filed).toEqual([{ title: 'Saves drop the hangar', body: 'Loading loses it.\n\n## Acceptance\n- [ ] Hangar loads', labels: ['enhancement'], assignees: [] }])
+  expect(gh.planned[340]).toEqual({ status: 'Inbox' })
+  expect(toasts).toContain('Captured #340 to the Inbox')
+  const band = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...BAND })
+  expect(await band.find({ text: '1 captured to the Inbox' })).toBeDefined()
+  await band.unmount()
 })
 
 test('a new session paints the saved board and keeps the issue Claude was on', async ($, on) => {
@@ -600,7 +747,7 @@ test('a new session paints the saved board and keeps the issue Claude was on', a
   const pane = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   expect(await pane.find({ key: 'stop-315' })).toBeDefined()
   // Another session started it, so this session's system prompt doesn't claim it.
-  expect((await $.prompt.compose(COMPOSE)).sections.map(section => section.id)).toEqual(['intro'])
+  expect((await $.prompt.compose(COMPOSE)).sections.map(section => section.id)).toEqual(['intro', 'issue-board:capture'])
   await pane.unmount()
 })
 

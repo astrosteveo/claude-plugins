@@ -46,22 +46,28 @@ test('an epic draft asks for sub-issues and reads them back', () => {
   })
 })
 
-// GitHub with those issues, and the issues gh was asked to create.
+// GitHub with those issues, the issues filed over REST, and the sub-issue links made, as [epic, the sub-issue's id].
 const github = (on: On, issues: Raw[] = ISSUES) => {
   // These tests have the board write to the project, which the person let it do.
   adoptedStore(on)
   on('session.root', async () => ({ value: '/work/void-sector' }))
-  const state = { created: [] as string[][], bodies: [] as string[], next: 50 }
+  const state = { filed: [] as { title: string; body: string }[], linked: [] as [number, string][], next: 50 }
   on('process.run', async (_$, e) => {
     const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
     const argv = e.argv
     if (argv[0] === 'git') return answer('main\n')
     if (isIssuesQuery(argv)) return answer(graphPage(issues))
     if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/claude-plugins', hasIssuesEnabled: true }))
-    if (argv[1] === 'issue' && argv[2] === 'create') {
-      state.created.push(argv.slice(3))
-      state.bodies.push(e.init?.stdin ?? '')
-      return answer(`https://github.com/astrosteveo/claude-plugins/issues/${state.next++}\n`)
+    if (argv[1] === 'api' && argv[2] === '-X' && argv[3] === 'POST' && /\/issues$/.test(argv[4] ?? '')) {
+      const fields = JSON.parse(e.init?.stdin ?? '{}') as { title: string; body: string }
+      state.filed.push({ title: fields.title, body: fields.body })
+      const number = state.next++
+      return answer(JSON.stringify({ number, id: 9000 + number, node_id: `I_${number}`, html_url: '', updated_at: '2026-10-05T03:00:00Z', labels: [], assignees: [] }))
+    }
+    if (argv[1] === 'api' && argv[2]?.includes('/issues?state=closed')) return answer('[]')
+    if (argv[1] === 'api' && argv[2] === '-X' && /\/sub_issues$/.test(argv[4] ?? '')) {
+      state.linked.push([Number(/issues\/(\d+)\//.exec(argv[4] ?? '')?.[1]), argv.at(-1)?.split('=')[1] ?? ''])
+      return answer('{}')
     }
     if (argv[1] === 'issue' && argv[2] === 'view') return answer(JSON.stringify({ number: 43, title: 'Edit issues from the board', labels: [], body: '- [ ] Edit', updatedAt: '2026-10-05T00:00:00Z' }))
     return answer(argv[1] === 'api' ? 'astrosteveo\n' : '[]')
@@ -189,10 +195,15 @@ test('issue_update start on an epic with no ready sub-issue refuses and says why
   expect(JSON.stringify(answer)).toContain('Epic #35 has no ready sub-issue to start')
 })
 
-test('/issues new epic drafts a parent and its sub-issues, and creates each one under the parent', async ($, on) => {
+test('/issues new epic captures a parent and its sub-issues to the Inbox, each sub-issue under the parent', async ($, on) => {
   adoptedStore(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-05T03:00:00Z') })
   const gh = github(on)
+  const toasts: string[] = []
+  on('ui.toast', async (_$, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
   const asked: string[] = []
   on('model.fork', async (_$, e) => {
     asked.push(e.prompt)
@@ -209,26 +220,24 @@ test('/issues new epic drafts a parent and its sub-issues, and creates each one 
   })
   await $.command.run({ ...RUN, args: 'refresh' })
   const reply = await $.command.run({ ...RUN, args: 'new epic saves that survive a crash' })
-  expect(reply.text).toMatch(/^Drafting an epic and its sub-issues/)
+  expect(reply.text).toMatch(/^Capturing an epic and its sub-issues from the conversation to the Inbox\./)
   await clock.settle()
   expect(asked.at(-1)).toMatch(/^Draft an epic for this repository about: saves that survive a crash:/)
 
-  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
-  expect(await ui.find({ text: /^New epic · draft · 2 sub-issues$/ })).toBeDefined()
-  expect(await ui.find({ text: /^Check saves on load$/ })).toBeDefined()
-  expect(await ui.find({ key: 'draft-file' })).toMatchObject({ text: '✚ Create the epic and 2 sub-issues' })
-
-  // Pressed twice before the first has done: the epic is created once.
-  await Promise.allSettled([ui.press({ key: 'draft-file' }), ui.press({ key: 'draft-file' })])
-  await clock.settle()
-  expect(gh.created.map(args => [args[1], args.includes('--parent') ? args[args.indexOf('--parent') + 1] : null])).toEqual([
-    ['Saves survive a crash', null],
-    ['Write saves atomically', '50'],
-    ['Check saves on load', '50'],
+  // The epic is filed with the box its last sub-issue closing ticks, then each sub-issue as written, under it.
+  expect(gh.filed).toEqual([
+    { title: 'Saves survive a crash', body: 'Why.\n\n## Acceptance\n- [ ] Every sub-issue is closed\n' },
+    { title: 'Write saves atomically', body: '- [ ] Temp file then rename' },
+    { title: 'Check saves on load', body: '- [ ] Checksums\n- [ ] Fallback' },
   ])
-  // The epic is filed with the box its last sub-issue closing ticks; its sub-issues as drafted.
-  expect(gh.bodies).toEqual(['Why.\n\n## Acceptance\n- [ ] Every sub-issue is closed\n', '- [ ] Temp file then rename', '- [ ] Checksums\n- [ ] Fallback'])
-  expect(await ui.find({ text: /^New epic · draft/ })).toBeUndefined()
+  expect(gh.linked).toEqual([
+    [50, '9051'],
+    [50, '9052'],
+  ])
+  expect(toasts).toContain('Captured epic #50 and 2 sub-issues to the Inbox')
+  // No card waits in the pane.
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  expect(await ui.find({ text: /draft/ })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -309,10 +318,6 @@ const lifecycle = (on: On, open: Raw[]) => {
       const number = Number(argv[3])
       const raw = state.issues.find(one => one.number === number)
       return answer(JSON.stringify({ number, title: raw?.title ?? '', labels: [], assignees: [], body: state.bodies[number] ?? '', updatedAt: raw?.updatedAt ?? '2026-10-05T00:00:00Z', id: `I_${number}` }))
-    }
-    if (argv[1] === 'issue' && argv[2] === 'create') {
-      state.created.push({ title: argv[argv.indexOf('--title') + 1] ?? '', body: e.init?.stdin ?? '' })
-      return answer(`https://github.com/astrosteveo/claude-plugins/issues/${60 + state.created.length}\n`)
     }
     if (argv[1] === 'api' && argv[2] === '-X' && argv[3] === 'POST' && /\/issues$/.test(argv[4] ?? '')) {
       const fields = JSON.parse(e.init?.stdin ?? '{}') as { title: string; body: string }
