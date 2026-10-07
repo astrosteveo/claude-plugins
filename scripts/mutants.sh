@@ -17,8 +17,23 @@
 # verdict, because the verdict is for the committed code and may not hold for the changes. It warns rather than stops,
 # so it can still be run mid-change to check the committed mutants. Commit and run it again for a verdict on the
 # changes. In CI the tree is always clean, so it never warns there.
+#
+# Given a base ref, as in `sh scripts/mutants.sh origin/main`, it runs only the patches the changes since that base can
+# affect: a patch that is new or changed, or one whose touched files or `Test:` test files changed. A `Test:` name in a
+# plugin is placed by searching that plugin's test files for it, and a name it can't place makes its patch run. A change
+# to this script, the workflow, the pinned Claude Code, a plugin's plugin.json or a shared test helper (a file in a
+# plugin's tests/ that is not a test file) runs every patch. It says which patches it skipped and why. With no base it
+# runs every patch. Other changes can still change a verdict in rare cases, such as a refactor of a helper the patched
+# code calls, so CI also runs every patch on each push to main and weekly.
 set -eu
 cd "$(dirname "$0")/.."
+
+base=${1-}
+# A base it can't find, as in a shallow clone, runs every patch: skipping on a guess could pass a survivor.
+if [ -n "$base" ] && ! git merge-base "$base" HEAD >/dev/null 2>&1; then
+  echo "Running every patch: can't find the base $base, or what it shares with HEAD."
+  base=
+fi
 
 root=$(mktemp -d "${TMPDIR:-/tmp}/mutants.XXXXXX")
 cleanup() {
@@ -63,9 +78,71 @@ note() {
   [ -z "$mine" ] || echo "          (tested the last commit; uncommitted changes to ${mine% })"
 }
 
+# Prints the test files that hold a `Test:` line's test: the file itself for a node test, and for a plugin, those of
+# its test files that contain the name. Prints nothing when it can't place the name.
+testfiles() {
+  place=${1%%: *}
+  case "$place" in
+    *.mjs | *.js) printf '%s\n' "$place" ;;
+    *) [ ! -d "$place/tests" ] || grep -rlF --include='*.test.*' -- "${1#*: }" "$place/tests" || true ;;
+  esac
+}
+
+# With a base, the files that differ from it: those committed since the merge base, and any uncommitted patches, since
+# the patches are read from the working tree.
+diffed=
+if [ -n "$base" ]; then
+  diffed=$( {
+    git diff --name-only "$base"...HEAD
+    uncommitted scripts/mutants
+  } | sort -u)
+  # A change to any of these can change every verdict.
+  everything=$(printf '%s\n' "$diffed" | while IFS= read -r file; do
+    case "$file" in
+      scripts/mutants.sh | .github/workflows/mutants.yml | .github/claude-code-version | plugins/*/.claude-plugin/plugin.json)
+        printf '%s\n' "$file" ;;
+      plugins/*/tests/*.test.*) ;;
+      plugins/*/tests/*) printf '%s\n' "$file" ;;
+    esac
+  done)
+  if [ -n "$everything" ]; then
+    echo "Running every patch: these changed since $base:"
+    printf '%s\n' "$everything" | sed 's/^/  /'
+    base=
+  fi
+fi
+
+# Says why a patch must run, one reason per line, or nothing when no change since the base can affect it.
+reasons() {
+  ! printf '%s\n' "$diffed" | grep -qxF -- "$1" || echo "the patch is new or changed"
+  {
+    awk '/^diff --git / { sub(/^a\//, "", $3); sub(/^b\//, "", $4); print $3; print $4 }' "$1"
+    sed -n '/^diff /q; s/^Test: //p' "$1" | while IFS= read -r line; do
+      files=$(testfiles "$line")
+      [ -n "$files" ] || echo "can't find the test \"${line#*: }\" in ${line%%: *}"
+      printf '%s\n' "$files"
+    done
+  } | sort -u | while IFS= read -r file; do
+    case "$file" in
+      "can't find "*) printf '%s\n' "$file" ;;
+      ?*) ! printf '%s\n' "$diffed" | grep -qxF -- "$file" || echo "$file changed" ;;
+    esac
+  done
+}
+
 status=0
+skipped=0
 for patch in scripts/mutants/*.patch; do
   name=$(basename "$patch" .patch)
+  if [ -n "$base" ]; then
+    why=$(reasons "$patch")
+    if [ -z "$why" ]; then
+      echo "skipped   $name: nothing it touches or tests changed since $base"
+      skipped=$((skipped + 1))
+      continue
+    fi
+    printf '%s\n' "$why" | sed "s/^/running   $name: /"
+  fi
   tests=$(sed -n '/^diff /q; s/^Test: //p' "$patch")
   if [ -z "$tests" ]; then
     echo "NO TEST   $name: the header has no Test: line naming the test that must catch it"
@@ -114,4 +191,5 @@ for patch in scripts/mutants/*.patch; do
   note "$patch"
   git worktree remove --force "$tree"
 done
+[ "$skipped" -eq 0 ] || echo "Skipped $skipped patches that no change since $base can affect."
 exit "$status"

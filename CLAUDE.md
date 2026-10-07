@@ -15,6 +15,7 @@ sh scripts/validate.sh                      # strict `claude plugin validate` on
 sh scripts/test.sh                          # run every plugin's tests (what CI runs after validate.sh)
 sh scripts/typecheck.sh                     # type-check every plugin against the installed Claude Code (CI runs it last)
 sh scripts/mutants.sh                       # put each fixed bug in scripts/mutants/ back and check the tests catch it (about a minute); tests the last commit, so commit first
+sh scripts/mutants.sh origin/main           # only the patches the changes since origin/main can affect, as pull requests run it
 claude plugin test plugins/issue-board      # run one plugin's *.test.ts(x); there is no per-test filter
 claude plugin validate --json plugins/issue-board   # what the module hooks and calls, state keys, gating hooks and `.catch`
 npx -p typescript@7 tsc -p plugins/issue-board      # type-check; needs .claude-plugin/types/, see below
@@ -22,8 +23,9 @@ claude --plugin-dir ./plugins/issue-board           # try a plugin from this che
 ```
 
 CI (`.github/workflows/validate.yml`) runs `validate.sh`, then `test.sh`, then `typecheck.sh`. A second workflow,
-`mutants.yml`, runs `mutants.sh` on pull requests that touch hooks, tests, `plugin.json` or `scripts/`, and weekly.
-Both install the Claude Code version pinned in `.github/claude-code-version`, so a Claude Code release can't turn CI
+`mutants.yml`, runs `mutants.sh` on pull requests that touch hooks, tests, `plugin.json` or `scripts/`, with the pull
+request's base, so only the patches it can affect run. It runs every patch on each push to `main` that touches those
+files, weekly, and by hand. Both install the Claude Code version pinned in `.github/claude-code-version`, so a Claude Code release can't turn CI
 red with no change here. `validate.yml` also runs weekly against the latest Claude Code, and by hand with `latest`
 ticked. When that run fails, fix the plugins for the new release. Once it passes, bump the pin in its own PR.
 
@@ -113,6 +115,15 @@ changes: each clean worktree is made from HEAD. When a file a patch touches, or 
 uncommitted changes, it prints a warning and notes it beside that patch's verdict; commit and run it again before
 trusting the result. Make a patch by changing the code in a scratch
 worktree and saving `git diff` below the header. Remake a stale one the same way against the current code.
+
+Given a base ref, as in `sh scripts/mutants.sh origin/main`, it runs only the patches the changes since that base can
+affect: a new or changed patch, or one whose touched files or `Test:` test files changed. It finds a plugin test's
+file by searching the plugin's test files for the name, and runs the patch when it can't (a name built from a table,
+for instance). A change to `mutants.sh`, `mutants.yml`, `.github/claude-code-version`, a plugin's `plugin.json`, or a
+shared test helper (any file in a plugin's `tests/` that is not a test file) runs every patch. It prints `skipped`
+with the reason for each patch it leaves out, and `running` with the reasons for each it runs. A base it can't find
+runs every patch. Pull requests run it with their base; the full set on pushes to `main` and weekly catches the rare
+survivor a change elsewhere makes, such as a refactor of a helper the patched code calls.
 
 ## The call budget
 

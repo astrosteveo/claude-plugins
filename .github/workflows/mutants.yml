@@ -1,9 +1,20 @@
 name: Mutants
 
-# Puts each fixed bug in scripts/mutants/ back and expects the tests to catch it. It runs on pull requests that touch
-# the code, tests or mutants (a hook change can also leave a patch stale), weekly, and by hand.
+# Puts each fixed bug in scripts/mutants/ back and expects the tests to catch it. On a pull request it runs only the
+# patches the pull request can affect (see scripts/mutants.sh). A change outside what a patch touches or tests can
+# still turn a kill into a survivor in rare cases, so every patch runs on each push to main that touches the code,
+# weekly, and by hand. A survivor is then found within one merge.
 on:
   pull_request:
+    paths:
+      - 'plugins/*/hooks/**'
+      - 'plugins/*/tests/**'
+      - 'plugins/*/.claude-plugin/plugin.json'
+      - 'scripts/**'
+      - '.github/claude-code-version'
+      - '.github/workflows/mutants.yml'
+  push:
+    branches: [main]
     paths:
       - 'plugins/*/hooks/**'
       - 'plugins/*/tests/**'
@@ -27,7 +38,11 @@ jobs:
   mutants:
     runs-on: ubuntu-latest
     steps:
+      # The whole history, so the pull request's base commit is there to diff against. Without it the script would
+      # find no base and run every patch.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -36,5 +51,9 @@ jobs:
         run: |
           npm install -g "@anthropic-ai/claude-code@$(cat .github/claude-code-version)"
           claude --version
+      # On a pull request the base is its base commit, and the log says which patches ran and which were skipped and
+      # why. Elsewhere the base is empty, so every patch runs.
       - name: Check every mutant is caught
-        run: sh scripts/mutants.sh
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: sh scripts/mutants.sh "$BASE"
