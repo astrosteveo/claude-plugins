@@ -3,19 +3,10 @@ Test: plugins/issue-board: no number, link, count, badge or key hint splits acro
 Test: plugins/issue-board: a pull request's row keeps its number, badge, linked issue and counts whole, and cuts the title, narrow and wide
 
 diff --git a/plugins/issue-board/hooks/register.tsx b/plugins/issue-board/hooks/register.tsx
-index 2ed1893..df2fec6 100644
+index c32f110..836df29 100644
 --- a/plugins/issue-board/hooks/register.tsx
 +++ b/plugins/issue-board/hooks/register.tsx
-@@ -3235,7 +3235,7 @@ const partsOf = ({ Box, Text, Button, Link }: Pick<ElementTable, 'Box' | 'Text'
-   ),
-   // A part of a one-line row that keeps its width: a number, a badge, a count or a button. A row short of room
-   // squeezes only the part left to shrink, which cuts its text, rather than breaking `#252` into `#25` over `2`.
--  keep: (part: RenderChildren) => <Box flexShrink={0}>{part}</Box>,
-+  keep: (part: RenderChildren) => <Box flexShrink={1}>{part}</Box>,
-   // One option of a set, the chosen one drawn as the primary and the others dim. `extra` carries a tab's hotkey.
-   choice: (key: string, label: string, chosen: boolean, onPress: ButtonProps['onPress'], extra: Pick<ButtonProps, 'hotkey'> = {}) => (
-     <Button key={key} {...extra} variant={chosen ? 'primary' : undefined} dimColor={!chosen} onPress={onPress}>
-@@ -4087,7 +4087,7 @@ export const register: Register = (on, options) => {
+@@ -4066,7 +4066,7 @@ export const register: Register = (on, options) => {
  
      // The header's right: when the board last synced, and Refresh. It keeps its width; the repo's name is cut instead.
      const sync = (
@@ -24,34 +15,7 @@ index 2ed1893..df2fec6 100644
          <Text color={busy ? 'warning' : undefined} dimColor={!busy}>
            {busy ? '◌ syncing…' : now ? `⟳ ${ago(now.fetchedAt, clock)}` : ''}
          </Text>
-@@ -4698,7 +4698,7 @@ export const register: Register = (on, options) => {
-                   </Text>,
-                 )}
-             </Box>
--            <Box flexDirection="row" gap={1} flexShrink={0}>
-+            <Box flexDirection="row" gap={1} flexShrink={1}>
-               {shown.size && (
-                 <Text>
-                   <Text color="success">{`+${pr.additions}`}</Text>
-@@ -4789,7 +4789,7 @@ export const register: Register = (on, options) => {
-           {!isOpen && peek(issue)}
-           {/* The marks, priority and number keep their width; were the row ever short of room, the title gives way. */}
-           <Box flexDirection="row" flexShrink={1}>
--            <Box flexDirection="row" flexShrink={0}>
-+            <Box flexDirection="row" flexShrink={1}>
-               {onIt ? (
-                 <Text color="claude" bold>
-                   {'▶ '}
-@@ -4807,7 +4807,7 @@ export const register: Register = (on, options) => {
-               {fit(issue.title, fits.title)}
-             </Button>
-           </Box>
--          <Box flexDirection="row" gap={1} flexShrink={0}>
-+          <Box flexDirection="row" gap={1} flexShrink={1}>
-             {badge && <Text color={badge.color}>{badge.text}</Text>}
-             {blocked && <Text color="warning">{blocked}</Text>}
-             {linked && <Text color={ciBadge[linked.ci].color}>{pr}</Text>}
-@@ -5348,7 +5348,7 @@ export const register: Register = (on, options) => {
+@@ -5105,7 +5105,7 @@ export const register: Register = (on, options) => {
                </Text>
                {issue.checks.map((check, index) => (
                  <Box key={`box-row-${issue.number}-${index + 1}`} flexDirection="row">
@@ -60,7 +24,7 @@ index 2ed1893..df2fec6 100644
                      <Text color={check.done ? 'success' : 'warning'}>{check.done ? '✔ ' : '☐ '}</Text>
                    </Box>
                    <Box flexShrink={1}>
-@@ -5602,7 +5602,7 @@ export const register: Register = (on, options) => {
+@@ -5359,7 +5359,7 @@ export const register: Register = (on, options) => {
                          </Text>
                          <Text dimColor>{` ${count}`}</Text>
                        </Text>
@@ -69,3 +33,51 @@ index 2ed1893..df2fec6 100644
                          {meter(epic.completed, epic.total, 10)}
                          <Text dimColor>{closed}</Text>
                          {next && (
+diff --git a/plugins/issue-board/hooks/views/issue-row.tsx b/plugins/issue-board/hooks/views/issue-row.tsx
+index e265840..26fd389 100644
+--- a/plugins/issue-board/hooks/views/issue-row.tsx
++++ b/plugins/issue-board/hooks/views/issue-row.tsx
+@@ -77,7 +77,7 @@ export const issueRow = (elements: Elements, data: IssueRowData, handlers: Issue
+       {!isOpen && peek(elements, { issue, width, room: data.room })}
+       {/* The marks, priority and number keep their width; were the row ever short of room, the title gives way. */}
+       <Box flexDirection="row" flexShrink={1}>
+-        <Box flexDirection="row" flexShrink={0}>
++        <Box flexDirection="row" flexShrink={1}>
+           {onIt ? (
+             <Text color="claude" bold>
+               {'▶ '}
+@@ -95,7 +95,7 @@ export const issueRow = (elements: Elements, data: IssueRowData, handlers: Issue
+           {fit(issue.title, fits.title)}
+         </Button>
+       </Box>
+-      <Box flexDirection="row" gap={1} flexShrink={0}>
++      <Box flexDirection="row" gap={1} flexShrink={1}>
+         {badge && <Text color={badge.color}>{badge.text}</Text>}
+         {blocked && <Text color="warning">{blocked}</Text>}
+         {linked && <Text color={ciBadge[linked.ci].color}>{pr}</Text>}
+diff --git a/plugins/issue-board/hooks/views/parts.tsx b/plugins/issue-board/hooks/views/parts.tsx
+index c13902a..936c471 100644
+--- a/plugins/issue-board/hooks/views/parts.tsx
++++ b/plugins/issue-board/hooks/views/parts.tsx
+@@ -17,7 +17,7 @@ export const partsOf = ({ Box, Text, Button, Link }: Elements) => ({
+   ),
+   // A part of a one-line row that keeps its width: a number, a badge, a count or a button. A row short of room
+   // squeezes only the part left to shrink, which cuts its text, rather than breaking `#252` into `#25` over `2`.
+-  keep: (part: RenderChildren) => <Box flexShrink={0}>{part}</Box>,
++  keep: (part: RenderChildren) => <Box flexShrink={1}>{part}</Box>,
+   // One option of a set, the chosen one drawn as the primary and the others dim. `extra` carries a tab's hotkey.
+   choice: (key: string, label: string, chosen: boolean, onPress: ButtonProps['onPress'], extra: Pick<ButtonProps, 'hotkey'> = {}) => (
+     <Button key={key} {...extra} variant={chosen ? 'primary' : undefined} dimColor={!chosen} onPress={onPress}>
+diff --git a/plugins/issue-board/hooks/views/pr-row.tsx b/plugins/issue-board/hooks/views/pr-row.tsx
+index 0ce5db1..6f0d47b 100644
+--- a/plugins/issue-board/hooks/views/pr-row.tsx
++++ b/plugins/issue-board/hooks/views/pr-row.tsx
+@@ -96,7 +96,7 @@ export const prRow = (elements: Elements, data: PrRowData, handlers: PrRowHandle
+               </Text>,
+             )}
+         </Box>
+-        <Box flexDirection="row" gap={1} flexShrink={0}>
++        <Box flexDirection="row" gap={1} flexShrink={1}>
+           {shown.size && (
+             <Text>
+               <Text color="success">{`+${pr.additions}`}</Text>
