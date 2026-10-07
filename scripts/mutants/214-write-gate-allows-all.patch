@@ -1,4 +1,6 @@
 Guards #214: the board writes only to a project it may write to. The write check lets every project through.
+Test: plugins/issue-board: the write check refuses any project the list lacks, by owner and number, and says why and how to adopt
+Test: plugins/issue-board: a project nobody adopted gets no write from Start, triage, any board tool or a read, with every setting on
 
 diff --git a/plugins/issue-board/hooks/project.ts b/plugins/issue-board/hooks/project.ts
 index f52c601..9e90731 100644

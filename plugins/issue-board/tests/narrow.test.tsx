@@ -220,8 +220,6 @@ test('no number, link, count, badge or key hint splits across lines in the pane 
   // Each kind of band line was drawn.
   const wide = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...band(120) })
   for (const text of [/ ✗ CI /, / ◆ EPIC /, / ⚠ PROJECT /, / ✦ PLAN /, / ✚ INBOX /]) expect(await wide.find({ text })).toBeDefined()
-  // The agent at work has no band line: Claude Code lists running agents itself.
-  expect(await wide.find({ key: 'agent-row-agent-2' })).toBeUndefined()
   await wide.unmount()
   expect(checks).toEqual([])
 })

@@ -1,7 +1,7 @@
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { ago, bar, cells, checksOf, ciOf, filterKeys, fit, hintFit, issuesOf, openedText, pad, peekPlace, proseOf, rowRoom, spark, summary, weekly, wrappedLines } from '../hooks/parse'
+import { ago, agoText, bar, cells, checksOf, ciOf, filterKeys, fit, hintFit, issuesOf, openedText, pad, peekPlace, proseOf, rowRoom, spark, summary, weekly, wrappedLines } from '../hooks/parse'
 import { graphPage, isIssuesQuery } from './graph'
 
 test("a card's text leaves out its boxes, and a pull request names the issues it is for", () => {
@@ -69,6 +69,17 @@ test('bars, ages and titles fit the pane', () => {
   expect(ago('2026-09-01T12:00:00Z', at)).toBe('4w')
   expect(fit('Lay Kessik out for play', 10)).toBe('Lay Kessi…')
   expect(fit('short', 10)).toBe('short')
+})
+
+test('an age in a sentence reads "just now" under a minute, never "now ago", from a number or an ISO string', () => {
+  const at = Date.parse('2026-10-03T12:00:00Z')
+  expect(agoText('2026-10-03T11:59:30Z', at)).toBe('just now')
+  expect(agoText(at - 30_000, at)).toBe('just now')
+  expect(agoText('2026-10-03T09:00:00Z', at)).toBe('3h ago')
+  expect(agoText(at - 5 * 60_000, at)).toBe('5m ago')
+  expect(ago(at - 3 * 3_600_000, at)).toBe('3h')
+  expect(agoText('not a date', at)).toBe('')
+  expect(agoText('', at)).toBe('')
 })
 
 test('text is measured in terminal cells: an emoji or a wide character takes two, a combining mark none', () => {
