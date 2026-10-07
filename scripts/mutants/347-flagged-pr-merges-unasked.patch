@@ -1,0 +1,16 @@
+Guards #347: Finish & merge reads a pull request's files but sends it to Claude anyway when they flag something, without asking.
+Test: plugins/issue-board: Finish & merge reads the files first: a flagged pull request asks and lists what it found, a clean one goes at once
+Test: plugins/issue-board: the band's Finish & merge checks the files too, and a flagged pull request opens the pane on its ask
+diff --git a/plugins/issue-board/hooks/register.tsx b/plugins/issue-board/hooks/register.tsx
+index 3605b38..3b3e259 100644
+--- a/plugins/issue-board/hooks/register.tsx
++++ b/plugins/issue-board/hooks/register.tsx
+@@ -3213,7 +3213,7 @@ const finishPr = async ($: EngineInterface, pr: PullRequest, go: () => unknown,
+   const repo = (await read($, board))?.repo
+   const risk = closeOutRisk(pr, workerOfPr(pr, await read($, workers)))
+   const found = repo ? await flagsOf($, repo, pr.number, await isMarketplace($)) : []
+-  if (!risk && found.length === 0) {
++  if (!risk) {
+     await go()
+     return
+   }
