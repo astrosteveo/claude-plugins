@@ -74,7 +74,7 @@ export const fakeGitHub = (on: On, options: Options = {}): GitHub => {
     const call: Call = { argv: [...e.argv], ...(e.init?.stdin === undefined ? {} : { stdin: e.init.stdin }) }
     const { argv } = call
     gh.ran.push(call)
-    if (argv[0] === 'gh' && (writesGitHub(argv.join(' ')) || isMutation(argv.slice(1), call.stdin))) gh.writes.push(call)
+    if (argv[0] === 'gh' && (writesGitHub(argv.join(' ')) || isMutation(argv, call.stdin))) gh.writes.push(call)
     for (const route of routes) {
       const answer = await route(call)
       if (answer) return answer
@@ -86,8 +86,8 @@ export const fakeGitHub = (on: On, options: Options = {}): GitHub => {
       return ok(`HTTP/2.0 200 OK\nEtag: ${gh.etag}\n\n[]`)
     }
     if (isIssuesQuery(argv)) return ok(graphPage(gh.issues, argv, gh.project, gh.types, gh.views, gh.labels))
-    // The pull requests' review threads: none open.
-    if (argv[1] === 'api' && argv[2] === 'graphql') return json({ data: { repository: { pullRequests: { nodes: [] } } } })
+    // A project write goes through, and the pull requests' review threads are none open.
+    if (argv[1] === 'api' && argv[2] === 'graphql') return json({ data: isMutation(argv, call.stdin) ? {} : { repository: { pullRequests: { nodes: [] } } } })
     if (argv[1] === 'pr' && argv[2] === 'list') return argv.includes('open') ? json(gh.prs) : ok('[]')
     if (argv[1] === 'api') return ok(`${gh.login}\n`)
     return ok('[]')
