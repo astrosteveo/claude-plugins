@@ -3,7 +3,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
 import { captureSection } from '../hooks/parse'
-import { countCall, countContext, countPoints, kindOf, newStats, statsText } from '../hooks/stats'
+import { countCall, countContext, countPoints, countPrompt, defineTool, kindOf, loadTool, newStats, statsText } from '../hooks/stats'
 import { adoptedStore, graphPage, isIssuesQuery } from './graph'
 import { letThrough } from './engine'
 import { github } from './setup-github'
@@ -107,7 +107,7 @@ const spent = async ($: Parameters<TestBody>[0]): Promise<Counts & { text: strin
   const text = String((await $.command.run(STATS)).text)
   const calls = /^GitHub calls: .* \(REST (\d+), REST 304 (\d+), GraphQL (\d+)\)$/m.exec(text)
   const context = /^Context added: ([\d,]+) characters/m.exec(text)
-  const points = /^GraphQL points: ([\d,]+),/m.exec(text)
+  const points = /^GraphQL points: ([\d,]+)[,.]/m.exec(text)
   const number = (value: string | undefined) => Number((value ?? '').replace(/,/g, ''))
   return { text, rest: number(calls?.[1]), rest304: number(calls?.[2]), graphql: number(calls?.[3]), context: number(context?.[1]), points: number(points?.[1]) }
 }
@@ -139,17 +139,98 @@ test('each gh command counts as REST or GraphQL, and stats add up calls, points 
   countCall(stats, 'poll', 'rest304')
   countCall(stats, 'poll', 'rest304')
   countPoints(stats, { cost: 2, remaining: 4990, resetAt: '2026-10-04T11:00:00Z' })
-  countContext(stats, 'tool definitions', 4000)
+  countContext(stats, 'working note', 4000)
   countContext(stats, 'issue copies', 250)
+  for (let prompt = 0; prompt < 10; prompt++) countPrompt(stats)
   stats.lastRead = { at: Date.parse('2026-10-04T11:00:00Z'), calls: { rest: 1, rest304: 0, graphql: 1 }, points: 2 }
   const text = statsText(stats, Date.parse('2026-10-04T12:00:00Z'))
   expect(text).toMatch(/^What the issue board cost since it loaded 2 h 0 min ago\.$/m)
+  expect(text).not.toContain('Per-hour rates show')
   expect(text).toMatch(/^GitHub calls: 4, 2\.0 an hour \(REST 1, REST 304 2, GraphQL 1\)$/m)
   expect(text).toMatch(/^- full read: REST 1, REST 304 0, GraphQL 1\n- poll: REST 0, REST 304 2, GraphQL 0$/m)
   expect(text).toMatch(/^GraphQL points: 2, 1\.0 an hour\. 4,990 left until \d\d:\d\d\.$/m)
-  expect(text).toMatch(/^Context added: 4,250 characters, 2,125 an hour\n- tool definitions: 4,000\n- issue copies: 250$/m)
+  expect(text).toMatch(/^Context added: 4,250 characters, 425 a prompt over 10 prompts, 2,125 an hour\n- working note: 4,000\n- issue copies: 250$/m)
+  expect(text).toMatch(/^Tool definitions: none registered\.$/m)
   expect(text).toMatch(/^Last full read, 1 h 0 min ago: REST 1, REST 304 0, GraphQL 1; 2 points\.$/m)
   expect(statsText(newStats(0), 0)).toMatch(/^No full read has finished yet\.$/m)
+})
+
+test('per-hour rates show only after 10 minutes, and say how long the board has been loaded until then', () => {
+  const stats = newStats(Date.parse('2026-10-04T10:00:00Z'))
+  for (let call = 0; call < 9; call++) countCall(stats, 'full read', 'graphql')
+  countPoints(stats, { cost: 3, remaining: 4997, resetAt: '2026-10-04T11:00:00Z' })
+  countContext(stats, 'news', 8500)
+  countPrompt(stats)
+  // A minute in, the old count would have read 540 calls and 510,000 characters an hour.
+  const early = statsText(stats, Date.parse('2026-10-04T10:01:00Z'))
+  expect(early).toMatch(/^What the issue board cost since it loaded 1 min ago\.\nPer-hour rates show once it has been loaded 10 minutes\.$/m)
+  expect(early).not.toContain('an hour')
+  expect(early).toMatch(/^GitHub calls: 9 \(REST 0, REST 304 0, GraphQL 9\)$/m)
+  expect(early).toMatch(/^GraphQL points: 3\. 4,997 left until \d\d:\d\d\.$/m)
+  expect(early).toMatch(/^Context added: 8,500 characters, 8,500 a prompt over 1 prompt$/m)
+  // Just short of ten minutes still has no rate; at ten it does.
+  expect(statsText(stats, Date.parse('2026-10-04T10:09:59Z'))).not.toContain('an hour')
+  const later = statsText(stats, Date.parse('2026-10-04T10:10:00Z'))
+  expect(later).not.toContain('Per-hour rates show')
+  expect(later).toMatch(/^GitHub calls: 9, 54 an hour \(REST 0, REST 304 0, GraphQL 9\)$/m)
+  expect(later).toMatch(/^Context added: 8,500 characters, 8,500 a prompt over 1 prompt, 51,000 an hour$/m)
+})
+
+test('tool definitions show on their own line, and count as context only once loaded', () => {
+  const stats = newStats(0)
+  defineTool(stats, 'mcp__issue-board__issues', 3000)
+  defineTool(stats, 'mcp__issue-board__tick', 1500)
+  expect(statsText(stats, 0)).toMatch(/^Context added: 0 characters$/m)
+  expect(statsText(stats, 0)).toMatch(/^Tool definitions: 4,500 characters for 2 tools, loaded when a tool is first used; none loaded yet\.$/m)
+  loadTool(stats, 'mcp__issue-board__tick')
+  // Loaded twice, or a tool that isn't the board's, counts nothing more.
+  loadTool(stats, 'mcp__issue-board__tick')
+  loadTool(stats, 'Bash')
+  const text = statsText(stats, 0)
+  expect(text).toMatch(/^Context added: 1,500 characters\n- tool definitions: 1,500$/m)
+  expect(text).toMatch(/^Tool definitions: 4,500 characters for 2 tools, loaded when a tool is first used; 1 loaded so far, 1,500 characters, counted in context added\.$/m)
+  // Registered again, as a new session does, it keeps whether it was loaded.
+  defineTool(stats, 'mcp__issue-board__tick', 1500)
+  expect(statsText(stats, 0)).toMatch(/1 loaded so far/)
+})
+
+test('a board tool loads when Claude Code lists it in front, when ToolSearch finds it, or when Claude calls it', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
+  world(on)
+  on('tool.describe', async (_$, e) => ({ description: e.description, ...(e.isDeferred ? { isDeferred: true } : {}) }))
+  on('tool.call', { tool: 'ToolSearch' }, async (_$, e) => ({ result: { matches: ['mcp__issue-board__tick'], query: e.query, total_deferred_tools: 10 }, text: 'tick' }))
+  await $.session.start({ cwd: REPO.root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const tools = async () => /^Tool definitions: ([\d,]+) characters for (\d+) tools, loaded when a tool is first used; (.*)\.$/m.exec((await spent($)).text)
+  const atLoad = await tools()
+  expect(atLoad?.[2]).toBe('10')
+  expect(atLoad?.[3]).toBe('none loaded yet')
+  expect((await spent($)).text).not.toMatch(/^- tool definitions:/m)
+  const provider = { plugin: 'issue-board', tier: 'user' } as const
+  // Deferred, a tool's schema stays out of context.
+  await $.tool.describe({ tool: 'mcp__issue-board__issues', description: 'Lists issues', isDeferred: true, provider })
+  expect((await tools())?.[3]).toBe('none loaded yet')
+  // Listed in front, it is in context from the start.
+  await $.tool.describe({ tool: 'mcp__issue-board__milestone', description: 'Milestones', provider })
+  expect((await tools())?.[3]).toMatch(/^1 loaded so far/)
+  await $.tool.call({ tool: 'ToolSearch', query: 'select:mcp__issue-board__tick', max_results: 5 })
+  expect((await tools())?.[3]).toMatch(/^2 loaded so far/)
+  await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 315, priority: 'P0' })
+  await clock.settle()
+  const text = (await spent($)).text
+  expect(text).toMatch(/3 loaded so far, [\d,]+ characters, counted in context added\.$/m)
+  expect(text).toMatch(/^- tool definitions: [\d,]+$/m)
+})
+
+test('context added counts per prompt Claude received', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
+  world(on)
+  await $.session.start({ cwd: REPO.root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  expect((await spent($)).text).toMatch(/^Context added: [\d,]+ characters$/m)
+  await $.prompt.submit({ text: 'What is next?', wait: false, origin: { kind: 'composer' } })
+  await $.prompt.submit({ text: 'And then?', wait: false, origin: { kind: 'composer' } })
+  expect((await spent($)).text).toMatch(/^Context added: [\d,]+ characters, [\d,]+ a prompt over 2 prompts$/m)
 })
 
 test('the budget: a refresh, the capture note, a Start, an issue_update, a capture and an idle hour', async ($, on) => {

@@ -265,7 +265,8 @@ until it happens again.
 
 Each open pull request is a row: its CI (`✓ PASS`, `✗ FAIL`, `◷ CI`), title,
 the issue it is for (`→ #38`), its review, and `◆` on the branch you have
-checked out. It says why it can't merge yet: `⚠ conflicts`, `↓ behind`,
+checked out. A `⚙` after its number means a background agent is still on
+the issue it is for, and may push to its branch. It says why it can't merge yet: `⚠ conflicts`, `↓ behind`,
 open review threads, and who is asked to review. At the right are its diff
 counts (`+120 −40`) and **Finish & merge**. Press the title for its details.
 
@@ -277,7 +278,9 @@ diff counts, the linked issue, the merge note and the review mark. Last,
 their badge, number and buttons keep their width, and the text is cut.
 
 - **Finish & merge** sends Claude to see it through: fix CI, answer review,
-  and merge, without bypassing branch protection or force-pushing.
+  and merge, without bypassing branch protection or force-pushing. While a
+  background agent owns the branch, or CI is still running or failing, it
+  asks first and says why. **Close out anyway** sends it, **Cancel** doesn't.
 - **⇶ Merge all** (`m`) does the same for every open pull request, oldest
   first, after asking: `y` to send, `n` to cancel.
 
@@ -742,8 +745,10 @@ once and still knows the issue you were on.
 
 ### What it costs
 
-`/issues stats` says what the board has spent since it loaded, per hour, and
-for its last full read:
+`/issues stats` says what the board has spent since it loaded, and for its
+last full read. Once the board has been loaded 10 minutes, it also gives
+each count per hour. Before then it says how long the board has been loaded,
+since a rate scaled up from a few seconds says little.
 
 - **GitHub calls**, as REST, REST answered 304 (nothing changed, so free
   against the rate limit), and GraphQL. `gh issue`, `gh pr` and
@@ -754,10 +759,15 @@ for its last full read:
 - **GraphQL points**, added up from the issues query's own rate limit
   answer, with what is left and when it resets.
 - **Context**: the characters the board adds to Claude's context, by
-  source. The tool definitions count once, when they are registered. The
-  working, orchestrator and capture notes count when they first go into the
-  system prompt and when they change. Issue copies, moved lines, news, the prompts
-  the board sends, and its tools' answers count each time.
+  source, and per prompt Claude received. The working, orchestrator and
+  capture notes count when they first go into the system prompt and when
+  they change. Issue copies, moved lines, news, the prompts the board sends, and
+  its tools' answers count each time.
+- **Tool definitions**, on their own line: the size of all the board's
+  tools, and how many are loaded so far. Claude Code defers the board's
+  tools, so only their names are in context until a tool is loaded. A tool's
+  definition counts as context once: when Claude Code lists it in the
+  prompt, when ToolSearch finds it, or when Claude first calls it.
 
 The counts stay in memory. A reload starts them over.
 

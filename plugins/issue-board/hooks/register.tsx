@@ -7,7 +7,7 @@ import type { Linked } from './project'
 import { authOf, problemsOf, problemsText, repoOf } from './access'
 import { isBug, markerAskOf, markerKey, markerOptionsOf, markerText, markersOf } from './markers'
 import type { Cause, ContextSource, Tally } from './stats'
-import { countCall, countContext, countPoints, kindOf, minus, newStats, statsText } from './stats'
+import { countCall, countContext, countPoints, countPrompt, defineTool, kindOf, loadTool, matchesOf, minus, newStats, statsText } from './stats'
 import {
   ADD_ITEM,
   ARCHIVE_ITEM,
@@ -80,6 +80,7 @@ import {
   templatePrompt,
 } from './setup'
 import {
+  ACTIVE,
   PR_RULES,
   START_MODES,
   THREADS_QUERY,
@@ -101,6 +102,7 @@ import {
   ciBadge,
   closeOutAllPrompt,
   closeOutPrompt,
+  closeOutRisk,
   commentsOf,
   commandsOf,
   copiesFor,
@@ -170,6 +172,7 @@ import {
   wrappedLines,
   workerBadge,
   workerOnLine,
+  workerOfPr,
   workerIssueOf,
   workerPrOf,
   workerPrompt,
@@ -381,6 +384,7 @@ const expanded = atom({ plugin: 'issue-board', key: 'expanded' } as const, [])
 const working = atom({ plugin: 'issue-board', key: 'working' } as const, null)
 const dismissed = atom({ plugin: 'issue-board', key: 'dismissed' } as const, [])
 const confirming = atom({ plugin: 'issue-board', key: 'confirming' } as const, false)
+const confirmingPr = atom({ plugin: 'issue-board', key: 'confirmingPr' } as const, null)
 const query = atom({ plugin: 'issue-board', key: 'query' } as const, '')
 const viewer = atom({ plugin: 'issue-board', key: 'viewer' } as const, null)
 const branch = atom({ plugin: 'issue-board', key: 'branch' } as const, null)
@@ -540,7 +544,9 @@ const askThenAct = async <E, R>(e: E, next: (e: E) => Promise<ToolCallResult>, a
 }
 
 // One of the board's tools at work: its gh calls count under tool, and its answer as context Claude reads.
-const asTool = async <R,>(work: () => Promise<R>): Promise<R> => {
+const asTool = async <R,>(tool: string, work: () => Promise<R>): Promise<R> => {
+  // Claude called the tool, so its definition is in context now, if ToolSearch hadn't loaded it already.
+  loadTool(stats, tool)
   const answer = await within('tool', work)
   countText('tool results', answerText(answer))
   return answer
@@ -2762,9 +2768,6 @@ const watchRun = async ($: EngineInterface, run: { id: number; workflow: string 
   }
 }
 
-// Where a background agent's loop may still move on from.
-const ACTIVE: readonly Worker['status'][] = ['pending', 'running', 'waiting', 'idle']
-
 // While a background agent works, the board asks where each stands every 10 seconds, and stops once none works. An
 // agent the list shows ended may still answer; when no answer has come 10 seconds later, the board says how it ended
 // without one.
@@ -3327,17 +3330,21 @@ const countSection = (id: string, text: string, source: ContextSource): void => 
   countText(source, text)
 }
 
-// Sends Claude a prompt of the board's. What reaches Claude counts as context.
+// Sends Claude a prompt of the board's. What reaches Claude counts as context, and as a prompt, since the board's own
+// prompt.submit hook doesn't see it.
 const submit = async ($: EngineInterface, source: ContextSource, args: Parameters<EngineInterface['prompt']['submit']>[0]) => {
   const sent = await $.prompt.submit(args)
-  if (sent.drop === undefined) countText(source, args.text)
+  if (sent.drop === undefined) {
+    countText(source, args.text)
+    countPrompt(stats)
+  }
   return sent
 }
 
-// Registers one of the board's tools. Its name, description and schema go to Claude with every request, and count
-// once, as the tool is registered.
+// Registers one of the board's tools. Its name, description and schema count as context only once Claude Code puts
+// them in front of Claude: see the tool.describe and tool.call hooks.
 const registerTool = ($: EngineInterface, tool: Parameters<EngineInterface['tool']['register']>[0]) => {
-  countText('tool definitions', JSON.stringify(tool))
+  defineTool(stats, `mcp__issue-board__${tool.name}`, JSON.stringify(tool).length)
   return $.tool.register(tool)
 }
 
@@ -3628,7 +3635,7 @@ export const register: Register = (on, options) => {
     // The agent Start in background runs: in its own worktree, in the background. Claude reads its description among the
     // agent types.
     const workerDescription = "Works one GitHub issue of this repository end to end in its own git worktree, for the issue board's Start in background."
-    countText('tool definitions', workerDescription)
+    countText('agent type', workerDescription)
     await $.agent
       .register({
         name: 'worker',
@@ -3788,6 +3795,22 @@ export const register: Register = (on, options) => {
     return { value: undefined }
   }).catch(($, e, next) => fallBack($, e, next, 'ui.close'))
 
+  // A board tool's definition goes into Claude's context when Claude Code first lists it in front, rather than behind
+  // ToolSearch, for /issues stats.
+  on('tool.describe', async ($, e, next) => {
+    const described = await next(e)
+    const deferred = described.isDeferred ?? e.isDeferred === true
+    if (!deferred) loadTool(stats, e.tool)
+    return described
+  }).catch(($, e, next) => fallBack($, e, next, 'tool.describe'))
+
+  // A deferred tool's definition loads when ToolSearch finds it. One Claude calls loads too: see asTool.
+  on('tool.call', { tool: 'ToolSearch' }, async ($, e, next) => {
+    const ran = await next(e)
+    if (ran.deny === undefined && !ran.isError) for (const name of matchesOf(ran.result)) loadTool(stats, name)
+    return ran
+  }).catch(($, e, next) => fallBack($, e, next, 'tool.call on ToolSearch'))
+
   // Claude changing GitHub through gh or a push: show the change straight away, and a change Claude made through gh to
   // the issue it is on isn't news to it. A checkout moves the branch marker, and to a branch named for an issue, the
   // issue Claude is on, when the main session moves: a subagent's checkout is its own. Any git or gh has the board read
@@ -3865,6 +3888,7 @@ export const register: Register = (on, options) => {
     // A dropped prompt never reached Claude, so its copies count as unsent, and nothing it carried counts as context.
     if (entered.drop === undefined) for (const [number, key] of copied) sentCopies.set(number, key)
     if (entered.drop === undefined) for (const [source, text] of lines) countText(source, text)
+    if (entered.drop === undefined) countPrompt(stats)
     if (starting && entered.drop === undefined) {
       $.ui.toast(`Sent #${starting.issue.number} to Claude`)
       await claim($, starting.issue)
@@ -3925,7 +3949,7 @@ export const register: Register = (on, options) => {
   on('prompt.suggest', async ($, e, next) => (e.origin.kind === 'suggestion' && nextStep ? next({ ...e, text: nextStep }) : next(e)))
 
   on('tool.call', { tool: ISSUES_TOOL }, async ($, e) =>
-    asTool(async () => {
+    asTool(e.tool, async () => {
       const input = e as unknown as {
         number?: number
         filter?: BuiltInFilter
@@ -4006,7 +4030,7 @@ export const register: Register = (on, options) => {
   ).catch(($, _e, next) => toolFailed($, next, 'issues'))
 
   on('tool.call', { tool: TICK_TOOL }, async ($, e, next) =>
-    asTool(async () => {
+    asTool(e.tool, async () => {
       const input = e as unknown as { number?: unknown; boxes?: unknown; done?: unknown }
       const { number, boxes } = input
       if (typeof number !== 'number' || !Array.isArray(boxes) || boxes.length === 0 || !boxes.every(box => Number.isInteger(box))) {
@@ -4029,7 +4053,7 @@ export const register: Register = (on, options) => {
   ).catch(($, _e, next) => toolFailed($, next, 'tick'))
 
   on('tool.call', { tool: UPDATE_TOOL }, async ($, e, next) =>
-    asTool(async () => {
+    asTool(e.tool, async () => {
       const changes = changesOf(e)
       if (!changes) return { deny: 'Give the issue number, and what to change on it.' }
       // A lock the board doesn't know is refused, not dropped without a word.
@@ -4064,7 +4088,7 @@ export const register: Register = (on, options) => {
   // A no leaves it on the card, for the person to apply some of it or discard it. In a mode that settles prompts unseen,
   // it stays on the card and the call asks nothing.
   on('tool.call', { tool: PLAN_TOOL }, async ($, e, next) =>
-    asTool(async () => {
+    asTool(e.tool, async () => {
       const planned = await planFor($, e, true)
       if ('problems' in planned) return { deny: problemsOfPlan(planned.problems) }
       const id = await propose($, planned.changes)
@@ -4095,7 +4119,7 @@ export const register: Register = (on, options) => {
 
   // Claude filing an issue. Claude Code asks first, as for any tool that changes something.
   on('tool.call', { tool: CREATE_TOOL }, async ($, e, next) =>
-    asTool(async () => {
+    asTool(e.tool, async () => {
       const spec = newIssueOf(e)
       if (typeof spec === 'string') return { deny: spec }
       return askThenAct(e, next, async () => {
@@ -4113,7 +4137,7 @@ export const register: Register = (on, options) => {
   // Claude capturing work found in conversation to the Inbox. It goes through the permission check like the other
   // writes, which the hook below lets through.
   on('tool.call', { tool: CAPTURE_TOOL }, async ($, e, next) =>
-    asTool(async () => {
+    asTool(e.tool, async () => {
       const spec = captureOf(e)
       if (typeof spec === 'string') return { deny: spec }
       return askThenAct(e, next, async () => {
@@ -4137,7 +4161,7 @@ export const register: Register = (on, options) => {
 
   // Claude reading or posting the project's status update. Reading answers at once; posting asks, then acts.
   on('tool.call', { tool: STATUS_TOOL }, async ($, e, next) =>
-    asTool(async () => {
+    asTool(e.tool, async () => {
       const ask = e as unknown as { status?: unknown; note?: unknown; start?: unknown; target?: unknown }
       const project = (await read($, board))?.project
       if (!project) return { deny: 'The board reads no project for this repo.' }
@@ -4170,7 +4194,7 @@ export const register: Register = (on, options) => {
   // Claude archiving project items: the first call lists them and answers at once; the second, with confirm, asks and
   // then archives them.
   on('tool.call', { tool: ARCHIVE_TOOL }, async ($, e, next) =>
-    asTool(async () => {
+    asTool(e.tool, async () => {
       const ask = e as unknown as { number?: unknown; doneBefore?: unknown; confirm?: unknown }
       const project = (await read($, board))?.project
       if (!project) return { deny: "The board reads no project for this repo, so there's nothing to archive." }
@@ -4202,7 +4226,7 @@ export const register: Register = (on, options) => {
   // Claude letting the board write to a project, or releasing it, when the person asked. It asks, then acts, so the
   // check below and its prompt run first, and a no changes nothing.
   on('tool.call', { tool: ADOPT_TOOL }, async ($, e, next) =>
-    asTool(async () => {
+    asTool(e.tool, async () => {
       const plan = await adoptPlan($, e)
       if ('refusal' in plan) return { deny: plan.refusal }
       return askThenAct(e, next, async () => {
@@ -4246,7 +4270,7 @@ export const register: Register = (on, options) => {
 
   // Claude making or changing a milestone. Claude Code asks first, as for any tool that changes something.
   on('tool.call', { tool: MILESTONE_TOOL }, async ($, e, next) =>
-    asTool(async () => {
+    asTool(e.tool, async () => {
       const ask = e as unknown as { title?: unknown; newTitle?: unknown; due?: unknown; description?: unknown; close?: unknown; reopen?: unknown }
       const text = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : undefined)
       const title = text(ask.title)
@@ -4355,6 +4379,7 @@ export const register: Register = (on, options) => {
     const chosen = await read($, filter)
     const open = await read($, expanded)
     const arming = await read($, confirming)
+    const armedPr = await read($, confirmingPr)
     const who = await read($, viewer)
     const typed = await read($, query)
     const here = await read($, branch)
@@ -4419,6 +4444,7 @@ export const register: Register = (on, options) => {
     }
 
     const closeOut = async (pr: PullRequest) => {
+      await update($, confirmingPr, () => null)
       await submit($, 'other prompts', { text: closeOutPrompt(pr), asUser: true })
       $.ui.toast(`Sent PR #${pr.number} to Claude to finish and merge`)
     }
@@ -5066,8 +5092,8 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
-    // A pull request on one row: CI, number, title, the issue it is for, a review mark, why it can't merge yet and
-    // whether it is this branch's, then its diff counts and Finish & merge. Every part but the title keeps its width,
+    // A pull request on one row: CI, number, a ⚙ while a background agent owns its branch, title, the issue it is for,
+    // a review mark, why it can't merge yet and whether it is this branch's, then its diff counts and Finish & merge. Every part but the title keeps its width,
     // and the title is cut to what is left; a narrow pane drops parts in prRowRoom's order rather than wrap the row.
     // The title opens its details beneath: branch, author, age, review, failing checks and its link.
     const prRow = (pr: PullRequest) => {
@@ -5085,8 +5111,13 @@ export const register: Register = (on, options) => {
       const threads = pr.openThreads ?? 0
       const threadText = threads > 0 ? `${threads} open ${threads === 1 ? 'thread' : 'threads'}` : ''
       const askedText = (pr.reviewers ?? []).length > 0 ? `asks ${(pr.reviewers ?? []).slice(0, 2).join(', ')}${(pr.reviewers ?? []).length > 2 ? ` +${(pr.reviewers ?? []).length - 2}` : ''}` : ''
+      // A background agent that may still push to its branch, and why Finish & merge asks first: that agent, or CI
+      // that hasn't passed.
+      const owner = workerOfPr(pr, working$)
+      const risk = closeOutRisk(pr, owner)
+      const asking = risk !== null && armedPr === pr.number
       const gapped = (text: string) => (text ? cells(text) + 1 : 0)
-      const fits = prRowRoom(width, cells(badge.text) + 1 + cells(`#${pr.number}`) + 1 + (mine ? 2 : 0), {
+      const fits = prRowRoom(width, cells(badge.text) + 1 + cells(`#${pr.number}`) + 1 + (mine ? 2 : 0) + (owner ? 2 : 0), {
         asked: gapped(askedText),
         threads: gapped(threadText),
         size: roomy ? gapped(size) : 0,
@@ -5105,6 +5136,7 @@ export const register: Register = (on, options) => {
                 </Text>,
               )}
               {keep(<Text color="suggestion" bold>{`#${pr.number}`}</Text>)}
+              {owner && keep(<Text color={workerBadge(owner.status).color}>⚙</Text>)}
               <Button key={`pr-${pr.number}`} plain hover={{ bold: true }} onPress={togglePr(pr.number)}>
                 {fit(pr.title, fits.title)}
               </Button>
@@ -5127,11 +5159,22 @@ export const register: Register = (on, options) => {
                   <Text color="error">{` −${pr.deletions}`}</Text>
                 </Text>
               )}
-              <Button key={`close-out-${pr.number}`} dimColor hover={{ dimColor: false, color: 'suggestion' }} onPress={() => void closeOut(pr)}>
+              <Button key={`close-out-${pr.number}`} dimColor hover={{ dimColor: false, color: 'suggestion' }} onPress={() => void (risk ? update($, confirmingPr, () => pr.number) : closeOut(pr))}>
                 {fits.finish}
               </Button>
             </Box>
           </Box>
+          {asking && (
+            <Box key={`close-out-ask-${pr.number}`} flexDirection="row" flexWrap="wrap" gap={1} paddingLeft={cells(badge.text) + 1}>
+              <Text color="warning" wrap="wrap">{`Close out PR #${pr.number} anyway? ${risk}`}</Text>
+              <Button key={`close-out-yes-${pr.number}`} variant="primary" onPress={() => void closeOut(pr)}>
+                Close out anyway
+              </Button>
+              <Button key={`close-out-no-${pr.number}`} dimColor onPress={() => void update($, confirmingPr, () => null)}>
+                Cancel
+              </Button>
+            </Box>
+          )}
           {isOpen && (
             <Box key={`pr-detail-${pr.number}`} flexDirection="row" flexWrap="wrap" gap={1} paddingLeft={[...badge.text].length + 1} marginBottom={1}>
               <Text dimColor>{`⎇ ${fit(pr.branch, Math.max(10, Math.floor(width / 3)))}`}</Text>
@@ -5140,6 +5183,7 @@ export const register: Register = (on, options) => {
               {review && <Text color={review.color}>{`· ${review.text}`}</Text>}
               {pr.ci === 'fail' && (pr.failing ?? []).length > 0 && <Text color="error">{`· ${fit(pr.failing.join(', '), 30)}`}</Text>}
               {(pr.issues ?? []).length > 0 && <Text dimColor>{`· for ${pr.issues.map(number => `#${number}`).join(', ')}`}</Text>}
+              {owner && <Text color={workerBadge(owner.status).color}>{`· ${workerOnLine(owner.status, ago(new Date(owner.startedAt).toISOString(), clock), owner.number)}`}</Text>}
               {mine && (
                 <Text color="claude" bold>
                   · ◆ this branch

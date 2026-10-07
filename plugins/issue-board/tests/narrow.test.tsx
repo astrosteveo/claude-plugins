@@ -186,14 +186,14 @@ const world = async ($: Engine, on: On) => {
   put('captured', 3)
 
   // The state is held here rather than by the host, so a drawing isn't drawn again when it changes: each press gets a
-  // fresh one.
-  for (const key of ['filter-all', 'group-epic', 'issue-302']) {
+  // fresh one. #252 is for #302, which an agent is on, so its row shows the ⚙ and its Finish & merge asks first.
+  for (const key of ['filter-all', 'group-epic', 'issue-302', 'close-out-252']) {
     const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...pane(120) })
     await ui.press({ key })
     await ui.unmount()
   }
   const setup = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...pane(120) })
-  for (const key of ['pr-row-252', 'filter-view:2', 'filter-all', 'plan-card', 'plan-pick-label-5', 'plan-pick-view-6', 'adopt-card', 'card-302', 'next-301', 'box-row-302-2'])
+  for (const key of ['pr-row-252', 'close-out-ask-252', 'filter-view:2', 'filter-all', 'plan-card', 'plan-pick-label-5', 'plan-pick-view-6', 'adopt-card', 'card-302', 'next-301', 'box-row-302-2'])
     expect(await setup.find({ key }), key).toBeDefined()
   expect(await setup.find({ text: /^⚠ The board can't apply sprint:@current/ })).toBeDefined()
   expect(await setup.find({ text: /last \d+ weeks/ })).toBeDefined()
@@ -260,10 +260,10 @@ test("a pull request's row keeps its number, badge, linked issue and counts whol
     expect([line.props.gap, left.props.flexShrink, right.props.flexShrink]).toEqual([1, 1, 0])
     // Every part on the left but the title sits in a Box that doesn't shrink.
     expect(parts.map(part => (part.type === 'Box' ? `${shown(kids(part)[0] as Drawn)}:${String(part.props.flexShrink)}` : part.type))).toEqual(
-      width === 40 ? [' ◷ CI :0', '#252:0', 'Button'] : [' ◷ CI :0', '#252:0', 'Button', '→ #302:0', '⚠ conflicts:0', 'asks @alice:0'],
+      width === 40 ? [' ◷ CI :0', '#252:0', '⚙:0', 'Button'] : [' ◷ CI :0', '#252:0', '⚙:0', 'Button', '→ #302:0', '⚠ conflicts:0', 'asks @alice:0'],
     )
     // The title is cut with an ellipsis to the room the row leaves it.
-    const title = String(parts[2]?.props.label)
+    const title = String(parts[3]?.props.label)
     expect(title.endsWith('…')).toBe(true)
     expect(ends.map(shown)).toEqual(width === 40 ? [FINISH_SHORT] : ['+1104 −11', FINISH])
   }
