@@ -2,16 +2,16 @@ import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { authOf, deniedOf, problemsOf, repoOf } from '../hooks/access'
-import { asksProject, graphPage, isIssuesQuery } from './graph'
+import { KESSIK, fail, fakeGitHub, ok } from './github'
+import { asksProject, isIssuesQuery } from './graph'
+import { HINT, RUN, band, engineBand, engineHint, pane } from './ui'
 
 const STORED = '/home/someone/.config/gh/hosts.yml'
 const account = (fields: Record<string, unknown>) => JSON.stringify({ hosts: { 'github.com': [{ state: 'success', active: true, host: 'github.com', login: 'astrosteveo', gitProtocol: 'https', ...fields }] } })
-const REPO = { nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true, viewerPermission: 'ADMIN', isArchived: false, visibility: 'PUBLIC' }
+const VIEW = { nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true, viewerPermission: 'ADMIN', isArchived: false, visibility: 'PUBLIC' }
 
-const BAND = { component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120, scroll: { offset: 0, bodyRows: 10 }, view: {} } } as const
-const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} } } as const
-const HINT = { component: 'PromptHint', props: { isDraft: false, isWorking: false, hint: '? for shortcuts' } } as const
-const RUN = { command: 'issues', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
+const BAND = band(120)
+const PANE = pane(100, 40)
 
 test('gh auth status reads as signed in, signed out, refused, or unknown', () => {
   expect(authOf(account({ tokenSource: 'GH_TOKEN', scopes: 'gist, project, repo' }))).toEqual({ state: 'signed-in', login: 'astrosteveo', source: 'GH_TOKEN', scopes: ['gist', 'project', 'repo'] })
@@ -32,7 +32,7 @@ test('a gh error names the permission it lacked', () => {
 })
 
 test('problems say what is missing, and the fix fits where the token comes from', () => {
-  const repo = repoOf(JSON.stringify(REPO))
+  const repo = repoOf(JSON.stringify(VIEW))
   const signedIn = (source: string, scopes: string[] | null) => ({ state: 'signed-in' as const, login: 'astrosteveo', source, scopes })
 
   expect(problemsOf({ installed: false, auth: null, repo: null }).map(one => one.id)).toEqual(['gh-missing'])
@@ -63,15 +63,15 @@ test('problems say what is missing, and the fix fits where the token comes from'
 
   // public_repo is enough for a public repository, not a private one.
   expect(problemsOf({ installed: true, auth: signedIn(STORED, ['public_repo', 'project']), repo })).toEqual([])
-  const secret = repoOf(JSON.stringify({ ...REPO, visibility: 'PRIVATE' }))
+  const secret = repoOf(JSON.stringify({ ...VIEW, visibility: 'PRIVATE' }))
   expect(problemsOf({ installed: true, auth: signedIn(STORED, ['public_repo', 'project']), repo: secret })[0]).toMatchObject({ id: 'scope-repo', command: 'gh auth refresh -s repo' })
 
-  const reader = repoOf(JSON.stringify({ ...REPO, viewerPermission: 'READ', hasIssuesEnabled: false }))
+  const reader = repoOf(JSON.stringify({ ...VIEW, viewerPermission: 'READ', hasIssuesEnabled: false }))
   expect(problemsOf({ installed: true, auth: signedIn(STORED, ['repo', 'project']), repo: reader }).map(one => [one.id, one.blocks, one.command])).toEqual([
     ['read-only', false, undefined],
     ['issues-off', false, undefined],
   ])
-  const off = repoOf(JSON.stringify({ ...REPO, hasIssuesEnabled: false }))
+  const off = repoOf(JSON.stringify({ ...VIEW, hasIssuesEnabled: false }))
   expect(problemsOf({ installed: true, auth: signedIn(STORED, ['repo', 'project']), repo: off })[0]).toMatchObject({ id: 'issues-off', command: 'gh repo edit astrosteveo/void-sector --enable-issues' })
 })
 
@@ -80,27 +80,27 @@ test('problems say what is missing, and the fix fits where the token comes from'
 const gh = (on: On, remote = 'git@github.com:astrosteveo/void-sector.git') => {
   const state = {
     auth: account({ tokenSource: STORED, scopes: 'gist, project, read:org, repo, workflow' }),
-    repo: JSON.stringify(REPO),
+    repo: JSON.stringify(VIEW),
     failure: '',
     refuseProject: '',
     projectQueries: 0,
     missing: false,
     copied: [] as string[],
   }
-  on('process.run', async (_$, e) => {
-    const answer = (stdout: string, exitCode = 0, stderr = '') => ({ value: { exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false } })
-    if (e.argv[0] === 'git') return answer('main\n')
+  const check = ({ argv }: { argv: readonly string[] }) => {
+    if (argv[0] !== 'gh') return undefined
     if (state.missing) return { deny: 'Executable not found in $PATH: "gh"' }
-    if (e.argv[1] === 'auth') return answer(state.auth)
-    if (e.argv[1] === 'repo') return answer(state.repo)
-    if (state.failure) return answer('', 1, state.failure)
-    if (isIssuesQuery(e.argv)) {
-      if (asksProject(e.argv)) state.projectQueries += 1
-      if (state.refuseProject && asksProject(e.argv)) return answer('', 1, state.refuseProject)
-      return answer(graphPage([{ number: 315, title: 'Lay Kessik out for play', labels: [], body: null, updatedAt: '2026-10-03T20:00:00Z', status: 'Ready', priority: 'P1' }], e.argv, true))
+    if (argv[1] === 'auth') return ok(state.auth)
+    if (argv[1] === 'repo') return ok(state.repo)
+    if (state.failure) return fail(state.failure)
+    if (isIssuesQuery(argv) && asksProject(argv)) {
+      state.projectQueries += 1
+      if (state.refuseProject) return fail(state.refuseProject)
     }
-    return answer(e.argv[1] === 'api' ? 'astrosteveo\n' : '[]')
-  })
+    return undefined
+  }
+  const issue = { number: KESSIK.number, title: KESSIK.title, labels: [], body: null, updatedAt: KESSIK.updatedAt, status: 'Ready', priority: 'P1' }
+  fakeGitHub(on, { issues: [issue], project: true, routes: [check] })
   on('session.repo', async () => ({ value: { root: '/work/void-sector', remote, internal: false, name: null } }))
   on('session.root', async () => ({ value: '/work/void-sector' }))
   on('ui.copy', async (_$, e) => {
@@ -113,10 +113,7 @@ const gh = (on: On, remote = 'git@github.com:astrosteveo/void-sector.git') => {
 test('a refused project read falls back to labels, and the band, the pane and Check again see it through', async ($, on) => {
   mock.store(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
-  on('ui.render', { component: 'AbovePrompt' }, async ($$, e) => {
-    const { Box } = $$.ui.resolve(e)
-    return <Box key="engine" />
-  })
+  engineBand(on)
   const world = gh(on)
   // A fine-grained token lists no scopes; GitHub says what it lacks when the board asks for the project.
   world.auth = account({ tokenSource: STORED, scopes: '' })
@@ -156,17 +153,10 @@ test('a refused project read falls back to labels, and the band, the pane and Ch
 
 test('a problem that only limits the board can be waved off, and the hint goes with it', async ($, on) => {
   mock.store(on)
-  on('ui.render', { component: 'AbovePrompt' }, async ($$, e) => {
-    const { Box } = $$.ui.resolve(e)
-    return <Box key="engine" />
-  })
-  // What the engine draws: its hint, then ` · ` and the tail the plugins added.
-  on('ui.render', { component: 'PromptHint' }, async ($$, e) => {
-    const { Text } = $$.ui.resolve(e)
-    return <Text>{e.props.tail ? `${e.props.hint} · ${e.props.tail}` : e.props.hint}</Text>
-  })
+  engineBand(on)
+  engineHint(on)
   const world = gh(on)
-  world.repo = JSON.stringify({ ...REPO, viewerPermission: 'READ' })
+  world.repo = JSON.stringify({ ...VIEW, viewerPermission: 'READ' })
 
   const reply = await $.command.run({ ...RUN, args: 'check' })
   expect(reply.text).toMatch(/^The issue board found one problem:\n- You have read access to astrosteveo\/void-sector\. Ticking boxes and merging pull requests need write access\. Ask an owner/)
@@ -184,10 +174,7 @@ test('a problem that only limits the board can be waved off, and the hint goes w
 test('without gh the band says so, and Claude gets the same fix', async ($, on) => {
   mock.store(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
-  on('ui.render', { component: 'AbovePrompt' }, async ($$, e) => {
-    const { Box } = $$.ui.resolve(e)
-    return <Box key="engine" />
-  })
+  engineBand(on)
   const world = gh(on)
   world.missing = true
 
