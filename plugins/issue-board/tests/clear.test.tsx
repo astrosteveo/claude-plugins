@@ -2,47 +2,34 @@ import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { graphPage, isIssuesQuery } from './graph'
+import { KESSIK, fail, fakeGitHub, issueReads } from './github'
+import { REFRESH, REPO, pane } from './ui'
 
-const issue = {
-  number: 315,
-  title: 'Lay Kessik out for play',
-  url: 'https://github.com/astrosteveo/void-sector/issues/315',
-  labels: [],
-  assignees: [{ login: 'astrosteveo' }],
-  body: '- [ ] Layout in place',
-  updatedAt: '2026-10-03T20:00:00Z',
-}
+const issue = { ...KESSIK, labels: [], body: '- [ ] Layout in place' }
 
-const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} } } as const
-const REFRESH = { command: 'issues', args: 'refresh', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
-const REPO = { root: '/work/void-sector', remote: null, internal: false, name: null }
+const PANE = pane(100, 40)
 const FETCHING = /Fetching issues and pull requests/
 
 // GitHub and git as the board reads them, and how often the board read the issues. `offline`: every gh call fails.
 // `late`: the board's first read of the repo waits for the clock to move this far.
 const world = (on: On, clock: { sleep: (ms: number) => Promise<void> }) => {
-  const state = { reads: 0, offline: false, late: 0 }
-  on('process.run', async (_$, e) => {
-    const argv = e.argv
-    const answer = (stdout: string, exitCode = 0) => ({ value: { exitCode, stdout, stderr: exitCode === 0 ? '' : 'offline', isStdoutTruncated: false, isStderrTruncated: false } })
-    if (argv[0] === 'git') return answer('main\n')
-    if (state.offline) return answer('', 1)
-    if (argv[1] === 'repo' && argv[4] === 'nameWithOwner,hasIssuesEnabled' && state.late > 0) {
-      const wait = state.late
-      state.late = 0
-      await clock.sleep(wait)
-    }
-    if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true }))
-    if (isIssuesQuery(argv)) {
-      state.reads += 1
-      return answer(graphPage([issue], argv))
-    }
-    if (argv[1] === 'api' && argv[2] === 'graphql') return answer(JSON.stringify({ data: { repository: { pullRequests: { nodes: [] } } } }))
-    if (argv[1] === 'api') return answer('astrosteveo\n')
-    return answer('[]')
+  const state = { offline: false, late: 0 }
+  const gh = fakeGitHub(on, {
+    issues: [issue],
+    routes: [
+      async ({ argv }) => {
+        if (argv[0] !== 'gh') return undefined
+        if (state.offline) return fail('offline')
+        if (argv[1] === 'repo' && argv[4] === 'nameWithOwner,hasIssuesEnabled' && state.late > 0) {
+          const wait = state.late
+          state.late = 0
+          await clock.sleep(wait)
+        }
+        return undefined
+      },
+    ],
   })
-  return state
+  return Object.assign(state, { reads: () => issueReads(gh) })
 }
 
 // The plugins' state, held as the host holds it. The host empties it when /clear starts the session over, just after
@@ -103,18 +90,18 @@ test('after /clear or /new the pane reads GitHub again and lists the board, and 
   expect(await look($)).toEqual({ listed: true, fetching: false, failed: false })
 
   for (const [index, command] of ['/clear', '/new'].entries()) {
-    const reads = gh.reads
+    const reads = gh.reads()
     await clear($, wipe, `session-${index}`)
     await clock.settle()
     expect({ command, ...(await look($)) }).toEqual({ command, listed: true, fetching: false, failed: false })
-    expect(gh.reads).toBe(reads + 1)
+    expect(gh.reads()).toBe(reads + 1)
   }
 
   const pane = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
-  const reads = gh.reads
+  const reads = gh.reads()
   await pane.press({ key: 'refresh' })
   await clock.settle()
-  expect(gh.reads).toBe(reads + 1)
+  expect(gh.reads()).toBe(reads + 1)
   expect(await pane.find({ key: 'issue-315' })).toBeDefined()
   await pane.unmount()
 })
@@ -138,7 +125,7 @@ test('a refresh under way when the context is cleared still ends with the board 
 
   const refreshed = $.command.run(REFRESH)
   await clock.settle()
-  expect(gh.reads).toBe(1)
+  expect(gh.reads()).toBe(1)
   await clear($, wipe, 'session-1')
   await clock.advance(1000)
   await refreshed
@@ -160,7 +147,7 @@ test('a refresh that is still reading GitHub when the context is cleared ends wi
   await clock.settle()
   // Still reading: the pane says so, and the refresh /clear asked for waits on the one under way.
   expect(await look($)).toEqual({ listed: false, fetching: true, failed: false })
-  expect(gh.reads).toBe(0)
+  expect(gh.reads()).toBe(0)
   await clock.advance(1000)
   await refreshed
   await clock.settle()
@@ -207,9 +194,9 @@ test('without a SessionStart hook after /clear, the next prompt fills the board 
   wipe()
   await clock.settle()
   expect((await look($)).listed).toBe(false)
-  const reads = gh.reads
+  const reads = gh.reads()
   await $.prompt.submit({ text: 'What next?', wait: false, origin: { kind: 'composer' } })
   await clock.settle()
   expect(await look($)).toEqual({ listed: true, fetching: false, failed: false })
-  expect(gh.reads).toBe(reads + 1)
+  expect(gh.reads()).toBe(reads + 1)
 })

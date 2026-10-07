@@ -2,33 +2,20 @@ import type { AgentSpawnInput, On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { eventRepoOf, liveRunsOf, runProgressOf, startedByClaude, workerBadge } from '../hooks/parse'
-import { graphPage, isIssuesQuery } from './graph'
+import { KESSIK, fakeGitHub, issueReads, json, line, pr335, session } from './github'
+import type { Route } from './github'
+import type { Raw } from './graph'
+import { REFRESH, REPO, band, engineBand, pane } from './ui'
 
-const issue = {
-  number: 315,
-  title: 'Lay Kessik out for play',
-  url: 'https://github.com/astrosteveo/void-sector/issues/315',
-  labels: [],
-  assignees: [{ login: 'astrosteveo' }],
-  body: '- [ ] Layout in place',
-  updatedAt: '2026-10-03T20:00:00Z',
-}
+const issue: Raw = { ...KESSIK, labels: [], body: '- [ ] Layout in place' }
 
+// #335 on #315's branch, its CI one validate check.
 const pr = (ci: 'pending' | 'pass') => ({
-  number: 335,
-  title: 'Glide in to a planet',
-  url: 'https://github.com/astrosteveo/void-sector/pull/335',
+  ...pr335(ci),
   headRefName: 'fix/315-glide',
-  headRefOid: 'abc123',
-  isDraft: false,
   statusCheckRollup: ci === 'pass' ? [{ name: 'validate', status: 'COMPLETED', conclusion: 'SUCCESS' }] : [{ name: 'validate', status: 'IN_PROGRESS' }],
   reviewDecision: null,
-  additions: 1,
-  deletions: 1,
-  author: { login: 'astrosteveo' },
-  updatedAt: '2026-10-03T20:00:00Z',
   body: 'Refs #315.',
-  closingIssuesReferences: [],
 })
 
 // Two drawings `gh run watch` makes, a few seconds apart: one job done and one running, then both ended.
@@ -63,38 +50,16 @@ const ENDED = [
   '',
 ].join('\n')
 
-const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 120, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } } as const
-const BAND = { component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120, scroll: { offset: 0, bodyRows: 10 }, view: {} } } as const
-const REFRESH = { command: 'issues', args: 'refresh', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
-const REPO = { root: '/work/void-sector', remote: null, internal: false, name: null }
+const PANE = pane(120, 60)
+const BAND = band(120)
 
-// GitHub and git as the board reads them; how often it read the issues, and what it ran.
-const world = (on: On, shown: typeof issue = issue) => {
-  const state = { prs: [pr('pending')] as unknown[], runs: [] as unknown[], reads: 0, watched: [] as string[][], ran: [] as string[] }
-  on('process.run', async (_$, e) => {
-    const argv = e.argv
-    state.ran.push(argv.join(' '))
-    const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
-    if (argv[0] === 'git') return answer('fix/315-glide\n')
-    if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true }))
-    if (isIssuesQuery(argv)) {
-      state.reads += 1
-      return answer(graphPage([shown]))
-    }
-    if (argv[1] === 'api' && argv[2] === 'graphql') return answer(JSON.stringify({ data: { repository: { pullRequests: { nodes: [] } } } }))
-    if (argv[1] === 'api') return answer('astrosteveo\n')
-    if (argv[1] === 'run' && argv[2] === 'list') return answer(JSON.stringify(state.runs))
-    if (argv[1] === 'pr' && argv[2] === 'list' && !argv.includes('merged')) return answer(JSON.stringify(state.prs))
-    return answer('[]')
-  })
-  on('session.id', async () => ({ value: 'session-1' }))
-  on('session.repo', async () => ({ value: REPO }))
-  on('session.root', async () => ({ value: REPO.root }))
-  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
-  on('ui.render', { component: 'AbovePrompt' }, async ($$, e) => {
-    const { Box } = $$.ui.resolve(e)
-    return <Box key="engine" />
-  })
+// GitHub and git as the board reads them, on the branch of #315's pull request, with its CI runs and the run watches the
+// test sees started.
+const world = (on: On, shown: Raw = issue) => {
+  const runs: Route = ({ argv }) => (argv[1] === 'run' && argv[2] === 'list' ? json(state.runs) : undefined)
+  const state = Object.assign(fakeGitHub(on, { issues: [shown], prs: [pr('pending')], branch: 'fix/315-glide', routes: [runs] }), { runs: [] as unknown[], watched: [] as string[][] })
+  session(on)
+  engineBand(on)
   on('session.receive', async (_$, e) => ({ text: e.text }))
   return state
 }
@@ -155,7 +120,7 @@ test("a GitHub event for this repo's pull request reads GitHub at once; another 
   const gh = world(on)
   gh.prs = [pr('pass')]
   await $.command.run(REFRESH)
-  const reads = gh.reads
+  const reads = issueReads(gh)
 
   const event = (repo: string) => ({
     origin: { kind: 'task-notification' as const },
@@ -166,11 +131,11 @@ test("a GitHub event for this repo's pull request reads GitHub at once; another 
   // The event still goes on to Claude.
   expect(received.text).toBe('astrosteveo/void-sector#335 merged')
   await clock.settle()
-  expect(gh.reads).toBe(reads + 1)
+  expect(issueReads(gh)).toBe(reads + 1)
 
   await $.session.receive(event('acme/app'))
   await clock.settle()
-  expect(gh.reads).toBe(reads + 1)
+  expect(issueReads(gh)).toBe(reads + 1)
 })
 
 test("while the branch's CI runs, the pane shows its progress from gh run watch, the band stays quiet, and its end reads GitHub", async ($, on) => {
@@ -205,13 +170,13 @@ test("while the branch's CI runs, the pane shows its progress from gh run watch,
   await clock.settle()
   expect(gh.watched.length).toBe(1)
 
-  const reads = gh.reads
+  const reads = issueReads(gh)
   gh.prs = [pr('pass')]
   finish()
   await clock.settle()
   expect(await band.find({ text: / ◷ CI / })).toBeUndefined()
   expect(await pane.find({ key: 'run-987' })).toBeUndefined()
-  expect(gh.reads).toBe(reads + 1)
+  expect(issueReads(gh)).toBe(reads + 1)
   await band.unmount()
   await pane.unmount()
 })
@@ -438,7 +403,7 @@ test("Claude dispatching the board's agent from the conversation claims the issu
   await clock.settle()
   expect(await ui.find({ text: /^⚙ working$/ })).toBeDefined()
   expect(await ui.find({ key: 'background-315' })).toBeUndefined()
-  expect(gh.ran.filter(line => line.startsWith('gh issue edit 315'))).toEqual(['gh issue edit 315 --add-assignee @me'])
+  expect(gh.ran.map(line).filter(one => one.startsWith('gh issue edit 315'))).toEqual(['gh issue edit 315 --add-assignee @me'])
   await ui.unmount()
 })
 

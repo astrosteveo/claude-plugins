@@ -5,11 +5,12 @@ import { groupsOf, isInbox, leftForDone, leftForVerification, toArchive } from '
 import { isLater, isNow, roleOf, rolesFor } from '../hooks/project'
 import { addsAsTodo, areasOf, automationsOff, automationsOn, mergeStatuses, picksFor, rolesOf, stepsOf, suggestAreas, suggestRoles } from '../hooks/setup'
 import type { Board, Issue, Project, SetupFacts } from '../types'
-import { adoptedStore, settingsLog } from './graph'
+import { adoptedStore, memoryStore, settingsLog } from './github'
 import { BOARD_STATUSES, complete, github, option } from './setup-github'
+import { RUN, pane } from './ui'
 
-const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } } as const
-const SETUP = { command: 'issues', args: 'setup', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
+const PANE = pane(100, 60)
+const SETUP = { ...RUN, args: 'setup' } as const
 
 test('Status options are added where they belong, and the ones there are kept as they are', () => {
   const fresh = mergeStatuses([option('Todo', 'a'), option('In Progress', 'b'), option('Done', 'c')])
@@ -83,12 +84,7 @@ test('area labels come from the repo\'s parts, and none are offered when it has 
 
 test('setup on a fresh repo shows its plan, changes nothing until Apply, then makes and links the project', async ($, on) => {
   // A store the test can read back.
-  const kept = new Map<string, unknown>()
-  on('store.get', async (_$, e) => ({ value: kept.get(e.key) }))
-  on('store.set', async (_$, e) => {
-    kept.set(e.key, e.value)
-    return { value: undefined }
-  })
+  const kept = memoryStore(on)
   const set = settingsLog(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-05T03:00:00Z') })
   const gh = github(on, { hasIssues: false, projects: [], labels: ['enhancement'], issues: [{ number: 1, items: [] }, { number: 2, items: [] }] })
@@ -208,12 +204,7 @@ test('with two projects linked, setup asks which, and Cancel changes nothing', a
 })
 
 test('setup says which project the board may write to; Release makes it read-only, and Apply adopts it again', { options: { writeProjects: 'astrosteveo/8' } }, async ($, on) => {
-  const kept = new Map<string, unknown>()
-  on('store.get', async (_$, e) => ({ value: kept.get(e.key) }))
-  on('store.set', async (_$, e) => {
-    kept.set(e.key, e.value)
-    return { value: undefined }
-  })
+  const kept = memoryStore(on)
   on('ui.toast', async () => ({ value: undefined }))
   const set = settingsLog(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-05T03:00:00Z') })
@@ -362,12 +353,7 @@ test("the board goes by the roles: the board's names without saved roles, the sa
 })
 
 test('setup on a project with its own names lets the person pick which is which, and saves only that', async ($, on) => {
-  const kept = new Map<string, unknown>()
-  on('store.get', async (_$, e) => ({ value: kept.get(e.key) }))
-  on('store.set', async (_$, e) => {
-    kept.set(e.key, e.value)
-    return { value: undefined }
-  })
+  const kept = memoryStore(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-05T03:00:00Z') })
   const gh = github(on, { hasIssues: true, projects: [shipyard], labels: ['bug', 'area:sim'], issues: [{ number: 1, items: [{ project: 'PVT_10', item: 'PVTI_1', status: 'Todo' }] }] })
   await $.command.run(SETUP)

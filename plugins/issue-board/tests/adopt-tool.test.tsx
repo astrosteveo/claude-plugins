@@ -3,10 +3,11 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import { adoptReason, adoptTarget, approvedOf, linkedOf, releaseReason } from '../hooks/project'
 import { approved, refused } from './engine'
-import { PROJECT, graphPage, isIssuesQuery, settingsLog } from './graph'
+import { fakeGitHub, json, memoryStore, session, settingsLog } from './github'
+import type { Call } from './github'
+import { PROJECT } from './graph'
+import { REFRESH, REPO } from './ui'
 
-const REFRESH = { command: 'issues', args: 'refresh', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
-const REPO = { root: '/work/void-sector', remote: null, internal: false, name: null }
 // The board's project, as the writeProjects setting lists it.
 const WRITES_8 = { options: { writeProjects: 'astrosteveo/8' } }
 const TOOL = 'mcp__issue-board__project_adopt'
@@ -22,8 +23,6 @@ const WARNING = [
   'Once you do, it sets Status and Priority, adds issues as items, archives items when asked, and posts status updates, as your settings and presses call for.',
   'Each write is a GitHub API call made with your gh token. The board reads GitHub every 5 minutes (the refresh setting).',
 ].join('\n')
-
-const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
 
 const ISSUES = [
   {
@@ -43,34 +42,21 @@ const ISSUES = [
 // where the test can read it; the setting as the board last set it; and the engine's answer beneath the tool, approved
 // unless the test says otherwise.
 const world = (on: On, saved: Record<string, unknown> = {}) => {
-  const state = { linkedReads: 0, mutations: 0, answer: APPROVED as typeof APPROVED, kept: new Map<string, unknown>(Object.entries(saved)) }
-  on('process.run', async (_$, e) => {
-    const argv = [...e.argv]
-    const stdin = e.init?.stdin ?? ''
-    if (argv[0] === 'git') return ok('main\n')
-    if (isIssuesQuery(argv)) return ok(graphPage(ISSUES as never, argv, true))
-    if (argv[1] === 'repo') return ok(JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true }))
-    if (argv[1] === 'api' && argv[2] === 'graphql') {
-      if (/\bmutation\b/.test(`${argv.join(' ')} ${stdin}`)) state.mutations += 1
-      if (stdin.includes('projectsV2(first: 20)')) {
-        state.linkedReads += 1
-        return ok(JSON.stringify({ data: { repository: { projectsV2: { nodes: [PROJECT, ROADMAP, OLD] } } } }))
-      }
-      return ok(JSON.stringify({ data: {} }))
-    }
-    if (argv[1] === 'pr') return ok('[]')
-    if (argv[1] === 'api' && argv[2]?.includes('/milestones')) return ok('[]')
-    if (argv[1] === 'api') return ok('astrosteveo\n')
-    return ok('[]')
-  })
-  on('store.get', async (_$, e) => ({ value: state.kept.get(e.key) }))
-  on('store.set', async (_$, e) => {
-    state.kept.set(e.key, e.value)
-    return { value: undefined }
-  })
-  on('session.id', async () => ({ value: 'session-1' }))
-  on('session.repo', async () => ({ value: REPO }))
-  on('session.root', async () => ({ value: REPO.root }))
+  // The read of the projects linked to the repo, and any GraphQL mutation.
+  const readsLinked = ({ argv, stdin }: Call) => argv.includes('graphql') && (stdin ?? '').includes('projectsV2(first: 20)')
+  const mutates = ({ argv, stdin }: Call) => argv.includes('graphql') && /\bmutation\b/.test(`${argv.join(' ')} ${stdin ?? ''}`)
+  const gh = fakeGitHub(on, { issues: ISSUES, project: true, routes: [call => (readsLinked(call) ? json({ data: { repository: { projectsV2: { nodes: [PROJECT, ROADMAP, OLD] } } } }) : undefined)] })
+  const state = {
+    answer: APPROVED as typeof APPROVED,
+    kept: memoryStore(on, saved),
+    get linkedReads() {
+      return gh.ran.filter(readsLinked).length
+    },
+    get mutations() {
+      return gh.ran.filter(mutates).length
+    },
+  }
+  session(on)
   on('ui.toast', async () => ({ value: undefined }))
   on('ui.log', async () => ({ value: undefined }))
   on('tool.call', { tool: TOOL }, async () => state.answer)

@@ -1,8 +1,9 @@
-import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { ago, agoText, bar, cells, checksOf, ciOf, filterKeys, fit, hintFit, issuesOf, openedText, pad, peekPlace, proseOf, rowRoom, spark, summary, weekly, wrappedLines } from '../hooks/parse'
-import { graphPage, isIssuesQuery } from './graph'
+import { ASTEROIDS, KESSIK, fakeGitHub, json, pr335 } from './github'
+import type { Call } from './github'
+import { HINT, REFRESH, RUN, engineHint, pane } from './ui'
 
 test("a card's text leaves out its boxes, and a pull request names the issues it is for", () => {
   expect(proseOf('Why it matters.\n\n## Acceptance\n\n- [ ] One\n- [x] Two\n\n## Notes\n\nKeep this.')).toBe('Why it matters.\n\n## Notes\n\nKeep this.')
@@ -12,40 +13,21 @@ test("a card's text leaves out its boxes, and a pull request names the issues it
   expect(issuesOf([], '')).toEqual([])
 })
 
+// Without URLs, so the board links to the page the repo gives.
 const ISSUES = [
   {
-    number: 315,
-    title: 'Lay Kessik out for play',
+    ...KESSIK,
+    url: undefined,
     labels: [{ name: 'enhancement', color: 'a2eeef' }, { name: 'area:simulation', color: '0e8a16' }, { name: 'future', color: 'c5def5' }],
-    assignees: [{ login: 'astrosteveo' }],
     body: 'Kessik needs a layout for play.\n\n## Acceptance\n\n- [x] Layout in place\n- [X] Old saves load\n- [ ] Goldens regenerated',
-    updatedAt: '2026-10-03T20:00:00Z',
   },
-  {
-    number: 289,
-    title: "Asteroids didn't draw",
-    labels: [{ name: 'bug', color: 'd73a4a' }, { name: 'area:art-audio', color: 'fbca04' }],
-    body: null,
-    updatedAt: '2026-10-02T20:00:00Z',
-  },
+  { ...ASTEROIDS, url: undefined, assignees: undefined, labels: [{ name: 'bug', color: 'd73a4a' }, { name: 'area:art-audio', color: 'fbca04' }] },
 ]
 
-const PRS = [
-  {
-    number: 335,
-    title: 'Glide in to a planet',
-    headRefName: 'fix/planet-glide',
-    isDraft: false,
-    statusCheckRollup: [{ status: 'COMPLETED', conclusion: 'SUCCESS' }],
-    reviewDecision: 'APPROVED',
-    additions: 120,
-    deletions: 40,
-    author: { login: 'astrosteveo' },
-    updatedAt: '2026-10-03T20:00:00Z',
-  },
-]
+// #335 without a URL or a body, so it links to the page the repo gives and names no issue.
+const PRS = [{ ...pr335('pass'), url: undefined, body: undefined, statusCheckRollup: [{ status: 'COMPLETED', conclusion: 'SUCCESS' }], additions: 120, deletions: 40 }]
 
-const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} } } as const
+const PANE = pane(100, 40)
 
 test('acceptance boxes and CI read the way gh writes them', () => {
   expect(checksOf('- [x] one\n* [ ] two\nnot a box\n  - [X] three')).toEqual([
@@ -105,11 +87,8 @@ test("a preview line holding an emoji keeps the card's width, so nothing shows t
   }
   // Rows enough above it for its card: numbered higher, so they sort first.
   const others = [101, 102, 103, 104, 105, 106].map(number => ({ number, title: `Other ${number}`, labels: [], body: '', updatedAt: '2026-10-03T20:00:00Z' }))
-  on('process.run', async (_$, e) => {
-    const stdout = isIssuesQuery(e.argv) ? graphPage([blocked, ...others]) : e.argv[1] === 'repo' ? JSON.stringify({ nameWithOwner: 'astrosteveo/claude-plugins', hasIssuesEnabled: true }) : '[]'
-    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
-  })
-  await $.command.run({ command: 'issues', args: 'refresh', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
+  fakeGitHub(on, { repo: 'astrosteveo/claude-plugins', issues: [blocked, ...others] })
+  await $.command.run(REFRESH)
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   const preview = (await ui.findAll({ type: 'Box' })).find(box => box.props.position === 'absolute')
   // The card's lines, which are cut rather than wrapped; the repo's name in the header is cut too, but isn't one.
@@ -169,11 +148,8 @@ test('every hover card sits above its row, trimmed near the top, and none where 
     body: '- [ ] One.\n- [ ] Two.',
     updatedAt: '2026-10-03T20:00:00Z',
   }))
-  on('process.run', async (_$, e) => {
-    const stdout = isIssuesQuery(e.argv) ? graphPage(issues) : e.argv[1] === 'repo' ? JSON.stringify({ nameWithOwner: 'astrosteveo/claude-plugins', hasIssuesEnabled: true }) : '[]'
-    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
-  })
-  await $.command.run({ command: 'issues', args: 'refresh', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
+  fakeGitHub(on, { repo: 'astrosteveo/claude-plugins', issues })
+  await $.command.run(REFRESH)
   const tops = async (offset: number, bodyRows: number) => {
     const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE, props: { ...PANE.props, scroll: { offset, bodyRows } } })
     const found = (await ui.findAll({ type: 'Box' })).filter(box => box.props.position === 'absolute').map(box => Number(box.props.top))
@@ -202,11 +178,8 @@ test('a narrow row drops its chips, then its bar, then its age, and the title ke
 })
 
 test('the pane has no blank lines between sections, short group headers and the progress at the right', async ($, on) => {
-  on('process.run', async (_$, e) => {
-    const stdout = isIssuesQuery(e.argv) ? graphPage(ISSUES) : e.argv[1] === 'repo' ? JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true }) : '[]'
-    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
-  })
-  await $.command.run({ command: 'issues', args: 'refresh', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
+  fakeGitHub(on, { issues: ISSUES })
+  await $.command.run(REFRESH)
   // A row as drawn, without the hidden preview card that hovering it shows.
   type Drawn = string | { type?: string; props?: { position?: string; label?: string }; children?: Drawn[] }
   const textOf = (node: Drawn): string =>
@@ -254,32 +227,17 @@ test('velocity counts each week and draws it as a sparkline', () => {
 })
 
 test('the pane lists the issues by filter and opens one to its boxes', async ($, on) => {
-  on('process.run', async (_$, e) => {
-    const kind = e.argv[1]
-    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
-    const stdout =
-      isIssuesQuery(e.argv)
-        ? graphPage(ISSUES)
-        : kind === 'repo'
-        ? JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true })
-        : e.argv.includes('closed')
-          ? JSON.stringify([{ closedAt: yesterday }, { closedAt: yesterday }])
-          : e.argv.includes('merged')
-            ? JSON.stringify([{ mergedAt: yesterday }])
-            : JSON.stringify(kind === 'issue' ? ISSUES : PRS)
-    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
-  })
+  // Two issues closed and a pull request merged yesterday, for the weekly counts.
+  const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+  const velocity = ({ argv }: Call) =>
+    argv.includes('closed') ? json([{ closedAt: yesterday }, { closedAt: yesterday }]) : argv.includes('merged') ? json([{ mergedAt: yesterday }]) : undefined
+  fakeGitHub(on, { issues: ISSUES, prs: PRS, routes: [velocity] })
   const sent: string[] = []
   on('prompt.submit', async (_$, e) => {
     sent.push(e.text)
     return { text: e.text }
   })
-  await $.command.run({
-    command: 'issues',
-    args: 'refresh',
-    origin: { kind: 'composer' },
-    presentation: { isFullscreen: true, columns: 120 },
-  })
+  await $.command.run(REFRESH)
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'issue-board', surface, ...PANE })
@@ -382,43 +340,27 @@ test("the summary leaves out the pull request Claude Code's footer already shows
   expect(summary([], prs.slice(0, 1), undefined, 'fix/276-footer')).toBeUndefined()
 })
 
-const HINT = { component: 'PromptHint', props: { isDraft: false, isWorking: false, hint: '? for shortcuts' } } as const
-const REFRESH = { command: 'issues', args: 'refresh', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
-
 test('the hint under the prompt carries the summary, and nothing with nothing open', async ($, on) => {
-  let repo = { nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true }
-  let issues: unknown[] = ISSUES
-  let prs: unknown[] = PRS
-  const issueCalls: string[][] = []
-  on('process.run', async (_$, e) => {
-    const kind = e.argv[1]
-    if (kind === 'issue') issueCalls.push([...e.argv])
-    const stdout = isIssuesQuery(e.argv) ? graphPage(issues as never) : kind === 'repo' ? JSON.stringify(repo) : e.argv.includes('closed') || e.argv.includes('merged') ? '[]' : JSON.stringify(kind === 'issue' ? issues : prs)
-    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
-  })
-  // What the engine draws: its hint, then ` · ` and the tail the plugins added.
-  on('ui.render', { component: 'PromptHint' }, async ($$, e) => {
-    const { Text } = $$.ui.resolve(e)
-    return <Text>{e.props.tail ? `${e.props.hint} · ${e.props.tail}` : e.props.hint}</Text>
-  })
+  const gh = fakeGitHub(on, { issues: ISSUES, prs: PRS })
+  engineHint(on)
   const hint = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...HINT })
   const shows = async (text: string) => expect(await hint.drawn()).toMatchObject({ type: 'Text', children: [text] })
 
   await $.command.run(REFRESH)
   await shows('? for shortcuts · 2 issues · 1 bug · PR #335✓')
 
-  issues = []
-  prs = []
+  gh.issues = []
+  gh.prs = []
   const reply = await $.command.run(REFRESH)
   await shows('? for shortcuts')
   expect(reply.text).toBe('Refreshed: nothing open.')
 
   // A repo with issues turned off: no issue calls, and its pull requests still show.
-  repo = { ...repo, hasIssuesEnabled: false }
-  prs = PRS
-  issueCalls.length = 0
+  gh.hasIssues = false
+  gh.prs = PRS
+  const ran = gh.ran.length
   await $.command.run(REFRESH)
-  expect(issueCalls).toEqual([])
+  expect(gh.ran.slice(ran).filter(call => call.argv[1] === 'issue')).toEqual([])
   await shows('? for shortcuts · PR #335✓')
 
   await hint.unmount()
@@ -427,17 +369,13 @@ test('the hint under the prompt carries the summary, and nothing with nothing op
 // The person's Esc reaches plugins as their close of the pane, which a test can't raise: the ui.close hook that turns
 // it into a collapse while a card is open is left to the live session.
 test('the pane opens to close on Esc, and Collapse folds the card', async ($, on) => {
-  on('process.run', async (_$, e) => {
-    const kind = e.argv[1]
-    const stdout = isIssuesQuery(e.argv) ? graphPage(ISSUES) : kind === 'repo' ? JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true }) : e.argv.includes('closed') || e.argv.includes('merged') ? '[]' : JSON.stringify(kind === 'issue' ? ISSUES : PRS)
-    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
-  })
+  fakeGitHub(on, { issues: ISSUES, prs: PRS })
   const opened: unknown[] = []
   on('ui.open', async (_$, e) => {
     opened.push(e)
     return { value: { isPlaced: true as const } }
   })
-  await $.command.run({ command: 'issues', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
+  await $.command.run({ ...RUN, args: '' })
   expect(opened).toEqual([{ id: 'issue-board', title: 'Issues', focus: true, closeOnEscape: true }])
   // The pane reads GitHub as it opens: wait for that read.
   await $.command.run(REFRESH)
@@ -454,98 +392,41 @@ test('the pane opens to close on Esc, and Collapse folds the card', async ($, on
   await ui.unmount()
 })
 
-// GitHub with the board's issues and pull requests, counting every call the board makes.
-const quiet = (on: On) => {
-  const state = { calls: 0 }
-  on('process.run', async (_$, e) => {
-    state.calls += 1
-    const kind = e.argv[1]
-    const stdout = isIssuesQuery(e.argv)
-      ? graphPage(ISSUES as never)
-      : kind === 'repo'
-        ? JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true })
-        : e.argv.includes('closed') || e.argv.includes('merged')
-          ? '[]'
-          : JSON.stringify(kind === 'issue' ? ISSUES : PRS)
-    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+// How long the board waits after a read before it looks at GitHub again, by the refresh setting: so many minutes, or
+// only when asked. A look makes gh calls, so their count tells when it looked.
+const INTERVALS: [string | undefined, number | null][] = [
+  [undefined, 5],
+  ['15', 15],
+  ['60', 60],
+  ['manual', null],
+]
+
+for (const [refresh, minutes] of INTERVALS) {
+  const when = minutes === null ? 'only when asked' : `${minutes} minutes after a read`
+  test(`with refresh ${refresh ?? 'unset'}, the board looks at GitHub again ${when}`, { options: refresh ? { refresh } : {} }, async ($, on) => {
+    const clock = mock.clock(on, { now: Date.parse('2026-10-06T10:00:00Z') })
+    const gh = fakeGitHub(on, { issues: ISSUES, prs: PRS })
+    await $.command.run(REFRESH)
+    await clock.settle()
+    const after = gh.ran.length
+    // Nothing is read a minute short of the wait, or for three hours while it waits to be asked.
+    await clock.advance(minutes === null ? 3 * 60 * 60 * 1000 : (minutes - 1) * 60 * 1000)
+    expect(gh.ran.length).toBe(after)
+    if (minutes === null) await $.command.run(REFRESH)
+    else await clock.advance(60 * 1000)
+    expect(gh.ran.length).toBeGreaterThan(after)
   })
-  return state
 }
-
-test('by default the board looks at GitHub again five minutes after a read', async ($, on) => {
-  const clock = mock.clock(on, { now: Date.parse('2026-10-06T10:00:00Z') })
-  const gh = quiet(on)
-  await $.command.run(REFRESH)
-  await clock.settle()
-  const after = gh.calls
-  await clock.advance(4 * 60 * 1000)
-  expect(gh.calls).toBe(after)
-  await clock.advance(60 * 1000)
-  expect(gh.calls).toBeGreaterThan(after)
-})
-
-test('set to 15 minutes, the board waits that long before it looks again', { options: { refresh: '15' } }, async ($, on) => {
-  const clock = mock.clock(on, { now: Date.parse('2026-10-06T10:00:00Z') })
-  const gh = quiet(on)
-  await $.command.run(REFRESH)
-  await clock.settle()
-  const after = gh.calls
-  await clock.advance(14 * 60 * 1000)
-  expect(gh.calls).toBe(after)
-  await clock.advance(60 * 1000)
-  expect(gh.calls).toBeGreaterThan(after)
-})
-
-test('set to 60 minutes, the board waits an hour', { options: { refresh: '60' } }, async ($, on) => {
-  const clock = mock.clock(on, { now: Date.parse('2026-10-06T10:00:00Z') })
-  const gh = quiet(on)
-  await $.command.run(REFRESH)
-  await clock.settle()
-  const after = gh.calls
-  await clock.advance(59 * 60 * 1000)
-  expect(gh.calls).toBe(after)
-  await clock.advance(60 * 1000)
-  expect(gh.calls).toBeGreaterThan(after)
-})
-
-test('set to manual, the board looks at GitHub only when asked', { options: { refresh: 'manual' } }, async ($, on) => {
-  const clock = mock.clock(on, { now: Date.parse('2026-10-06T10:00:00Z') })
-  const gh = quiet(on)
-  await $.command.run(REFRESH)
-  await clock.settle()
-  const after = gh.calls
-  await clock.advance(3 * 60 * 60 * 1000)
-  expect(gh.calls).toBe(after)
-  await $.command.run(REFRESH)
-  expect(gh.calls).toBeGreaterThan(after)
-})
 
 // Claude Code's /config row for its own PR footer, as `$.config.list()` returns it.
 const footerRow = (value: boolean) => ({ key: 'prStatus', label: 'Show PR status footer', kind: 'boolean' as const, value, provider: { plugin: 'engine', tier: 'core' as const }, isLocked: false })
 
 test("while Claude Code's PR footer is on, the hint's tail leaves out the branch's pull request", async ($, on) => {
   const other = { ...PRS[0], number: 336, title: 'Dock at a station', headRefName: 'feat/336-dock', statusCheckRollup: [{ status: 'COMPLETED', conclusion: 'FAILURE' }] }
-  let here = 'fix/planet-glide'
+  const gh = fakeGitHub(on, { issues: ISSUES, prs: [...PRS, other], branch: 'fix/planet-glide' })
   let footer = true
-  on('process.run', async (_$, e) => {
-    const kind = e.argv[1]
-    const stdout =
-      e.argv[0] === 'git' && kind === 'branch'
-        ? `${here}\n`
-        : isIssuesQuery(e.argv)
-          ? graphPage(ISSUES as never)
-          : kind === 'repo'
-            ? JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true })
-            : e.argv.includes('closed') || e.argv.includes('merged')
-              ? '[]'
-              : JSON.stringify(kind === 'issue' ? ISSUES : [...PRS, other])
-    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
-  })
   on('config.list', async () => ({ value: [footerRow(footer)] }))
-  on('ui.render', { component: 'PromptHint' }, async ($$, e) => {
-    const { Text } = $$.ui.resolve(e)
-    return <Text>{e.props.tail ? `${e.props.hint} · ${e.props.tail}` : e.props.hint}</Text>
-  })
+  engineHint(on)
   const hint = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...HINT })
   const shows = async (text: string) => expect(await hint.drawn()).toMatchObject({ type: 'Text', children: [text] })
 
@@ -563,7 +444,7 @@ test("while Claude Code's PR footer is on, the hint's tail leaves out the branch
 
   // On a branch with no pull request, nothing is left out.
   footer = true
-  here = 'main'
+  gh.branch = 'main'
   await $.command.run(REFRESH)
   await shows('? for shortcuts · 2 issues · 1 bug · PR #335✓ #336✗')
 

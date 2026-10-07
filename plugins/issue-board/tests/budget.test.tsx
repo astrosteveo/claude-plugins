@@ -4,102 +4,61 @@ import type { TestBody } from 'claude-code/testing'
 
 import { captureSection } from '../hooks/parse'
 import { countCall, countContext, countPoints, countPrompt, defineTool, kindOf, loadTool, newStats, statsText } from '../hooks/stats'
-import { adoptedStore, graphPage, isIssuesQuery } from './graph'
 import { letThrough } from './engine'
+import { KESSIK, adoptedStore, fakeGitHub, json, pr335, registrations, session } from './github'
+import type { Route } from './github'
 import { github } from './setup-github'
+import { COMPOSE, REFRESH, REPO, pane } from './ui'
 
 // What the board may spend. Each action below has a budget of GitHub calls, as `/issues stats` counts them, so a change
 // that adds requests fails here and says by how many. Raise a budget only on purpose.
 
-const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} } } as const
-const REFRESH = { command: 'issues', args: 'refresh', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
+const PANE = pane(100, 40)
 const STATS = { ...REFRESH, args: 'stats' } as const
 const SETUP = { ...REFRESH, args: 'setup' } as const
-const REPO = { root: '/work/void-sector', remote: null, internal: false, name: null }
-const COMPOSE = { model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: ['terminal'], tools: [], outputStyle: null, traits: [] } as const
 
-const issue = {
-  number: 315,
-  title: 'Lay Kessik out for play',
-  url: 'https://github.com/astrosteveo/void-sector/issues/315',
-  labels: [{ name: 'enhancement', color: 'a2eeef' }],
-  assignees: [],
-  body: '## Acceptance\n\n- [ ] Layout in place\n- [ ] Old saves load\n',
-  updatedAt: '2026-10-03T20:00:00Z',
-  status: 'Ready',
-  priority: 'P1',
-}
+const issue = { ...KESSIK, labels: [{ name: 'enhancement', color: 'a2eeef' }], assignees: [], body: '## Acceptance\n\n- [ ] Layout in place\n- [ ] Old saves load\n', status: 'Ready', priority: 'P1' }
 
-const pr = {
-  number: 335,
-  title: 'Glide in to a planet',
-  url: 'https://github.com/astrosteveo/void-sector/pull/335',
-  headRefName: 'fix/planet-glide',
-  headRefOid: 'abc123',
-  isDraft: false,
-  statusCheckRollup: [{ name: 'build', status: 'COMPLETED', conclusion: 'SUCCESS' }],
-  reviewDecision: 'APPROVED',
-  additions: 1,
-  deletions: 1,
-  author: { login: 'astrosteveo' },
-  updatedAt: '2026-10-03T20:00:00Z',
-  body: 'Refs #315.',
-  closingIssuesReferences: [],
-}
+const pr = { ...pr335('pass'), body: 'Refs #315.' }
 
 // GitHub as the board reads and writes it, with every gh call kept. The cheap checks answer 304 while nothing changed.
 const world = (on: On) => {
   adoptedStore(on)
-  const state = { calls: [] as string[] }
-  on('process.run', async (_$, e) => {
-    const argv = e.argv
-    if (argv[0] === 'gh') state.calls.push(argv.slice(1).join(' '))
-    const answer = (stdout: string, exitCode = 0) => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
-    if (argv[0] === 'git') return answer('main\n')
-    if (argv[1] === 'api' && argv[2] === '-i') return argv.includes('If-None-Match: E1') ? answer('HTTP/2.0 304 Not Modified\n', 1) : answer('HTTP/2.0 200 OK\nEtag: E1\n\n[]')
-    if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true }))
-    if (argv[1] === 'auth') return answer(JSON.stringify({ hosts: { 'github.com': [{ state: 'success', active: true, login: 'astrosteveo', scopes: 'repo, read:org, project' }] } }))
-    if (isIssuesQuery(argv)) return answer(graphPage([issue], argv, true))
+  // gh's sign-in, the project's items and field values, #315's body over REST, read and written as a tick does, and a
+  // filed issue.
+  const route: Route = ({ argv, stdin }) => {
+    if (argv[1] === 'auth') return json({ hosts: { 'github.com': [{ state: 'success', active: true, login: 'astrosteveo', scopes: 'repo, read:org, project' }] } })
     if (argv[1] === 'api' && argv[2] === 'graphql' && argv.includes('--input')) {
-      const asked = JSON.parse(e.init?.stdin ?? '{}') as { query: string; variables: Record<string, unknown> }
-      if (asked.query.includes('projectItems')) return answer(JSON.stringify({ data: { node: { projectItems: { nodes: [{ id: 'PVTI_315', project: { id: 'PVT_8' } }] } } } }))
-      if (asked.query.includes('fieldValues')) return answer(JSON.stringify({ data: { node: { fieldValues: { nodes: [] } } } }))
-      if (asked.query.includes('addProjectV2ItemById')) return answer(JSON.stringify({ data: { addProjectV2ItemById: { item: { id: 'PVTI_340' } } } }))
-      if (asked.query.includes('updateProjectV2ItemFieldValue')) return answer(JSON.stringify({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: String(asked.variables.item) } } } }))
-      return answer(JSON.stringify({ data: {} }))
+      const asked = JSON.parse(stdin ?? '{}') as { query: string; variables: Record<string, unknown> }
+      if (asked.query.includes('projectItems')) return json({ data: { node: { projectItems: { nodes: [{ id: 'PVTI_315', project: { id: 'PVT_8' } }] } } } })
+      if (asked.query.includes('fieldValues')) return json({ data: { node: { fieldValues: { nodes: [] } } } })
+      if (asked.query.includes('addProjectV2ItemById')) return json({ data: { addProjectV2ItemById: { item: { id: 'PVTI_340' } } } })
+      if (asked.query.includes('updateProjectV2ItemFieldValue')) return json({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: String(asked.variables.item) } } } })
+      return json({ data: {} })
     }
-    if (argv[1] === 'api' && argv[2] === 'graphql' && argv.some(arg => arg.includes('reviewThreads'))) return answer(JSON.stringify({ data: { repository: { pullRequests: { nodes: [] } } } }))
-    if (argv[1] === 'api' && argv[2]?.includes('/milestones')) return answer('[]')
-    if (argv[1] === 'api' && argv[2]?.includes('/issues?state=closed')) return answer('[]')
-    // #315's body over REST, read and written as a tick does.
-    if (argv[1] === 'api' && argv.includes('{body, updated_at}')) return answer(JSON.stringify({ body: issue.body, updated_at: issue.updatedAt }))
+    if (argv[1] === 'api' && argv.includes('{body, updated_at}')) return json({ body: issue.body, updated_at: issue.updatedAt })
     if (argv[1] === 'api' && argv[2] === '-X' && argv[3] === 'PATCH') {
-      const body = (JSON.parse(e.init?.stdin ?? '{}') as { body?: string }).body ?? issue.body
-      return answer(JSON.stringify({ title: issue.title, body, updated_at: '2026-10-04T10:00:00Z' }))
+      const body = (JSON.parse(stdin ?? '{}') as { body?: string }).body ?? issue.body
+      return json({ title: issue.title, body, updated_at: '2026-10-04T10:00:00Z' })
     }
     if (argv[1] === 'api' && argv[2] === '-X' && argv[3] === 'POST' && /\/issues$/.test(argv[4] ?? '')) {
-      return answer(JSON.stringify({ number: 340, id: 9340, node_id: 'I_340', html_url: '', updated_at: '2026-10-04T10:00:00Z', labels: [], assignees: [] }))
+      return json({ number: 340, id: 9340, node_id: 'I_340', html_url: '', updated_at: '2026-10-04T10:00:00Z', labels: [], assignees: [] })
     }
-    if (argv[1] === 'api') return answer('astrosteveo\n')
-    if (argv[1] === 'issue' && argv[2] === 'view') return answer(JSON.stringify({ id: 'I_315', body: issue.body, comments: [] }))
-    if (argv[1] === 'issue' && argv[2] === 'list') return answer('[]')
-    if (argv[1] === 'issue') return answer('')
-    if (argv[1] === 'pr' && argv[2] === 'list' && argv.includes('open')) return answer(JSON.stringify([pr]))
-    return answer('[]')
-  })
-  on('session.id', async () => ({ value: 'session-1' }))
-  on('session.repo', async () => ({ value: REPO }))
-  on('session.root', async () => ({ value: REPO.root }))
-  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+    return undefined
+  }
+  const gh = fakeGitHub(on, { issues: [issue], prs: [pr], project: true, etag: 'E1', routes: [route] })
+  const state = {
+    get calls() {
+      return gh.ran.filter(call => call.argv[0] === 'gh').map(call => call.argv.slice(1).join(' '))
+    },
+  }
+  session(on)
   on('ui.log', async () => ({ value: undefined }))
   on('ui.status', async () => ({ value: undefined }))
   on('prompt.submit', async (_$, e) => ({ text: e.text }))
   on('prompt.compose', async () => ({ sections: [{ id: 'intro', text: 'You are Claude Code.', scope: 'shared' as const }] }))
   on('tool.call', { tool: 'TaskCreate' }, async () => ({ result: { task: { id: '1' } } }))
-  on('session.start', async (_$, e) => ({ cwd: e.cwd }))
-  on('command.register', async (_$, e) => ({ value: { command: e.name } }))
-  on('tool.register', async (_$, e) => ({ value: { tool: `mcp__issue-board__${e.name}` } }))
-  on('agent.register', async (_$, e) => ({ value: { agent: `issue-board:${e.name}` } }))
+  registrations(on)
   letThrough(on)
   return state
 }

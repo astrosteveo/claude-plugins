@@ -5,7 +5,9 @@ import type { Issue, Project, ProjectView } from '../types'
 import { groupsOf, parseFilter, parseGraph, tabOf, tabsOf, viewFieldsOf, viewGroupingOf, viewMatchOf } from '../hooks/parse'
 import { issuesQuery } from '../hooks/project'
 import type { RawView, Views } from './graph'
-import { adoptedStore, graphPage, isIssuesQuery } from './graph'
+import { graphPage, isIssuesQuery } from './graph'
+import { adoptedStore, fakeGitHub } from './github'
+import { REFRESH, pane } from './ui'
 
 // A project with Status, Priority, an Area field and a number field, for the filter tests that need no pane.
 const PROJECT: Project = {
@@ -198,8 +200,7 @@ test('the issues query reads the views, and the field values they need by name, 
 
 const AREA = { id: 'F_area', name: 'Area', dataType: 'SINGLE_SELECT', options: [{ id: 'A0', name: 'Engine' }, { id: 'A1', name: 'UI' }] }
 
-const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} } } as const
-const REFRESH = { command: 'issues', args: 'refresh', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
+const PANE = pane(100, 40)
 
 const RAW = [
   { number: 1, title: 'Pirates in cruise', labels: [{ name: 'bug', color: '' }], assignees: [{ login: 'astrosteveo' }], body: null, updatedAt: '2026-10-03T20:00:00Z', status: 'Ready', fields: { Area: 'UI' } },
@@ -218,17 +219,12 @@ const VIEWS: RawView[] = [
 // GitHub with the project and its views; each issues query asked is kept.
 const world = (on: On, views: RawView[]) => {
   adoptedStore(on)
-  const asked: string[][] = []
-  on('process.run', async (_$, e) => {
-    const argv = e.argv
-    let stdout = '[]'
-    if (isIssuesQuery(argv)) {
-      asked.push([...argv])
-      stdout = graphPage(RAW, argv, true, [], { views, fields: [AREA] })
-    } else if (argv[1] === 'repo') stdout = JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true })
-    else if (argv[1] === 'api' && argv[2] === 'user') stdout = 'astrosteveo\n'
-    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
-  })
+  const asked: (readonly string[])[] = []
+  const keep = ({ argv }: { argv: readonly string[] }) => {
+    if (isIssuesQuery(argv)) asked.push(argv)
+    return undefined
+  }
+  fakeGitHub(on, { issues: RAW, project: true, views: { views, fields: [AREA] }, routes: [keep] })
   return asked
 }
 

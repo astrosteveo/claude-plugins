@@ -5,16 +5,15 @@ import type { Issue } from '../types'
 import { BUG_LABELS, DEFAULT_MARKERS, LATER_LABELS, guessMarkers, isBug, isFuture, markerAskOf, markerKey, markerOptionsOf, markerText, markersOf } from '../hooks/markers'
 import { chipsOf, matches, summary } from '../hooks/parse'
 import { stepsOf } from '../hooks/setup'
-import { graphPage, isIssuesQuery } from './graph'
+import { fakeGitHub, memoryStore, session } from './github'
+import type { Raw } from './graph'
+import { REFRESH, REPO, band, engineBand, pane } from './ui'
 
-const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 120, placement: 'dock', scroll: { offset: 0, bodyRows: 80 }, view: {} } } as const
-const BAND = { component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 140, scroll: { offset: 0, bodyRows: 10 }, view: {} } } as const
-const RUN = { command: 'issues', args: 'refresh', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
-const REPO = { root: '/work/void-sector', remote: null, internal: false, name: null }
+const PANE = pane(120, 80)
+const BAND = band(140)
 const KEY = `repo:${REPO.root}`
 const CHOICES = `choices:${REPO.root}`
 
-type Raw = { number: number; title: string; url: string; labels: { name: string }[]; assignees: never[]; body: string; updatedAt: string; type?: string }
 const raw = (number: number, labels: string[] = [], type?: string): Raw => ({
   number,
   title: `Issue ${number}`,
@@ -40,38 +39,15 @@ const issue = (number: number, labels: string[] = [], type?: string): Issue => (
 // GitHub without a project: the repo's labels and issue types as given, every call kept, and a store that starts with
 // `choices` under the choices key.
 const world = (on: On, issues: Raw[], labels: string[], types: string[] = [], choices?: Record<string, unknown>) => {
-  const kept = new Map<string, unknown>(choices ? [[CHOICES, choices]] : [])
-  const calls: { argv: string[]; stdin: string }[] = []
-  on('store.get', async (_$, e) => ({ value: kept.get(e.key) }))
-  on('store.set', async (_$, e) => {
-    kept.set(e.key, e.value)
-    return { value: undefined }
-  })
-  on('process.run', async (_$, e) => {
-    const argv = [...e.argv]
-    calls.push({ argv, stdin: e.init?.stdin ?? '' })
-    const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
-    if (argv[0] === 'git') return ok('main\n')
-    if (isIssuesQuery(argv)) return ok(graphPage(issues, argv, false, types, {}, labels))
-    if (argv[1] === 'repo') return ok(JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true }))
-    if (argv[1] === 'api' && argv[2] === 'graphql') return ok(JSON.stringify({ data: {} }))
-    if (argv[1] === 'api') return ok('astrosteveo\n')
-    return ok('[]')
-  })
-  on('session.id', async () => ({ value: 'session-1' }))
-  on('session.repo', async () => ({ value: REPO }))
-  on('session.root', async () => ({ value: REPO.root }))
-  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  const kept = memoryStore(on, choices ? { [CHOICES]: choices } : {})
+  const gh = fakeGitHub(on, { issues, labels, types })
+  session(on)
   on('ui.toast', async () => ({ value: undefined }))
   on('ui.log', async () => ({ value: undefined }))
-  // The engine's own band, for when the board has nothing to show.
-  on('ui.render', { component: 'AbovePrompt' }, async ($$, e) => {
-    const { Box } = $$.ui.resolve(e)
-    return <Box key="engine" />
-  })
+  engineBand(on)
   // What would change GitHub: a GraphQL mutation, or any gh call that makes or edits a label or an issue.
   const writes = () =>
-    calls.filter(call => (call.argv.includes('graphql') && /\bmutation\b/.test(`${call.argv.join(' ')} ${call.stdin}`)) || call.argv[1] === 'label' || (call.argv[1] === 'issue' && call.argv[2] !== 'list'))
+    gh.ran.filter(call => (call.argv.includes('graphql') && /\bmutation\b/.test(`${call.argv.join(' ')} ${call.stdin ?? ''}`)) || call.argv[1] === 'label' || (call.argv[1] === 'issue' && call.argv[2] !== 'list'))
   return { kept, writes }
 }
 
@@ -142,8 +118,8 @@ test('/issues labels keeps offering a saved marker the repo no longer has, and l
 
 test('/issues labels shows a saved Bugs label the repo lost as the pick, so Save keeps it', async ($, on) => {
   const { kept } = world(on, [raw(1, ['enhancement'])], ['enhancement', 'someday'], [], { markers: { bug: { label: 'kind:bug' }, later: 'someday' } })
-  await $.command.run(RUN)
-  await $.command.run({ ...RUN, args: 'labels' })
+  await $.command.run(REFRESH)
+  await $.command.run({ ...REFRESH, args: 'labels' })
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   expect(await ui.find({ key: 'labels-bug-kind:bug' })).toMatchObject({ props: { variant: 'primary' } })
   await ui.press({ key: 'labels-save' })
@@ -154,7 +130,7 @@ test('/issues labels shows a saved Bugs label the repo lost as the pick, so Save
 test('a guessed label shows once in the band and /issues check, and Looks right saves it locally without writing to GitHub', async ($, on) => {
   const { kept, writes } = world(on, [raw(1, ['defect']), raw(2, ['someday']), raw(3, ['bug report'])], ['bug report', 'defect', 'someday', 'area:board'])
   // `bug report` comes before `defect` in the names the board tries.
-  expect((await $.command.run(RUN)).text).toBe('Refreshed: 3 issues · 1 bug.')
+  expect((await $.command.run(REFRESH)).text).toBe('Refreshed: 3 issues · 1 bug.')
   const pane = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   expect(await pane.find({ key: 'filter-bugs' })).toMatchObject({ text: 'Bugs 1' })
   expect(await pane.find({ key: 'filter-future' })).toMatchObject({ text: 'Future 1' })
@@ -162,7 +138,7 @@ test('a guessed label shows once in the band and /issues check, and Looks right 
 
   const band = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...BAND })
   expect(await band.find({ text: 'Bugs: the label bug report · Later: the label someday' })).toBeDefined()
-  expect((await $.command.run({ ...RUN, args: 'check' })).text).toContain(
+  expect((await $.command.run({ ...REFRESH, args: 'check' })).text).toContain(
     'The board guessed which labels Bugs and Later go by. Bugs: the label bug report · Later: the label someday. Press Looks right in the band to keep it, or run /issues labels to change it.',
   )
 
@@ -171,11 +147,11 @@ test('a guessed label shows once in the band and /issues check, and Looks right 
   expect((kept.get(CHOICES) as Record<string, unknown>).markers).toEqual({ bug: { label: 'bug report' }, later: 'someday' })
   expect((kept.get(KEY) as Record<string, unknown> | undefined)?.markers).toBeUndefined()
   expect(await band.find({ key: 'labels-yes' })).toBeUndefined()
-  expect((await $.command.run({ ...RUN, args: 'check' })).text).not.toContain('guessed which labels')
+  expect((await $.command.run({ ...REFRESH, args: 'check' })).text).not.toContain('guessed which labels')
   await band.unmount()
 
   // It stays saved: the next read goes by it, and doesn't ask again.
-  await $.command.run(RUN)
+  await $.command.run(REFRESH)
   const again = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...BAND })
   expect(await again.find({ key: 'labels-yes' })).toBeUndefined()
   await again.unmount()
@@ -186,7 +162,7 @@ test('a guessed label shows once in the band and /issues check, and Looks right 
 
 test('Change opens /issues labels, the guess goes, and Save keeps the picks here and moves the tabs', async ($, on) => {
   const { kept, writes } = world(on, [raw(1, ['defect']), raw(2, ['someday']), raw(3, ['enhancement']), raw(4, ['icebox'])], ['defect', 'enhancement', 'icebox', 'someday', 'area:board'])
-  await $.command.run(RUN)
+  await $.command.run(REFRESH)
   const band = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...BAND })
   await band.press({ key: 'labels-change' })
   expect(await band.find({ key: 'labels-yes' })).toBeUndefined()
@@ -211,7 +187,7 @@ test('Change opens /issues labels, the guess goes, and Save keeps the picks here
   expect(await ui.find({ text: /Issue 2/ })).toBeUndefined()
 
   // /issues labels opens it again on the saved picks; Esc steps back and saves nothing.
-  expect((await $.command.run({ ...RUN, args: 'labels' })).text).toBe(
+  expect((await $.command.run({ ...REFRESH, args: 'labels' })).text).toBe(
     'Which label or issue type Bugs goes by, and which label Later does, shows at the top of the issues pane. Save keeps it here, and nothing changes on GitHub.',
   )
   expect(await ui.find({ key: 'labels-bug-enhancement' })).toMatchObject({ props: { variant: 'primary' } })
@@ -223,7 +199,7 @@ test('Change opens /issues labels, the guess goes, and Save keeps the picks here
 
 test('a saved choice wins over the guess, and the Bug issue type marks bugs where issues use it', async ($, on) => {
   world(on, [raw(1, ['kind:bug']), raw(2, ['defect']), raw(3, [], 'Bug')], ['defect', 'kind:bug'], ['Bug', 'Task'], { markers: { bug: { label: 'kind:bug' } } })
-  await $.command.run(RUN)
+  await $.command.run(REFRESH)
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   expect(await ui.find({ key: 'filter-bugs' })).toMatchObject({ text: 'Bugs 1' })
   await ui.press({ key: 'filter-bugs' })
@@ -238,7 +214,7 @@ test('a saved choice wins over the guess, and the Bug issue type marks bugs wher
 
 test('the Bug issue type is guessed when open issues use it, and the bug count follows it', async ($, on) => {
   world(on, [raw(1, [], 'Bug'), raw(2, ['bug']), raw(3, [], 'Bug')], ['bug'], ['Bug', 'Task'])
-  expect((await $.command.run(RUN)).text).toBe('Refreshed: 3 issues · 2 bugs.')
+  expect((await $.command.run(REFRESH)).text).toBe('Refreshed: 3 issues · 2 bugs.')
   const band = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...BAND })
   expect(await band.find({ text: 'Bugs: the Bug issue type' })).toBeDefined()
   await band.unmount()
@@ -249,7 +225,7 @@ test('the Bug issue type is guessed when open issues use it, and the bug count f
 
 test('a repo with none of the names keeps bug and future, and the band asks nothing', async ($, on) => {
   const { kept } = world(on, [raw(1, ['enhancement']), raw(2, ['docs'])], ['enhancement', 'docs'])
-  expect((await $.command.run(RUN)).text).toBe('Refreshed: 2 issues.')
+  expect((await $.command.run(REFRESH)).text).toBe('Refreshed: 2 issues.')
   const band = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...BAND })
   expect(await band.find({ key: 'labels-yes' })).toBeUndefined()
   await band.unmount()

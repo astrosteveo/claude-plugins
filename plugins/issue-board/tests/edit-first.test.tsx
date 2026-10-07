@@ -3,12 +3,12 @@ import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { backgroundPrompt, namesIssue, startPrompt } from '../hooks/parse'
-import { STATUSES, graphPage, isIssuesQuery, adoptedStore, graphHas, graphArgs } from './graph'
+import { adoptedStore, fakeGitHub, session } from './github'
+import { STATUSES, graphArgs, graphHas } from './graph'
+import type { Raw } from './graph'
+import { REFRESH, pane } from './ui'
 
-const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 110, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } } as const
-const RUN = { origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 }, command: 'issues' } as const
-
-type Raw = Parameters<typeof graphPage>[0][number]
+const PANE = pane(110, 60)
 const EPIC = { number: 35, title: 'Make the issue board a full issue tracker', total: 2, completed: 1 }
 // Epic #35 in the project, with one open sub-issue, #43, which is ready: its card's Start starts #43.
 const ISSUES: Raw[] = [
@@ -32,33 +32,24 @@ const worker = (number: number): AgentSpawnInput => ({
 const world = (on: On) => {
   // These tests have the board write to the project, which the person let it do.
   adoptedStore(on)
-  on('session.root', async () => ({ value: '/work/void-sector' }))
-  const state = { writes: [] as string[], sent: [] as { text: string; context: readonly string[] }[], filled: [] as string[], tasks: [] as string[], spawned: [] as { description: string; prompt: string }[] }
-  on('process.run', async (_$, e) => {
-    const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
-    const argv = [...e.argv]
-    if (argv[0] === 'git') return answer('main\n')
-    if (isIssuesQuery(argv)) return answer(graphPage(ISSUES, argv, true))
-    if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/claude-plugins', hasIssuesEnabled: true }))
-    if (graphHas(argv, e.init?.stdin, 'updateProjectV2ItemFieldValue')) {
-      const asked = graphArgs(argv, e.init?.stdin)
-      const item = asked.item?.slice('PVTI_'.length) ?? ''
-      state.writes.push(`status #${item} ${STATUSES[Number(asked.option?.slice('S'.length))]}`)
-      return answer(JSON.stringify({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: item } } } }))
-    }
-    if (argv[1] === 'issue' && argv[2] === 'edit' && argv.includes('--add-assignee')) {
-      state.writes.push(`assign #${argv[3]}`)
-      return answer('')
-    }
-    if (argv[1] === 'issue' && argv[2] === 'view') {
-      const raw = ISSUES.find(one => one.number === Number(argv[3]))
-      return answer(JSON.stringify({ number: raw?.number, title: raw?.title, labels: [], assignees: [{ login: 'astrosteveo' }], body: raw?.body, updatedAt: raw?.updatedAt }))
-    }
-    if (argv[1] === 'api' && argv[2] === 'user') return answer('astrosteveo\n')
-    return answer('[]')
-  })
-  on('session.id', async () => ({ value: 'session-1' }))
-  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  const gh = fakeGitHub(on, { repo: 'astrosteveo/claude-plugins', issues: ISSUES, project: true })
+  const state = {
+    // The writes Start makes, as `status #N <Status>` and `assign #N`.
+    get writes() {
+      return gh.writes.flatMap(({ argv, stdin }) => {
+        if (graphHas(argv, stdin, 'updateProjectV2ItemFieldValue')) {
+          const asked = graphArgs(argv, stdin)
+          return [`status #${asked.item?.slice('PVTI_'.length)} ${STATUSES[Number(asked.option?.slice('S'.length))]}`]
+        }
+        return argv[1] === 'issue' && argv[2] === 'edit' && argv.includes('--add-assignee') ? [`assign #${argv[3]}`] : []
+      })
+    },
+    sent: [] as { text: string; context: readonly string[] }[],
+    filled: [] as string[],
+    tasks: [] as string[],
+    spawned: [] as { description: string; prompt: string }[],
+  }
+  session(on)
   on('ui.toast', async () => ({ value: undefined }))
   on('ui.log', async () => ({ value: undefined }))
   on('prompt.submit', async (_$, e) => {
@@ -86,7 +77,7 @@ const epicCard = async ($: Engine, on: On) => {
   adoptedStore(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-05T10:00:00Z') })
   const gh = world(on)
-  await $.command.run({ ...RUN, args: 'refresh' })
+  await $.command.run(REFRESH)
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   await ui.press({ key: 'filter-all' })
   await ui.press({ key: 'issue-35' })

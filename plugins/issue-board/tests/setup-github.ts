@@ -1,6 +1,8 @@
 import type { On } from 'claude-code'
 
 import type { SetupOption } from '../types'
+import { fakeGitHub, json, ok } from './github'
+import type { Route } from './github'
 
 // GitHub as /issues setup sees it, shared by the setup tests and the budget test.
 
@@ -21,10 +23,9 @@ export const complete = {
   ],
 }
 
-// GitHub as setup sees it: the repo, its projects and issues, and every change asked for, in order. `calls` keeps every
+// GitHub as setup sees it: the repo, its projects and issues, and every change asked for, in order. `calls` lists every
 // gh command, for the budget test.
 export const github = (on: On, start: { hasIssues: boolean; projects: (typeof complete)[]; labels: string[]; issues: { number: number; items: { project: string; item: string; status: string | null }[] }[] }) => {
-  const state = { ...start, writes: [] as string[], created: null as null | typeof complete, calls: [] as string[] }
   const projectNode = (project: typeof complete) => ({
     id: project.id,
     number: project.number,
@@ -34,24 +35,20 @@ export const github = (on: On, start: { hasIssues: boolean; projects: (typeof co
     fields: { nodes: [project.status, project.priority].filter(Boolean).map(field => ({ id: field?.id, name: field?.id === 'F_status' ? 'Status' : 'Priority', options: field?.options })) },
     workflows: { nodes: project.workflows },
   })
-  on('process.run', async (_$, e) => {
-    const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
-    const argv = e.argv
-    if (argv[0] === 'gh') state.calls.push(argv.slice(1).join(' '))
-    if (argv[0] === 'git') return answer('main\n')
-    if (argv[1] === 'repo' && argv[2] === 'view') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: state.hasIssues }))
+  const route: Route = ({ argv, stdin }) => {
+    if (argv[1] === 'repo' && argv[2] === 'view') return json({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: state.hasIssues })
     if (argv[1] === 'repo' && argv[2] === 'edit') {
       state.writes.push(`repo edit ${argv.slice(3).join(' ')}`)
       state.hasIssues = true
-      return answer('')
+      return ok('')
     }
     if (argv[1] === 'label' && argv[2] === 'create') {
       state.writes.push(`label ${argv[3]}`)
-      return answer('')
+      return ok('')
     }
     if (argv[1] === 'api' && argv[2] === 'graphql' && argv.includes('--input')) {
-      const { query, variables } = JSON.parse(e.init?.stdin ?? '{}') as { query: string; variables: Record<string, any> }
-      const data = (value: unknown) => answer(JSON.stringify({ data: value }))
+      const { query, variables } = JSON.parse(stdin ?? '{}') as { query: string; variables: Record<string, any> }
+      const data = (value: unknown) => json({ data: value })
       if (query.includes('labels(first: 100)')) {
         return data({
           repository: {
@@ -106,10 +103,18 @@ export const github = (on: On, start: { hasIssues: boolean; projects: (typeof co
         return data({ updateProjectV2ItemFieldValue: { projectV2Item: { id: variables.item } } })
       }
     }
-    // The board's own refresh, which follows Apply.
-    if (argv[1] === 'api' && argv[2] === 'graphql') return answer(JSON.stringify({ data: { repository: { issues: { pageInfo: { hasNextPage: false }, nodes: [] } } } }))
-    return answer(argv[1] === 'api' ? 'astrosteveo\n' : '[]')
-  })
+    return undefined
+  }
+  // The board's own refresh, which follows Apply, finds no issues.
+  const gh = fakeGitHub(on, { routes: [route] })
+  const state = {
+    ...start,
+    writes: [] as string[],
+    created: null as null | typeof complete,
+    get calls() {
+      return gh.ran.filter(call => call.argv[0] === 'gh').map(call => call.argv.slice(1).join(' '))
+    },
+  }
   on('session.repo', async () => ({ value: { root: '/work/void-sector', remote: 'git@github.com:astrosteveo/void-sector.git', internal: false, name: null } }))
   on('session.root', async () => ({ value: '/work/void-sector' }))
   on('ui.open', async () => ({ value: { isPlaced: true as const } }))

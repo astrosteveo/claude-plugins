@@ -5,12 +5,12 @@ import type { Issue } from '../types'
 import { groupsOf, parseGraph, placedAfter, projectMoveOf } from '../hooks/parse'
 import { issuesQuery, orderFilter } from '../hooks/project'
 import { letThrough } from './engine'
-import { adoptedStore, asksProject, graphPage, isIssuesQuery } from './graph'
+import { adoptedStore, fakeGitHub, json } from './github'
+import { graphHas, graphPage, isIssuesQuery } from './graph'
+import type { Raw } from './graph'
+import { REFRESH, pane } from './ui'
 
-type Raw = Parameters<typeof graphPage>[0][number]
-
-const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 120, placement: 'dock', scroll: { offset: 0, bodyRows: 80 }, view: {} } } as const
-const RUN = { command: 'issues', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
+const PANE = pane(120, 80)
 const ASKED = ['gh', 'api', 'graphql', `query=${issuesQuery(true)}`]
 
 const raw = (number: number, more: Partial<Raw> = {}): Raw => ({ number, title: `Issue ${number}`, labels: [], body: '', updatedAt: '2026-10-05T00:00:00Z', ...more })
@@ -120,39 +120,38 @@ const github = (on: On) => {
   adoptedStore(on)
   letThrough(on)
   on('session.root', async () => ({ value: '/work/void-sector' }))
-  const state = { order: [50, 51, 52], mutations: [] as Record<string, unknown>[], filters: [] as string[] }
-  on('process.run', async (_$, e) => {
-    const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
-    const argv = [...e.argv]
-    if (argv[0] === 'git') return answer('main\n')
-    if (isIssuesQuery(argv)) {
-      const filter = argv.find(arg => arg.startsWith('order='))
-      if (filter) state.filters.push(filter.slice('order='.length))
-      return answer(graphPage([50, 51, 52].map(number => raw(number, { status: 'Ready', priority: 'P1', position: state.order.indexOf(number) })), argv, asksProject(argv)))
-    }
-    if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/claude-plugins', hasIssuesEnabled: true }))
-    if (argv[1] === 'api' && argv[2] === 'graphql' && argv.includes('--input')) {
-      const sent = JSON.parse(e.init?.stdin ?? '{}') as { query: string; variables: { item: string; after: string | null } }
-      if (/updateProjectV2ItemPosition/.test(sent.query)) {
+  // Ready issues #50 to #52, at their places in `order`.
+  const inOrder = (order: number[]) => [50, 51, 52].map(number => raw(number, { status: 'Ready', priority: 'P1', position: order.indexOf(number) }))
+  const state = { order: [50, 51, 52], mutations: [] as Record<string, unknown>[] }
+  const gh = fakeGitHub(on, {
+    repo: 'astrosteveo/claude-plugins',
+    issues: inOrder(state.order),
+    project: true,
+    routes: [
+      ({ argv, stdin }) => {
+        if (!graphHas(argv, stdin, 'updateProjectV2ItemPosition')) return undefined
+        const sent = JSON.parse(stdin ?? '{}') as { variables: { item: string; after: string | null } }
         state.mutations.push(sent.variables)
         const moved = Number(sent.variables.item.replace('PVTI_', ''))
         const rest = state.order.filter(one => one !== moved)
         const at = sent.variables.after === null ? 0 : rest.indexOf(Number(sent.variables.after.replace('PVTI_', ''))) + 1
         state.order = [...rest.slice(0, at), moved, ...rest.slice(at)]
-        return answer(JSON.stringify({ data: { updateProjectV2ItemPosition: { clientMutationId: null } } }))
-      }
-    }
-    return answer('[]')
+        gh.issues = inOrder(state.order)
+        return json({ data: { updateProjectV2ItemPosition: { clientMutationId: null } } })
+      },
+    ],
   })
-  return state
+  // The filter each issues query read the project's order with.
+  const filters = () => gh.ran.filter(call => isIssuesQuery(call.argv)).flatMap(call => call.argv.filter(arg => arg.startsWith('order=')).map(arg => arg.slice('order='.length)))
+  return Object.assign(state, { filters })
 }
 
 test("moving an issue in the project's order writes the move and the pane shows the new order", async ($, on) => {
   const clock = mock.clock(on, { now: Date.parse('2026-10-06T10:00:00Z') })
   const gh = github(on)
   on('ui.toast', async () => ({ value: undefined }))
-  await $.command.run({ ...RUN, args: 'refresh' })
-  expect(gh.filters.at(-1)).toBe('is:open is:issue repo:astrosteveo/claude-plugins')
+  await $.command.run(REFRESH)
+  expect(gh.filters().at(-1)).toBe('is:open is:issue repo:astrosteveo/claude-plugins')
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   await ui.press({ key: 'filter-all' })
   await ui.press({ key: 'group-status' })

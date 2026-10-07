@@ -4,7 +4,9 @@ import { expect, test } from 'claude-code/testing'
 
 import { HASH_ROWS, hashRows, parseGraph, parsePrs } from '../hooks/parse'
 import type { Board } from '../types'
-import { graphPage, isIssuesQuery } from './graph'
+import { fakeGitHub } from './github'
+import { graphPage } from './graph'
+import { REFRESH } from './ui'
 
 const raw = (number: number, title: string, status?: string, priority?: string, labels: string[] = []) => ({
   number,
@@ -76,8 +78,6 @@ test('without a project, issues go newest first and pull requests before them', 
   expect(hashRows(board, '#1').map(row => row.text)).toEqual(['#125', '#120', '#16', '#15', '#14', '#13', '#12'])
 })
 
-const REFRESH = { command: 'issues', args: 'refresh', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
-
 type Autocomplete = (e: PromptAutocompleteInput) => Promise<PromptAutocompleteResult>
 
 // The prompt box as the person left it, with the token at the cursor, raised as the engine raises it.
@@ -86,10 +86,7 @@ const typed = (text: string): PromptAutocompleteInput => ({ text, cursor: text.l
 // gh answering with the board's issues, and a plugin beneath with a row of its own, so the board's rows go after it.
 // The test kit's typings in v2.1.292 leave `autocomplete` off the test's `$.prompt`, though the engine carries it.
 const promptBox = ($: Engine, on: On): Autocomplete => {
-  on('process.run', async (_$, e) => {
-    const stdout = isIssuesQuery(e.argv) ? graphPage(ISSUES) : e.argv[1] === 'repo' ? JSON.stringify({ nameWithOwner: 'astrosteveo/claude-plugins', hasIssuesEnabled: true }) : '[]'
-    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
-  })
+  fakeGitHub(on, { repo: 'astrosteveo/claude-plugins', issues: ISSUES })
   on('prompt.autocomplete', async () => ({ suggestions: [{ text: '#beneath' }] }))
   return ($.prompt as unknown as { autocomplete: Autocomplete }).autocomplete
 }

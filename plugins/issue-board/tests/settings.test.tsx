@@ -2,8 +2,9 @@ import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { SETTING_TITLES, featuresOff, settingsOf, switchesOf, withOldKeys } from '../hooks/settings'
+import { fakeGitHub } from './github'
+import { RUN } from './ui'
 
-const RUN = { origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 }, command: 'issues' } as const
 const AUTO_MOVE_OFF = 'turned off in /config by Move issues on their own (autoMove)'
 const RULE_OFF = 'turned off in /config by Closes only when every box is ticked (closesWhenTicked)'
 
@@ -39,11 +40,7 @@ test("an older board's keys count for one release where the new key isn't set", 
 // GitHub with no issues, and settings files that hold `stored` as the board's options in this repo's settings.
 const world = (on: On, stored: Record<string, unknown>) => {
   const prompts: string[] = []
-  on('process.run', async (_$, e) => {
-    const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
-    if (e.argv[0] === 'git') return answer('main\n')
-    return answer('[]')
-  })
+  fakeGitHub(on)
   on('session.start', async (_$, e) => ({ cwd: e.cwd }))
   on('command.register', async (_$, e) => ({ value: { command: e.name } }))
   on('tool.register', async (_$, e) => ({ value: { tool: `mcp__issue-board__${e.name}` } }))
