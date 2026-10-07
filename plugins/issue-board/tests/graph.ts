@@ -10,6 +10,7 @@ export type Raw = {
   assignees?: { login: string }[] | null
   body: string | null
   updatedAt: string
+  createdAt?: string
   // What the project and GitHub hold beyond `gh issue list`.
   status?: string
   priority?: string
@@ -88,6 +89,7 @@ const node = (raw: Raw, project: boolean, aliases: [string, string][] = []) => (
   url: raw.url ?? '',
   body: raw.body,
   updatedAt: raw.updatedAt,
+  ...(raw.createdAt ? { createdAt: raw.createdAt } : {}),
   labels: { nodes: raw.labels },
   assignees: { nodes: raw.assignees ?? [] },
   milestone: raw.milestone ? { title: raw.milestone } : null,

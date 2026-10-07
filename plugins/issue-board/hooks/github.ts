@@ -233,6 +233,7 @@ type RawGraphIssue = {
   url?: string
   body?: string | null
   updatedAt: string
+  createdAt?: string
   labels?: RawNodes<RawLabel>
   assignees?: RawNodes<RawUser>
   milestone?: { title: string } | null
@@ -328,6 +329,7 @@ export const parseGraph = (
         assignees: nodesOf(raw.assignees).map(user => user.login),
         checks: checksOf(raw.body ?? null),
         updatedAt: raw.updatedAt,
+        ...(raw.createdAt ? { createdAt: raw.createdAt } : {}),
         body: raw.body ?? '',
         id: raw.id,
         item: item?.id ?? null,
