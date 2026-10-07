@@ -1,7 +1,7 @@
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { adoptText, grantsOf, isMutation, ownerOf, projectKeysOf, projectKeysText, savedAdoptionOf, writeRefusal } from '../hooks/project'
+import { adoptText, grantsOf, isMutation, ownerOf, projectKeysOf, projectKeysText, writeRefusal } from '../hooks/project'
 import { ADOPTED, PROJECT, graphPage, isIssuesQuery, settingsLog } from './graph'
 import { letThrough, permissions } from './engine'
 import { namesText, projectPartOf, repoChangeOf } from '../hooks/parse'
@@ -405,24 +405,11 @@ test("adopting beside a repo's grant keeps the person's own entries and copies n
   await ui.unmount()
 })
 
-test('a repo whose saved setup names the project has it moved into the setting once, and counts as adopted', EVERYTHING, async ($, on) => {
-  const kept = memory(on, { [KEY]: { setup: { project: { id: PROJECT.id, number: 8, title: PROJECT.title }, status: null, priority: null, at: 0 } } })
-  const set = settingsLog(on)
-  const { mutations } = world(on)
-  await $.command.run(REFRESH)
-  expect(set).toEqual([{ key: 'issue-board.writeProjects', value: 'astrosteveo/8' }])
-  expect(kept.get(CHOICES)).toEqual({ adoptionMoved: true })
-  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
-  expect(await ui.find({ key: 'adopt-card' })).toBeUndefined()
-  await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, priority: 'P0' })
-  expect(mutations()).toHaveLength(1)
-  await $.command.run(REFRESH)
-  expect(set).toHaveLength(1)
-  await ui.unmount()
-})
-
-test('a released project stays read-only even with a saved setup that names it', async ($, on) => {
-  memory(on, { [KEY]: { adopted: null, setup: { project: { id: PROJECT.id, number: 8, title: PROJECT.title }, status: null, priority: null, at: 0 } } })
+test('what an earlier board left in the shared entry grants nothing and chooses nothing', async ($, on) => {
+  // An adoption, a setup that names the project, and choices, as boards before 0.62 kept them.
+  memory(on, {
+    [KEY]: { adopted: ADOPTED, setup: { project: { id: PROJECT.id, number: 8, title: PROJECT.title }, status: null, priority: null, at: 0 }, declined: [PROJECT.id] },
+  })
   const set = settingsLog(on)
   const { mutations } = world(on)
   await $.command.run(REFRESH)
@@ -430,65 +417,21 @@ test('a released project stays read-only even with a saved setup that names it',
   expect(update.deny).toMatch(/only reads Void Sector/)
   expect(mutations()).toEqual([])
   expect(set).toEqual([])
-})
-
-test("an adoption an earlier board kept in the store moves to the setting once, after the board reads the project", async ($, on) => {
-  const kept = memory(on, { [KEY]: { board: null, working: null, dismissed: [], viewer: null, adopted: ADOPTED } })
-  const set = settingsLog(on)
-  const { mutations } = world(on)
-  await $.command.run(REFRESH)
-  expect(set).toEqual([{ key: 'issue-board.writeProjects', value: 'astrosteveo/8' }])
-  await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, priority: 'P0' })
-  expect(mutations()).toHaveLength(1)
-  // Once moved, the store's copy is never read again: a release there from an older board changes nothing.
-  kept.set(KEY, { ...(kept.get(KEY) as object), adopted: null })
-  await $.command.run(REFRESH)
-  expect(set).toHaveLength(1)
-  await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, priority: 'P1' })
-  expect(mutations()).toHaveLength(2)
-})
-
-// What a board from before 0.57.0 saves in another session: the whole shared entry, with none of the person's choices.
-const olderSave = (kept: Map<string, unknown>) => {
-  const { adopted: _a, declined: _d, statuses: _s, guessSeen: _g, ...rest } = (kept.get(KEY) ?? {}) as Record<string, unknown>
-  kept.set(KEY, { board: null, working: null, dismissed: [], viewer: null, ...rest })
-}
-
-const CHOSEN = { declined: ['PVT_9'], statuses: { PVT_8: { ready: 'S0', done: 'S2' } }, guessSeen: ['PVT_8:ready=S0'] }
-
-test("an older board's save of the shared entry changes neither what the board may write to nor the person's choices", WRITES_8, async ($, on) => {
-  const kept = memory(on, { [CHOICES]: CHOSEN })
-  const set = settingsLog(on)
-  const { mutations } = world(on)
-  await $.command.run(REFRESH)
-  olderSave(kept)
-  await $.command.run(REFRESH)
-  // This board's own save, after the read, leaves the choices out of the shared entry.
-  expect((kept.get(KEY) as { board: unknown }).board).not.toBeNull()
-  expect(Object.keys(kept.get(KEY) as object)).not.toContain('declined')
-  olderSave(kept)
-  expect(kept.get(CHOICES)).toEqual(CHOSEN)
-  // The board still writes, and doesn't ask again.
+  // The decline there doesn't put the prompt away either: it asks once more.
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
-  expect(await ui.find({ key: 'adopt-card' })).toBeUndefined()
-  await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, priority: 'P0' })
-  expect(mutations()).toHaveLength(1)
-  expect(set).toEqual([])
+  expect(await ui.find({ key: 'adopt-card' })).toBeDefined()
   await ui.unmount()
 })
 
-test('choices an earlier board saved in the shared entry move to their own key once, and stay there', async ($, on) => {
-  const kept = memory(on, { [KEY]: { board: null, working: null, dismissed: [], viewer: null, ...CHOSEN } })
+const CHOSEN = { declined: ['PVT_9'], statuses: { PVT_8: { ready: 'S0', done: 'S2' } }, guessSeen: ['PVT_8:ready=S0'] }
+
+test("the shared entry holds only the cached board, and saving it leaves the person's choices alone", WRITES_8, async ($, on) => {
+  const kept = memory(on, { [CHOICES]: CHOSEN })
   settingsLog(on)
   world(on)
   await $.command.run(REFRESH)
-  expect(kept.get(CHOICES)).toEqual(CHOSEN)
-  // From then on the shared entry's copies count for nothing: an older board dropping them changes nothing, and nor
-  // do stale ones left there.
-  olderSave(kept)
-  await $.command.run(REFRESH)
-  kept.set(KEY, { ...(kept.get(KEY) as object), declined: [] })
-  await $.command.run(REFRESH)
+  expect((kept.get(KEY) as { board: unknown }).board).not.toBeNull()
+  expect(Object.keys(kept.get(KEY) as object).sort()).toEqual(['board', 'dismissed', 'sections', 'version', 'viewer', 'working'])
   expect(kept.get(CHOICES)).toEqual(CHOSEN)
 })
 
@@ -505,7 +448,7 @@ test('two sessions changing different choices keep both', async ($, on) => {
   // And the other way: another session answers a guess, then this one adopts, which takes the project off the declines.
   kept.set(CHOICES, { ...(kept.get(CHOICES) as object), guessSeen: ['PVT_9:ready=S1'] })
   await $.tool.call({ tool: 'mcp__issue-board__project_adopt' })
-  expect(kept.get(CHOICES)).toEqual({ statuses: { PVT_9: { ready: 'S1' } }, guessSeen: ['PVT_9:ready=S1'], declined: [], adoptionMoved: true })
+  expect(kept.get(CHOICES)).toEqual({ statuses: { PVT_9: { ready: 'S1' } }, guessSeen: ['PVT_9:ready=S1'], declined: [] })
   await ui.unmount()
 })
 
@@ -522,7 +465,7 @@ test('the write check refuses any project the list lacks, by owner and number, a
   expect(writeRefusal([], 'new')).toBeNull()
 })
 
-test('the setting reads as owner/number keys, and a saved adoption moves only to the project it named', () => {
+test('the setting reads as owner/number keys', () => {
   expect(projectKeysOf(['astrosteveo/9', 'AstroSteveo/8', ' acme/12 '])).toEqual(['astrosteveo/9', 'astrosteveo/8', 'acme/12'])
   expect(projectKeysOf(['astrosteveo/9', 'astrosteveo/9'])).toEqual(['astrosteveo/9'])
   expect(projectKeysOf('astrosteveo/9, acme/3')).toEqual(['astrosteveo/9', 'acme/3'])
@@ -538,15 +481,6 @@ test('the setting reads as owner/number keys, and a saved adoption moves only to
   expect(grantsOf(['acme/9', 'astrosteveo/8'], ['acme/3'], ['acme/9'])).toEqual({ own: ['acme/3', 'astrosteveo/8'], repo: ['acme/9'], all: ['acme/3', 'astrosteveo/8', 'acme/9'] })
   expect(grantsOf([], [], [])).toEqual({ own: [], repo: [], all: [] })
 
-  const setup = { project: { id: 'PVT_8' } }
-  const reads = [{ id: 'PVT_8', number: 8, url: PROJECT.url }]
-  expect(savedAdoptionOf({}, reads)).toBeNull()
-  expect(savedAdoptionOf({ setup }, reads)).toBe('astrosteveo/8')
-  expect(savedAdoptionOf({ setup }, [])).toBeUndefined()
-  expect(savedAdoptionOf({ setup, adopted: null }, reads)).toBeNull()
-  expect(savedAdoptionOf({ adopted: { id: 'PVT_8' } }, reads)).toBe('astrosteveo/8')
-  expect(savedAdoptionOf({ adopted: { id: 'PVT_9' } }, reads)).toBeNull()
-  expect(savedAdoptionOf({ setup, adopted: { id: 'PVT_9' } }, [{ id: 'PVT_9', number: 9, url: 'https://github.com/orgs/acme/projects/9' }])).toBe('acme/9')
 })
 
 test('a mutation is told apart from a read, as a field or on stdin', () => {

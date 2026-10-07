@@ -143,11 +143,11 @@ export const graphPage = (issues: Raw[], argv: readonly string[] = [], project =
 }
 
 // The board writes only to a project the writeProjects setting lists. A test that has it write to the fake project
-// uses this store in place of `mock.store`: every repo's entry holds an adoption as an earlier board kept it, unless the
-// entry makes a choice of its own, and the board moves it into the setting once it has read the project. The choices
-// key is kept as set. A test's fake world and the test itself may both ask for it; the second call adds its entries to
-// the first's store.
+// uses this store in place of `mock.store`: the person's own settings list the fake project, until the board writes the
+// setting, after which they hold what it wrote, as Claude Code's would. A test's fake world and the test itself may both
+// ask for it; the second call adds its entries to the first's store.
 export const ADOPTED = { id: PROJECT.id, title: PROJECT.title, owner: 'astrosteveo' }
+const ADOPTED_KEY = 'astrosteveo/8'
 
 // Every `$.config.set` the board made, answered as written, as Claude Code's settings would.
 const logs = new WeakMap<On, { key: string; value: unknown }[]>()
@@ -172,12 +172,13 @@ export const adoptedStore = (on: On, entries: Readonly<Record<string, unknown>> 
   }
   const kept = new Map<string, unknown>(Object.entries(entries))
   stores.set(on, kept)
-  settingsLog(on)
-  on('store.get', async (_$, e) => {
-    const value = kept.get(e.key)
-    if (e.key.startsWith('choices:')) return { value }
-    return { value: { adopted: ADOPTED, ...(value && typeof value === 'object' ? value : {}) } }
+  const set = settingsLog(on)
+  on('settings.read', async (_$, e) => {
+    if (e.source !== 'user') return { value: {} }
+    const written = set.filter(one => one.key === 'issue-board.writeProjects').at(-1)?.value
+    return { value: { pluginConfigs: { 'issue-board@astrosteveo-plugins': { options: { writeProjects: written ?? ADOPTED_KEY } } } } }
   })
+  on('store.get', async (_$, e) => ({ value: kept.get(e.key) }))
   on('store.set', async (_$, e) => {
     kept.set(e.key, e.value)
     return { value: undefined }
