@@ -2,8 +2,10 @@ import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { matches, parseIssues, parseTriage, triagePrompt } from '../hooks/parse'
-import { PRIORITIES, STATUSES, graphPage, isIssuesQuery, optionId, graphArgs } from './graph'
-import { adoptedStore } from './github'
+import { adoptedStore, fakeGitHub, json, ok, session } from './github'
+import type { Route } from './github'
+import { PRIORITIES, STATUSES, graphArgs, graphPage, isIssuesQuery, optionId } from './graph'
+import { REFRESH, pane } from './ui'
 
 const raw = (number: number, title: string, labels: string[] = []) => ({
   number,
@@ -15,9 +17,7 @@ const raw = (number: number, title: string, labels: string[] = []) => ({
   updatedAt: '2026-10-03T20:00:00Z',
 })
 
-const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 120, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } } as const
-const REFRESH = { command: 'issues', args: 'refresh', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
-const REPO = { root: '/work/void-sector', remote: null, internal: false, name: null }
+const PANE = pane(120, 60)
 const PROJECT = { id: 'PVT_8', number: 8, title: 'Void Sector', url: '', status: { id: 'F_status', options: STATUSES.map((name, index) => ({ id: `S${index}`, name })) }, priority: { id: 'F_priority', options: PRIORITIES.map((name, index) => ({ id: `P${index}`, name })) } }
 
 // The Void Sector project: #340 sits in the Inbox, #341 isn't in the project yet, and #315 is Ready. Most tests have the
@@ -25,49 +25,39 @@ const PROJECT = { id: 'PVT_8', number: 8, title: 'Void Sector', url: '', status:
 const world = (on: On, answer: string, adopted = true) => {
   if (adopted) adoptedStore(on)
   else mock.store(on)
+  const issues = [raw(340, 'Saves drop the hangar', ['area:simulation']), raw(341, 'The map key hides the legend'), raw(315, 'Lay Kessik out for play', ['area:simulation'])]
+  // The project as the issues query reads it, and as its writes change it; the repo's labels, over REST.
+  const project: Route = ({ argv, stdin }) => {
+    if (isIssuesQuery(argv)) return ok(graphPage(issues.map(one => ({ ...one, ...state.planned[one.number] })), argv, true))
+    if (argv[1] === 'api' && argv[2]?.endsWith('/labels?per_page=100')) return json(['bug', 'area:simulation', 'area:interface'].map(name => ({ name })))
+    if (argv[1] !== 'api' || argv[2] !== 'graphql') return undefined
+    const args = graphArgs(argv, stdin)
+    if (args.query?.includes('reviewThreads')) return undefined
+    state.fields.push(args)
+    if (args.query?.includes('addProjectV2ItemById')) return json({ data: { addProjectV2ItemById: { item: { id: `PVTI_${args.content?.slice(2)}` } } } })
+    const number = Number(args.item?.slice('PVTI_'.length))
+    const name = [...STATUSES, ...PRIORITIES].find(one => optionId(one) === args.option) ?? ''
+    state.planned[number] = { ...state.planned[number], ...(args.field === 'F_status' ? { status: name } : { priority: name }) }
+    return json({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: args.item } } } })
+  }
+  const gh = fakeGitHub(on, { routes: [project] })
   const state = {
     planned: { 340: { status: 'Inbox' }, 315: { status: 'Ready', priority: 'P1' } } as Record<number, { status?: string; priority?: string }>,
-    issues: [raw(340, 'Saves drop the hangar', ['area:simulation']), raw(341, 'The map key hides the legend'), raw(315, 'Lay Kessik out for play', ['area:simulation'])],
     fields: [] as Record<string, string>[],
-    edits: [] as string[][],
+    // Each gh issue edit, as its whole command.
+    get edits() {
+      return gh.ran.filter(({ argv }) => argv[1] === 'issue' && argv[2] === 'edit').map(({ argv }) => [...argv])
+    },
     asked: [] as string[],
     blocks: [] as (readonly { text: string; cache?: true }[] | undefined)[],
     toasts: [] as string[],
   }
-  on('process.run', async (_$, e) => {
-    const argv = e.argv
-    const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
-    if (argv[0] === 'git') return answer('main\n')
-    if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true }))
-    if (isIssuesQuery(argv)) return answer(graphPage(state.issues.map(one => ({ ...one, ...state.planned[one.number] })), argv, true))
-    if (argv[1] === 'api' && argv[2] === 'graphql') {
-      const args = graphArgs(argv, e.init?.stdin)
-      if (args.query?.includes('reviewThreads')) return answer(JSON.stringify({ data: { repository: { pullRequests: { nodes: [] } } } }))
-      state.fields.push(args)
-      if (args.query?.includes('addProjectV2ItemById')) return answer(JSON.stringify({ data: { addProjectV2ItemById: { item: { id: `PVTI_${args.content?.slice(2)}` } } } }))
-      const number = Number(args.item?.slice('PVTI_'.length))
-      const name = [...STATUSES, ...PRIORITIES].find(one => optionId(one) === args.option) ?? ''
-      state.planned[number] = { ...state.planned[number], ...(args.field === 'F_status' ? { status: name } : { priority: name }) }
-      return answer(JSON.stringify({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: args.item } } } }))
-    }
-    // The repo's labels, over REST.
-    if (argv[1] === 'api' && argv[2]?.endsWith('/labels?per_page=100')) return answer(JSON.stringify(['bug', 'area:simulation', 'area:interface'].map(name => ({ name }))))
-    if (argv[1] === 'api') return answer('astrosteveo\n')
-    if (argv[1] === 'issue' && argv[2] === 'edit') {
-      state.edits.push([...argv])
-      return answer('')
-    }
-    return answer('[]')
-  })
   on('model.complete', async (_$, e) => {
     state.asked.push(e.prompt)
     state.blocks.push(e.promptBlocks)
     return { value: { isAnswered: true, text: answer, usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } }
   })
-  on('session.id', async () => ({ value: 'session-1' }))
-  on('session.repo', async () => ({ value: REPO }))
-  on('session.root', async () => ({ value: REPO.root }))
-  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  session(on)
   on('ui.toast', async (_$, e) => {
     state.toasts.push(e.text)
     return { value: undefined }
