@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { parseIssues } from '../hooks/parse'
-import { alreadyTrue, cardParts, changeText, issueOf, kindsText, planAsk, planOf, rowText, rowsOf, sizeText, viewNoteOf } from '../hooks/plan'
+import { PLAN_LIMIT, alreadyTrue, cardParts, changeText, issueOf, kindsText, planAsk, planOf, rowText, rowsOf, sizeText, viewDoneText, viewNoteOf } from '../hooks/plan'
 import type { PlanChange, Project } from '../types'
 import { PRIORITIES, STATUSES, adoptedStore, graphPage, isIssuesQuery, optionId } from './graph'
 import type { RawView } from './graph'
@@ -212,6 +212,53 @@ test('a plan is checked whole: every problem is listed at once, and a valid plan
   const unadopted = { ...context, refusal: 'The issue board only reads Void Sector.' }
   expect(planOf({ issues: [{ number: 340, reason: 'Soon.', status: 'Ready', addLabels: ['bug'] }] }, unadopted)).toEqual({ problems: ['The issue board only reads Void Sector.'] })
   expect('changes' in planOf({ issues: [{ number: 340, reason: 'A bug.', addLabels: ['bug'] }] }, unadopted)).toBe(true)
+})
+
+test('a plan is refused past its size limit, and for the label, parent, view and project problems each check names', () => {
+  const context = { issues: ISSUES, project: PROJECT, milestones: MILESTONES, refusal: null }
+  // One change past the limit is refused with the count; at the limit the plan is made.
+  const labels = (count: number) => Array.from({ length: count }, (_, index) => ({ name: `area:${index}`, reason: 'A new area.', create: true }))
+  expect(PLAN_LIMIT).toBe(100)
+  expect(planOf({ labels: labels(101) }, context)).toEqual({ problems: ['A plan holds at most 100 changes; this one has 101. Split it.'] })
+  expect('changes' in planOf({ labels: labels(100) }, context)).toBe(true)
+
+  // A label made and deleted at once, and a new label given a rename.
+  expect(planOf({ labels: [{ name: 'area:net', reason: 'Both.', create: true, delete: true }, { name: 'area:hud', reason: 'New.', create: true, rename: 'area:ui' }] }, { ...context, labels: ['bug'] })).toEqual({
+    problems: ["Label area:net can't be made and deleted at once.", 'Label area:hud: name a new label as you want it, without rename.'],
+  })
+
+  // A parent that isn't open on the board.
+  expect(planOf({ issues: [{ number: 340, reason: 'Under the old epic.', parent: 999 }] }, context)).toEqual({ problems: ["#340: its parent #999 isn't an open issue on the board."] })
+
+  // A view filter that isn't text, and a view named by a name two views share.
+  const twins = { ...context, project: { ...PROJECT, views: [...PROJECT_VIEWS, { name: 'bugs', number: 4, layout: 'board' as const, filter: 'label:bug', groupBy: null }] } }
+  expect(planOf({ views: [{ name: 'Sprint', reason: 'Soon.', filter: 5 }, { view: 'Bugs', reason: 'Wider.', filter: 'label:bug,defect' }] }, twins)).toEqual({
+    problems: ['New view Sprint: give its filter as text.', 'View Bugs: Void Sector has 2 views called Bugs; name it by number.'],
+  })
+
+  // With no project, nothing that lives in it can be set: Status, Priority, a field or the order.
+  expect(planOf({ issues: [{ number: 340, reason: 'Soon.', status: 'Ready', priority: 'P0', fields: { Estimate: 3 }, projectAfter: 0 }] }, { ...context, project: null })).toEqual({
+    problems: [
+      "#340: the board reads no project, so it can't set Status.",
+      "#340: the board reads no project, so it can't set Priority.",
+      "#340: the board reads no project, so it can't set Estimate.",
+      "#340: the board reads no project, so it can't move it in the project's order.",
+    ],
+  })
+})
+
+test('an applied view change says what was made, and names the filter terms its tab leaves out', () => {
+  const [bugs, old] = PROJECT_VIEWS
+  if (!bugs || !old) throw new Error('no views')
+  expect(viewDoneText({ kind: 'view', view: null, to: { name: 'Sprint', layout: 'board', filter: 'status:Ready sprint:@current' }, partial: ['sprint:@current'] })).toBe(
+    "Created the board view Sprint with the filter status:Ready sprint:@current. Its tab leaves out sprint:@current, which the board can't apply.",
+  )
+  expect(viewDoneText({ kind: 'view', view: null, to: { name: 'Everything', layout: 'table', filter: '' }, partial: [] })).toBe('Created the table view Everything.')
+  expect(viewDoneText({ kind: 'view', view: bugs, to: { name: 'Ready bugs', layout: 'table', filter: 'label:bug status:Ready' }, partial: [] })).toBe(
+    'Changed the view Bugs: renamed Ready bugs, filter label:bug status:Ready.',
+  )
+  expect(viewDoneText({ kind: 'view', view: bugs, to: { name: 'Bugs', layout: 'roadmap', filter: 'label:bug' }, partial: [] })).toBe('Changed the view Bugs: roadmap layout.')
+  expect(viewDoneText({ kind: 'view', view: old, to: null, partial: [] })).toBe('Deleted the view Old.')
 })
 
 test("Claude's plan asks once with a summary and shows on the card and the band; a no writes nothing, a yes applies it all", async ($, on) => {

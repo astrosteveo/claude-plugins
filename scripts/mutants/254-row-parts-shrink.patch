@@ -1,10 +1,12 @@
 Guards #254: a row's number, badge, link and counts never split across lines. Those parts may shrink.
+Test: plugins/issue-board: no number, link, count, badge or key hint splits across lines in the pane or the band, from 40 to 120 columns
+Test: plugins/issue-board: a pull request's row keeps its number, badge, linked issue and counts whole, and cuts the title, narrow and wide
 
 diff --git a/plugins/issue-board/hooks/register.tsx b/plugins/issue-board/hooks/register.tsx
-index 47ad2f7..287ef18 100644
+index f3b27ab..1ce5431 100644
 --- a/plugins/issue-board/hooks/register.tsx
 +++ b/plugins/issue-board/hooks/register.tsx
-@@ -4468,7 +4468,7 @@ export const register: Register = (on, options) => {
+@@ -4473,7 +4473,7 @@ export const register: Register = (on, options) => {
      )
      // A part of a one-line row that keeps its width: a number, a badge, a count or a button. A row short of room
      // squeezes only the part left to shrink, which cuts its text, rather than breaking `#252` into `#25` over `2`.
@@ -13,16 +15,16 @@ index 47ad2f7..287ef18 100644
  
      // Start: the issue is the one Claude is on, and Claude gets it. Its button says so from the press on.
      const start = (issue: Issue) =>
-@@ -4541,7 +4541,7 @@ export const register: Register = (on, options) => {
+@@ -4546,7 +4546,7 @@ export const register: Register = (on, options) => {
  
      // The header's right: when the board last synced, and Refresh. It keeps its width; the repo's name is cut instead.
      const sync = (
 -      <Box flexDirection="row" gap={1} flexShrink={0}>
 +      <Box flexDirection="row" gap={1} flexShrink={1}>
          <Text color={busy ? 'warning' : undefined} dimColor={!busy}>
-           {busy ? '◌ syncing…' : now ? `⟳ ${ago(new Date(now.fetchedAt).toISOString(), clock)}` : ''}
+           {busy ? '◌ syncing…' : now ? `⟳ ${ago(now.fetchedAt, clock)}` : ''}
          </Text>
-@@ -5206,7 +5206,7 @@ export const register: Register = (on, options) => {
+@@ -5211,7 +5211,7 @@ export const register: Register = (on, options) => {
                    </Text>,
                  )}
              </Box>
@@ -31,7 +33,7 @@ index 47ad2f7..287ef18 100644
                {shown.size && (
                  <Text>
                    <Text color="success">{`+${pr.additions}`}</Text>
-@@ -5297,7 +5297,7 @@ export const register: Register = (on, options) => {
+@@ -5302,7 +5302,7 @@ export const register: Register = (on, options) => {
            {!isOpen && peek(issue)}
            {/* The marks, priority and number keep their width; were the row ever short of room, the title gives way. */}
            <Box flexDirection="row" flexShrink={1}>
@@ -40,7 +42,7 @@ index 47ad2f7..287ef18 100644
                {onIt ? (
                  <Text color="claude" bold>
                    {'▶ '}
-@@ -5315,7 +5315,7 @@ export const register: Register = (on, options) => {
+@@ -5320,7 +5320,7 @@ export const register: Register = (on, options) => {
                {fit(issue.title, fits.title)}
              </Button>
            </Box>
@@ -49,7 +51,7 @@ index 47ad2f7..287ef18 100644
              {badge && <Text color={badge.color}>{badge.text}</Text>}
              {blocked && <Text color="warning">{blocked}</Text>}
              {linked && <Text color={ciBadge[linked.ci].color}>{pr}</Text>}
-@@ -5892,7 +5892,7 @@ export const register: Register = (on, options) => {
+@@ -5897,7 +5897,7 @@ export const register: Register = (on, options) => {
                </Text>
                {issue.checks.map((check, index) => (
                  <Box key={`box-row-${issue.number}-${index + 1}`} flexDirection="row">
@@ -58,7 +60,7 @@ index 47ad2f7..287ef18 100644
                      <Text color={check.done ? 'success' : 'warning'}>{check.done ? '✔ ' : '☐ '}</Text>
                    </Box>
                    <Box flexShrink={1}>
-@@ -6154,7 +6154,7 @@ export const register: Register = (on, options) => {
+@@ -6159,7 +6159,7 @@ export const register: Register = (on, options) => {
                          </Text>
                          <Text dimColor>{` ${count}`}</Text>
                        </Text>
@@ -67,7 +69,7 @@ index 47ad2f7..287ef18 100644
                          {meter(epic.completed, epic.total, 10)}
                          <Text dimColor>{closed}</Text>
                          {next && (
-@@ -6273,7 +6273,7 @@ export const register: Register = (on, options) => {
+@@ -6278,7 +6278,7 @@ export const register: Register = (on, options) => {
        </Text>
      )
      // Each line keeps its badge, number and buttons whole, as the pane's rows do; its text is cut to what is left.

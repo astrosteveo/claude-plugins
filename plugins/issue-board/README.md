@@ -787,7 +787,9 @@ change by hand, with a link:
 
 - Keep the **Auto-add** workflows on.
 - Turn **Item closed** off. It marks every closed issue Done, so Done would no
-  longer mean shipped. `/issues check` notes it while it's on.
+  longer mean shipped. `/issues check` notes it while it's on, when **Move
+  closed issues to Done** is on and the board may write to the project.
+  Without those, turning it off would leave Done empty.
 - Set **Item added to project** to Inbox rather than GitHub's Todo, so new
   issues land in the Inbox.
 

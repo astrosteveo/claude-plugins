@@ -88,6 +88,7 @@ import {
   WORKER,
   absorbed,
   ago,
+  agoText,
   alertsOf,
   answerPrompt,
   areaOf,
@@ -602,9 +603,10 @@ const checkAccess = ($: EngineInterface, message?: string): Promise<Problem[]> =
     const said = [message, projectRefusal].filter(Boolean).join('\n')
     const problems = onGitHub ? problemsOf({ installed, auth, repo, ...(said ? { message: said } : {}) }) : []
     // The project's "Item closed" workflow marks every closed issue Done, which the board does only for completed ones.
-    // A limit, not a blocker: it can be waved off.
+    // A limit, not a blocker: it can be waved off. It only counts when the board moves closed issues to Done itself:
+    // with moveToDone off, or a project it may not write to, turning the workflow off would leave Done empty.
     const project = (await read($, board))?.project
-    if (project?.closesToDone) {
+    if (project?.closesToDone && settings.moveToDone && (await mayWrite($, project))) {
       problems.push({
         id: 'item-closed',
         title: `${project.title}'s Item closed workflow is on`,
@@ -3790,6 +3792,9 @@ export const register: Register = (on, options) => {
         text: now ? `Refreshed: ${summary(now.issues, now.prs, await markersNow($, now)) ?? 'nothing open'}.` : `Couldn't refresh: ${(await read($, error)) ?? 'unknown error'}`,
       }
     }
+    // A mistyped subcommand says so, rather than opening the pane as if nothing had been asked.
+    const unknown = e.args.trim().split(/\s+/)[0]
+    if (unknown) return { text: `Unknown subcommand ${unknown}; /issues help lists them.` }
     await $.ui.open(OPEN)
     if ((await read($, board)) === null) void refresh($)
     // The pane opening at the Inbox is the Inbox seen: the band stops counting captures.
@@ -4543,7 +4548,7 @@ export const register: Register = (on, options) => {
     const sync = (
       <Box flexDirection="row" gap={1} flexShrink={0}>
         <Text color={busy ? 'warning' : undefined} dimColor={!busy}>
-          {busy ? '◌ syncing…' : now ? `⟳ ${ago(new Date(now.fetchedAt).toISOString(), clock)}` : ''}
+          {busy ? '◌ syncing…' : now ? `⟳ ${ago(now.fetchedAt, clock)}` : ''}
         </Text>
         <Button key="refresh" hotkey="r" dimColor onPress={() => void refresh($)}>
           Refresh
@@ -5237,7 +5242,7 @@ export const register: Register = (on, options) => {
               {review && <Text color={review.color}>{`· ${review.text}`}</Text>}
               {pr.ci === 'fail' && (pr.failing ?? []).length > 0 && <Text color="error">{`· ${fit(pr.failing.join(', '), 30)}`}</Text>}
               {(pr.issues ?? []).length > 0 && <Text dimColor>{`· for ${pr.issues.map(number => `#${number}`).join(', ')}`}</Text>}
-              {owner && <Text color={workerBadge(owner.status).color}>{`· ${workerOnLine(owner.status, ago(new Date(owner.startedAt).toISOString(), clock), owner.number)}`}</Text>}
+              {owner && <Text color={workerBadge(owner.status).color}>{`· ${workerOnLine(owner.status, ago(owner.startedAt, clock), owner.number)}`}</Text>}
               {mine && (
                 <Text color="claude" bold>
                   · ◆ this branch
@@ -5759,7 +5764,7 @@ export const register: Register = (on, options) => {
             <Box key={`comment-${n}-${index}`} flexDirection="column" marginTop={index > 0 ? 1 : 0}>
               <Text>
                 <Text color="suggestion">{`@${comment.author}`}</Text>
-                <Text dimColor>{` · ${ago(comment.at, clock)} ago`}</Text>
+                <Text dimColor>{agoText(comment.at, clock) ? ` · ${agoText(comment.at, clock)}` : ''}</Text>
               </Text>
               <Markdown text={comment.body.length > 800 ? `${comment.body.slice(0, 799)}…` : comment.body || '(empty)'} />
             </Box>
@@ -5792,7 +5797,7 @@ export const register: Register = (on, options) => {
       const prose = proseOf(issue.body ?? '')
       // The background agent Start in background set on it, with what it last said.
       const worker = working$.find(one => one.number === issue.number)
-      const workerAge = worker ? ago(new Date(worker.startedAt).toISOString(), clock) : ''
+      const workerAge = worker ? agoText(worker.startedAt, clock) : ''
       // What Start starts: on an epic's card, its first ready sub-issue, which the button names; null when none is.
       const isEpic = (issue.subIssues?.total ?? 0) > 0
       const target = startTargetOf(now.issues, issue, project, marks)
@@ -5866,7 +5871,7 @@ export const register: Register = (on, options) => {
             {issue.assignees.map(login => (
               <Text color="suggestion">{`@${login}`}</Text>
             ))}
-            <Text dimColor>{`updated ${ago(issue.updatedAt, clock)} ago`}</Text>
+            <Text dimColor>{`updated ${agoText(issue.updatedAt, clock)}`}</Text>
             {issue.parent && <Text dimColor>{`in #${issue.parent.number}`}</Text>}
             {(issue.subIssues?.total ?? 0) > 0 && <Text dimColor>{`epic · ${issue.subIssues?.completed}/${issue.subIssues?.total} sub-issues closed`}</Text>}
             {issue.milestone && <Text dimColor>{`⚑ ${issue.milestone}`}</Text>}
@@ -5936,7 +5941,7 @@ export const register: Register = (on, options) => {
             <Box flexDirection="column" marginTop={1}>
               <Text>
                 <Text color={workerBadge(worker.status).color}>{`${workerBadge(worker.status).text} `}</Text>
-                <Text dimColor>{`a background agent, started ${workerAge === 'now' || workerAge === '' ? 'just now' : `${workerAge} ago`}`}</Text>
+                <Text dimColor>{`a background agent, started ${workerAge}`}</Text>
               </Text>
               {worker.answer && (
                 <Text dimColor wrap="wrap">
@@ -5948,7 +5953,7 @@ export const register: Register = (on, options) => {
           <Box flexDirection="row" gap={1} marginTop={1} flexWrap="wrap">
             {busy ? (
               <Text key={`worker-on-${issue.number}`} color={workerBadge(busy.status).color}>
-                {workerOnLine(busy.status, ago(new Date(busy.startedAt).toISOString(), clock), goes.number === issue.number ? undefined : goes.number)}
+                {workerOnLine(busy.status, ago(busy.startedAt, clock), goes.number === issue.number ? undefined : goes.number)}
               </Text>
             ) : inBackground ? (
               [backgroundButton, startButton, draftBackgroundButton, draftButton]
@@ -6355,7 +6360,7 @@ export const register: Register = (on, options) => {
               {keep(<Text color="claude" bold>{`#${issue.number}`}</Text>)}
               <Text wrap="truncate-end">
                 <Text>{fit(issue.title, Math.max(12, width - 44))}</Text>
-                <Text dimColor>{` changed ${ago(issue.updatedAt, clock)} ago`}</Text>
+                <Text dimColor>{` changed ${agoText(issue.updatedAt, clock)}`}</Text>
               </Text>
               {keep(link(pageOf(repo, 'issues', issue)))}
               {keep(

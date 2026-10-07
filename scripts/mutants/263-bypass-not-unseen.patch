@@ -1,4 +1,6 @@
 Guards #263: in bypass mode, project_adopt and plans refuse rather than apply unseen. Bypass mode no longer counts as unseen.
+Test: plugins/issue-board: a rule that denies stands, a subagent is refused, and so are auto and bypass mode, where nobody would see the prompt
+Test: plugins/issue-board: in bypass or auto mode a plan is refused, stays on the card to apply in /issues, and writes nothing; default mode asks
 
 diff --git a/plugins/issue-board/hooks/register.tsx b/plugins/issue-board/hooks/register.tsx
 index 47ad2f7..5bb2d6a 100644

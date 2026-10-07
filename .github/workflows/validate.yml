@@ -1,9 +1,29 @@
 name: Validate plugins
 
+# Pull requests and pushes to main run against the Claude Code version in .github/claude-code-version, so a new Claude
+# Code release can't turn CI red with no change in the repo. The weekly run, and a manual run with `latest` ticked,
+# install the latest Claude Code instead, so a release that breaks the plugins is noticed before the pin is bumped.
 on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: '0 7 * * 1'
+  workflow_dispatch:
+    inputs:
+      latest:
+        description: Run against the latest Claude Code instead of the pinned version
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# A new push to a pull request cancels its run in progress. Other runs are left to finish. The event is in the group so
+# the weekly run never queues behind, or displaces, a push to main.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   validate:
@@ -14,7 +34,12 @@ jobs:
         with:
           node-version: 22
       - name: Install Claude Code
-        run: npm install -g @anthropic-ai/claude-code
+        env:
+          LATEST: ${{ github.event_name == 'schedule' || inputs.latest == true }}
+        run: |
+          if [ "$LATEST" = true ]; then version=latest; else version=$(cat .github/claude-code-version); fi
+          npm install -g "@anthropic-ai/claude-code@$version"
+          claude --version
       - name: Validate marketplace and plugins
         run: sh scripts/validate.sh
       - name: Test plugins
