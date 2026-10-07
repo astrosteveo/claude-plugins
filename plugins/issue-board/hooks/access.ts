@@ -17,6 +17,9 @@ export const TOKENS_URL = 'https://github.com/settings/tokens'
 const FINE_GRAINED_URL = 'https://github.com/settings/personal-access-tokens'
 const WRITERS = ['ADMIN', 'MAINTAIN', 'WRITE']
 
+// How the dismissed list names a problem waved off from the band.
+export const accessKey = (problem: Problem): string => `access-${problem.id}`
+
 // The active account, preferring github.com; null when the answer isn't what that command writes, as from a gh too old
 // for `--json`, or when it couldn't reach GitHub (offline reads as an error too, so only a 401 means a bad token).
 export const authOf = (json: string): Auth | null => {
