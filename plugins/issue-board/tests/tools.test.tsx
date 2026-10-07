@@ -22,6 +22,7 @@ import {
 } from '../hooks/parse'
 import { isMutation } from '../hooks/project'
 import { PRIORITIES, STATUSES, asksProject, graphPage, isIssuesQuery, optionId, adoptedStore } from './graph'
+import type { RawView } from './graph'
 import { letThrough, permissions } from './engine'
 
 const BODY = '## Acceptance\r\n\r\n- [x] Layout in place\r\n- [ ] Old saves load\r\n- [ ] Goldens regenerated\r\n'
@@ -151,6 +152,9 @@ const world = (on: On) => {
     patches: [] as string[],
     // Every gh call that writes to GitHub.
     writes: [] as string[],
+    // The project's views, and whether the read of the issues closed lately fails.
+    views: [] as RawView[],
+    failClosed: false,
   }
   on('process.run', async (_$, e) => {
     const argv = e.argv
@@ -168,7 +172,7 @@ const world = (on: On) => {
       if (state.limited) return { value: { exitCode: 1, stdout: '', stderr: 'GraphQL: API rate limit already exceeded for user ID 1.', isStdoutTruncated: false, isStderrTruncated: false } }
       if (state.refuseProject && asksProject(argv)) return { value: { exitCode: 1, stdout: '', stderr: state.refuseProject, isStdoutTruncated: false, isStderrTruncated: false } }
       const page = JSON.parse(
-        graphPage([{ ...issue(state.body), ...state.planned[315], ...(state.type315 ? { type: state.type315 } : {}) }, { ...other, ...state.planned[289] }], argv, state.project, state.types),
+        graphPage([{ ...issue(state.body), ...state.planned[315], ...(state.type315 ? { type: state.type315 } : {}) }, { ...other, ...state.planned[289] }], argv, state.project, state.types, { views: state.views }),
       ) as { data: { repository: { projectsV2?: { nodes: { fields: { nodes: unknown[] } }[] } } } }
       if (state.newField) page.data.repository.projectsV2?.nodes[0]?.fields.nodes.push(state.newField)
       const statusField = page.data.repository.projectsV2?.nodes[0]?.fields.nodes[0] as { options?: { id: string; name: string }[] } | undefined
@@ -266,7 +270,10 @@ const world = (on: On) => {
       state.searched.push(argv[argv.indexOf('-f') + 1]?.slice(2) ?? '')
       return answer(JSON.stringify({ total_count: 45, items: [CLOSED, { ...CLOSED, number: 291, title: 'A pull request', pull_request: {} }] }))
     }
-    if (argv[1] === 'api' && argv[2]?.includes('/issues?state=closed')) return answer(JSON.stringify([CLOSED]))
+    if (argv[1] === 'api' && argv[2]?.includes('/issues?state=closed')) {
+      if (state.failClosed) return { value: { exitCode: 1, stdout: '', stderr: 'gh: Server Error (HTTP 502)', isStdoutTruncated: false, isStderrTruncated: false } }
+      return answer(JSON.stringify([CLOSED]))
+    }
     if (argv[1] === 'api' && argv[2] === '-X' && argv[4]?.includes('/dependencies/blocked_by')) {
       state.blocks.push(`${/issues\/(\d+)\//.exec(argv[4])?.[1]} ${argv[6]?.split('=')[1]}`)
       return answer('{}')
@@ -717,6 +724,170 @@ test('/issues new captures an issue from the conversation straight to the Inbox'
   const band = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...BAND })
   expect(await band.find({ text: '1 captured to the Inbox' })).toBeDefined()
   await band.unmount()
+})
+
+test("an organization's ceiling of ask keeps capture asking, and a capture with no title is refused", async ($, on) => {
+  const gh = world(on)
+  gh.project = true
+  on('ui.toast', async () => ({ value: undefined }))
+  await $.command.run(REFRESH)
+  const input = { title: 'Hangar lights flicker after a jump', body: 'Seen while laying out #315.' }
+  gh.engine.beneath = 'ask'
+  expect((await $.tool.check({ tool: CAPTURE, input, ceiling: 'ask' })).decision).toBe('ask')
+  expect((await $.tool.check({ tool: CAPTURE, input, ceiling: 'allow' })).decision).toBe('allow')
+  expect((await $.tool.check({ tool: CAPTURE, input })).decision).toBe('allow')
+
+  // Left at ask, the person is asked, and a no files nothing.
+  gh.engine.verdict = 'ask'
+  gh.engine.answer = 'no'
+  await $.tool.call({ tool: CAPTURE, ...input })
+  expect(gh.engine.asked).toEqual([CAPTURE])
+  expect(gh.filed).toEqual([])
+
+  // A capture needs a title before anything is asked or filed.
+  gh.engine.verdict = 'allow'
+  expect((await $.tool.call({ tool: CAPTURE, body: 'Seen.' })).deny).toBe('Give the capture a title.')
+  expect((await $.tool.call({ tool: CAPTURE, title: '   ', body: 'Seen.' })).deny).toBe('Give the capture a title.')
+  expect(gh.engine.asked).toEqual([CAPTURE])
+  expect(gh.filed).toEqual([])
+})
+
+test("the band's ✕ ends the capture count, and the next capture counts from one", async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
+  const gh = world(on)
+  gh.project = true
+  on('ui.render', { component: 'AbovePrompt' }, async ($$, e) => {
+    const { Box } = $$.ui.resolve(e)
+    return <Box key="engine" />
+  })
+  on('ui.toast', async () => ({ value: undefined }))
+  await $.command.run(REFRESH)
+  await $.tool.call({ tool: CAPTURE, title: 'Hangar lights flicker after a jump', body: 'Seen while laying out #315.' })
+  const band = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...BAND })
+  expect(await band.find({ text: '1 captured to the Inbox' })).toBeDefined()
+  await band.press({ key: 'captured-dismiss' })
+  expect(await band.find({ key: 'captured-row' })).toBeUndefined()
+  // The count starts again from nothing.
+  await $.tool.call({ tool: CAPTURE, title: 'Docking ring creaks on approach', body: 'Heard in the same test run.' })
+  expect(await band.find({ text: '1 captured to the Inbox' })).toBeDefined()
+  expect(gh.filed).toHaveLength(2)
+  await band.unmount()
+  await clock.settle()
+})
+
+test("a capture is filed anyway when the closed issues to compare it with can't be read", async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
+  const gh = world(on)
+  gh.project = true
+  on('ui.toast', async () => ({ value: undefined }))
+  const logged: string[] = []
+  on('ui.log', async (_$, e) => {
+    logged.push(e.text)
+    return { value: undefined }
+  })
+  await $.command.run(REFRESH)
+  gh.failClosed = true
+  // The title matches #290, closed the day before, but the board can't see it, so it files the work.
+  const answer = await $.tool.call({ tool: CAPTURE, title: 'Dock the shuttles', body: 'The shuttle still drifts.' })
+  expect(String(answer.result)).toMatch(/^Captured to the Inbox for the person to triage\. Filed #340: “Dock the shuttles”/)
+  expect(gh.filed.map(one => one.title)).toEqual(['Dock the shuttles'])
+  expect(gh.commented).toEqual([])
+  expect(logged.some(line => line.startsWith("issue-board: couldn't read the closed issues to compare a capture with: "))).toBe(true)
+  await clock.settle()
+})
+
+test('/issues new says by toast why nothing was captured, and files nothing', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
+  const gh = world(on)
+  gh.project = true
+  const toasts: string[] = []
+  on('ui.toast', async (_$, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  const usage = { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+  type Reply = { isAnswered: true; text: string; usage: typeof usage } | { isAnswered: false; reason: 'nothing-to-fork' } | { isAnswered: false; reason: 'empty-reply'; usage: typeof usage }
+  let forked: Reply = { isAnswered: false, reason: 'nothing-to-fork' }
+  const completed: string[] = []
+  on('model.fork', async () => ({ value: forked }))
+  on('model.complete', async (_$, e) => {
+    completed.push(e.model ?? '')
+    return { value: { isAnswered: false as const, reason: 'empty-reply' as const, usage } }
+  })
+  await $.command.run(REFRESH)
+  const run = async (args: string) => {
+    await $.command.run({ ...REFRESH, args })
+    await clock.settle()
+    return toasts.at(-1)
+  }
+
+  // Nothing said yet in the conversation, and nothing said to go on.
+  expect(await run('new')).toBe('Nothing to capture from yet. Say what it is about: /issues new <what>')
+  expect(await run('new epic')).toBe('Nothing to capture from yet. Say what it is about: /issues new epic <what>')
+  expect(completed).toEqual([])
+  // With something to go on, it asks Sonnet instead, and says why that failed.
+  expect(await run('new the hangar vanishing on load')).toBe("Couldn't write the issue: empty-reply")
+  expect(completed).toEqual(['sonnet'])
+
+  // The fork's own failure is named.
+  forked = { isAnswered: false, reason: 'empty-reply', usage }
+  expect(await run('new the hangar vanishing on load')).toBe("Couldn't write the issue: empty-reply")
+  expect(completed).toEqual(['sonnet'])
+
+  // An answer that isn't an issue or an epic.
+  forked = { isAnswered: true, text: 'I would call it the hangar bug.', usage }
+  expect(await run('new the hangar vanishing on load')).toBe("Claude's answer didn't come back as an issue. Try /issues new again.")
+  expect(await run('new epic saves that survive a crash')).toBe("Claude's answer didn't come back as an epic. Try /issues new again.")
+
+  // GitHub refusing the issue.
+  forked = { isAnswered: true, text: JSON.stringify({ title: 'A refused issue', body: 'Why.', labels: [] }), usage }
+  expect(await run('new the hangar vanishing on load')).toMatch(/^Couldn't capture the issue: .*Validation Failed/)
+  expect(gh.filed).toEqual([])
+})
+
+test('a project view that is the Inbox stands in for the Inbox tab: Open Inbox opens it, and choosing it ends the capture count', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
+  const gh = world(on)
+  gh.project = true
+  gh.views = [
+    { name: 'Triage', number: 1, layout: 'TABLE_LAYOUT', filter: 'status:Inbox' },
+    { name: 'Bugs', number: 2, layout: 'TABLE_LAYOUT', filter: 'label:bug' },
+  ]
+  on('ui.render', { component: 'AbovePrompt' }, async ($$, e) => {
+    const { Box } = $$.ui.resolve(e)
+    return <Box key="engine" />
+  })
+  on('ui.toast', async () => ({ value: undefined }))
+  await $.command.run(REFRESH)
+  const pane = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  const tabs = async () => (await pane.findAll({ type: 'Button' })).map(one => String(one.key ?? '')).filter(key => key.startsWith('filter-'))
+  expect(await tabs()).toEqual(['filter-view:1', 'filter-view:2', 'filter-all', 'filter-closed'])
+  await pane.press({ key: 'filter-view:2' })
+
+  // Open Inbox picks the Triage view, which shows the new issue, and ends the count.
+  const capture = (title: string) => $.tool.call({ tool: CAPTURE, title, body: 'Seen while testing.' })
+  await capture('Hangar lights flicker after a jump')
+  const band = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...BAND })
+  expect(await band.find({ text: '1 captured to the Inbox' })).toBeDefined()
+  await band.press({ key: 'captured-open' })
+  expect(await band.find({ key: 'captured-row' })).toBeUndefined()
+  expect(await pane.find({ key: 'issue-340' })).toBeDefined()
+
+  // Choosing the Triage tab in the pane ends the count too.
+  await pane.press({ key: 'filter-view:2' })
+  await capture('Docking ring creaks on approach')
+  expect(await band.find({ text: '1 captured to the Inbox' })).toBeDefined()
+  await pane.press({ key: 'filter-view:1' })
+  expect(await band.find({ key: 'captured-row' })).toBeUndefined()
+
+  // So does /issues, opening the pane at the Triage tab.
+  await capture('Map legend overlaps the key')
+  expect(await band.find({ text: '1 captured to the Inbox' })).toBeDefined()
+  await $.command.run({ ...REFRESH, args: '' })
+  expect(await band.find({ key: 'captured-row' })).toBeUndefined()
+  await band.unmount()
+  await pane.unmount()
+  await clock.settle()
 })
 
 test('a new session paints the saved board and keeps the issue Claude was on', async ($, on) => {
