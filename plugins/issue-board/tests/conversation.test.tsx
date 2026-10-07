@@ -3,6 +3,7 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import { absorbed, issueOfBranch, knownOf, mentionsOf, newsOf, nextStepOf, parseIssues, parsePrs, writesGitHub } from '../hooks/parse'
 import { graphPage, isIssuesQuery } from './graph'
+import { letThrough } from './engine'
 
 const BODY = '## Acceptance\n\n- [x] Layout in place\n- [ ] Old saves load\n- [ ] Goldens regenerated\n'
 
@@ -92,6 +93,7 @@ const world = (on: On) => {
     return answer(JSON.stringify(state.prs))
   })
   on('session.id', async () => ({ value: 'session-1' }))
+  letThrough(on)
   on('session.repo', async () => ({ value: REPO }))
   on('session.root', async () => ({ value: REPO.root }))
   on('ui.open', async () => ({ value: { isPlaced: true as const } }))

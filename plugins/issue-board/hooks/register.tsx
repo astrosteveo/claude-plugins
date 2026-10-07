@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { AgentSpawnResult, Caught, EngineInterface, HookFailure, ModelForkResult, Register, ThemeKey, Timer, UiCopyArgs } from 'claude-code'
+import type { AgentSpawnResult, Caught, EngineInterface, HookFailure, ModelForkResult, Register, ThemeKey, Timer, ToolCallResult, UiCopyArgs } from 'claude-code'
 
 import type { Adopted, Adoption, Alert, Board, BoxTask, Check, Comment, Draft, DraftEdit, EpicNote, Filter, GroupBy, Issue, Known, Launch, Problem, Project, ProjectField, Role, Roles, StatusPicks, StatusUpdate, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
 import type { Ended, IssueChanges, NewIssue, PrRule, StartMode, Switches } from './parse'
@@ -459,6 +459,16 @@ const fallBack = <E, R>($: EngineInterface, e: E, next: ((e: E) => R) & Caught, 
 const toolFailed = ($: EngineInterface, next: Caught, tool: string) => {
   $.ui.log(`issue-board: the ${tool} tool failed: ${failureOf(next.error)}`, { to: 'debug' })
   return { deny: `The issue board's ${tool} tool failed: ${failureOf(next.error)}` }
+}
+
+// How each of the board's tools that changes something acts: ask, then act. A hook that answers a tool call itself
+// skips the engine's permission check, which only runs beneath it, so this calls next(e) first. That runs the check,
+// with the board's own tool.check verdicts, and the prompt where they leave the call at ask. Only when the call got
+// through does the engine go on to find that no hook answered, and only then does `act` run. Anything else, a no
+// included, is passed back as it came, and nothing changes on GitHub.
+const askThenAct = async <E, R>(e: E, next: (e: E) => Promise<ToolCallResult>, act: () => Promise<R>): Promise<R | ToolCallResult> => {
+  const asked = await next(e)
+  return approvedOf(asked) ? act() : asked
 }
 
 // What project_adopt's permission check answers when it fails. Falling back to the verdict beneath could let an allow
@@ -3361,26 +3371,28 @@ export const register: Register = (on, options) => {
     return { result: boardText(now, kept, label, Date.now()) }
   }).catch(($, _e, next) => toolFailed($, next, 'issues'))
 
-  on('tool.call', { tool: TICK_TOOL }, async ($, e) => {
+  on('tool.call', { tool: TICK_TOOL }, async ($, e, next) => {
     const input = e as unknown as { number?: unknown; boxes?: unknown; done?: unknown }
     const { number, boxes } = input
     if (typeof number !== 'number' || !Array.isArray(boxes) || boxes.length === 0 || !boxes.every(box => Number.isInteger(box))) {
       return { deny: 'Give the issue number and the boxes to tick, counted from 1.' }
     }
-    try {
-      const copy = await copyOf($)
-      const { text, before } = await tick($, number, boxes as number[], input.done !== false)
-      // Only the boxes Claude changed: the body was read fresh, so what others changed meanwhile stays news.
-      if ((await read($, working))?.number === number) await absorb($, copy && { ...copy, checks: before })
-      return { result: text }
-    } catch (cause) {
-      const message = messageOf(cause)
-      const problems = ACCESS_ERROR.test(message) ? await checkAccess($, message) : []
-      return { deny: `Couldn't tick boxes on #${number}: ${message}${problems.length > 0 ? `\n${problemsText(problems)}` : ''}` }
-    }
+    return askThenAct(e, next, async () => {
+      try {
+        const copy = await copyOf($)
+        const { text, before } = await tick($, number, boxes as number[], input.done !== false)
+        // Only the boxes Claude changed: the body was read fresh, so what others changed meanwhile stays news.
+        if ((await read($, working))?.number === number) await absorb($, copy && { ...copy, checks: before })
+        return { result: text }
+      } catch (cause) {
+        const message = messageOf(cause)
+        const problems = ACCESS_ERROR.test(message) ? await checkAccess($, message) : []
+        return { deny: `Couldn't tick boxes on #${number}: ${message}${problems.length > 0 ? `\n${problemsText(problems)}` : ''}` }
+      }
+    })
   }).catch(($, _e, next) => toolFailed($, next, 'tick'))
 
-  on('tool.call', { tool: UPDATE_TOOL }, async ($, e) => {
+  on('tool.call', { tool: UPDATE_TOOL }, async ($, e, next) => {
     const changes = changesOf(e)
     if (!changes) return { deny: 'Give the issue number, and what to change on it.' }
     // A lock the board doesn't know is refused, not dropped without a word.
@@ -3389,39 +3401,43 @@ export const register: Register = (on, options) => {
     }
     const { number, ...rest } = changes
     const starting = (e as { start?: unknown }).start === true
-    try {
-      const started = starting ? await startHere($, number) : null
-      if (started && Object.keys(rest).length === 0) return { result: started }
-      const copy = (await read($, working))?.number === number ? await copyOf($) : null
-      const result = await applyChanges($, number, rest)
-      // What the tool changed that Claude is told of: a comment, and closing or reopening.
-      if (copy) {
-        const closed = rest.close ? true : rest.reopen ? false : copy.closed
-        await absorb($, copy, { ...copy, comments: copy.comments === null ? null : copy.comments + (rest.comment ? 1 : 0), closed })
+    return askThenAct(e, next, async () => {
+      try {
+        const started = starting ? await startHere($, number) : null
+        if (started && Object.keys(rest).length === 0) return { result: started }
+        const copy = (await read($, working))?.number === number ? await copyOf($) : null
+        const result = await applyChanges($, number, rest)
+        // What the tool changed that Claude is told of: a comment, and closing or reopening.
+        if (copy) {
+          const closed = rest.close ? true : rest.reopen ? false : copy.closed
+          await absorb($, copy, { ...copy, comments: copy.comments === null ? null : copy.comments + (rest.comment ? 1 : 0), closed })
+        }
+        return { result: started ? `${started}\n${result}` : result }
+      } catch (cause) {
+        const message = messageOf(cause)
+        const problems = ACCESS_ERROR.test(message) ? await checkAccess($, message) : []
+        return { deny: `Couldn't change #${number}: ${message}${problems.length > 0 ? `\n${problemsText(problems)}` : ''}` }
       }
-      return { result: started ? `${started}\n${result}` : result }
-    } catch (cause) {
-      const message = messageOf(cause)
-      const problems = ACCESS_ERROR.test(message) ? await checkAccess($, message) : []
-      return { deny: `Couldn't change #${number}: ${message}${problems.length > 0 ? `\n${problemsText(problems)}` : ''}` }
-    }
+    })
   }).catch(($, _e, next) => toolFailed($, next, 'issue_update'))
 
   // Claude filing an issue. Claude Code asks first, as for any tool that changes something.
-  on('tool.call', { tool: CREATE_TOOL }, async ($, e) => {
+  on('tool.call', { tool: CREATE_TOOL }, async ($, e, next) => {
     const spec = newIssueOf(e)
     if (typeof spec === 'string') return { deny: spec }
-    try {
-      return { result: await fileIssue($, spec) }
-    } catch (cause) {
-      const message = messageOf(cause)
-      const problems = ACCESS_ERROR.test(message) ? await checkAccess($, message) : []
-      return { deny: `Couldn't file the issue: ${message}${problems.length > 0 ? `\n${problemsText(problems)}` : ''}` }
-    }
+    return askThenAct(e, next, async () => {
+      try {
+        return { result: await fileIssue($, spec) }
+      } catch (cause) {
+        const message = messageOf(cause)
+        const problems = ACCESS_ERROR.test(message) ? await checkAccess($, message) : []
+        return { deny: `Couldn't file the issue: ${message}${problems.length > 0 ? `\n${problemsText(problems)}` : ''}` }
+      }
+    })
   }).catch(($, _e, next) => toolFailed($, next, 'issue_create'))
 
-  // Claude reading or posting the project's status update.
-  on('tool.call', { tool: STATUS_TOOL }, async ($, e) => {
+  // Claude reading or posting the project's status update. Reading answers at once; posting asks, then acts.
+  on('tool.call', { tool: STATUS_TOOL }, async ($, e, next) => {
     const ask = e as unknown as { status?: unknown; note?: unknown; start?: unknown; target?: unknown }
     const project = (await read($, board))?.project
     if (!project) return { deny: 'The board reads no project for this repo.' }
@@ -3430,14 +3446,17 @@ export const register: Register = (on, options) => {
       return { result: latest ? `${project.title}: ${updateLine(latest, await nowOf($))}${latest.body.includes('\n') ? `\n${latest.body}` : ''}` : `${project.title} has no status update yet.` }
     }
     const text = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : undefined)
-    try {
-      const note = text(ask.note)
-      const start = text(ask.start)
-      const target = text(ask.target)
-      return { result: await postStatus($, project, { status: ask.status, ...(note ? { note } : {}), ...(start ? { start } : {}), ...(target ? { target } : {}) }) }
-    } catch (cause) {
-      return { deny: `Couldn't post the status update: ${messageOf(cause)}` }
-    }
+    const status = ask.status
+    return askThenAct(e, next, async () => {
+      try {
+        const note = text(ask.note)
+        const start = text(ask.start)
+        const target = text(ask.target)
+        return { result: await postStatus($, project, { status, ...(note ? { note } : {}), ...(start ? { start } : {}), ...(target ? { target } : {}) }) }
+      } catch (cause) {
+        return { deny: `Couldn't post the status update: ${messageOf(cause)}` }
+      }
+    })
   }).catch(($, _e, next) => toolFailed($, next, 'project_status'))
 
   // Reading the status update changes nothing, so it needs no permission prompt; posting one asks.
@@ -3447,22 +3466,27 @@ export const register: Register = (on, options) => {
     return verdict.decision === 'ask' && mayAllow(e.ceiling) && !(typeof status === 'string' && status.trim()) ? { decision: 'allow' as const } : verdict
   }).catch(($, e, next) => fallBack($, e, next, 'tool.check on project_status'))
 
-  // Claude archiving project items: the first call lists them, the second, with confirm, archives them.
-  on('tool.call', { tool: ARCHIVE_TOOL }, async ($, e) => {
+  // Claude archiving project items: the first call lists them and answers at once; the second, with confirm, asks and
+  // then archives them.
+  on('tool.call', { tool: ARCHIVE_TOOL }, async ($, e, next) => {
     const ask = e as unknown as { number?: unknown; doneBefore?: unknown; confirm?: unknown }
     const project = (await read($, board))?.project
     if (!project) return { deny: "The board reads no project for this repo, so there's nothing to archive." }
-    try {
-      return {
-        result: await archiveItems($, project, {
-          ...(typeof ask.number === 'number' ? { number: ask.number } : {}),
-          ...(typeof ask.doneBefore === 'string' && ask.doneBefore.trim() ? { doneBefore: ask.doneBefore.trim() } : {}),
-          confirm: ask.confirm === true,
-        }),
+    const confirm = ask.confirm === true
+    const archive = async () => {
+      try {
+        return {
+          result: await archiveItems($, project, {
+            ...(typeof ask.number === 'number' ? { number: ask.number } : {}),
+            ...(typeof ask.doneBefore === 'string' && ask.doneBefore.trim() ? { doneBefore: ask.doneBefore.trim() } : {}),
+            confirm,
+          }),
+        }
+      } catch (cause) {
+        return { deny: `Couldn't archive: ${messageOf(cause)}` }
       }
-    } catch (cause) {
-      return { deny: `Couldn't archive: ${messageOf(cause)}` }
     }
+    return confirm ? askThenAct(e, next, archive) : archive()
   }).catch(($, _e, next) => toolFailed($, next, 'project_archive'))
 
   // Listing what an archive would take changes nothing, so it needs no permission prompt; the archive itself asks. A rule
@@ -3472,26 +3496,24 @@ export const register: Register = (on, options) => {
     return verdict.decision === 'ask' && mayAllow(e.ceiling) && (e.input as { confirm?: unknown }).confirm !== true ? { decision: 'allow' as const } : verdict
   }).catch(($, e, next) => fallBack($, e, next, 'tool.check on project_archive'))
 
-  // Claude letting the board write to a project, or releasing it, when the person asked. A hook that answers a tool call
-  // itself skips the engine's permission check, which only runs beneath it, so this one calls next(e) first: that runs
-  // the check below and its prompt. Only when the person said yes does the engine go on to find no hook answered, and
-  // only then does the change happen. Anything else, a no included, is passed back as it came and changes nothing.
+  // Claude letting the board write to a project, or releasing it, when the person asked. It asks, then acts, so the
+  // check below and its prompt run first, and a no changes nothing.
   on('tool.call', { tool: ADOPT_TOOL }, async ($, e, next) => {
     const plan = await adoptPlan($, e)
     if ('refusal' in plan) return { deny: plan.refusal }
-    const asked = await next(e)
-    if (!approvedOf(asked)) return asked
-    try {
-      if ('release' in plan) {
-        await releaseNow($)
-        return { result: `Released ${plan.release.title}: the board only reads it now.` }
+    return askThenAct(e, next, async () => {
+      try {
+        if ('release' in plan) {
+          await releaseNow($)
+          return { result: `Released ${plan.release.title}: the board only reads it now.` }
+        }
+        await adoptProject($, plan.adopt)
+        const instead = plan.was ? `, in place of ${plan.was.title}` : ''
+        return { result: `The board may write to ${plan.adopt.title} now${instead}. Release it with project_adopt and release: true, or in /issues setup.` }
+      } catch (cause) {
+        return { deny: `Couldn't save that: ${messageOf(cause)}` }
       }
-      await adoptProject($, plan.adopt)
-      const instead = plan.was ? `, in place of ${plan.was.title}` : ''
-      return { result: `The board may write to ${plan.adopt.title} now${instead}. Release it with project_adopt and release: true, or in /issues setup.` }
-    } catch (cause) {
-      return { deny: `Couldn't save that: ${messageOf(cause)}` }
-    }
+    })
   }).catch(($, _e, next) => toolFailed($, next, 'project_adopt'))
 
   // Adopting or releasing a project always asks the person, whatever their rules allow, with the pane's warning in the
@@ -3517,28 +3539,30 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => fallBack($, e, next, 'classic.UserPromptSubmit'))
 
   // Claude making or changing a milestone. Claude Code asks first, as for any tool that changes something.
-  on('tool.call', { tool: MILESTONE_TOOL }, async ($, e) => {
+  on('tool.call', { tool: MILESTONE_TOOL }, async ($, e, next) => {
     const ask = e as unknown as { title?: unknown; newTitle?: unknown; due?: unknown; description?: unknown; close?: unknown; reopen?: unknown }
     const text = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : undefined)
     const title = text(ask.title)
     if (!title) return { deny: 'Give the milestone a title.' }
     const repo = (await read($, board))?.repo
     if (!repo) return { deny: "The issue board hasn't read GitHub yet; refresh it and try again." }
-    try {
-      const newTitle = text(ask.newTitle)
-      return {
-        result: await saveMilestone($, repo, {
-          title,
-          ...(newTitle ? { newTitle } : {}),
-          ...(typeof ask.due === 'string' ? { due: ask.due.trim() } : {}),
-          ...(typeof ask.description === 'string' ? { description: ask.description } : {}),
-          ...(ask.close === true ? { close: true } : {}),
-          ...(ask.reopen === true ? { reopen: true } : {}),
-        }),
+    return askThenAct(e, next, async () => {
+      try {
+        const newTitle = text(ask.newTitle)
+        return {
+          result: await saveMilestone($, repo, {
+            title,
+            ...(newTitle ? { newTitle } : {}),
+            ...(typeof ask.due === 'string' ? { due: ask.due.trim() } : {}),
+            ...(typeof ask.description === 'string' ? { description: ask.description } : {}),
+            ...(ask.close === true ? { close: true } : {}),
+            ...(ask.reopen === true ? { reopen: true } : {}),
+          }),
+        }
+      } catch (cause) {
+        return { deny: `Couldn't change the milestone: ${messageOf(cause)}` }
       }
-    } catch (cause) {
-      return { deny: `Couldn't change the milestone: ${messageOf(cause)}` }
-    }
+    })
   }).catch(($, _e, next) => toolFailed($, next, 'milestone'))
 
   // Moving the Status of the issue the person started is part of working on it, so it doesn't ask, and nor does starting
@@ -3556,6 +3580,13 @@ export const register: Register = (on, options) => {
     const doing = await read($, working)
     return doing && number === doing.number && statusOnly(changes) ? { decision: 'allow' as const } : verdict
   }).catch(($, e, next) => fallBack($, e, next, 'tool.check on issue_update'))
+
+  // Ticking boxes is how work on an issue reports its progress, so it needs no permission prompt, as it never has. A rule
+  // that denies it still stands, and so does an organization's ceiling that keeps the tool at asking.
+  on('tool.check', { tool: TICK_TOOL }, async ($, e, next) => {
+    const verdict = await next(e)
+    return verdict.decision === 'ask' && mayAllow(e.ceiling) ? { decision: 'allow' as const } : verdict
+  }).catch(($, e, next) => fallBack($, e, next, 'tool.check on tick'))
 
   // Reading the board changes nothing, so it needs no permission prompt; a rule that denies it still stands, and so
   // does an organization's ceiling that keeps the tool at asking.

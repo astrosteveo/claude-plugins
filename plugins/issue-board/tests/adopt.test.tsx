@@ -3,6 +3,7 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import { adoptText, adoptedOf, isMutation, ownerOf, writeRefusal } from '../hooks/project'
 import { ADOPTED, PROJECT, graphPage, isIssuesQuery } from './graph'
+import { letThrough } from './engine'
 
 const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 120, placement: 'dock', scroll: { offset: 0, bodyRows: 80 }, view: {} } } as const
 const BAND = { component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120, scroll: { offset: 0, bodyRows: 10 }, view: {} } } as const
@@ -95,6 +96,7 @@ const world = (on: On) => {
     return ok('[]')
   })
   on('session.id', async () => ({ value: 'session-1' }))
+  letThrough(on)
   on('session.repo', async () => ({ value: REPO }))
   on('session.root', async () => ({ value: REPO.root }))
   on('ui.open', async () => ({ value: { isPlaced: true as const } }))
