@@ -20,14 +20,41 @@
 #
 # Given a base ref, as in `sh scripts/mutants.sh origin/main`, it runs only the patches the changes since that base can
 # affect: a patch that is new or changed, or one whose touched files or `Test:` test files changed. A `Test:` name in a
-# plugin is placed by searching that plugin's test files for it, and a name it can't place makes its patch run. A change
-# to this script, the workflow, the pinned Claude Code, a plugin's plugin.json or a shared test helper (a file in a
-# plugin's tests/ that is not a test file) runs every patch. It says which patches it skipped and why. With no base it
-# runs every patch. Other changes can still change a verdict in rare cases, such as a refactor of a helper the patched
-# code calls, so CI also runs every patch on each push to main and weekly.
+# plugin is placed by searching that plugin's test files for it. When the search can't place it, as with a name built
+# from a table, a `Test-file: <path>` line in the header names the file that holds it; with neither, the patch runs. A
+# change to this script, the workflow, the pinned Claude Code, a shared test helper (a file in a plugin's tests/ that is
+# not a test file), or a plugin's plugin.json beyond its version line runs every patch. It says which patches it
+# skipped and why. With no base it runs every patch. Other changes can still change a verdict in rare cases, such as a
+# refactor of a helper the patched code calls, so CI also runs every patch on each push to main and weekly.
+#
+#   sh scripts/mutants.sh [--list] [--shard <i>/<n>] [<base>]
+#
+# --list prints the patches it would run, each as `selected  <name>`, and runs none; CI uses it to plan its shards.
+# --shard 2/4 runs the second of four shards: the selected patches are dealt out in turn, so shard i gets the i-th, the
+# (i+n)-th and so on.
 set -eu
 cd "$(dirname "$0")/.."
 
+list=
+shard=1
+shards=1
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --list) list=yes ;;
+    --shard)
+      [ "$#" -gt 1 ] || { echo "mutants.sh: --shard needs <i>/<n>, such as 2/4" >&2; exit 2; }
+      shard=${2%%/*}
+      shards=${2#*/}
+      case "$shard/$shards" in
+        *[!0-9/]* | /* | */ | */*/*) echo "mutants.sh: --shard needs <i>/<n>, such as 2/4, not $2" >&2; exit 2 ;;
+      esac
+      [ "$shard" -ge 1 ] && [ "$shard" -le "$shards" ] || { echo "mutants.sh: no shard $2" >&2; exit 2; }
+      shift
+      ;;
+    *) break ;;
+  esac
+  shift
+done
 base=${1-}
 # A base it can't find, as in a shallow clone, runs every patch: skipping on a guess could pass a survivor.
 if [ -n "$base" ] && ! git merge-base "$base" HEAD >/dev/null 2>&1; then
@@ -50,10 +77,11 @@ failures() {
 }
 
 # Prints the paths a patch touches, from its `diff --git a/<path> b/<path>` lines, and the places its tests live. Diff
-# body lines start with a space, + or -, so only header lines can match `Test: `.
+# body lines start with a space, + or -, so only header lines can match `Test: ` or `Test-file: `.
 touched() {
   awk '/^diff --git / { sub(/^a\//, "", $3); sub(/^b\//, "", $4); print $3; print $4 }
-    /^Test: / { sub(/^Test: /, ""); sub(/: .*/, ""); print }' "$1" | sort -u
+    /^Test: / { sub(/^Test: /, ""); sub(/: .*/, ""); print }
+    /^Test-file: / { sub(/^Test-file: /, ""); print }' "$1" | sort -u
 }
 
 # Prints which of the paths given, or the files beneath them, have uncommitted changes, staged or not, or are untracked.
@@ -96,11 +124,15 @@ if [ -n "$base" ]; then
     git diff --name-only "$base"...HEAD
     uncommitted scripts/mutants
   } | sort -u)
-  # A change to any of these can change every verdict.
+  # A change to any of these can change every verdict. Every plugin change bumps its version, so a plugin.json whose
+  # only changed line is the version doesn't count; any other change to it, such as a setting, does.
   everything=$(printf '%s\n' "$diffed" | while IFS= read -r file; do
     case "$file" in
-      scripts/mutants.sh | .github/workflows/mutants.yml | .github/claude-code-version | plugins/*/.claude-plugin/plugin.json)
-        printf '%s\n' "$file" ;;
+      scripts/mutants.sh | .github/workflows/mutants.yml | .github/claude-code-version) printf '%s\n' "$file" ;;
+      plugins/*/.claude-plugin/plugin.json)
+        ! git diff --unified=0 "$base"...HEAD -- "$file" | grep '^[-+]' | grep -v '^+++ \|^--- ' |
+          grep -qv '^[-+] *"version": *"[^"]*",\{0,1\} *$' || printf '%s\n' "$file"
+        ;;
       plugins/*/tests/*.test.*) ;;
       plugins/*/tests/*) printf '%s\n' "$file" ;;
     esac
@@ -117,8 +149,13 @@ reasons() {
   ! printf '%s\n' "$diffed" | grep -qxF -- "$1" || echo "the patch is new or changed"
   {
     awk '/^diff --git / { sub(/^a\//, "", $3); sub(/^b\//, "", $4); print $3; print $4 }' "$1"
+    # The Test-file lines name the files that hold the tests the search can't place. One that is gone places nothing.
+    hinted=$(sed -n '/^diff /q; s/^Test-file: //p' "$1" | while IFS= read -r file; do
+      [ ! -f "$file" ] || printf '%s\n' "$file"
+    done)
     sed -n '/^diff /q; s/^Test: //p' "$1" | while IFS= read -r line; do
       files=$(testfiles "$line")
+      [ -n "$files" ] || files=$hinted
       [ -n "$files" ] || echo "can't find the test \"${line#*: }\" in ${line%%: *}"
       printf '%s\n' "$files"
     done
@@ -130,7 +167,9 @@ reasons() {
   done
 }
 
-status=0
+# Picks the patches to run, saying why it skips the others. The patch paths have no spaces, so a space-separated list
+# of them is safe.
+selected=
 skipped=0
 for patch in scripts/mutants/*.patch; do
   name=$(basename "$patch" .patch)
@@ -143,6 +182,32 @@ for patch in scripts/mutants/*.patch; do
     fi
     printf '%s\n' "$why" | sed "s/^/running   $name: /"
   fi
+  selected="$selected $patch"
+done
+[ "$skipped" -eq 0 ] || echo "Skipped $skipped patches that no change since $base can affect."
+
+if [ -n "$list" ]; then
+  for patch in $selected; do
+    echo "selected  $(basename "$patch" .patch)"
+  done
+  exit 0
+fi
+
+# Deals the selected patches out in turn and keeps this shard's.
+if [ "$shards" -gt 1 ]; then
+  k=0
+  mine=
+  for patch in $selected; do
+    [ $((k % shards + 1)) -ne "$shard" ] || mine="$mine $patch"
+    k=$((k + 1))
+  done
+  selected=$mine
+  echo "Shard $shard of $shards runs:$(for patch in $selected; do printf ' %s' "$(basename "$patch" .patch)"; done)"
+fi
+
+status=0
+for patch in $selected; do
+  name=$(basename "$patch" .patch)
   tests=$(sed -n '/^diff /q; s/^Test: //p' "$patch")
   if [ -z "$tests" ]; then
     echo "NO TEST   $name: the header has no Test: line naming the test that must catch it"
@@ -191,5 +256,4 @@ for patch in scripts/mutants/*.patch; do
   note "$patch"
   git worktree remove --force "$tree"
 done
-[ "$skipped" -eq 0 ] || echo "Skipped $skipped patches that no change since $base can affect."
 exit "$status"

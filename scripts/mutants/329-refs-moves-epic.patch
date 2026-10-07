@@ -1,6 +1,7 @@
 Guards #329: a merged pull request that says Refs #N for an epic moves the epic to Verification while its sub-issues are open.
 Test: plugins/issue-board: a merged pull request that refers to an epic with open sub-issues leaves the epic alone, and moves the plain issue beside it
 Test: plugins/issue-board: the planner moves an epic on Refs merge: -
+Test-file: plugins/issue-board/tests/planner.test.ts
 
 diff --git a/plugins/issue-board/hooks/moves.ts b/plugins/issue-board/hooks/moves.ts
 index 2d93fe6..c24a65a 100644

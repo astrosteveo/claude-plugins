@@ -25,7 +25,7 @@ claude --plugin-dir ./plugins/issue-board           # try a plugin from this che
 CI (`.github/workflows/validate.yml`) runs `validate.sh`, then `test.sh`, then `typecheck.sh`. A second workflow,
 `mutants.yml`, runs `mutants.sh` on pull requests that touch hooks, tests, `plugin.json` or `scripts/`, with the pull
 request's base, so only the patches it can affect run. It runs every patch on each push to `main` that touches those
-files, weekly, and by hand. Both install the Claude Code version pinned in `.github/claude-code-version`, so a Claude Code release can't turn CI
+files, weekly, and by hand. More than four patches run as four parallel jobs. Both install the Claude Code version pinned in `.github/claude-code-version`, so a Claude Code release can't turn CI
 red with no change here. `validate.yml` also runs weekly against the latest Claude Code, and by hand with `latest`
 ticked. When that run fails, fix the plugins for the new release. Once it passes, bump the pin in its own PR.
 
@@ -118,12 +118,16 @@ worktree and saving `git diff` below the header. Remake a stale one the same way
 
 Given a base ref, as in `sh scripts/mutants.sh origin/main`, it runs only the patches the changes since that base can
 affect: a new or changed patch, or one whose touched files or `Test:` test files changed. It finds a plugin test's
-file by searching the plugin's test files for the name, and runs the patch when it can't (a name built from a table,
-for instance). A change to `mutants.sh`, `mutants.yml`, `.github/claude-code-version`, a plugin's `plugin.json`, or a
-shared test helper (any file in a plugin's `tests/` that is not a test file) runs every patch. It prints `skipped`
-with the reason for each patch it leaves out, and `running` with the reasons for each it runs. A base it can't find
-runs every patch. Pull requests run it with their base; the full set on pushes to `main` and weekly catches the rare
-survivor a change elsewhere makes, such as a refactor of a helper the patched code calls.
+file by searching the plugin's test files for the name. When the search can't place a name, such as one built from a
+table, add a `Test-file: <path from the repo root>` line to the header, such as
+`Test-file: plugins/issue-board/tests/planner.test.ts`, naming the file that holds it; with neither, the patch always
+runs. A change to `mutants.sh`, `mutants.yml`, `.github/claude-code-version`, a shared test helper (any file in a
+plugin's `tests/` that is not a test file), or a plugin's `plugin.json` beyond its `version` line runs every patch. It
+prints `skipped` with the reason for each patch it leaves out, and `running` with the reasons for each it runs. A base
+it can't find runs every patch. Pull requests run it with their base; the full set on pushes to `main` and weekly
+catches the rare survivor a change elsewhere makes, such as a refactor of a helper the patched code calls. In CI a
+plan job runs `mutants.sh --list` to pick the patches, and when more than four are picked, four jobs each run
+`mutants.sh --shard <i>/4`, which deals the picked patches out in turn and runs its share.
 
 ## The call budget
 

@@ -3,7 +3,8 @@ name: Mutants
 # Puts each fixed bug in scripts/mutants/ back and expects the tests to catch it. On a pull request it runs only the
 # patches the pull request can affect (see scripts/mutants.sh). A change outside what a patch touches or tests can
 # still turn a kill into a survivor in rare cases, so every patch runs on each push to main that touches the code,
-# weekly, and by hand. A survivor is then found within one merge.
+# weekly, and by hand. A survivor is then found within one merge. More than four patches to run are split across four
+# parallel jobs, so a full run takes a few minutes.
 on:
   pull_request:
     paths:
@@ -35,11 +36,50 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  mutants:
+  # Picks the patches to run, and splits them across four shards when there are more than four. On a pull request
+  # the base is its base commit, and the log says which patches it picked and which it skipped, and why. Elsewhere
+  # the base is empty, so every patch runs.
+  plan:
     runs-on: ubuntu-latest
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+      count: ${{ steps.plan.outputs.count }}
     steps:
       # The whole history, so the pull request's base commit is there to diff against. Without it the script would
       # find no base and run every patch.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Pick the patches
+        id: plan
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          sh scripts/mutants.sh --list "$BASE" | tee plan.out
+          picked=$(grep -c '^selected ' plan.out || true)
+          if [ "$picked" -gt 4 ]; then
+            shards='[1,2,3,4]' count=4
+          elif [ "$picked" -gt 0 ]; then
+            shards='[1]' count=1
+          else
+            shards='[]' count=0
+          fi
+          echo "$picked patches to run, in $count jobs"
+          echo "shards=$shards" >>"$GITHUB_OUTPUT"
+          echo "count=$count" >>"$GITHUB_OUTPUT"
+
+  # One job per shard. Each picks the same patches as the plan, keeps its share, and lists them with their verdicts.
+  # A shard that fails fails the run; the others still finish, so one run shows every verdict.
+  mutants:
+    needs: plan
+    if: needs.plan.outputs.shards != '[]'
+    name: mutants (shard ${{ matrix.shard }} of ${{ needs.plan.outputs.count }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -51,9 +91,8 @@ jobs:
         run: |
           npm install -g "@anthropic-ai/claude-code@$(cat .github/claude-code-version)"
           claude --version
-      # On a pull request the base is its base commit, and the log says which patches ran and which were skipped and
-      # why. Elsewhere the base is empty, so every patch runs.
-      - name: Check every mutant is caught
+      - name: Check this shard's mutants are caught
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
-        run: sh scripts/mutants.sh "$BASE"
+          SHARD: ${{ matrix.shard }}/${{ needs.plan.outputs.count }}
+        run: sh scripts/mutants.sh --shard "$SHARD" "$BASE"
