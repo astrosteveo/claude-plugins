@@ -357,6 +357,20 @@ test('the summary names what is open, and nothing when nothing is', () => {
   expect(summary([issue], [])).toBe('1 issue')
 })
 
+test("the summary leaves out the pull request Claude Code's footer already shows, and only that one", () => {
+  const issue = { number: 1, title: 'One', url: '', labels: [], assignees: [], checks: [], updatedAt: '', body: '' }
+  const pr = (number: number, branch: string, ci: 'pass' | 'fail') => ({ number, title: '', url: '', author: '', branch, isDraft: false, ci, review: '' }) as never
+  const prs = [pr(276, 'fix/276-footer', 'pass'), pr(280, 'feat/280-other', 'fail')]
+  expect(summary([issue], prs)).toBe('1 issue · PR #276✓ #280✗')
+  expect(summary([issue], prs, undefined, null)).toBe('1 issue · PR #276✓ #280✗')
+  expect(summary([issue], prs, undefined, 'fix/276-footer')).toBe('1 issue · PR #280✗')
+  // A branch with no pull request on the board leaves the list as it is.
+  expect(summary([issue], prs, undefined, 'main')).toBe('1 issue · PR #276✓ #280✗')
+  // With only the footer's pull request open, the list goes, and with nothing else open, the summary does.
+  expect(summary([issue], prs.slice(0, 1), undefined, 'fix/276-footer')).toBe('1 issue')
+  expect(summary([], prs.slice(0, 1), undefined, 'fix/276-footer')).toBeUndefined()
+})
+
 const HINT = { component: 'PromptHint', props: { isDraft: false, isWorking: false, hint: '? for shortcuts' } } as const
 const REFRESH = { command: 'issues', args: 'refresh', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
 
@@ -493,6 +507,56 @@ test('set to manual, the board looks at GitHub only when asked', { options: { re
   expect(gh.calls).toBe(after)
   await $.command.run(REFRESH)
   expect(gh.calls).toBeGreaterThan(after)
+})
+
+// Claude Code's /config row for its own PR footer, as `$.config.list()` returns it.
+const footerRow = (value: boolean) => ({ key: 'prStatus', label: 'Show PR status footer', kind: 'boolean' as const, value, provider: { plugin: 'engine', tier: 'core' as const }, isLocked: false })
+
+test("while Claude Code's PR footer is on, the hint's tail leaves out the branch's pull request", async ($, on) => {
+  const other = { ...PRS[0], number: 336, title: 'Dock at a station', headRefName: 'feat/336-dock', statusCheckRollup: [{ status: 'COMPLETED', conclusion: 'FAILURE' }] }
+  let here = 'fix/planet-glide'
+  let footer = true
+  on('process.run', async (_$, e) => {
+    const kind = e.argv[1]
+    const stdout =
+      e.argv[0] === 'git' && kind === 'branch'
+        ? `${here}\n`
+        : isIssuesQuery(e.argv)
+          ? graphPage(ISSUES as never)
+          : kind === 'repo'
+            ? JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true })
+            : e.argv.includes('closed') || e.argv.includes('merged')
+              ? '[]'
+              : JSON.stringify(kind === 'issue' ? ISSUES : [...PRS, other])
+    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('config.list', async () => ({ value: [footerRow(footer)] }))
+  on('ui.render', { component: 'PromptHint' }, async ($$, e) => {
+    const { Text } = $$.ui.resolve(e)
+    return <Text>{e.props.tail ? `${e.props.hint} · ${e.props.tail}` : e.props.hint}</Text>
+  })
+  const hint = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...HINT })
+  const shows = async (text: string) => expect(await hint.drawn()).toMatchObject({ type: 'Text', children: [text] })
+
+  await $.command.run(REFRESH)
+  await shows('? for shortcuts · 2 issues · 1 bug · PR #336✗')
+  // It still has its row in the pane, with its CI.
+  const pane = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  expect(await pane.find({ text: /#335/ })).toBeDefined()
+  await pane.unmount()
+
+  // The footer turned off: the tail lists every pull request again.
+  footer = false
+  await $.command.run(REFRESH)
+  await shows('? for shortcuts · 2 issues · 1 bug · PR #335✓ #336✗')
+
+  // On a branch with no pull request, nothing is left out.
+  footer = true
+  here = 'main'
+  await $.command.run(REFRESH)
+  await shows('? for shortcuts · 2 issues · 1 bug · PR #335✓ #336✗')
+
+  await hint.unmount()
 })
 
 test('with its summary turned off, the hint under the prompt keeps its own text', { options: { hintSummary: false } }, async ($, on) => {

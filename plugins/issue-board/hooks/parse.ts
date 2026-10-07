@@ -1064,12 +1064,15 @@ export const prRowRoom = (
 export const pad = (text: string, width: number): string => `${text}${' '.repeat(Math.max(0, width - cells(text)))}`
 
 // The board in a line, such as `35 issues · 1 bug · PR #335✓`; undefined with nothing open, so nothing shows.
-export const summary = (issues: Issue[], prs: PullRequest[], markers: Markers = DEFAULT_MARKERS): string | undefined => {
+// `footer`: the branch whose pull request Claude Code's own PR footer already shows in the same row. That pull request
+// is left out of the list, so the row doesn't name it twice.
+export const summary = (issues: Issue[], prs: PullRequest[], markers: Markers = DEFAULT_MARKERS, footer: string | null = null): string | undefined => {
   const bugs = issues.filter(issue => isBug(issue, markers)).length
+  const listed = footer === null ? prs : prs.filter(pr => pr.branch !== footer)
   const parts: string[] = []
   if (issues.length > 0) parts.push(`${issues.length} issue${issues.length === 1 ? '' : 's'}`)
   if (bugs > 0) parts.push(`${bugs} bug${bugs === 1 ? '' : 's'}`)
-  if (prs.length > 0) parts.push(`PR ${prs.map(pr => `#${pr.number}${ciMark[pr.ci]}`).join(' ')}`)
+  if (listed.length > 0) parts.push(`PR ${listed.map(pr => `#${pr.number}${ciMark[pr.ci]}`).join(' ')}`)
   return parts.length > 0 ? parts.join(' · ') : undefined
 }
 
