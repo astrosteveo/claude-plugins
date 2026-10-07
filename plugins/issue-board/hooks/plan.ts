@@ -433,12 +433,83 @@ export const problemsOfPlan = (problems: readonly string[]): string =>
   `The plan wasn't made. Fix ${problems.length === 1 ? 'this' : 'these'} and call again:\n${problems.map(one => `- ${one}`).join('\n')}`
 
 // What an Apply answers: how many changes went through, each one's text, and each failure with why. The failed rows stay
-// on the card.
-export const appliedText = (done: readonly string[], failed: readonly { row: PlanRow; message: string }[]): string => {
+// on the card. Ticked rows the board showed as made already were skipped, and are named too.
+export const appliedText = (done: readonly string[], failed: readonly { row: PlanRow; message: string }[], skipped: readonly PlanRow[] = []): string => {
   const total = done.length + failed.length
   const head =
-    failed.length === 0
-      ? `Applied the plan: ${total} ${total === 1 ? 'change' : 'changes'}.`
-      : `Applied ${done.length} of ${total} changes. ${failed.length} failed and ${failed.length === 1 ? 'stays' : 'stay'} on the plan card in /issues.`
-  return [head, ...done, ...failed.map(({ row, message }) => `Failed: ${rowText(row.change)}: ${message}`)].join('\n')
+    total === 0
+      ? `Nothing was applied: ${skipped.length === 1 ? 'the ticked change was' : `all ${skipped.length} ticked changes were`} made already.`
+      : failed.length === 0
+        ? `Applied the plan: ${total} ${total === 1 ? 'change' : 'changes'}.`
+        : `Applied ${done.length} of ${total} changes. ${failed.length} failed and ${failed.length === 1 ? 'stays' : 'stay'} on the plan card in /issues.`
+  const skips = total > 0 && skipped.length > 0 ? ` Skipped ${skipped.length} made already.` : ''
+  return [
+    `${head}${skips}`,
+    ...done,
+    ...failed.map(({ row, message }) => `Failed: ${rowText(row.change)}: ${message}`),
+    ...skipped.map(row => `Skipped, made already: ${rowText(row.change)}`),
+  ].join('\n')
 }
+
+// What the board holds that tells whether a change is in place already.
+export type PlanState = Pick<PlanContext, 'issues' | 'project' | 'labels'>
+
+// Whether the board shows a change as made already, as when Claude made it with issue_update after proposing the plan.
+// A change the board can't check, such as a field it doesn't read or a label's color, counts as not made, so its row
+// stays. So does a change to an issue the board no longer holds, as when it was closed.
+export const alreadyTrue = (change: PlanChange, state: PlanState): boolean => {
+  if (change.kind === 'label') {
+    const repo = state.labels
+    if (!repo) return false
+    const has = (name: string) => repo.some(one => same(one, name))
+    if (change.action === 'create') return has(change.name)
+    if (change.action === 'delete') return !has(change.name)
+    // A rename shows in the names alone. A new color or description doesn't, so a change with one stays.
+    if (!change.rename || same(change.rename, change.name) || change.color !== undefined || change.description !== undefined) return false
+    return has(change.rename) && !has(change.name)
+  }
+  if (change.kind === 'view') {
+    const views = state.project?.views
+    if (!views) return false
+    const { view, to } = change
+    if (!to) return !!view && !views.some(one => one.number === view.number)
+    const now = view ? views.find(one => one.number === view.number) : views.find(one => one.name.toLowerCase() === to.name.toLowerCase())
+    return !!now && now.name === to.name && now.layout === to.layout && now.filter === to.filter
+  }
+  const issue = state.issues.find(one => one.number === change.number)
+  if (!issue) return false
+  switch (change.kind) {
+    case 'status':
+    case 'priority': {
+      const value = issue[change.kind]
+      return typeof value === 'string' && value.toLowerCase() === change.value.toLowerCase()
+    }
+    case 'field': {
+      // The board reads only the fields a view needs, so a field it doesn't hold can't be checked, and neither can a
+      // clear.
+      const value = issue.fields?.[change.field]
+      return change.value !== null && value !== undefined && value.toLowerCase() === String(change.value).toLowerCase()
+    }
+    case 'labels':
+    case 'assignees': {
+      const held = change.kind === 'labels' ? issue.labels.map(one => one.name) : issue.assignees
+      const has = (name: string) => held.some(one => same(one, name))
+      return change.add.every(has) && !change.remove.some(has)
+    }
+    case 'milestone':
+      if (issue.milestone === undefined) return false
+      return (issue.milestone ?? '').toLowerCase() === (change.value ?? '').toLowerCase()
+    case 'parent':
+      if (issue.parent === undefined) return false
+      return (issue.parent?.number ?? null) === change.value
+    case 'order': {
+      if (issue.position === undefined) return false
+      const ordered = state.issues.filter(one => one.position !== undefined).sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+      const at = ordered.findIndex(one => one.number === change.number)
+      return change.after === null ? at === 0 : ordered[at - 1]?.number === change.after
+    }
+  }
+}
+
+// The plan's rows still to make: those the board doesn't show as made already.
+export const rowsToMake = (rows: readonly PlanRow[], state: PlanState): PlanRow[] => rows.filter(row => !alreadyTrue(row.change, state))

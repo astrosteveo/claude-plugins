@@ -2,8 +2,8 @@ import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { parseIssues } from '../hooks/parse'
-import { cardParts, changeText, issueOf, kindsText, planAsk, planOf, rowText, rowsOf, sizeText, viewNoteOf } from '../hooks/plan'
-import type { Project } from '../types'
+import { alreadyTrue, cardParts, changeText, issueOf, kindsText, planAsk, planOf, rowText, rowsOf, sizeText, viewNoteOf } from '../hooks/plan'
+import type { PlanChange, Project } from '../types'
 import { PRIORITIES, STATUSES, adoptedStore, graphPage, isIssuesQuery, optionId } from './graph'
 import type { RawView } from './graph'
 import { permissions } from './engine'
@@ -716,4 +716,122 @@ test('a project nobody let the board write to refuses view changes, before anyth
   expect(answer.deny).toMatch(/^The plan wasn't made\. Fix this and call again:\n- The issue board only reads Void Sector: nobody has let it write there\./)
   expect(gh.engine.asked).toEqual([])
   expect(gh.writes).toEqual([])
+})
+
+test("a change counts as made already when the board shows it, and one the board can't check counts as not made", () => {
+  const issues = parseIssues(JSON.stringify([{ ...raw(340, 'Saves drop the hangar', ['bug']), assignees: [{ login: 'astrosteveo' }] }, raw(341, 'The map key hides the legend'), raw(315, 'Lay Kessik out for play')])).map(one =>
+    one.number === 340
+      ? { ...one, status: 'Ready', priority: 'P0', milestone: 'Launch', parent: { number: 315, title: 'Kessik', total: 1, completed: 0 }, position: 1, fields: { Estimate: '3' } }
+      : { ...one, status: 'Inbox', milestone: null, parent: null, position: one.number === 315 ? 0 : 2 },
+  )
+  const views: NonNullable<Project['views']> = [{ name: 'Bugs', number: 2, layout: 'table', filter: 'label:bug', groupBy: null }]
+  const state = { issues, project: { ...PROJECT, views }, labels: ['bug', 'defect'] }
+  const made = (change: PlanChange) => alreadyTrue(change, state)
+
+  expect(made({ kind: 'status', number: 340, value: 'ready' })).toBe(true)
+  expect(made({ kind: 'status', number: 341, value: 'Ready' })).toBe(false)
+  expect(made({ kind: 'priority', number: 340, value: 'P0' })).toBe(true)
+  expect(made({ kind: 'field', number: 340, field: 'Estimate', value: 3 })).toBe(true)
+  // A field the board doesn't read, and a clear, can't be checked.
+  expect(made({ kind: 'field', number: 341, field: 'Estimate', value: 3 })).toBe(false)
+  expect(made({ kind: 'field', number: 340, field: 'Estimate', value: null })).toBe(false)
+  expect(made({ kind: 'labels', number: 340, add: ['Bug'], remove: ['area:ui'] })).toBe(true)
+  expect(made({ kind: 'labels', number: 341, add: ['bug'], remove: [] })).toBe(false)
+  expect(made({ kind: 'assignees', number: 340, add: ['astrosteveo'], remove: [] })).toBe(true)
+  expect(made({ kind: 'milestone', number: 340, value: 'launch' })).toBe(true)
+  expect(made({ kind: 'milestone', number: 341, value: null })).toBe(true)
+  expect(made({ kind: 'parent', number: 340, value: 315 })).toBe(true)
+  expect(made({ kind: 'parent', number: 341, value: 315 })).toBe(false)
+  expect(made({ kind: 'order', number: 340, after: 315 })).toBe(true)
+  expect(made({ kind: 'order', number: 315, after: null })).toBe(true)
+  expect(made({ kind: 'order', number: 341, after: null })).toBe(false)
+  // An issue the board no longer holds can't be checked.
+  expect(made({ kind: 'status', number: 999, value: 'Ready' })).toBe(false)
+
+  expect(made({ kind: 'label', action: 'create', name: 'Defect' })).toBe(true)
+  expect(made({ kind: 'label', action: 'delete', name: 'wontfix' })).toBe(true)
+  expect(made({ kind: 'label', action: 'edit', name: 'wontfix', rename: 'defect' })).toBe(true)
+  // A color the board doesn't read can't be checked, nor can anything when the board hasn't read the repo's labels.
+  expect(made({ kind: 'label', action: 'edit', name: 'wontfix', rename: 'defect', color: 'ffffff' })).toBe(false)
+  expect(alreadyTrue({ kind: 'label', action: 'create', name: 'bug' }, { ...state, labels: undefined })).toBe(false)
+
+  const bugs = views[0] as NonNullable<Project['views']>[number]
+  expect(made({ kind: 'view', view: null, to: { name: 'Bugs', layout: 'board', filter: 'label:bug' }, partial: [] })).toBe(false)
+  expect(made({ kind: 'view', view: null, to: { name: 'Bugs', layout: 'table', filter: 'label:bug' }, partial: [] })).toBe(true)
+  expect(made({ kind: 'view', view: { ...bugs, filter: '' }, to: { name: 'Bugs', layout: 'table', filter: 'label:bug' }, partial: [] })).toBe(true)
+  expect(made({ kind: 'view', view: { ...bugs, number: 5 }, to: null, partial: [] })).toBe(true)
+  expect(made({ kind: 'view', view: bugs, to: null, partial: [] })).toBe(false)
+})
+
+test('a row Claude made with issue_update after the plan leaves the card and the band, and Apply skips it and says so', async ($, on) => {
+  const gh = world(on)
+  await $.command.run(REFRESH)
+  gh.engine.verdict = 'ask'
+  gh.engine.answer = 'no'
+  await $.tool.call({ tool: TOOL, ...PLAN })
+
+  // Claude moves #340 to Ready itself.
+  gh.engine.verdict = 'allow'
+  await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 340, status: 'Ready' })
+  expect(gh.writes).toEqual(['#340 Status Ready'])
+
+  const band = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...BAND })
+  expect(await band.find({ text: /^Claude's plan: 3 changes to 3 issues$/ })).toBeDefined()
+  await band.unmount()
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  expect(await ui.find({ text: /^Claude's plan · 3 changes to 3 issues$/ })).toBeDefined()
+  expect((await ui.findAll({ type: 'Button', text: /^[☑☐] / })).map(one => one.text)).toEqual(['☑ Priority → P0', '☑ labels +bug −area:ui', '☑ milestone → Launch'])
+  expect(await ui.find({ key: 'plan-apply' })).toMatchObject({ text: '✓ Apply 3 of 3' })
+
+  // A yes to the same plan writes the rest, and names the row it skipped.
+  gh.engine.verdict = 'ask'
+  gh.engine.answer = 'yes'
+  const yes = await $.tool.call({ tool: TOOL, ...PLAN })
+  expect(String(yes.result)).toBe(
+    [
+      'Applied the plan: 3 changes. Skipped 1 made already.',
+      '#340 set to P0.',
+      '#341 labelled bug, unlabelled area:ui.',
+      '#315 put on the milestone Launch.',
+      'Skipped, made already: #340 Status → Ready',
+    ].join('\n'),
+  )
+  expect(gh.writes).toEqual(['#340 Status Ready', '#340 Priority P0', 'issue edit 341 --add-label bug --remove-label area:ui', 'issue edit 315 --milestone Launch'])
+  expect(await ui.find({ key: 'plan-card' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a plan made true in full leaves the card and the band, and applying it writes nothing', async ($, on) => {
+  const gh = world(on)
+  await $.command.run(REFRESH)
+  const moves = { issues: [{ number: 340, reason: 'Saves break.', status: 'Ready' }, { number: 341, reason: 'Soon.', status: 'Ready' }] }
+  gh.engine.verdict = 'ask'
+  gh.engine.answer = 'no'
+  await $.tool.call({ tool: TOOL, ...moves })
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  expect(await ui.find({ text: /^Claude's plan · 2 changes to 2 issues$/ })).toBeDefined()
+
+  gh.engine.verdict = 'allow'
+  await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 340, status: 'Ready' })
+  await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 341, status: 'Ready' })
+  expect(await ui.find({ key: 'plan-card' })).toBeUndefined()
+  const band = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...BAND })
+  expect(await band.find({ key: 'plan-review' })).toBeUndefined()
+  await band.unmount()
+
+  // The plan left state, not just the card: a later read that undoes a row doesn't bring it back.
+  gh.planned[340] = { status: 'Inbox' }
+  await $.command.run(REFRESH)
+  expect(await ui.find({ key: 'plan-card' })).toBeUndefined()
+  await ui.unmount()
+
+  // A plan already true when it is approved writes nothing, and says so.
+  gh.planned[340] = { status: 'Ready' }
+  await $.command.run(REFRESH)
+  const writes = gh.writes.length
+  gh.engine.verdict = 'ask'
+  gh.engine.answer = 'yes'
+  const yes = await $.tool.call({ tool: TOOL, ...moves })
+  expect(String(yes.result)).toBe(['Nothing was applied: all 2 ticked changes were made already.', 'Skipped, made already: #340 Status → Ready', 'Skipped, made already: #341 Status → Ready'].join('\n'))
+  expect(gh.writes.length).toBe(writes)
 })

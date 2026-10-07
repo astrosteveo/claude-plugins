@@ -527,6 +527,10 @@ shows a `✦ PLAN` line with **Review**, which opens the pane:
   that went through leave the card, and so do unticked ones. A row that
   failed stays, with why, so you can try it again or discard it.
 - **Discard** drops the plan. A new plan from Claude replaces the old one.
+- A change the board already shows as made, for example because Claude made
+  it with `issue_update` after the plan, leaves the card and the band. Apply
+  skips it and says so. When every change is made, the plan goes. Changes the
+  board can't check, such as a field it doesn't read or a label's color, stay.
 
 Claude's call asks permission once, with the plan summed up by kind, such as
 `Status 3 · Priority 2 · order 4`. Saying yes applies the plan, so you can

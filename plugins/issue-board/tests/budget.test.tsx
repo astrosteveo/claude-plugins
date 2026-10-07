@@ -296,7 +296,7 @@ test('the budget: a refresh, the capture note, a Start, an issue_update, a captu
 
   // A plan of two changes, approved at its prompt: each change's own write, then one refresh for them both, not one each.
   const plan = await measure(() =>
-    $.tool.call({ tool: 'mcp__issue-board__project_plan', issues: [{ number: 315, reason: 'Back to planned.', status: 'Backlog', priority: 'P1' }] }),
+    $.tool.call({ tool: 'mcp__issue-board__project_plan', issues: [{ number: 315, reason: 'Back to planned.', status: 'Backlog', priority: 'P2' }] }),
   )
   expect(calls(plan)).toEqual({ rest: 1, rest304: 1, graphql: 5 })
   expect(plan.text).toMatch(/^- tool: REST 2, REST 304 0, GraphQL 5$/m)
