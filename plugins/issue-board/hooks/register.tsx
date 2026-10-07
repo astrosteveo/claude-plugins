@@ -12,6 +12,7 @@ import {
   ARCHIVE_ITEM,
   CLEAR_VALUE,
   ISSUE_ITEMS,
+  MOVE_ITEM,
   ITEM_VALUES,
   POST_STATUS,
   SET_FIELD,
@@ -34,6 +35,7 @@ import {
   guessText,
   isMutation,
   issuesQuery,
+  orderFilter,
   linkedOf,
   nowNames,
   optionOf,
@@ -187,6 +189,8 @@ import {
   fieldValueOf,
   itemValuesOf,
   reordered,
+  placedAfter,
+  projectMoveOf,
   toArchive,
   statusEnumOf,
   updateLine,
@@ -340,6 +344,7 @@ const changesOf = (input: unknown): (IssueChanges & { number: number }) | null =
   if (raw.confirmTransfer === true) changes.confirmTransfer = true
   if (typeof raw.moveBefore === 'number' && Number.isInteger(raw.moveBefore)) changes.moveBefore = raw.moveBefore
   else if (typeof raw.moveAfter === 'number' && Number.isInteger(raw.moveAfter)) changes.moveAfter = raw.moveAfter
+  if (typeof raw.projectAfter === 'number' && Number.isInteger(raw.projectAfter) && raw.projectAfter >= 0) changes.projectAfter = raw.projectAfter
   if (raw.type === null) changes.type = null
   else if (text(raw.type)) changes.type = text(raw.type)
   if (typeof raw.duplicateOf === 'number' && Number.isInteger(raw.duplicateOf) && raw.duplicateOf > 0 && raw.duplicateOf !== raw.number) changes.duplicateOf = raw.duplicateOf
@@ -1181,7 +1186,7 @@ const fetchIssues = async ($: EngineInterface, nameWithOwner: string): Promise<{
     const pages: string[] = []
     let after: string | null = null
     do {
-      const page: string = await gh($, ['api', 'graphql', '-f', `owner=${owner}`, '-f', `name=${name}`, ...(after ? ['-f', `after=${after}`] : []), '-f', `query=${issuesQuery(withProject, fields)}`])
+      const page: string = await gh($, ['api', 'graphql', '-f', `owner=${owner}`, '-f', `name=${name}`, ...(after ? ['-f', `after=${after}`] : []), ...(withProject ? ['-f', `order=${orderFilter(owner, name)}`] : []), '-f', `query=${issuesQuery(withProject, fields)}`])
       pages.push(page)
       after = nextPageOf(page)
     } while (after && pages.length < PAGES)
@@ -1813,6 +1818,19 @@ const reorder = async ($: EngineInterface, repo: string, number: number, beside:
     const siblings = was.issues.filter(one => one.parent?.number === epic).map(one => one.number)
     return { ...was, issues: was.issues.map(one => (one.number === epic ? { ...one, subOrder: reordered(one.subOrder ?? siblings, number, beside, before) } : one)) }
   })
+  await save($)
+}
+
+// Moves an issue in the project's own order, the one the pane's rows follow: straight after `beside`, or before it, or
+// to the top for null. The pane shows the new order at once; the next read confirms it.
+const moveInProject = async ($: EngineInterface, number: number, beside: number | null, before: boolean): Promise<void> => {
+  const now = await read($, board)
+  const project = now?.project
+  if (!now || !project) throw new Error("the board reads no project for this repo, so it can't move items in its order")
+  const move = projectMoveOf(now.issues, number, beside, before)
+  if (typeof move === 'string') throw new Error(move)
+  await projectWrite($, project, MOVE_ITEM, { project: project.id, item: move.item, after: move.after?.item ?? null })
+  await update($, board, was => was && { ...was, issues: placedAfter(was.issues, number, move.after?.number ?? null) })
   await save($)
 }
 
@@ -2906,6 +2924,7 @@ const applyChanges = async ($: EngineInterface, number: number, changes: IssueCh
   }
   if (repo && changes.type !== undefined) await setType($, repo, number, changes.type)
   if (repo && (changes.moveBefore || changes.moveAfter)) await reorder($, repo, number, (changes.moveBefore ?? changes.moveAfter) as number, Boolean(changes.moveBefore))
+  if (changes.projectAfter !== undefined) await moveInProject($, number, changes.projectAfter || null, false)
   if (repo && changes.duplicateOf) await closeAsDuplicate($, repo, number, changes.duplicateOf)
   if (repo && changes.addBlockedBy?.length) await block($, repo, number, changes.addBlockedBy, true)
   if (repo && changes.removeBlockedBy?.length) await block($, repo, number, changes.removeBlockedBy, false)
@@ -3151,6 +3170,7 @@ export const register: Register = (on, options) => {
           type: { type: ['string', 'null'], description: 'An issue type, such as Bug, where the org has types; null takes it off.' },
           moveBefore: { type: 'integer', description: "Moves this sub-issue before this sibling in its epic's order." },
           moveAfter: { type: 'integer' },
+          projectAfter: { type: 'integer', minimum: 0, description: "Moves it after this issue in the project's order; 0 to the top." },
           pin: { type: 'boolean' },
           lock: {
             type: ['boolean', 'string'],

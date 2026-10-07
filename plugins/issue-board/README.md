@@ -68,9 +68,12 @@ Each issue is one row: its priority, number and title, then, at the right,
 its background agent, its pull request with CI (`⇄ #51 ✓`), its labels in
 their colors, a bar of its boxes (`━━━ 2/4`) and how long since it changed.
 A narrow pane drops the labels, then the bar, then the age, so the row stays
-on one line. Within a group, the most pressing priority comes first, then
-bugs (`▲`), then work under way. An issue waiting on an open one shows
-`⛔ #N`.
+on one line. Within a group, rows follow the project's own order, the one
+you set by dragging items on GitHub. The board reads it with the issues, at
+no extra cost. Issues the project doesn't hold come after, in the board's
+order: the most pressing priority first, then bugs (`▲`), then work under
+way, then the newest. Without a project, the whole list is in the board's
+order. An issue waiting on an open one shows `⛔ #N`.
 
 Hover a row to preview its open boxes. The preview opens above the row, so
 the rows above stay clear for the pointer. Near the top of the pane it lists
@@ -79,7 +82,8 @@ fewer boxes, and a row with no room above shows none.
 **Epics** are parent issues with GitHub's sub-issues. Grouped by Epic, each
 heading has a bar of its sub-issues closed, such as `6/12 closed`, and
 **▶ Next**, which starts Claude on the first one nothing blocks. Sub-issues
-follow GitHub's order where priority and blockers don't decide.
+keep the epic's order, not the project's: they follow GitHub's sub-issue
+order where priority and blockers don't decide.
 
 An epic can move along with its sub-issues. This is off by default; turn on
 **Move epics with their sub-issues** (`advanceEpics`) to have it:
@@ -365,7 +369,8 @@ The board gives Claude eight tools:
 - `tick` ticks or unticks boxes, reading the body fresh first.
 - `issue_update` changes an issue: Status, Priority, title, body, boxes
   (`addBoxes`, `rewordBoxes`), labels, assignees, epic and its order among
-  siblings (`moveBefore`, `moveAfter`), milestone, type, the project's
+  siblings (`moveBefore`, `moveAfter`), its place in the project's order
+  (`projectAfter`, an issue's number or 0 for the top), milestone, type, the project's
   fields (`fields`), blocked-by links, pin, lock, transfer to another of the
   owner's repos, a comment, and closing, as a duplicate too. `start` marks
   that Claude started on it here, as Start does; on an epic it starts the
