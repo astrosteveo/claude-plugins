@@ -720,8 +720,21 @@ export const viewGroupingOf = (view: ProjectView | undefined, project: Project |
 // A view's page on GitHub.
 export const viewUrl = (project: { url: string }, view: { number: number }): string => `${project.url}/views/${view.number}`
 
-type RawNodes<T> = { nodes?: (T | null)[] | null } | null | undefined
-type RawField = { id?: string; name?: string; dataType?: string; options?: { id: string; name: string }[]; configuration?: { iterations?: { id: string; title: string }[] } | null }
+// A GraphQL connection as GitHub answers it, any level of which may be missing; the board's read and setup's share it.
+export type RawNodes<T> = { nodes?: (T | null)[] | null } | null | undefined
+// A project field as a GraphQL fragment answers it. `options` are a single-select field's; setup reads them with their
+// colors and descriptions, the board with only their ids and names.
+export type RawField<O = { id: string; name: string }> = { id?: string; name?: string; dataType?: string; options?: O[]; configuration?: { iterations?: { id: string; title: string }[] } | null }
+// What the board's read and setup both ask of a project.
+export type RawProjectBase<O = { id: string; name: string }> = {
+  id: string
+  number: number
+  title: string
+  url: string
+  closed?: boolean
+  fields?: RawNodes<RawField<O>>
+  workflows?: RawNodes<{ name: string; enabled: boolean }>
+}
 
 // The kind of each field the board can set, by GitHub's data type; the rest, such as Assignees or Labels, are the issue's.
 const KINDS: Record<string, ProjectField['kind']> = { TEXT: 'text', NUMBER: 'number', DATE: 'date', ITERATION: 'iteration', SINGLE_SELECT: 'select' }
@@ -733,15 +746,8 @@ const fieldsOf = (project: RawProject): ProjectField[] =>
     return [{ id: one.id, name: one.name, kind, ...(options ? { options } : {}) }]
   })
 type RawUpdate = { status?: string | null; body?: string | null; createdAt: string; startDate?: string | null; targetDate?: string | null }
-type RawProject = {
-  id: string
-  number: number
-  title: string
-  url: string
-  closed?: boolean
-  fields?: RawNodes<RawField>
+type RawProject = RawProjectBase & {
   statusUpdates?: RawNodes<RawUpdate>
-  workflows?: RawNodes<{ name: string; enabled: boolean }>
   views?: RawNodes<RawView>
   order?: RawNodes<{ id: string }>
 }
@@ -785,9 +791,11 @@ type RawGraphIssue = {
 }
 type RawPage = { data?: { repository?: { issueTypes?: RawNodes<{ name: string }>; labels?: RawNodes<{ name: string }>; projectsV2?: RawNodes<RawProject>; issues?: { pageInfo?: { hasNextPage: boolean; endCursor: string | null }; nodes?: (RawGraphIssue | null)[] } } } }
 
-const nodesOf = <T>(list: RawNodes<T>): T[] => (list?.nodes ?? []).filter((one): one is T => one !== null && one !== undefined)
+// A connection's nodes, without the missing ones.
+export const nodesOf = <T>(list: RawNodes<T>): T[] => (list?.nodes ?? []).filter((one): one is T => one !== null && one !== undefined)
 
-const fieldOf = (project: RawProject, name: string): Field | null => {
+// A project's single-select field by name, whatever its case, with its options.
+export const fieldOf = <O>(project: { fields?: RawNodes<RawField<O>> }, name: string): { id: string; options: O[] } | null => {
   const field = nodesOf(project.fields).find(one => one.id && one.name?.toLowerCase() === name.toLowerCase() && one.options)
   return field?.id && field.options ? { id: field.id, options: field.options } : null
 }

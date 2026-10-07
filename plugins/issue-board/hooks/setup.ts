@@ -1,5 +1,7 @@
 import type { RolePicks, Roles, SetupFacts, SetupOption, SetupProject, SetupStep } from '../types'
 import { BUG_LABELS } from './markers'
+import type { RawNodes, RawProjectBase } from './parse'
+import { fieldOf, nodesOf } from './parse'
 import { ROLE_NAMES, ROLE_ORDER, rolesFor } from './project'
 
 // The board's Status options, in its order, with the color and description a new one gets.
@@ -50,17 +52,9 @@ export const UPDATE_FIELD =
 export const CREATE_FIELD =
   'mutation($project: ID!, $name: String!, $options: [ProjectV2SingleSelectFieldOptionInput!]) { createProjectV2Field(input: {projectId: $project, dataType: SINGLE_SELECT, name: $name, singleSelectOptions: $options}) { projectV2Field { ... on ProjectV2SingleSelectField { id } } } }'
 
-type Nodes<T> = { nodes?: (T | null)[] | null } | null | undefined
-type RawField = { id?: string; name?: string; options?: SetupOption[] }
-type RawProject = { id: string; number: number; title: string; url: string; closed?: boolean; fields?: Nodes<RawField>; workflows?: Nodes<{ name: string; enabled: boolean }> }
+type RawProject = RawProjectBase<SetupOption>
 
-const nodesOf = <T>(list: Nodes<T>): T[] => (list?.nodes ?? []).filter((one): one is T => one !== null && one !== undefined)
 const same = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase()
-
-const fieldOf = (project: RawProject, name: string) => {
-  const field = nodesOf(project.fields).find(one => one.id && one.name && same(one.name, name) && one.options)
-  return field?.id && field.options ? { id: field.id, options: field.options } : null
-}
 
 // A project as setup reads it, from the facts query or the one-project query.
 export const projectOf = (raw: RawProject): SetupProject => ({
@@ -81,8 +75,8 @@ type RawFacts = {
       hasIssuesEnabled: boolean
       viewerPermission?: string | null
       owner: { id: string }
-      labels?: Nodes<{ name: string }>
-      projectsV2?: Nodes<RawProject>
+      labels?: RawNodes<{ name: string }>
+      projectsV2?: RawNodes<RawProject>
     }
   }
 }
@@ -91,7 +85,7 @@ type RawItems = {
     repository?: {
       issues?: {
         pageInfo?: { hasNextPage: boolean; endCursor: string | null }
-        nodes?: ({ id: string; number: number; projectItems?: Nodes<{ id: string; project?: { id: string } | null; status?: { name?: string } | null }> } | null)[]
+        nodes?: ({ id: string; number: number; projectItems?: RawNodes<{ id: string; project?: { id: string } | null; status?: { name?: string } | null }> } | null)[]
       }
     }
   }

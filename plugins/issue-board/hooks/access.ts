@@ -82,7 +82,8 @@ const scopeProblem = (scopes: string[], source: string, detail: string, blocks: 
 const PROJECT_SCOPES = ['project', 'read:project']
 const PROJECT_DETAIL = "The board reads and changes Status and Priority in the repo's GitHub Project with it. Until then it groups and filters by labels."
 
-export type Found = {
+// What a permission check found out about gh, its sign-in and the repo, for problemsOf.
+export type AccessFacts = {
   // Whether gh could be started at all.
   installed: boolean
   auth: Auth | null
@@ -92,7 +93,7 @@ export type Found = {
 }
 
 // What is missing for the board to work, most pressing first.
-export const problemsOf = ({ installed, auth, repo, message = '' }: Found): Problem[] => {
+export const problemsOf = ({ installed, auth, repo, message = '' }: AccessFacts): Problem[] => {
   if (!installed) {
     return [{ id: 'gh-missing', title: "GitHub's gh tool isn't installed", detail: 'The board reads GitHub through gh.', fix: 'Install it from cli.github.com, then run `gh auth login`.', url: 'https://cli.github.com', blocks: true }]
   }
