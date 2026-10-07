@@ -11,6 +11,8 @@ node --test scripts/config-rows.test.mjs || status=1
 node --test scripts/settings-titles.test.mjs || status=1
 # mutants.sh must warn when it tests a commit that the working tree has moved on from.
 node --test scripts/mutants.test.mjs || status=1
+# Given a base ref, mutants.sh must run only the patches the changes since it can affect.
+node --test scripts/mutants-select.test.mjs || status=1
 for plugin in plugins/*/; do
   plugin=${plugin%/}
   [ -n "$(find "$plugin" -path "$plugin/node_modules" -prune -o \( -name '*.test.ts' -o -name '*.test.tsx' \) -print -quit)" ] || continue
