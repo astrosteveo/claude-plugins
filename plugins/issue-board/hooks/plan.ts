@@ -452,7 +452,7 @@ export const appliedText = (done: readonly string[], failed: readonly { row: Pla
 }
 
 // What the board holds that tells whether a change is in place already.
-export type PlanState = Pick<PlanContext, 'issues' | 'project' | 'labels'>
+export type PlanState = { issues: readonly Issue[]; project?: Project | null; labels?: readonly string[] }
 
 // Whether the board shows a change as made already, as when Claude made it with issue_update after proposing the plan.
 // A change the board can't check, such as a field it doesn't read or a label's color, counts as not made, so its row
