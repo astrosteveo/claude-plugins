@@ -54,6 +54,22 @@ The box above the dialog has little room, so the fork is asked for short
 reasons. With one or two questions they fit whole. With more, each pick comes
 first and the reasons are cut at a word to fit.
 
+### When you are away
+
+Claude Code can stop waiting for an answer. The `askUserQuestionTimeout`
+setting is `60s`, `5m`, `10m` or `never`, and it is `never` unless you set it.
+When the time runs out, the dialog sends whatever you had selected so far and
+tells Claude you may be away.
+
+With this plugin, Claude then goes with its own pick for each question you
+left open. An answer you selected before the timeout stands. Claude is told
+that you did not choose the pick. A toast and the band above the prompt say
+"You were away, so Claude went with X.", with a **Got it** button.
+
+While the timeout is on, the take box adds "If you're away for 5m, I'll go
+with X." If Claude has no pick (still thinking, or it failed), the timeout
+works as it would without the plugin.
+
 ### Remembered answers
 
 After you answer, the band above the prompt offers **Remember** or **Not
@@ -66,13 +82,15 @@ and options, ignoring case and spacing.
 `/decisions` opens a pane with the answers Claude reuses and the log of your
 answers in this project.
 
-- The log marks where you went against Claude's pick.
+- The log marks where you went against Claude's pick, and the picks Claude
+  took while you were away. Those are never offered to remember.
 - The search box at the top filters the log and the remembered answers. Every
   word you type must appear in the question, the answer or the header.
 - Under the log's title, a line says how often you went with Claude's pick:
   over the whole log, and over the last 20 answers once there are more. A
   second line splits it by week, for the last four weeks with answers.
-  Answers given from memory had no pick, so they don't count.
+  Answers given from memory had no pick, and nobody chose a pick taken while
+  you were away, so neither counts.
 - **Forget** next to a remembered answer means you are asked again.
 - **Copy as Markdown** puts the project's log on the clipboard as markdown.
 - **Clear log** drops this project's log.
