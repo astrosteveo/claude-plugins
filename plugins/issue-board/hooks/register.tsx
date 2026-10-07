@@ -636,6 +636,18 @@ const currentBranch = async ($: EngineInterface): Promise<string | null> => {
   }
 }
 
+// The /config row for Claude Code's own PR footer ("Show PR status footer"), as `$.config.list()` names it.
+const PR_FOOTER = 'prStatus'
+
+// The branch whose pull request Claude Code's footer shows at the start of the hint row: the checked-out one, while
+// the footer's row is on. null when it is off or can't be read, so the hint's tail lists every pull request as before.
+const footerBranch = async ($: EngineInterface): Promise<string | null> => {
+  const here = await read($, branch)
+  if (!here) return null
+  const rows = await $.config.list().catch(() => [])
+  return rows.find(row => row.key === PR_FOOTER)?.value === true ? here : null
+}
+
 // How many times Claude ran git or gh this session, and how many it had when the board last began reading GitHub: a
 // turn that ends with more reads it again.
 let touches = 0
@@ -6195,7 +6207,7 @@ export const register: Register = (on, options) => {
     const loud = ((await read($, access))?.problems ?? []).filter(problem => problem.blocks || !gone.includes(accessKey(problem)))
     const note = loud.length > 0 ? `issue board ${loud.some(problem => problem.blocks) ? 'needs setup' : 'is limited'} (/issues check)` : undefined
     // Turned off, the summary goes, but a problem the check found still says so.
-    const text = [settings.hintSummary && now && summary(now.issues, now.prs, await markersNow($, now)), note].filter(Boolean).join(' · ')
+    const text = [settings.hintSummary && now && summary(now.issues, now.prs, await markersNow($, now), await footerBranch($)), note].filter(Boolean).join(' · ')
     if (!text) return next(e)
 
     return next({ ...e, props: { ...e.props, tail: e.props.tail ? `${e.props.tail} · ${text}` : text } })

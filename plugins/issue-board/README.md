@@ -26,7 +26,11 @@ what the board is missing, if anything.
 
 The line under the prompt sums up the board in dim text, such as
 `? for shortcuts · 35 issues · 1 bug · PR #335✓`. It shows nothing when
-nothing is open.
+nothing is open. Claude Code's own PR footer already shows the checked-out
+branch's pull request at the start of that line, so while the footer is on
+(`/config`, "Show PR status footer"), the board lists only the other pull
+requests there. That pull request's CI still shows in its pane row, and the band still
+says when it fails or passes.
 
 Type `#` in the prompt box to pick an open issue or pull request from the
 board. `#12` matches by number (#12, #120…), and `#dock` matches titles with
