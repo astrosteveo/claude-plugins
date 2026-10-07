@@ -1653,19 +1653,70 @@ export const mentionText = (board: Board, number: number, clock: number): string
   if (issue) {
     const prs = prsFor(issue, board.prs)
     const prose = proseOf(issue.body)
-    const text = prose.length > MENTION_TEXT ? `${prose.slice(0, MENTION_TEXT - 1)}…` : prose
+    const cut = prose.length > MENTION_TEXT
+    const text = cut ? `${prose.slice(0, MENTION_TEXT - 1)}…` : prose
     return [
       `The prompt names #${number}. This is ${as}:`,
       ...issueLines(issue),
       ...(prs.length > 0 ? ['Pull requests for it:', ...prs.map(prText)] : []),
-      ...(text ? ['Text, without the boxes:', text] : []),
-      prose.length > MENTION_TEXT || !issue.body
+      ...(text ? [cut ? `Text, without the boxes, cut to its first ${MENTION_TEXT} of ${prose.length} characters:` : 'Text, without the boxes:', text] : []),
+      cut || !issue.body
         ? `Read the whole issue with \`gh issue view ${number}\`.`
         : `Its comments aren't here: the issues tool shows them with its \`number\`.`,
     ].join('\n')
   }
   const pr = board.prs.find(one => one.number === number)
   return pr ? `The prompt names pull request #${number}. This is ${as}:\n${prText(pr)}\nRead it in full with \`gh pr view ${number}\`.` : null
+}
+
+// What a copy of `#number` stands for: the issue or pull request as last updated, and for an issue its pull requests
+// and their CI, which change without touching the issue. A copy is sent again only once this differs. Null when the
+// board has neither open.
+export const copyKeyOf = (board: Board, number: number): string | null => {
+  const prKey = (pr: PullRequest) => `${pr.number}:${pr.updatedAt}:${pr.ci}`
+  const issue = board.issues.find(one => one.number === number)
+  if (issue) return [issue.updatedAt, ...prsFor(issue, board.prs).map(prKey)].join('|')
+  const pr = board.prs.find(one => one.number === number)
+  return pr ? prKey(pr) : null
+}
+
+// How many copies one prompt carries at most, so naming many issues doesn't fill the context.
+export const COPY_CAP = 3
+
+// What a prompt naming `numbers` carries: the copies not sent yet this session, or changed since (`sent` maps a number
+// to the key its copy had), up to COPY_CAP; a line for those already sent and unchanged, so Claude knows it has them;
+// and a line naming those past the cap. `keys` is what to record once the prompt goes.
+export const copiesFor = (
+  board: Board,
+  numbers: number[],
+  sent: ReadonlyMap<number, string>,
+  clock: number,
+): { context: string[]; keys: [number, string][] } => {
+  const copies: string[] = []
+  const keys: [number, string][] = []
+  const same: number[] = []
+  const over: number[] = []
+  for (const number of numbers) {
+    const key = copyKeyOf(board, number)
+    const copy = key === null || sent.get(number) === key || copies.length >= COPY_CAP ? null : mentionText(board, number, clock)
+    if (key === null) continue
+    if (sent.get(number) === key) same.push(number)
+    else if (copy === null) over.push(number)
+    else {
+      copies.push(copy)
+      keys.push([number, key])
+    }
+  }
+  const list = (all: number[]) => all.map(one => `#${one}`).join(', ')
+  const unchanged = same.length === 1 ? "it hasn't" : "they haven't"
+  return {
+    context: [
+      ...copies,
+      ...(same.length > 0 ? [`An earlier prompt in this session carried the board's copy of ${list(same)}, and ${unchanged} changed since.`] : []),
+      ...(over.length > 0 ? [`The prompt names ${list(over)} too, past the ${COPY_CAP} copies a prompt carries: the issues tool shows each with its \`number\`.`] : []),
+    ],
+    keys,
+  }
 }
 
 // What Claude knows of an issue as the board has it now; `issue` undefined once it's closed, as it leaves the board.

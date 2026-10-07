@@ -185,7 +185,12 @@ While Claude is on it:
   such as `Open a PR for #N` once every box is ticked. Tab takes it.
 
 A prompt that names `#123` carries the board's copy of that issue or pull
-request for Claude, unseen. A prompt carries up to three.
+request for Claude, unseen. A copy goes once per session. Naming the issue
+again sends it again only when the issue, or a pull request for it, changed
+since. After a compaction or `/clear`, the next prompt that names it sends it
+again. A prompt carries up to three copies, and names any more in one line. A
+copy carries the first 2000 characters of the issue's text and says when it was
+cut.
 
 **The band above the prompt** speaks up only for what needs you: CI that
 fails (**Fix** hands it to Claude), CI that passes (**Finish & merge**), news
