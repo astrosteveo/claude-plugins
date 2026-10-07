@@ -197,6 +197,11 @@ GitHub. The card shows the latest three comments, a field to reply, and
   agent, and the row follows the agent as it does for Start in background.
 - On an epic's card, both Edit first buttons follow the same sub-issue as
   Start.
+- While a background agent works on the issue, the card shows it in place of
+  both Starts and both Edit first buttons, such as
+  `⚙ Worker on it · working 4m`. That holds whether Start in background or
+  Claude started the agent. On an epic's card it names the sub-issue, such as
+  `⚙ Worker on #185`. The buttons come back when the agent ends.
 - **⚙ Change** opens the editor; see [File and plan issues](#file-and-plan-issues).
 - **↗ GitHub** opens the issue. **Collapse** (`x` or Esc) folds the card.
   With nothing open, Esc closes the pane.
