@@ -7,7 +7,10 @@ import {
   WHY_CHARS,
   agreement,
   agreementLines,
+  awayContext,
+  awayPicks,
   decorate,
+  idleTimeout,
   keyOf,
   logMarkdown,
   matches,
@@ -74,6 +77,149 @@ function answering(on: On, $: Engine, answers: Record<string, string>, drawn: st
   })
 }
 
+// The engine's dialog when nobody answers in time: once Claude's take is in
+// (or has failed), it submits what was selected so far and sets afkTimeoutMs.
+function timingOut(on: On, $: Engine, selected: Record<string, string>, drawn: string[] = []) {
+  on('ui.render', { component: 'AskUserQuestion' }, async () => ({ type: 'engine', ref: 0 }) as const)
+  on('tool.call', { tool: 'AskUserQuestion' }, async (_$, e) => {
+    const ui = await $.ui.mount({ plugin: 'ask', surface: 'terminal', component: 'AskUserQuestion', requestId: e.tool_use_id, props: { tool: 'AskUserQuestion', questions: e.questions as never } })
+    for (let i = 0; i < 50 && (await ui.find({ text: /%|No take/ })) === undefined; i++) await ui.drawn()
+    for (const one of await ui.findAll({ type: 'Text' })) drawn.push(one.text ?? '')
+    await ui.unmount()
+    return { result: { questions: e.questions, answers: { ...selected }, afkTimeoutMs: 300_000 } as never }
+  })
+}
+
+const TWO = JSON.stringify({
+  takes: [
+    { pick: 'JWT', confidence: 82, why: 'Stateless.', plain: 'Logins.', notes: {} },
+    { pick: 'SQLite', confidence: 64, why: 'Small app.', plain: 'Storage.', notes: {} },
+  ],
+})
+
+function quiet(on: On, toasts: string[] = []) {
+  mock.clock(on, { now: 1_000 })
+  on('session.root', async () => ({ value: '/proj' }))
+  on('ui.toast', async (_$, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('ui.log', async () => ({ value: undefined }))
+  on('ui.render', { component: 'AbovePrompt' }, async (_$, e) => {
+    const { Box } = _$.ui.resolve(e)
+    return <Box key="engine" />
+  })
+  return toasts
+}
+
+test('away picks are the open questions Claude has a take for, and Claude is told to go ahead', () => {
+  const [jwt, sqlite] = parseTakes(TWO, [AUTH, DB])
+  expect(awayPicks([AUTH, DB], {}, [jwt ?? null, sqlite ?? null]).map(p => p.take.pick)).toEqual(['JWT', 'SQLite'])
+  expect(awayPicks([AUTH, DB], { [AUTH.question]: 'Sessions' }, [jwt ?? null, sqlite ?? null]).map(p => p.take.pick)).toEqual(['SQLite'])
+  expect(awayPicks([AUTH, DB], {}, [null, null])).toEqual([])
+  const text = awayContext(awayPicks([AUTH], {}, [jwt ?? null]))
+  expect(text).toMatch(/The user was away/)
+  expect(text).toMatch(/"Which auth method\?": JWT \(82% sure\)/)
+  expect(text).toMatch(/The user did not choose these/)
+  expect(idleTimeout({ askUserQuestionTimeout: '5m' })).toBe('5m')
+  expect(idleTimeout({ askUserQuestionTimeout: 'never' })).toBeNull()
+  expect(idleTimeout({})).toBeNull()
+  expect(idleTimeout(undefined)).toBeNull()
+})
+
+test('a timed-out dialog with no answer goes with Claude’s pick, logged as away and never offered to remember', async ($, on) => {
+  const toasts = quiet(on)
+  mock.store(on)
+  on('model.fork', async () => ({ value: { isAnswered: true, text: TAKE, usage: USAGE } }) as const)
+  timingOut(on, $, {})
+
+  const ran = await $.tool.call({ tool: 'AskUserQuestion', questions: [AUTH] })
+  // The answers stay as the person left them; the pick reaches Claude as context.
+  expect((ran.result as { answers: Record<string, string> }).answers).toEqual({})
+  expect((ran.result as { afkTimeoutMs?: number }).afkTimeoutMs).toBe(300_000)
+  expect(ran.context?.join('\n')).toMatch(/"Which auth method\?": JWT \(82% sure\)/)
+  expect(toasts).toContain('You were away, so Claude went with JWT.')
+
+  const band = await $.ui.mount({ plugin: 'ask', surface: 'terminal', ...BAND })
+  expect(await band.find({ text: /You were away, so Claude went with JWT\./ })).toBeDefined()
+  expect(await band.find({ key: 'remember' })).toBeUndefined()
+  await band.press({ key: 'got-it' })
+  expect(await band.find({ text: /You were away/ })).toBeUndefined()
+  await band.unmount()
+
+  const pane = await $.ui.mount({ plugin: 'ask', surface: 'terminal', ...PANE })
+  expect(await pane.find({ text: /picked while you were away \(82%\)/ })).toBeDefined()
+  expect(await pane.find({ text: /Claude agreed/ })).toBeUndefined()
+  expect(await pane.find({ text: /You went with Claude's pick/ })).toBeUndefined()
+  await pane.unmount()
+})
+
+test('an answer selected before the timeout stands, and only the open question gets Claude’s pick', async ($, on) => {
+  quiet(on)
+  const stored = sharedStore(on)
+  on('model.fork', async () => ({ value: { isAnswered: true, text: TWO, usage: USAGE } }) as const)
+  timingOut(on, $, { [AUTH.question]: 'Sessions' })
+
+  const ran = await $.tool.call({ tool: 'AskUserQuestion', questions: [AUTH, DB] })
+  expect((ran.result as { answers: Record<string, string> }).answers).toEqual({ [AUTH.question]: 'Sessions' })
+  const said = ran.context?.join('\n') ?? ''
+  expect(said).toMatch(/"Which database\?": SQLite/)
+  expect(said).not.toMatch(/auth method/)
+  const log = stored.log as Decision[]
+  expect(log.map(d => [d.question, d.answer, d.source])).toEqual([
+    [AUTH.question, 'Sessions', 'you'],
+    [DB.question, 'SQLite', 'away'],
+  ])
+
+  // The person's own answer may be remembered; the away pick may not.
+  const band = await $.ui.mount({ plugin: 'ask', surface: 'terminal', ...BAND })
+  expect(await band.find({ text: /You were away, so Claude went with SQLite\./ })).toBeDefined()
+  expect(await band.find({ text: /Remember "Which auth method\?" → Sessions/ })).toBeDefined()
+  await band.press({ key: 'remember' })
+  expect((stored.remembered as Remembered[]).map(one => one.question)).toEqual([AUTH.question])
+  await band.unmount()
+})
+
+test('with no ready take, a timeout reaches Claude as it would without the plugin', async ($, on) => {
+  quiet(on)
+  const stored = sharedStore(on)
+  on('model.fork', async () => ({ value: { isAnswered: false, reason: 'empty-reply', usage: USAGE } }) as const)
+  const drawn: string[] = []
+  timingOut(on, $, {}, drawn)
+
+  const ran = await $.tool.call({ tool: 'AskUserQuestion', questions: [AUTH] })
+  expect(drawn.join('\n')).toMatch(/No take this time/)
+  expect(ran.context ?? []).toEqual([])
+  expect((ran.result as { answers: Record<string, string> }).answers).toEqual({})
+  expect(stored.log).toBeUndefined()
+  const band = await $.ui.mount({ plugin: 'ask', surface: 'terminal', ...BAND })
+  expect(await band.find({ text: /You were away/ })).toBeUndefined()
+  await band.unmount()
+})
+
+test('the take box says what happens if you are away only when the timeout is on', async ($, on) => {
+  const take = { pick: 'JWT', confidence: 82, why: 'Your API is stateless.', plain: 'How users stay logged in.', notes: {} }
+  expect(takeLines([AUTH], [take], 9, '5m').map(textOf)).toContain("If you're away for 5m, I'll go with JWT.")
+  expect(takeLines([AUTH], [take], 9).map(textOf).join('\n')).not.toMatch(/away/)
+  expect(takeLines([AUTH, DB], [take, take], 9, '60s').map(textOf)).toContain("If you're away for 60s, I'll go with my picks.")
+
+  quiet(on)
+  mock.store(on)
+  let setting: unknown = '10m'
+  on('settings.read', async () => ({ value: { askUserQuestionTimeout: setting } }))
+  on('model.fork', async () => ({ value: { isAnswered: true, text: TAKE, usage: USAGE } }) as const)
+  const drawn: string[] = []
+  answering(on, $, { [AUTH.question]: 'JWT' }, drawn)
+  await $.tool.call({ tool: 'AskUserQuestion', questions: [AUTH] })
+  expect(drawn.join('\n')).toMatch(/If you're away for 10m, I'll go with JWT\./)
+
+  setting = 'never'
+  drawn.length = 0
+  await $.tool.call({ tool: 'AskUserQuestion', questions: [AUTH] })
+  expect(drawn.join('\n')).toMatch(/82%/)
+  expect(drawn.join('\n')).not.toMatch(/If you're away/)
+})
+
 test('a question is the same decision whatever its case, spacing or option order', () => {
   const shuffled = { ...AUTH, question: '  which AUTH   method? ', options: [...AUTH.options].reverse() }
   expect(keyOf('/p', shuffled)).toBe(keyOf('/p', AUTH))
@@ -121,6 +267,8 @@ test('decorating keeps every label and puts the take in the descriptions', () =>
 test('the log as markdown says when Claude would have picked otherwise', () => {
   const text = logMarkdown([{ root: '/p', header: 'Auth', question: 'Which?', answer: 'Sessions', pick: 'JWT', confidence: 82, source: 'you', at: 0 }])
   expect(text).toMatch(/→ Sessions \(Claude would have picked JWT, 82%\)/)
+  const away = logMarkdown([{ root: '/p', header: 'Auth', question: 'Which?', answer: 'JWT', pick: 'JWT', confidence: 82, source: 'away', at: 0 }])
+  expect(away).toMatch(/→ JWT \(picked by Claude while you were away, 82%\)/)
 })
 
 test('search matches every word, ignoring case', () => {
@@ -140,6 +288,8 @@ test('agreement counts in total, over the last 20, and per week', () => {
     ...Array.from({ length: 4 }, (_, i) => one(wed + i, true)),
     // Remembered answers had no take and don't count.
     { root: '/p', header: 'H', question: 'Q', answer: 'A', source: 'remembered', at: wed + 10 },
+    // Nobody chose an away pick, so it doesn't count either.
+    { root: '/p', header: 'H', question: 'Q', answer: 'A', pick: 'A', confidence: 90, source: 'away', at: wed + 11 },
   ]
   const a = agreement(log)
   expect(a.total).toEqual({ agreed: 9, of: 29 })
@@ -238,6 +388,10 @@ test('the take box stays within the rows Claude Code allows around the dialog', 
   const takes = four.map(() => ({ pick: 'JWT', confidence: 70, why: long, plain: long, notes: { JWT: long } }))
   expect(sum(takeLines(four, takes, 9))).toBeLessThanOrEqual(9)
   expect(takeLines(four, takes, 9).filter(l => l.kind === 'pick').length).toBe(4)
+  // The away line fits in the budget too, and never pushes out a pick.
+  expect(sum(takeLines(four, takes, 9, '10m'))).toBeLessThanOrEqual(9)
+  expect(takeLines(four, takes, 9, '10m').filter(l => l.kind === 'pick').length).toBe(4)
+  expect(sum(takeLines([AUTH], takes, 9, '10m'))).toBeLessThanOrEqual(9)
   expect(takeLines([AUTH], takes, 9).map(l => l.kind)).toEqual(['note', 'pick', 'note'])
   expect(sum(takeLines([AUTH], takes, 9))).toBeLessThanOrEqual(9)
 

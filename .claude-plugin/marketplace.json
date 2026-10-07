@@ -29,7 +29,7 @@
       "name": "ask",
       "source": "./plugins/ask",
       "description": "Ask Claude a side question in a pane, and get Claude's own pick, remembered answers and a decision log when Claude asks you.",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "author": {
         "name": "astrosteveo"
       },

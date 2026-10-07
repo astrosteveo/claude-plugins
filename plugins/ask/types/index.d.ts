@@ -36,7 +36,8 @@ export type Advice =
 // An answer to give again, without asking, in the project it was saved in.
 export type Remembered = { key: string; root: string; question: string; answer: string; at: number }
 
-// One answered question, for the decision log.
+// One answered question, for the decision log. `away` is Claude's own pick,
+// taken when the dialog timed out with nobody at the keyboard.
 export type Decision = {
   root: string
   header: string
@@ -44,12 +45,15 @@ export type Decision = {
   answer: string
   pick?: string
   confidence?: number
-  source: 'you' | 'remembered'
+  source: 'you' | 'remembered' | 'away'
   at: number
 }
 
 // The answers the band offers to remember, from the last dialog.
 export type Offer = { root: string; items: { key: string; question: string; answer: string }[] }
+
+// What the band says after the dialog timed out and Claude went with its pick.
+export type Away = { items: { question: string; pick: string }[] }
 
 declare module 'claude-code' {
   interface PluginState {
@@ -59,6 +63,8 @@ declare module 'claude-code' {
       // Claude's take on each open AskUserQuestion dialog.
       advice: StateFamily<Advice | null>
       offer: Offer | null
+      // The picks Claude took while the person was away, until they press Got it.
+      away: Away | null
       log: Decision[]
       remembered: Remembered[]
       // What the /decisions pane's search box holds.
