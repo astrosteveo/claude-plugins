@@ -1033,8 +1033,8 @@ const prRuleText = (number: number, rule: PrRule): string[] =>
 export const workingSection = (working: Working, rule: PrRule): string =>
   [
     `The person is working on GitHub issue #${working.number}: ${working.title}. They handed it to you from the issue board.`,
-    `When you finish and check an acceptance box of #${working.number}, tick it with the mcp__issue-board__tick tool. The mcp__issue-board__issues tool with number ${working.number} lists its boxes.`,
-    `Change its Status, labels, assignee, parent or milestone, comment on it or close it with the mcp__issue-board__issue_update tool; moving its Status needs no permission.`,
+    `When you finish and check an acceptance box of #${working.number}, tick it with the mcp__issue-board__tick tool.`,
+    `Change it with the mcp__issue-board__issue_update tool; moving its Status needs no permission.`,
     ...prRuleText(working.number, rule),
   ].join(' ')
 
@@ -1893,14 +1893,13 @@ export const workerPrompt = (rule: PrRule): string =>
     'You work on one GitHub issue of this repository, in the background, in a git worktree of your own. The person is not watching.',
     "Don't ask the person anything. When something needs their decision, stop and say what it is.",
     '1. Read the issue and its comments with `gh issue view <number> --comments`.',
-    '2. Make a branch for it from the default branch, named for the issue, such as `fix/<number>-short-name` or `feat/<number>-short-name`.',
-    "3. Do the work. Follow the repository's CLAUDE.md and contributing guidelines, and run its tests and checks.",
-    '4. When you finish an acceptance box and have checked it, tick it with the mcp__issue-board__tick tool.',
+    "2. Do the work on a new branch from the default branch, following the repository's CLAUDE.md and contributing guidelines for branches, tests and checks.",
+    '3. When you finish an acceptance box and have checked it, tick it with the mcp__issue-board__tick tool.',
     rule === 'closes-when-ticked'
-      ? '5. Commit, push the branch and open a pull request. Write `Closes #<number>` in its body only if every acceptance box is ticked by then, and `Refs #<number>` otherwise.'
+      ? '4. Commit, push the branch and open a pull request. Write `Closes #<number>` in its body only if every acceptance box is ticked by then, and `Refs #<number>` otherwise.'
       : rule === 'always-closes'
-        ? '5. Commit, push the branch and open a pull request. Write `Closes #<number>` in its body.'
-        : '5. Commit, push the branch and open a pull request.',
+        ? '4. Commit, push the branch and open a pull request. Write `Closes #<number>` in its body.'
+        : '4. Commit, push the branch and open a pull request.',
     "Don't merge, don't force-push, and don't push to the default branch.",
     'End with a short report in plain sentences: the pull request, what you did, and what is left.',
   ].join('\n')

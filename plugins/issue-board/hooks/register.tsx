@@ -2804,13 +2804,13 @@ export const register: Register = (on, options) => {
       description: 'Show open issues and pull requests in a pane',
       argumentHint: `[${SUBCOMMANDS.map(one => one.name.replace(' <what>', '')).filter((one, index, all) => all.indexOf(one) === index).join(' | ')}]`,
     })
+    // Each tool's text is sent with every request, so it says only what Claude needs to choose and call the tool.
+    // Claude Code's own permission prompt covers asking, and the working and orchestrator notes cover the workflow.
     await $.tool.register({
       name: 'issues',
       description:
-        "Lists this repository's open GitHub issues and pull requests from the issue board's copy, which refreshes every few minutes and after gh changes. " +
-        'Without `number`, one line each: number, title, labels and how many task-list boxes are ticked; pull requests also give their branch, CI and review. ' +
-        'With `number`, that issue in full as the board has it: labels, assignees and its task-list boxes, numbered as the tick tool counts them; a closed issue is read from GitHub, with how it closed. ' +
-        'With `state` closed or all, or `search`, it searches every issue with GitHub\'s own search instead, one line each with how it stands. ' +
+        "Lists this repo's open issues and pull requests from the issue board's copy, one line each. " +
+        'With `number`, one in full with its boxes numbered as tick counts them. With `state` closed or all, or `search`, it searches GitHub instead. ' +
         "Read an issue's whole text with `gh issue view`.",
       inputSchema: {
         type: 'object',
@@ -2820,36 +2820,31 @@ export const register: Register = (on, options) => {
             type: 'string',
             enum: ['active', 'future', 'bugs', 'mine', 'all', 'inbox'],
             description:
-              "Which issues to list: active, future, bugs, mine (assigned to the signed-in user), inbox, or all, the default. With the repo's GitHub Project, active is Now (Priority P0 and P1), future is Later (P2), and inbox is the issues with Status Inbox or none, waiting to be triaged; without one, future means labelled future and inbox lists nothing.",
+              'Default all. With a project, active is P0 and P1, future is P2, and inbox is Status Inbox or none; without one, future is labelled future.',
           },
-          area: { type: 'string', description: 'Only issues with this area: label, such as "simulation".' },
-          query: { type: 'string', description: 'Only issues whose title, number or labels hold every word of this.' },
-          state: { type: 'string', enum: ['open', 'closed', 'all'], description: 'open (the default) lists the board\'s copy; closed or all search GitHub.' },
-          search: { type: 'string', description: "Words to find in any issue's title or body, open or closed, with GitHub's search." },
-          label: { type: 'string', description: 'Only issues with this label.' },
-          assignee: { type: 'string', description: 'Only issues assigned to this login.' },
-          milestone: { type: 'string', description: 'Only issues on this milestone, by title.' },
-          milestones: { type: 'boolean', description: 'true lists the open milestones instead: how many of their issues are closed, and when each is due.' },
-          status: {
-            type: 'string',
-            description: "Lists the project's issues at this Status instead, open or closed, read from GitHub: such as Done, to see what shipped, or Verification.",
-          },
-          since: { type: 'string', description: 'With status: only issues closed on or after this date, YYYY-MM-DD.' },
+          area: { type: 'string', description: 'Only issues with this area: label.' },
+          query: { type: 'string', description: 'Only issues whose title, number or labels hold every word.' },
+          state: { type: 'string', enum: ['open', 'closed', 'all'] },
+          search: { type: 'string', description: 'Words in any title or body.' },
+          label: { type: 'string' },
+          assignee: { type: 'string', description: 'A login.' },
+          milestone: { type: 'string', description: 'A milestone title.' },
+          milestones: { type: 'boolean', description: 'true lists the open milestones instead, with progress and due dates.' },
+          status: { type: 'string', description: "Lists the project's issues at this Status instead, open or closed, such as Done." },
+          since: { type: 'string', description: 'With status: closed on or after this date, YYYY-MM-DD.' },
         },
       },
     })
     await $.tool.register({
       name: 'tick',
       description:
-        "Ticks task-list boxes (`- [ ]` lines) in a GitHub issue's body, so the issue board shows the progress. " +
-        'Tick a box only once its work is done and checked. Boxes are counted from 1 in the order the body lists them, as the issues tool shows them with `number`. ' +
-        'Set `done` to false to untick.',
+        "Ticks `- [ ]` boxes in an issue's body once their work is done and checked. Boxes count from 1 in body order, as the issues tool shows them with `number`.",
       inputSchema: {
         type: 'object',
         properties: {
-          number: { type: 'integer', description: 'The issue.' },
-          boxes: { type: 'array', items: { type: 'integer', minimum: 1 }, minItems: 1, description: 'The boxes, counted from 1.' },
-          done: { type: 'boolean', description: 'true (the default) ticks them; false unticks them.' },
+          number: { type: 'integer' },
+          boxes: { type: 'array', items: { type: 'integer', minimum: 1 }, minItems: 1 },
+          done: { type: 'boolean', description: 'false unticks.' },
         },
         required: ['number', 'boxes'],
       },
@@ -2857,152 +2852,132 @@ export const register: Register = (on, options) => {
     await $.tool.register({
       name: 'issue_update',
       description:
-        "Changes a GitHub issue of this repository and updates the issue board at once: its title and body, its acceptance boxes, its Status and Priority in the repo's GitHub Project, labels, assignees, " +
-        'parent (the epic it is a sub-issue of), milestone, a comment, closing it as completed or not planned, or reopening it. Give only what changes. ' +
-        'Moving the Status of the issue the person started needs no permission; any other change asks. ' +
-        'When you start work on an issue or pull request in this conversation, without the board\'s Start, call this with start: true, so the board shows it under way. ' +
-        "To work one in the background, dispatch the issue-board:worker agent with a description that starts with the issue's #number: the board follows it on its own.",
+        'Changes an issue and the issue board at once. Give only what changes. ' +
+        "When you start work on an issue or pull request here without the board's Start, call this with start: true. " +
+        `To work one in the background instead, dispatch the ${WORKER} agent with a description that starts with the issue's #number.`,
       inputSchema: {
         type: 'object',
         properties: {
-          number: { type: 'integer', description: 'The issue; with start, a pull request starts the issue it is for.' },
-          start: {
-            type: 'boolean',
-            description: 'true when you start work on it here: it becomes the issue this session is on, moves to In progress and is assigned, as the Start button does. Needs no permission.',
-          },
-          status: { type: 'string', description: "A Status option of the repo's project, such as In progress, Verification or Done. A closed issue's is set too." },
-          priority: { type: 'string', description: "A Priority option of the repo's project, such as P0, P1 or P2." },
-          addLabels: { type: 'array', items: { type: 'string' }, description: "Labels to add. One the repo hasn't got yet is created first, and the answer says so." },
-          removeLabels: { type: 'array', items: { type: 'string' }, description: 'Labels to take off.' },
-          assign: { type: 'array', items: { type: 'string' }, description: 'GitHub logins to assign; @me for the signed-in user.' },
-          unassign: { type: 'array', items: { type: 'string' }, description: 'GitHub logins to unassign; @me for the signed-in user.' },
-          parent: { type: 'integer', minimum: 0, description: 'The epic to put it under, by number; 0 takes it out of its epic.' },
-          milestone: { type: 'string', description: 'The milestone to put it on, by title; an empty string takes it off its milestone.' },
-          comment: { type: 'string', description: 'A comment to add, in Markdown.' },
-          close: { type: 'string', enum: ['completed', 'not planned'], description: 'Close it, saying why.' },
-          duplicateOf: { type: 'integer', minimum: 1, description: 'Close it as a duplicate of this issue, by number; GitHub links the two.' },
-          type: { type: ['string', 'null'], description: "Its issue type, such as Bug or Task, where the repo's organization has types; null takes it off." },
-          moveBefore: { type: 'integer', description: "Move this sub-issue just before this sibling, by number, in its epic's order, which ▶ Next follows." },
-          moveAfter: { type: 'integer', description: "Move this sub-issue just after this sibling, by number, in its epic's order." },
-          pin: { type: 'boolean', description: "true pins it to the top of the repo's issues; false unpins it." },
+          number: { type: 'integer', description: 'With start, a pull request starts its issue.' },
+          start: { type: 'boolean', description: "true makes it this session's issue, moves it to In progress and assigns it, as Start does." },
+          status: { type: 'string', description: 'A project Status option, such as In progress or Done.' },
+          priority: { type: 'string', description: 'A project Priority option, such as P1.' },
+          addLabels: { type: 'array', items: { type: 'string' }, description: 'Missing ones are created.' },
+          removeLabels: { type: 'array', items: { type: 'string' } },
+          assign: { type: 'array', items: { type: 'string' }, description: 'Logins; @me for you.' },
+          unassign: { type: 'array', items: { type: 'string' }, description: 'Logins; @me for you.' },
+          parent: { type: 'integer', minimum: 0, description: 'The epic to put it under; 0 takes it out.' },
+          milestone: { type: 'string', description: 'A milestone title; empty takes it off.' },
+          comment: { type: 'string', description: 'Markdown.' },
+          close: { type: 'string', enum: ['completed', 'not planned'] },
+          duplicateOf: { type: 'integer', minimum: 1, description: 'Closes it as a duplicate.' },
+          type: { type: ['string', 'null'], description: 'An issue type, such as Bug, where the org has types; null takes it off.' },
+          moveBefore: { type: 'integer', description: "Moves this sub-issue before this sibling in its epic's order." },
+          moveAfter: { type: 'integer' },
+          pin: { type: 'boolean' },
           lock: {
             type: ['boolean', 'string'],
             enum: [true, false, 'off_topic', 'resolved', 'spam', 'too_heated'],
-            description: "true, or GitHub's reason, locks its conversation; false unlocks it.",
           },
-          transferTo: { type: 'string', description: "Move it to another of the owner's repos, by name; it leaves this board." },
-          confirmTransfer: { type: 'boolean', description: "true moves it even from a public repo to a private one, where GitHub won't move it back." },
+          transferTo: { type: 'string', description: "Moves it to another of the owner's repos, by name." },
+          confirmTransfer: { type: 'boolean', description: "Needed to move it from a public repo to a private one, which GitHub can't undo." },
           fields: {
             type: 'object',
             additionalProperties: { type: ['string', 'number', 'null'] },
-            description:
-              "The project's other fields to set, by name, such as {\"Estimate\": 3, \"Sprint\": \"Iteration 2\", \"Due\": \"2026-10-20\"}: a number, a date (YYYY-MM-DD), text, an iteration's title or an option's name; null clears one.",
+            description: 'Other project fields by name, such as {"Estimate": 3, "Due": "2026-10-20"}: a number, YYYY-MM-DD, text, an iteration or option name; null clears.',
           },
-          reopen: { type: 'boolean', description: 'true reopens a closed issue.' },
-          title: { type: 'string', description: 'A new title.' },
-          body: {
-            type: 'string',
-            description: 'A whole new body, in Markdown. Refused if the body changed on GitHub since the board read it. To add or reword boxes, use addBoxes or rewordBoxes.',
-          },
-          addBoxes: { type: 'array', items: { type: 'string' }, description: 'Acceptance boxes to add, after the last box, or under a new Acceptance heading.' },
+          reopen: { type: 'boolean' },
+          title: { type: 'string' },
+          body: { type: 'string', description: 'A whole new Markdown body, refused if it changed on GitHub since the board read it. For boxes use addBoxes or rewordBoxes.' },
+          addBoxes: { type: 'array', items: { type: 'string' }, description: 'Acceptance boxes to add after the last one.' },
           rewordBoxes: {
             type: 'array',
             items: { type: 'object', properties: { box: { type: 'integer', minimum: 1 }, text: { type: 'string' } }, required: ['box', 'text'] },
-            description: 'Boxes to reword, by number as the issues tool counts them; ticked ones stay ticked.',
+            description: 'Ticked boxes stay ticked.',
           },
-          addBlockedBy: { type: 'array', items: { type: 'integer' }, description: 'Issues it is blocked by, by number, to link.' },
-          removeBlockedBy: { type: 'array', items: { type: 'integer' }, description: 'Issues it is no longer blocked by, by number.' },
+          addBlockedBy: { type: 'array', items: { type: 'integer' } },
+          removeBlockedBy: { type: 'array', items: { type: 'integer' } },
         },
         required: ['number'],
       },
     })
     await $.tool.register({
       name: 'milestone',
-      description:
-        "Makes or changes a milestone of this repository, by its title: one the repo hasn't got is made, with an optional due date and description; " +
-        'one it has is renamed, given a new due date or description, closed or reopened. The issue board shows open milestones with their progress. ' +
-        'List them with the issues tool and `milestones`. Changing a milestone asks for permission.',
+      description: "Makes a milestone by title if the repo hasn't got it, or else changes it. The issues tool lists them with `milestones`.",
       inputSchema: {
         type: 'object',
         properties: {
-          title: { type: 'string', description: 'The milestone, by title.' },
-          newTitle: { type: 'string', description: 'A new title.' },
-          due: { type: 'string', description: 'The due date, YYYY-MM-DD; an empty string clears it.' },
-          description: { type: 'string', description: 'What the milestone is for.' },
-          close: { type: 'boolean', description: 'true closes it.' },
-          reopen: { type: 'boolean', description: 'true reopens a closed one.' },
+          title: { type: 'string' },
+          newTitle: { type: 'string' },
+          due: { type: 'string', description: 'YYYY-MM-DD; empty clears it.' },
+          description: { type: 'string' },
+          close: { type: 'boolean' },
+          reopen: { type: 'boolean' },
         },
         required: ['title'],
       },
     })
     await $.tool.register({
       name: 'project_status',
-      description:
-        "Reads or posts the status update of the repo's GitHub Project, which shows at the top of the project and in the issue board's pane. " +
-        'Without status, it answers the latest update. With status (On track, At risk, Off track, Complete or Inactive), it posts one, with a note and optional start and target dates. ' +
-        'Reading needs no permission; posting asks.',
+      description: "Reads the latest status update of the repo's GitHub Project, or with status posts one.",
       inputSchema: {
         type: 'object',
         properties: {
-          status: { type: 'string', enum: ['On track', 'At risk', 'Off track', 'Complete', 'Inactive'], description: 'How the project stands; leave it out to read the latest update.' },
-          note: { type: 'string', description: 'What to say about it, in Markdown.' },
-          start: { type: 'string', description: 'The start date, YYYY-MM-DD.' },
-          target: { type: 'string', description: 'The target date, YYYY-MM-DD.' },
+          status: { type: 'string', enum: ['On track', 'At risk', 'Off track', 'Complete', 'Inactive'] },
+          note: { type: 'string', description: 'Markdown.' },
+          start: { type: 'string', description: 'YYYY-MM-DD.' },
+          target: { type: 'string', description: 'YYYY-MM-DD.' },
         },
       },
     })
     await $.tool.register({
       name: 'project_archive',
       description:
-        "Archives items in the repo's GitHub Project, which takes them out of its views and leaves the issues as they are: one issue's item, by number, " +
-        'or every item at Done whose issue closed before a date. The first call says how many and which, and changes nothing; call again with confirm: true to archive.',
+        "Archives items in the repo's GitHub Project, leaving the issues as they are: one issue's item, or every Done item closed before a date. " +
+        'The first call lists them and changes nothing; call again with confirm: true to archive.',
       inputSchema: {
         type: 'object',
         properties: {
-          number: { type: 'integer', description: "One issue whose item to archive." },
-          doneBefore: { type: 'string', description: 'Every item at Done whose issue closed before this date, YYYY-MM-DD.' },
-          confirm: { type: 'boolean', description: 'true archives what the first call listed.' },
+          number: { type: 'integer' },
+          doneBefore: { type: 'string', description: 'YYYY-MM-DD.' },
+          confirm: { type: 'boolean' },
         },
       },
     })
     await $.tool.register({
       name: 'project_adopt',
       description:
-        "Lets the issue board write to a GitHub Project for this repo, which it otherwise only reads: the project the board reads, or another linked to the repo, by number. " +
-        'With release: true, it stops the board writing to the adopted project instead. ' +
-        'Call it only when the person asks you to let the board write to a project, or to release one; never on your own, and never to get past a refusal. ' +
-        'It always asks the person in a permission prompt that shows what the board would write and what it costs.',
+        'Lets the issue board write to a GitHub Project of this repo, which it otherwise only reads; release: true stops it. ' +
+        'Call it only when the person asks you to let the board write to a project, or to release one; never on your own, and never to get past a refusal.',
       inputSchema: {
         type: 'object',
         properties: {
-          number: { type: 'integer', minimum: 1, description: "A project linked to the repo, by number; leave it out for the project the board reads." },
-          release: { type: 'boolean', description: 'true releases the adopted project: the board only reads it again.' },
+          number: { type: 'integer', minimum: 1, description: 'A project linked to the repo; by default the one the board reads.' },
+          release: { type: 'boolean' },
         },
       },
     })
     await $.tool.register({
       name: 'issue_create',
       description:
-        "Files a new GitHub issue in this repository and puts it on the issue board at once: its title and body, labels, assignees, milestone, the epic it is a sub-issue of, " +
-        "and its Status and Priority in the repo's GitHub Project. Without a Status it goes to the project's Inbox. Write the body in Markdown, with an Acceptance list of " +
-        "`- [ ]` boxes. For an epic, give its sub-issues too: each is filed under it, in order, with the same fields. " +
-        "Filing asks for permission. If a step after filing fails, the answer says which, and gives the new issue's number.",
+        "Files an issue and puts it on the issue board. Without a status it goes to the project's Inbox. " +
+        'Write the body in Markdown with an Acceptance list of `- [ ]` boxes. If a step after filing fails, the answer says which, with the new number.',
       inputSchema: {
         type: 'object',
         properties: {
-          title: { type: 'string', description: 'The title.' },
-          body: { type: 'string', description: 'The body, in Markdown.' },
-          labels: { type: 'array', items: { type: 'string' }, description: "Labels to put on it. One the repo hasn't got yet is created first, and the answer says so." },
-          assign: { type: 'array', items: { type: 'string' }, description: 'GitHub logins to assign; @me for the signed-in user.' },
-          milestone: { type: 'string', description: 'An open milestone to put it on, by title.' },
-          parent: { type: 'integer', minimum: 1, description: 'The epic to file it under, as a sub-issue, by number.' },
-          blockedBy: { type: 'array', items: { type: 'integer' }, description: 'Issues it is blocked by, by number.' },
-          type: { type: 'string', description: "Its issue type, such as Bug or Task, where the repo's organization has types." },
-          status: { type: 'string', description: "A Status option of the repo's project, such as Backlog or Ready." },
-          priority: { type: 'string', description: "A Priority option of the repo's project, such as P0, P1 or P2." },
+          title: { type: 'string' },
+          body: { type: 'string' },
+          labels: { type: 'array', items: { type: 'string' }, description: 'Missing ones are created.' },
+          assign: { type: 'array', items: { type: 'string' }, description: 'Logins; @me for you.' },
+          milestone: { type: 'string', description: 'An open milestone title.' },
+          parent: { type: 'integer', minimum: 1, description: 'The epic to file it under.' },
+          blockedBy: { type: 'array', items: { type: 'integer' } },
+          type: { type: 'string', description: 'An issue type, such as Bug, where the org has types.' },
+          status: { type: 'string', description: 'A project Status option, such as Backlog.' },
+          priority: { type: 'string', description: 'A project Priority option, such as P1.' },
           subIssues: {
             type: 'array',
-            description: 'For an epic: its sub-issues, filed under it in this order. Each takes the fields above, but no sub-issues of its own.',
+            description: 'For an epic: sub-issues to file under it, in order.',
             items: {
               type: 'object',
               properties: {
