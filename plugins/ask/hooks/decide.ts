@@ -1,6 +1,7 @@
 import type { Decision, Offer, Question, Remembered, Take } from '../types'
+import { clip } from './parse'
 
-export const LOG_KEEP = 300
+const LOG_KEEP = 300
 
 // The same question with the same options, in the same project, is the same
 // decision. Case and spacing don't make it a new one.
@@ -13,7 +14,7 @@ export function keyOf(root: string, q: Question): string {
 // How long the fork's short sentences may be. A why line of this length,
 // with its "Why: " in front, fits the two rows a note gets in the take box.
 export const WHY_CHARS = 70
-export const PLAIN_CHARS = 60
+const PLAIN_CHARS = 60
 
 // What the fork is asked. The fork reads the whole conversation, but not the
 // question Claude is asking right now, so the questions ride in the prompt.
@@ -38,11 +39,9 @@ export function takePrompt(questions: readonly Question[]): string {
   ].join('\n')
 }
 
-export const clip = (s: unknown, n: number): string => (typeof s === 'string' ? (s.length > n ? `${s.slice(0, n - 1)}…` : s).trim() : '')
-
 // Cuts at the last space that fits, so a line that must be cut doesn't end
 // in half a word.
-export function clipWords(s: string, n: number): string {
+function clipWords(s: string, n: number): string {
   if (s.length <= n) return s
   const room = s.slice(0, n - 1)
   const space = room.lastIndexOf(' ')
@@ -61,7 +60,7 @@ export type TakeLine =
   | { kind: 'pick'; header: string; pick: string; confidence: number }
   | { kind: 'note'; text: string }
 
-export function pickText(line: Extract<TakeLine, { kind: 'pick' }>): string {
+function pickText(line: Extract<TakeLine, { kind: 'pick' }>): string {
   const header = line.header === '' ? '' : ` ${line.header}  `
   return `${header}I'd pick ${line.pick}  ${meter(line.confidence)} ${line.confidence}% ${sureness(line.confidence)}`
 }
@@ -76,7 +75,7 @@ export function idleTimeout(settings: unknown): string | null {
 }
 
 // The take box's line saying what happens if nobody answers in time.
-export function awayText(questions: readonly Question[], takes: readonly (Take | null)[], timeout: string): string {
+function awayText(questions: readonly Question[], takes: readonly (Take | null)[], timeout: string): string {
   const picked = questions.flatMap((_, i) => (takes[i] ? [takes[i] as Take] : []))
   const what = questions.length === 1 && picked[0] ? clip(picked[0].pick, 28) : 'my picks'
   return `If you're away for ${timeout}, I'll go with ${what}.`
@@ -135,7 +134,7 @@ export function timedOut(result: unknown): boolean {
   return typeof (result as { afkTimeoutMs?: unknown } | null | undefined)?.afkTimeoutMs === 'number'
 }
 
-export type AwayPick = { question: Question; take: Take }
+type AwayPick = { question: Question; take: Take }
 
 // The questions a timed-out dialog left unanswered that Claude has a take
 // for. An answer selected before the timeout stands.
@@ -262,10 +261,10 @@ export function matches(query: string, ...texts: (string | undefined)[]): boolea
   return words.every(word => hay.includes(word))
 }
 
-export type Tally = { agreed: number; of: number }
-export type Agreement = { total: Tally; recent: Tally; weeks: { start: number; tally: Tally }[] }
+type Tally = { agreed: number; of: number }
+type Agreement = { total: Tally; recent: Tally; weeks: { start: number; tally: Tally }[] }
 
-export const RECENT = 20
+const RECENT = 20
 const WEEKS = 4
 
 const tally = (list: readonly Decision[]): Tally => ({ agreed: list.filter(d => agreed(d) === true).length, of: list.length })
@@ -296,11 +295,11 @@ export function agreement(log: readonly Decision[]): Agreement {
   return { total: tally(taken), recent: tally(taken.slice(-RECENT)), weeks }
 }
 
-export const percent = (t: Tally): string => `${t.agreed} of ${t.of} (${t.of === 0 ? 0 : Math.round((t.agreed / t.of) * 100)}%)`
+const percent = (t: Tally): string => `${t.agreed} of ${t.of} (${t.of === 0 ? 0 : Math.round((t.agreed / t.of) * 100)}%)`
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
-export function weekLabel(start: number): string {
+function weekLabel(start: number): string {
   const d = new Date(start)
   return `${MONTHS[d.getMonth()]} ${d.getDate()}`
 }
