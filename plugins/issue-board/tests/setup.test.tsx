@@ -173,7 +173,7 @@ test('with Done moves off, setup leaves Item closed on', async ($, on) => {
   expect(await itemClosedStep($, on)).toBeUndefined()
 })
 
-test('with Done moves on, setup says to turn Item closed off', { options: { moveToDone: true } }, async ($, on) => {
+test('with Done moves on, setup says to turn Item closed off', { options: { autoMove: true } }, async ($, on) => {
   expect(await itemClosedStep($, on)).toBeDefined()
 })
 
@@ -310,7 +310,7 @@ test("setup suggests the board's names where the project has them, and adds only
 
 const issueAt = (number: number, status: string | null, priority: string | null = null): Issue =>
   ({ number, title: `Issue ${number}`, url: '', labels: [], assignees: [], body: '', updatedAt: '2026-10-04T00:00:00Z', status, priority, item: `PVTI_${number}`, checks: [] }) as unknown as Issue
-const projectWith = (names: string[], roles?: Record<string, string>, nowCount?: number): Project => {
+const projectWith = (names: string[], roles?: Record<string, string>): Project => {
   const status = { id: 'F_status', options: names.map((name, index) => ({ id: `o${index}`, name })) }
   return {
     id: 'PVT_10',
@@ -320,7 +320,6 @@ const projectWith = (names: string[], roles?: Record<string, string>, nowCount?:
     status,
     priority: { id: 'F_priority', options: ['P0', 'P1', 'P2'].map((name, index) => ({ id: `p${index}`, name })) },
     roles: rolesFor(status, roles),
-    ...(nowCount !== undefined ? { nowCount } : {}),
   }
 }
 
@@ -356,11 +355,10 @@ test("the board goes by the roles: the board's names without saved roles, the sa
   expect(toArchive([doneItem], { doneBefore: '2026-10-01' }, 'Shipped').map(one => one.number)).toEqual([1])
   expect(toArchive([doneItem], { doneBefore: '2026-10-01' }, undefined)).toEqual([])
 
-  // Now is the first two priorities, or as many as set.
+  // Now is the first two priorities, P0 and P1, and Later the rest.
   expect(isNow(own, issueAt(1, null, 'P1'))).toBe(true)
-  const one = projectWith(['Todo'], undefined, 1)
-  expect(isNow(one, issueAt(1, null, 'P1'))).toBe(false)
-  expect(isLater(one, issueAt(1, null, 'P1'))).toBe(true)
+  expect(isNow(own, issueAt(1, null, 'P2'))).toBe(false)
+  expect(isLater(own, issueAt(1, null, 'P2'))).toBe(true)
 })
 
 test('setup on a project with its own names lets the person pick which is which, and saves only that', async ($, on) => {

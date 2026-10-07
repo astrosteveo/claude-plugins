@@ -71,8 +71,6 @@ export type Project = ProjectRef & {
   roles?: Roles
   // The roles were found by name, with no mapping saved: the band asks the person to confirm any common name it used.
   guessed?: boolean
-  // How many of the first Priority options count as Now; absent for the first two.
-  nowCount?: number
   // The project's table and board views in GitHub's order; absent on an older board.
   views?: ProjectView[]
 }

@@ -48,17 +48,20 @@ Status options a part each:
 Your project's options can have other names, such as `Todo` or `Shipped`. See
 [Fitting an existing project](#fitting-an-existing-project).
 
-The board can move issues by itself, in a project you let it write to. Each
-move has a setting, and each is off by default:
+The board can move issues by itself, in a project you let it write to.
+**Move issues on their own** (`autoMove`) turns these moves on. It is off by
+default:
 
-- **Move closed issues to Done** (`moveToDone`): an issue that closes as
-  completed moves to Done at the board's next read, wherever it closed. One
-  closed as not planned or as a duplicate stays where it was, so Done means
-  shipped.
-- **Move to Verification on a Refs merge** (`moveToVerification`): an issue a
-  merged pull request names with `Refs #N` moves to Verification, since the
-  merge didn't finish it. Claude's next prompt says so.
-- **Move epics with their sub-issues** (`advanceEpics`): see [Epics](#epics).
+- An issue that closes as completed moves to Done at the board's next read,
+  wherever it closed. One closed as not planned or as a duplicate stays where
+  it was, so Done means shipped.
+- An issue a merged pull request names with `Refs #N` moves to Verification,
+  since the merge didn't finish it. Claude's next prompt says so.
+- Epics move with their sub-issues. See [Epics](#epics).
+
+Each move needs its Status. To skip one, set its Status to none in
+`/issues statuses`: with no Verification, for example, a Refs merge moves
+nothing.
 
 Each time the board moves issues by itself, a toast says which and why, such
 as `Moved #43 to Done: it closed as completed.` A move GitHub refuses says so
@@ -67,9 +70,8 @@ once.
 ### Priority
 
 Priority is a project field too, such as P0, P1 and P2. The first two options
-count as **Now**, and the rest as **Later**. **Priorities that count as Now**
-(`nowCount`) changes how many count as Now. The Now and Later tabs and triage
-go by it.
+count as **Now**, and the rest as **Later**. The Now and Later tabs and
+triage go by it.
 
 ### Labels for kind and area
 
@@ -151,10 +153,12 @@ boxes, and a row with no room above shows none.
 
 A team that keeps views in its GitHub Project gets them in the pane. Each
 table or board view with a filter becomes a tab, named and ordered as on
-GitHub, on keys `1` to `7`. **All** and **Closed** come after them. A view
-needs a filter to become a tab. A view with none, such as GitHub's own
-"View 1", shows every issue, which All already does. Roadmap views are left
-out, and so are views past the seventh.
+GitHub, on keys `1` to `7`. The board's own **Inbox**, **All** and **Closed**
+come after them. Inbox comes only with a project that has an Inbox, and only
+when no view keeps just the Inbox already; it then takes a key, so six views
+fit. A view needs a filter to become a tab. A view with none, such as
+GitHub's own "View 1", shows every issue, which All already does. Roadmap
+views are left out, and so are views past the seventh.
 
 A tab shows the open issues its view's filter keeps, from the board's own
 copy, with no extra GitHub request. The board knows these terms:
@@ -186,9 +190,6 @@ field beyond Status and Priority, it reads that field's values for each issue
 too. A new or changed view that names such a field costs one extra read the
 first time. The band, the hint line and **▶ Next** go by the issues, not the
 tab.
-
-To keep the board's own tabs, set **Where the pane's tabs come from**
-(`filters`) to `board`.
 
 ## Working on an issue
 
@@ -250,7 +251,7 @@ first 1,000 characters of the answer, and the pull request holds the rest.
   this chat.
 - `background` makes Claude an orchestrator. **⚙ Start in background** comes
   first and takes `s`. **✎ Edit first in background** takes `e`. **▶ Start**
-  moves to `b`. The working note tells Claude to hand each issue to
+  moves to `b`. A note in the system prompt tells Claude to hand each issue to
   `issue-board:worker` and to make only small changes itself, such as a
   one-line fix or a typo in the docs. When a worker ends, Claude reviews its
   pull request, runs the repository's checks, watches CI, and then merges it
@@ -265,21 +266,21 @@ unless their issues touch separate areas.
 
 The issue this session is on has `▶` on its row, and `✕` to stop tracking it.
 It's the one you pressed Start on, or the one Claude started on when you
-asked in the conversation. With **Follow the branch** (`followBranch`) on, it
-can also be the one whose branch is checked out: a branch such as
-`fix/315-glide`, `315-glide` or `issue-315` counts. Only the main session's
-checkouts count, not a background agent's.
+asked in the conversation. It can also be the one whose branch is checked
+out: a branch such as `fix/315-glide`, `315-glide` or `issue-315` counts. Only
+the main session's checkouts count, not a background agent's. **Follow the
+branch** (`followBranch`) turns this off.
 
 While Claude is on it:
 
 - With **Working note in the system prompt** (`workingNote`) on, a short note
   in the system prompt names the issue and tells Claude to tick boxes as it
   finishes them. The note survives compaction.
-- **Working note's pull request rule** (`prRule`) can add how to name the
-  issue in a pull request: `closes-when-ticked` writes `Closes #N` only when
-  every box is ticked and `Refs #N` otherwise, and `always-closes` always
-  writes `Closes #N`. The default, `none`, says nothing. The background agent
-  follows it too.
+- The note also says how to name the issue in a pull request: `Closes #N`
+  only when every box is ticked, and `Refs #N` otherwise. The background agent
+  follows it too. **Closes only when every box is ticked**
+  (`closesWhenTicked`) turns this off, and leaves it to the repo's own
+  rules. Moves to Verification on a Refs merge rely on it.
 - The next prompt carries what changed on GitHub since: boxes, new comments,
   CI on its pull request, or the issue closed. Claude's own changes aren't
   news. This has no setting. Press `✕` on the row to stop it.
@@ -316,8 +317,8 @@ Epics are parent issues with GitHub's sub-issues.
 - Every new epic, from `/issues new epic` or `issue_create` with sub-issues,
   is filed with an "Every sub-issue is closed" box.
 
-With **Move epics with their sub-issues** (`advanceEpics`) on, an epic moves
-along with its sub-issues. It is off by default.
+With **Move issues on their own** (`autoMove`) on, an epic moves along with
+its sub-issues. It is off by default.
 
 - Starting a sub-issue moves its epic to In progress, if the epic is still in
   the Inbox, Backlog or Ready. An epic that is further along stays put.
@@ -452,8 +453,7 @@ The line under the prompt sums up the board in dim text, such as
 nothing is open. Claude Code's own PR footer already shows the checked-out
 branch's pull request at the start of that line. So while the footer is on
 (`/config`, "Show PR status footer"), the board lists only the other pull
-requests there. **Summary under the prompt** (`hintSummary`) turns the summary
-off. A problem the check found shows either way.
+requests there. A problem the check found shows there too.
 
 ### Issues after #
 
@@ -463,7 +463,6 @@ board. `#12` matches by number (#12, #120…), and `#dock` matches titles with
 or the CI state for a pull request. Issues in progress come first, then pull
 requests, then Ready, Verification, Backlog and Inbox, each by priority. It
 shows 8 rows at most, and reads no more of GitHub than the board already has.
-**Suggest issues after #** (`hashSuggestions`) turns it off.
 
 ## Letting Claude help
 
@@ -667,36 +666,38 @@ brackets is what `.claude/settings.json` takes.
 | Setting | Default | What it does |
 | --- | --- | --- |
 | **On GitHub, by itself** | | Project changes happen only in a project you let the board write to. |
-| Move closed issues to Done (`moveToDone`) | off | An issue closed as completed moves to Done. See [Status](#status). |
-| Move to Verification on a Refs merge (`moveToVerification`) | off | An issue a merged pull request names with `Refs #N` moves to Verification. |
-| Move epics with their sub-issues (`advanceEpics`) | off | An epic moves to In progress when a sub-issue starts, and closes, or moves to Verification, when the last one closes. See [Epics](#epics). |
+| Move issues on their own (`autoMove`) | off | Closed issues move to Done, a Refs merge moves its issue to Verification, and epics move with their sub-issues. Each move needs its Status. See [Status](#status) and [Epics](#epics). |
 | Start assigns and moves the issue (`claimOnStart`) | on | Start, and Claude starting on an issue, assign it to you and move it to In progress. |
 | Projects the board may write to (`writeProjects`) | empty | See [The setting](#the-setting). |
 | **How Start works** | | |
-| Where Start works (`startMode`) | `main` | `main` starts an issue in this chat. `background` makes Start in background the first button. See [Where Start works](#where-start-works). |
+| Where Start works (`startMode`) | `main` | `main` starts an issue in this chat. `background` makes Start in background the first button, and tells Claude in the system prompt to work as an orchestrator. See [Where Start works](#where-start-works). |
 | **In Claude's prompts and the prompt box** | | |
-| Working note in the system prompt (`workingNote`) | on | While Claude is on an issue you started, a note names it and says how to tick its boxes. In `background` start mode it also tells Claude to work as an orchestrator. |
-| Working note's pull request rule (`prRule`) | `none` | `closes-when-ticked`, `always-closes` or `none`. See [The issue Claude is on](#the-issue-claude-is-on). |
+| Working note in the system prompt (`workingNote`) | on | While Claude is on an issue you started, a note names it and says how to tick its boxes. |
+| Closes only when every box is ticked (`closesWhenTicked`) | on | The working note and the background agent write `Closes #N` only when every box is ticked, and `Refs #N` otherwise. Off, they say nothing about it. See [The issue Claude is on](#the-issue-claude-is-on). |
 | Capture section in the system prompt (`capture`) | on | Tells Claude to capture work it finds to the Inbox. Off, the section goes, and the tool and `/issues new` stay. |
 | Copies of issues a prompt names (`issueCopies`) | on | A prompt that names `#123` carries the board's copy of it, unseen. |
-| Suggest issues after # (`hashSuggestions`) | on | Typing `#` offers the board's open issues and pull requests. |
 | Suggest the next step (`suggestNextStep`) | off | After Claude's turn, the prompt box suggests the board's next step in place of Claude Code's own. |
-| Follow the branch (`followBranch`) | off | Checking out a branch named for an issue makes it the one Claude is on. |
+| Follow the branch (`followBranch`) | on | Checking out a branch named for an issue makes it the one Claude is on. |
 | **On screen** | | |
 | Band above the prompt (`band`) | on | The band raises what needs you. See [The band above the prompt](#the-band-above-the-prompt). |
-| Summary under the prompt (`hintSummary`) | on | The line under the prompt ends with the board in a few words. |
-| Priorities that count as Now (`nowCount`) | 2 | How many of the project's first Priority options the Now tab shows, and triage sends to Ready. |
-| Where the pane's tabs come from (`filters`) | `views` | `views` uses the project's filtered views as tabs. `board` keeps the board's own. |
 | **Reading GitHub** | | |
 | How often the board reads GitHub (`refresh`) | `5` | Every 5, 15 or 60 minutes, or `manual`. See [How the board reads GitHub](#how-the-board-reads-github). |
 
-The moves change the shared project from your session, so they start off.
-The PR rule is a repo's own convention, so it starts at `none`. A repo can
-set these for everyone who works in it, in its `.claude/settings.json`:
+The moves change the shared project from your session, so they start off. A
+repo can turn them on for everyone who works in it, in its
+`.claude/settings.json`:
 
 ```json
-{ "pluginConfigs": { "issue-board@astrosteveo-plugins": { "options": { "moveToDone": true, "moveToVerification": true, "advanceEpics": true, "prRule": "closes-when-ticked" } } } }
+{ "pluginConfigs": { "issue-board@astrosteveo-plugins": { "options": { "autoMove": true } } } }
 ```
+
+Older settings still count for one release. `moveToDone`,
+`moveToVerification` or `advanceEpics` set to true turns `autoMove` on, unless
+`autoMove` is set. `prRule` set to `closes-when-ticked` keeps
+`closesWhenTicked` on, and `always-closes` or `none` turns it off, unless
+`closesWhenTicked` is set. The summary under the prompt, the issues after `#`
+and the Inbox tab after the views no longer have a setting, and Now is always
+the first two priorities.
 
 `/issues check` and `/issues help` list each feature that is off, and why:
 the setting that turned it off, or the Status the project has no option for.

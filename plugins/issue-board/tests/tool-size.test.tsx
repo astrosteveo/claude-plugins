@@ -35,7 +35,7 @@ test('the tool definitions stay at least 35% shorter than before #223: name, des
 })
 
 test("the worker prompt defers to the repo's guidelines in one sentence and keeps its safety rules", () => {
-  for (const rule of ['none', 'closes-when-ticked', 'always-closes'] as const) {
+  for (const rule of [false, true]) {
     const prompt = workerPrompt(rule)
     expect(prompt.match(/CLAUDE\.md/g)?.length).toBe(1)
     expect(prompt).toContain(
@@ -46,7 +46,7 @@ test("the worker prompt defers to the repo's guidelines in one sentence and keep
 })
 
 test("the working, orchestrator and capture notes don't repeat each other or the tools' own text", () => {
-  const working = workingSection({ number: 315, title: 'Lay Kessik out', updatedAt: '' }, 'none')
+  const working = workingSection({ number: 315, title: 'Lay Kessik out', updatedAt: '' }, false)
   const orchestrator = orchestratorSection()
   // The issues tool says how it numbers boxes, and only the orchestrator note says how to dispatch a worker.
   expect(working).not.toContain('mcp__issue-board__issues')

@@ -108,9 +108,3 @@ test('typing # offers the board, and nothing before there is one', async ($, on)
   // A token that doesn't start with # isn't the board's.
   expect(await autocomplete(typed('look at 12'))).toEqual({ suggestions: [{ text: '#beneath' }] })
 })
-
-test('with # suggestions turned off, typing # offers only what was beneath', { options: { hashSuggestions: false } }, async ($, on) => {
-  const autocomplete = promptBox($, on)
-  await $.command.run(REFRESH)
-  expect(await autocomplete(typed('look at #12'))).toEqual({ suggestions: [{ text: '#beneath' }] })
-})

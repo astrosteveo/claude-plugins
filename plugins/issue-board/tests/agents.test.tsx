@@ -66,7 +66,7 @@ const world = (on: On) => {
   return state
 }
 
-test("a background agent's checkout in its own worktree doesn't make its issue the one Claude is on", { options: { followBranch: true } }, async ($, on) => {
+test("a background agent's checkout in its own worktree doesn't make its issue the one Claude is on", async ($, on) => {
   mock.store(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   const gh = world(on)

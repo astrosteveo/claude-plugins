@@ -361,7 +361,7 @@ const sub = (number: number, status: string, parent = { ...EPIC, total: 2, compl
   priority: 'P1',
 })
 const BAND = { component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120, scroll: { offset: 0, bodyRows: 10 }, view: {} } } as const
-const ON = { options: { advanceEpics: true } }
+const ON = { options: { autoMove: true } }
 
 for (const status of ['Inbox', 'Backlog', 'Ready']) {
   test(`starting a sub-issue moves its epic from ${status} to In progress`, ON, async ($, on) => {
@@ -616,5 +616,5 @@ test('by default the board moves no epic, and /issues help says the feature is o
   expect(gh.writes.filter(line => line.includes('#35'))).toEqual([])
 
   const help = String((await $.command.run({ ...RUN, args: 'help' })).text)
-  expect(help).toContain('- Moving an epic along with its sub-issues: turned off in /config by Move epics with their sub-issues (advanceEpics).')
+  expect(help).toContain('and epics with their sub-issues: turned off in /config by Move issues on their own (autoMove).')
 })

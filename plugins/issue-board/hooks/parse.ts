@@ -2,7 +2,9 @@ import type { ModelTextBlock, ThemeKey } from 'claude-code'
 import type { Alert, Board, BoxTask, BuiltInFilter, Check, Ci, Comment, EpicNote, Filter, Found, GroupBy, Issue, Known, Label, Markers, Milestone, ProjectField, ProjectView, StatusUpdate, Project, PullRequest, Role, RunWatch, Suggestion, Worker, Working } from '../types'
 import { DEFAULT_MARKERS, isBug, isBugLabel, isFuture, same } from './markers'
 import { TOOLS, WORKER } from './tools'
-import { ROLE_NAMES, isLater, isNow, isRole, nowCountOf, nowNames, priorityRank, roleOf } from './project'
+import { ROLE_NAMES, NOW_COUNT, isLater, isNow, isRole, nowNames, priorityRank, roleOf } from './project'
+import { offText } from './settings'
+import type { StartMode } from './settings'
 
 type RawLabel = { name: string; color?: string }
 type RawUser = { login: string }
@@ -228,7 +230,7 @@ export const isInbox = (issue: Issue, project: Project | null | undefined): bool
   roleOf(project, 'inbox') !== undefined && (!issue.status || isRole(project, issue.status, 'inbox'))
 
 // The Status an issue moves to out of the Inbox when Claude didn't say: Ready for Now's priorities, Backlog otherwise.
-export const statusFor = (project: Project | null, priority: string | null): 'Ready' | 'Backlog' => (priorityRank(project, priority) < nowCountOf(project) ? 'Ready' : 'Backlog')
+export const statusFor = (project: Project | null, priority: string | null): 'Ready' | 'Backlog' => (priorityRank(project, priority) < NOW_COUNT ? 'Ready' : 'Backlog')
 
 // How much of an issue's text Claude reads to triage it.
 const TRIAGE_TEXT = 1500
@@ -661,9 +663,6 @@ export const BUILT_IN_FILTERS: { id: BuiltInFilter; label: string; planned: stri
   { id: 'closed', label: 'Closed', planned: 'Closed', hotkey: '7' },
 ]
 
-// Where the pane's tabs come from: the project's views, or the board's own filters.
-export type FilterSource = 'views' | 'board'
-
 // A tab of the pane: a built-in filter, or a project view.
 export type Tab = { id: Filter; name: string; hotkey: string; view?: ProjectView }
 
@@ -675,21 +674,26 @@ export const VIEW_TABS = 7
 export const viewTabsOf = (project: Project | null | undefined): ProjectView[] =>
   (project?.views ?? []).filter(view => view.layout !== 'roadmap' && view.filter.trim() !== '').slice(0, VIEW_TABS)
 
-// The pane's tabs, on the keys 1 to 9 in order. With views that have filters: those views, then All and Closed.
-// Without any, or with the board's own filters chosen: the built-in ones, Inbox only with a project that has one.
-export const tabsOf = (project: Project | null | undefined, source: FilterSource = 'views'): Tab[] => {
-  const views = source === 'views' ? viewTabsOf(project) : []
-  if (views.length === 0) {
-    return BUILT_IN_FILTERS.filter(one => one.id !== 'inbox' || roleOf(project, 'inbox') !== undefined).map(one => ({
+// The pane's tabs, on the keys 1 to 9 in order. With views that have filters: those views, then the built-in Inbox
+// when the project has an Inbox and no view keeps just it, then All and Closed. Without any: the built-in ones, Inbox
+// only with a project that has one.
+export const tabsOf = (project: Project | null | undefined): Tab[] => {
+  const hasInbox = roleOf(project, 'inbox') !== undefined
+  const found = viewTabsOf(project)
+  if (found.length === 0) {
+    return BUILT_IN_FILTERS.filter(one => one.id !== 'inbox' || hasInbox).map(one => ({
       id: one.id,
       name: project ? one.planned : one.label,
       hotkey: one.hotkey,
     }))
   }
+  // The Inbox takes a key of its own, so one view fewer fits.
+  const inbox = hasInbox && !found.some(view => isInboxFilter(view.filter, project))
+  const views = inbox ? found.slice(0, VIEW_TABS - 1) : found
+  const after: { id: BuiltInFilter; name: string }[] = [...(inbox ? [{ id: 'inbox' as const, name: 'Inbox' }] : []), { id: 'all', name: 'All' }, { id: 'closed', name: 'Closed' }]
   return [
     ...views.map((view, index): Tab => ({ id: `view:${view.number}`, name: view.name, hotkey: String(index + 1), view })),
-    { id: 'all', name: 'All', hotkey: String(views.length + 1) },
-    { id: 'closed', name: 'Closed', hotkey: String(views.length + 2) },
+    ...after.map((tab, index): Tab => ({ ...tab, hotkey: String(views.length + index + 1) })),
   ]
 }
 
@@ -1402,37 +1406,26 @@ export const boardText = (board: Board, issues: Issue[], label: string, clock: n
   ].join('\n')
 }
 
-// How the board tells Claude to name the issue in a pull request: `Closes` only when every box is ticked, always
-// `Closes`, or nothing, which leaves it to the repository's own rules.
-export type PrRule = 'closes-when-ticked' | 'always-closes' | 'none'
-export const PR_RULES: readonly PrRule[] = ['closes-when-ticked', 'always-closes', 'none']
-
-// The PR rule's sentences for an issue; none for `none`.
-const prRuleText = (number: number, rule: PrRule): string[] =>
-  rule === 'closes-when-ticked'
+// The PR rule's sentences for an issue: `Closes` only when every box is ticked, else `Refs`. None with the rule off,
+// which leaves it to the repository's own rules.
+const prRuleText = (number: number, closesWhenTicked: boolean): string[] =>
+  closesWhenTicked
     ? [
         `When you open a pull request for #${number}, write \`Closes #${number}\` in its body only if every acceptance box of #${number} is ticked by then.`,
         `Otherwise write \`Refs #${number}\`, so the issue stays open for what is left. If the repository's contributing guidelines say otherwise, follow them.`,
       ]
-    : rule === 'always-closes'
-      ? [`When you open a pull request for #${number}, write \`Closes #${number}\` in its body. If the repository's contributing guidelines say otherwise, follow them.`]
-      : []
+    : []
 
 // The system prompt's section while Claude works on an issue the person started this session. It names the issue and
 // nothing that changes as the work goes on, so the prompt cache holds until the person starts another. `Closes` only
 // when the pull request finishes the issue: some repos keep an issue open for verification, and say `Refs` until then.
-export const workingSection = (working: Working, rule: PrRule): string =>
+export const workingSection = (working: Working, closesWhenTicked: boolean): string =>
   [
     `The person is working on GitHub issue #${working.number}: ${working.title}. They handed it to you from the issue board.`,
     `When you finish and check an acceptance box of #${working.number}, tick it with the mcp__issue-board__tick tool.`,
     `Change it with the mcp__issue-board__issue_update tool; moving its Status needs no permission.`,
-    ...prRuleText(working.number, rule),
+    ...prRuleText(working.number, closesWhenTicked),
   ].join(' ')
-
-// Where Start works by default: `main` starts the issue in this chat, `background` hands it to the board's agent and
-// keeps the main-chat Start one key away.
-export type StartMode = 'main' | 'background'
-export const START_MODES: readonly StartMode[] = ['main', 'background']
 
 // What Claude does when a background agent it handed an issue to ends, in `background` start mode. It follows the
 // person's own rules on merging, since some want to merge by hand.
@@ -1935,9 +1928,6 @@ export const SUBCOMMANDS: { name: string; what: string }[] = [
   { name: 'help', what: 'this list' },
 ]
 
-// The # suggestions' feature name, which /issues help also looks for to mark its line off.
-const HASH_FEATURE = 'Issues and pull requests offered after # in the prompt box'
-
 // /issues help: the pane and its keys, the card, the band and hint, the subcommands, and Claude's tools.
 export const helpText = (filters: { hotkey: string; name: string }[], off: { feature: string; why: string }[] = [], views = false): string =>
   [
@@ -1957,8 +1947,8 @@ export const helpText = (filters: { hotkey: string; name: string }[], off: { fea
     '',
     'Under the prompt',
     `- The band above the prompt shows what needs you: setup problems, failing CI, pull requests to merge, news on your issue, boxes to tick, a plan to approve, notes on epics, a project to adopt, the board's guesses at Status names and labels, and issues captured to the Inbox.${off.some(one => one.feature === 'The band above the prompt') ? ' (off)' : ''}`,
-    `- The hint line sums up what is open.${off.some(one => one.feature === 'The summary under the prompt') ? ' (off)' : ''}`,
-    `- # in the prompt box offers the board's issues and pull requests.${off.some(one => one.feature === HASH_FEATURE) ? ' (off)' : ''}`,
+    '- The hint line sums up what is open.',
+    "- # in the prompt box offers the board's issues and pull requests.",
     '',
     'Subcommands',
     ...SUBCOMMANDS.map(one => `- /issues ${one.name}: ${one.what}.`),
@@ -1967,55 +1957,6 @@ export const helpText = (filters: { hotkey: string; name: string }[], off: { fea
     ...TOOLS.map(one => `- ${one.name}: ${one.what}.`),
     ...(off.length > 0 ? ['', ...offText(off)] : []),
   ].join('\n')
-
-// The settings that turn a feature off, by their key: true where the feature is on. `refresh` is false when the board
-// reads GitHub only when asked, and `prRule` when the working note has no pull request rule.
-export type Switches = Record<
-  'moveToDone' | 'moveToVerification' | 'advanceEpics' | 'claimOnStart' | 'workingNote' | 'prRule' | 'capture' | 'issueCopies' | 'hashSuggestions' | 'suggestNextStep' | 'followBranch' | 'band' | 'hintSummary' | 'refresh',
-  boolean
->
-
-// The board's features that a setting or a Status role can turn off: the setting's key and its name in /config, and
-// the role the feature needs.
-const FEATURES: { feature: string; setting?: [keyof Switches, string]; role?: Role }[] = [
-  { feature: 'Moving closed issues to Done', setting: ['moveToDone', 'Move closed issues to Done'], role: 'done' },
-  { feature: 'Moving an issue a Refs merge touched to Verification', setting: ['moveToVerification', 'Move to Verification on a Refs merge'], role: 'verification' },
-  { feature: 'Moving an epic along with its sub-issues', setting: ['advanceEpics', 'Move epics with their sub-issues'] },
-  { feature: "Start moving the issue's Status", setting: ['claimOnStart', 'Start assigns and moves the issue'], role: 'started' },
-  { feature: 'The Inbox filter, its triage, and new issues landing in the Inbox', role: 'inbox' },
-  { feature: "Triage's Accept moving issues to Ready", role: 'ready' },
-  { feature: "The Backlog folding, and triage's Accept moving issues to it", role: 'backlog' },
-  { feature: 'project_archive by doneBefore', role: 'done' },
-  { feature: 'The working note in the system prompt', setting: ['workingNote', 'Working note in the system prompt'] },
-  { feature: "The working note's pull request rule", setting: ['prRule', "Working note's pull request rule"] },
-  { feature: 'The capture section in the system prompt', setting: ['capture', 'Capture section in the system prompt'] },
-  { feature: 'Copies of the issues a prompt names', setting: ['issueCopies', 'Copies of issues a prompt names'] },
-  { feature: HASH_FEATURE, setting: ['hashSuggestions', 'Suggest issues after #'] },
-  { feature: 'The next step suggested in the prompt box', setting: ['suggestNextStep', 'Suggest the next step'] },
-  { feature: 'Following the branch to the issue Claude is on', setting: ['followBranch', 'Follow the branch'] },
-  { feature: 'The band above the prompt', setting: ['band', 'Band above the prompt'] },
-  { feature: 'The summary under the prompt', setting: ['hintSummary', 'Summary under the prompt'] },
-  { feature: 'Reading GitHub by itself', setting: ['refresh', 'How often the board reads GitHub'] },
-]
-
-// The features that are off, each with why: the setting that turned it off, or the Status role the project has no
-// option for. A role counts only with a project that has a Status field. `writable` is false while the person hasn't
-// let the board write to the project, which leaves every project write off, whatever the settings say.
-export const featuresOff = (switches: Switches, project: Project | null | undefined, writable = true): { feature: string; why: string }[] => [
-  ...(project && !writable
-    ? [{ feature: 'Every change to the project: Status, Priority, adding items, archiving and status updates', why: `the board only reads ${project.title} until you let it write there; press Let it write in /issues, or Apply in /issues setup` }]
-    : []),
-  ...FEATURES.flatMap(({ feature, setting, role }) => {
-    if (setting && !switches[setting[0]]) return [{ feature, why: `turned off in /config by ${setting[1]} (${setting[0]})` }]
-    if (role && project?.status && !roleOf(project, role)) {
-      return [{ feature, why: `${project.title} has no Status option as the ${ROLE_NAMES[role]}; pick one in /issues statuses` }]
-    }
-    return []
-  }),
-]
-
-// The features that are off, as lines for /issues check and /issues help; none when all are on.
-export const offText = (off: { feature: string; why: string }[]): string[] => (off.length > 0 ? ['Off:', ...off.map(one => `- ${one.feature}: ${one.why}.`)] : [])
 
 // What the board did on its own in one read, in a line for a toast: the issues it moved to a Status and why, many at
 // once in one line. `why` reads for one issue; `whyMany` for several.
@@ -2468,18 +2409,16 @@ export const runProgressOf = (output: string): Pick<RunWatch, 'done' | 'total' |
 
 // The system prompt of the agent Start in background sets on an issue: it works alone, in a worktree of its own, and
 // leaves a pull request for the person. The pull request names the issue by the same rule as the working note.
-export const workerPrompt = (rule: PrRule): string =>
+export const workerPrompt = (closesWhenTicked: boolean): string =>
   [
     'You work on one GitHub issue of this repository, in the background, in a git worktree of your own. The person is not watching.',
     "Don't ask the person anything. When something needs their decision, stop and say what it is.",
     '1. Read the issue and its comments with `gh issue view <number> --comments`.',
     "2. Do the work on a new branch from the default branch, following the repository's CLAUDE.md and contributing guidelines for branches, tests and checks.",
     '3. When you finish an acceptance box and have checked it, tick it with the mcp__issue-board__tick tool.',
-    rule === 'closes-when-ticked'
+    closesWhenTicked
       ? '4. Commit, push the branch and open a pull request. Write `Closes #<number>` in its body only if every acceptance box is ticked by then, and `Refs #<number>` otherwise.'
-      : rule === 'always-closes'
-        ? '4. Commit, push the branch and open a pull request. Write `Closes #<number>` in its body.'
-        : '4. Commit, push the branch and open a pull request.',
+      : '4. Commit, push the branch and open a pull request.',
     "Don't merge, don't force-push, and don't push to the default branch.",
     'End with a short report in plain sentences: the pull request, what you did, and what is left.',
   ].join('\n')

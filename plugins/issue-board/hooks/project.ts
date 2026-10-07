@@ -205,20 +205,20 @@ export const priorityRank = (project: Project | null | undefined, priority: stri
   return named ? Number(named[1]) : 2
 }
 
-// How many of the first priorities are Now: the setting, or two (P0 and P1).
-export const nowCountOf = (project: Project | null | undefined): number => project?.nowCount ?? 2
+// How many of the first priorities are Now: two, P0 and P1.
+export const NOW_COUNT = 2
 
 // The Priority options that are Now and the ones that are Later, by name.
 export const nowNames = (project: Project | null | undefined): { now: string[]; later: string[] } => {
   const names = project?.priority?.options.map(option => option.name) ?? []
-  return { now: names.slice(0, nowCountOf(project)), later: names.slice(nowCountOf(project)) }
+  return { now: names.slice(0, NOW_COUNT), later: names.slice(NOW_COUNT) }
 }
 
-// Now is the first priorities, two unless set otherwise, Later the rest; an issue with none is neither.
-export const isNow = (project: Project | null | undefined, issue: Issue): boolean => priorityRank(project, issue.priority) < nowCountOf(project)
+// Now is the first two priorities, Later the rest; an issue with none is neither.
+export const isNow = (project: Project | null | undefined, issue: Issue): boolean => priorityRank(project, issue.priority) < NOW_COUNT
 export const isLater = (project: Project | null | undefined, issue: Issue): boolean => {
   const rank = priorityRank(project, issue.priority)
-  return rank >= nowCountOf(project) && rank !== UNSET
+  return rank >= NOW_COUNT && rank !== UNSET
 }
 
 // The login or organization a project belongs to, from its page: `github.com/users/<login>/projects/8` or the `orgs/` one.
