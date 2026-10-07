@@ -132,7 +132,10 @@ GitHub. The card shows the latest three comments, a field to reply, and
   so you can add your own instructions at the bottom. When you send it and
   it still names the issue, the board does what Start does: it tracks the
   issue, makes its tasks, moves it to In progress and assigns it. Rewritten
-  so it no longer names the issue, it is sent as a plain prompt.
+  so it no longer names the issue, it is sent as a plain prompt. With issue
+  copies on, the message only names the issue, and the issue's copy goes
+  with it, fresh even when an earlier prompt carried one. With copies off,
+  it lists the open boxes itself, as Start's message always does.
 - **✎ Edit first in background** puts a message in the prompt box instead,
   asking Claude to dispatch the agent with Start's message as its prompt.
   Lines you add go in the agent's prompt, since the agent can't ask you
