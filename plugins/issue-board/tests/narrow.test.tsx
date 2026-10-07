@@ -116,7 +116,9 @@ const world = async ($: Engine, on: On) => {
   mock.store(on)
   const milestones = ({ argv }: { argv: readonly string[] }) =>
     argv[1] === 'api' && argv[2]?.includes('/milestones') ? json([{ number: 3, title: 'Launch day', state: 'open', due_on: null, open_issues: 4, closed_issues: 2 }]) : undefined
-  fakeGitHub(on, { repo: REPO, issues: ISSUES, prs: PRS, project: true, views: VIEWS, routes: [milestones] })
+  // #252's files flag a workflow and a deletion, which its Finish & merge ask lists.
+  const files = { 252: [{ path: '.github/workflows/validate.yml', status: 'modified' }, { path: 'src/hangar/docking-ring.ts', status: 'removed' }] }
+  fakeGitHub(on, { repo: REPO, issues: ISSUES, prs: PRS, project: true, views: VIEWS, files, routes: [milestones] })
   session(on)
   engineBand(on)
   // The board's state, held here as the host holds it, so the test can add what a session would have gathered.

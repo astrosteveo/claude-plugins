@@ -62,7 +62,8 @@ entries the same.
     `prompts.ts` (what the board hands Claude, the system prompt's sections, help text), `boxes.ts` (acceptance
     boxes), `changes.ts` (issue edits and new issues from tool input, and what an edit says), `filing.ts` (filing one
     issue), `moves.ts` (the automatic Status moves), `epics.ts`, `workers.ts` (background agents and handoff),
-    `news.ts` (mentions, copies, news on an issue, alerts, runs), `setup.ts` (setup's plan and Apply's steps), and
+    `news.ts` (mentions, copies, news on an issue, alerts, runs), `merging.ts` (what a pull request's files flag
+    before Finish & merge and Merge all), `setup.ts` (setup's plan and Apply's steps), and
     `access.ts`, `markers.ts`, `plan.ts`, `project.ts`, `settings.ts`, `stats.ts` and `tools.ts`.
 - Drawing moved out of `register.tsx` lives in `hooks/views/`, one `.tsx` file per piece. In issue-board these are
   `parts.tsx` (`partsOf`, the small parts rows are built from), `issue-row.tsx`, `pr-row.tsx`, `peek.tsx`,
@@ -127,6 +128,8 @@ with it.
 | A capture: the closed issues to compare with, the issue, its project item and Status | 2 | 0 | 2 |
 | A `project_plan` of a Status and a Priority, approved, with one refresh after it | 1 | 1 | 5 |
 | Setup's Apply on a fresh repo, with the refresh after it | 7 | 0 | 16 |
+| Finish & merge: the pull request's files | 1 | 0 | 0 |
+| Merge all's confirm: each open pull request's files, here one | 1 | 0 | 0 |
 | An idle hour, at the 5-minute setting | 4 | 12 | 14 |
 
 Start adds at most 600 characters to Claude's context: the start message and the working note.

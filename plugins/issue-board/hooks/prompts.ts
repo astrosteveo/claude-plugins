@@ -1,5 +1,5 @@
 import type { ModelTextBlock } from 'claude-code'
-import type { Board, BuiltInFilter, Comment, Issue, Markers, Project, PullRequest, Suggestion, Working } from '../types'
+import type { Board, BuiltInFilter, Comment, Flagged, Issue, Markers, Project, PullRequest, Suggestion, Working } from '../types'
 import { TOOLS, WORKER } from './tools'
 import { NOW_COUNT, nowNames, priorityRank, roleOf } from './project'
 import { offText } from './settings'
@@ -112,28 +112,38 @@ export const fixPrompt = (pr: PullRequest): string => {
 }
 
 const CLOSE_OUT_RULES =
-  "Follow the repository's contributing guidelines, merge only once its required checks pass, and don't bypass branch protection or force-push. If it can't be merged, say what's blocking it."
+  "Follow the repository's contributing guidelines. Merge only once every check has passed, not just the required ones: wait for the pending ones with `gh pr checks --watch`. Don't bypass branch protection or force-push. If it can't be merged, say what's blocking it."
 
-// One pull request handed to Claude to see through: CI green, review answered, merged.
-export const closeOutPrompt = (pr: PullRequest): string => {
+// What the board flagged in a pull request's files, which the person saw and chose to merge anyway.
+const flaggedNote = (found: string[]): string => (found.length > 0 ? ` The board flagged its files, and the person chose to merge it anyway: it ${found.join('; it ')}.` : '')
+
+// One pull request handed to Claude to see through: CI green, review answered, merged. `found` is what the board
+// flagged in its files.
+export const closeOutPrompt = (pr: PullRequest, found: string[] = []): string => {
   const draft = pr.isDraft ? ' It is a draft: finish it and mark it ready first.' : ''
   return (
     `Close out PR #${pr.number}: ${pr.title} (branch \`${pr.branch}\`). Read it with \`gh pr view ${pr.number}\` and \`gh pr checks ${pr.number}\`, ` +
-    `fix any failing CI and answer any review on its branch, then merge it.${draft} ${CLOSE_OUT_RULES}`
+    `fix any failing CI and answer any review on its branch, then merge it.${draft}${flaggedNote(found)} ${CLOSE_OUT_RULES}`
   )
 }
 
 // Every open pull request, merged one at a time, oldest first, each brought up to date with what merged before it.
-export const closeOutAllPrompt = (prs: PullRequest[]): string => {
+// `flagged` is what the board flagged in their files, which the person saw before saying yes.
+export const closeOutAllPrompt = (prs: PullRequest[], flagged: Flagged[] = []): string => {
+  const foundOf = (number: number): string[] => flagged.find(one => one.number === number)?.found ?? []
   const list = [...prs]
     .sort((a, b) => a.number - b.number)
-    .map(pr => `- #${pr.number}: ${pr.title} (\`${pr.branch}\`, CI ${pr.ci}${pr.isDraft ? ', draft' : ''})`)
+    .map(pr => {
+      const found = foundOf(pr.number)
+      return `- #${pr.number}: ${pr.title} (\`${pr.branch}\`, CI ${pr.ci}${pr.isDraft ? ', draft' : ''})${found.length > 0 ? `; flagged: it ${found.join('; it ')}` : ''}`
+    })
     .join('\n')
+  const seen = prs.some(pr => foundOf(pr.number).length > 0) ? 'The person saw what the board flagged in their files and chose to merge them anyway. ' : ''
   return (
     `Merge all ${prs.length} open pull ${prs.length === 1 ? 'request' : 'requests'}:\n${list}\n\n` +
     'Take them one at a time, oldest first. For each, read it with `gh pr view` and `gh pr checks`, fix any failing CI and answer any review, ' +
-    'bring its branch up to date with what merged before it, and merge it once its checks pass. Finish a draft and mark it ready first. ' +
-    `${CLOSE_OUT_RULES} Then move on to the next, and end with which merged and which didn't.`
+    'bring its branch up to date with what merged before it, and merge it once every one of its checks has passed. Finish a draft and mark it ready first. ' +
+    `${seen}${CLOSE_OUT_RULES} Then move on to the next, and end with which merged and which didn't.`
   )
 }
 

@@ -43,6 +43,8 @@ export const roomAbove = (pane: {
   failure: string | null
   sectionOpen: (key: string) => boolean
   arming: boolean
+  // The lines Merge all's confirm holds under its question: one for each pull request whose files flagged something.
+  armingLines?: number
   runs: number
   unknownTerms: number
   triaging: boolean
@@ -75,7 +77,7 @@ export const roomAbove = (pane: {
     (now.project?.update ? 1 : 0) +
     (now.prs.length > 0 ? 1 + (sectionOpen('prs') ? now.prs.length : 0) : 0) +
     ((now.milestones ?? []).length > 0 ? 1 + (sectionOpen('milestones') ? (now.milestones ?? []).length : 0) : 0) +
-    (pane.arming && now.prs.length > 0 ? 1 : 0) +
+    (pane.arming && now.prs.length > 0 ? 1 + (pane.armingLines ?? 0) : 0) +
     pane.runs +
     (pane.unknownTerms > 0 ? 1 : 0) +
     (triaging ? 1 + (pane.triageFailed ? 1 : 0) : 0)

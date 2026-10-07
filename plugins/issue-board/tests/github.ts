@@ -45,6 +45,10 @@ export type GitHub = {
   // The ETag the cheap checks get. While a check sends it back, GitHub answers 304, nothing changed. Left null, a
   // check gets no status, so the board takes it as changed.
   etag: string | null
+  // Each pull request's changed files, as the board's jq shapes GitHub's answer, and whether the checkout is a plugin
+  // marketplace (git lists .claude-plugin/marketplace.json). A pull request left out changes no file the board flags.
+  files: Record<number, { path: string; status: string; patch?: string | null }[]>
+  marketplace: boolean
   // Every call, git's included, and the gh calls that change GitHub, in order.
   ran: Call[]
   writes: Call[]
@@ -67,6 +71,8 @@ export const fakeGitHub = (on: On, options: Options = {}): GitHub => {
     types: [],
     labels: undefined,
     etag: null,
+    files: {},
+    marketplace: false,
     ...given,
     ran: [],
     writes: [],
@@ -80,7 +86,10 @@ export const fakeGitHub = (on: On, options: Options = {}): GitHub => {
       const answer = await route(call)
       if (answer) return answer
     }
+    if (argv[0] === 'git' && argv[1] === 'ls-files') return ok(gh.marketplace && argv.includes('.claude-plugin/marketplace.json') ? '.claude-plugin/marketplace.json\n' : '')
     if (argv[0] === 'git') return ok(`${gh.branch}\n`)
+    const files = argv[1] === 'api' ? /\/pulls\/(\d+)\/files/.exec(argv[2] ?? '') : null
+    if (files) return json(gh.files[Number(files[1])] ?? [])
     if (argv[1] === 'repo' && argv[2] === 'view') return json({ nameWithOwner: gh.repo, hasIssuesEnabled: gh.hasIssues })
     if (argv[1] === 'api' && argv[2] === '-i' && gh.etag !== null) {
       if (argv.includes(`If-None-Match: ${gh.etag}`)) return fail('gh: HTTP 304', 'HTTP/2.0 304 Not Modified\n')

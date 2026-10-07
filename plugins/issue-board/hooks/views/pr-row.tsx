@@ -2,6 +2,7 @@ import type { ButtonProps } from 'claude-code'
 
 import type { PullRequest, Worker } from '../../types'
 import { ago, cells, ciBadge, fit, mergeNoteOf, prRowRoom, reviewBadge } from '../layout'
+import { flagsText } from '../merging'
 import { pageOf } from '../rest'
 import { closeOutRisk, workerBadge, workerOfPr, workerOnLine } from '../workers'
 import type { Elements } from './parts'
@@ -16,8 +17,9 @@ export type PrRowData = {
   here: string | null
   // The pull request whose details are open, if any.
   shownPr: number | null
-  // The pull request whose Finish & merge is asking first, if any.
+  // The pull request whose Finish & merge is asking first, if any, and what its files flagged.
   armedPr: number | null
+  armedFound: string[]
   workers: Worker[]
   clock: number
 }
@@ -25,8 +27,8 @@ export type PrRowData = {
 export type PrRowHandlers = {
   // Opens or closes the pull request's details.
   toggle: (number: number) => ButtonProps['onPress']
-  // Has Finish & merge ask before it goes.
-  arm: (pr: PullRequest) => unknown
+  // Finish & merge: checks the pull request's files, then sends it, or has it ask before it goes.
+  finish: (pr: PullRequest) => unknown
   // Sends the pull request to Claude to finish and merge.
   closeOut: (pr: PullRequest) => unknown
   // Takes back the ask.
@@ -55,11 +57,13 @@ export const prRow = (elements: Elements, data: PrRowData, handlers: PrRowHandle
   const threads = pr.openThreads ?? 0
   const threadText = threads > 0 ? `${threads} open ${threads === 1 ? 'thread' : 'threads'}` : ''
   const askedText = (pr.reviewers ?? []).length > 0 ? `asks ${(pr.reviewers ?? []).slice(0, 2).join(', ')}${(pr.reviewers ?? []).length > 2 ? ` +${(pr.reviewers ?? []).length - 2}` : ''}` : ''
-  // A background agent that may still push to its branch, and why Finish & merge asks first: that agent, or CI
-  // that hasn't passed.
+  // A background agent that may still push to its branch, and why Finish & merge asks first: that agent, CI
+  // that hasn't passed, or what its files flagged.
   const owner = workerOfPr(pr, data.workers)
   const risk = closeOutRisk(pr, owner)
-  const asking = risk !== null && data.armedPr === pr.number
+  const found = data.armedPr === pr.number ? data.armedFound : []
+  const asking = data.armedPr === pr.number && (risk !== null || found.length > 0)
+  const why = [risk ?? '', flagsText(found)].filter(Boolean).join(' ')
   const gapped = (text: string) => (text ? cells(text) + 1 : 0)
   const fits = prRowRoom(width, cells(badge.text) + 1 + cells(`#${pr.number}`) + 1 + (mine ? 2 : 0) + (owner ? 2 : 0), {
     asked: gapped(askedText),
@@ -103,14 +107,14 @@ export const prRow = (elements: Elements, data: PrRowData, handlers: PrRowHandle
               <Text color="error">{` −${pr.deletions}`}</Text>
             </Text>
           )}
-          <Button key={`close-out-${pr.number}`} dimColor hover={{ dimColor: false, color: 'suggestion' }} onPress={() => void (risk ? handlers.arm(pr) : handlers.closeOut(pr))}>
+          <Button key={`close-out-${pr.number}`} dimColor hover={{ dimColor: false, color: 'suggestion' }} onPress={() => handlers.finish(pr)}>
             {fits.finish}
           </Button>
         </Box>
       </Box>
       {asking && (
         <Box key={`close-out-ask-${pr.number}`} flexDirection="row" flexWrap="wrap" gap={1} paddingLeft={cells(badge.text) + 1}>
-          <Text color="warning" wrap="wrap">{`Close out PR #${pr.number} anyway? ${risk}`}</Text>
+          <Text color="warning" wrap="wrap">{`Close out PR #${pr.number} anyway? ${why}`}</Text>
           <Button key={`close-out-yes-${pr.number}`} variant="primary" onPress={() => void handlers.closeOut(pr)}>
             Close out anyway
           </Button>
