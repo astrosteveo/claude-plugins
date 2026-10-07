@@ -21,7 +21,8 @@ import {
   writesGitHub,
 } from '../hooks/parse'
 import { isMutation } from '../hooks/project'
-import { PRIORITIES, STATUSES, asksProject, graphPage, isIssuesQuery, optionId, adoptedStore, graphArgs, isItemWrite } from './graph'
+import { PRIORITIES, STATUSES, asksProject, graphPage, isIssuesQuery, optionId, graphArgs, isItemWrite } from './graph'
+import { adoptedStore } from './github'
 import type { RawView } from './graph'
 import { letThrough, permissions } from './engine'
 

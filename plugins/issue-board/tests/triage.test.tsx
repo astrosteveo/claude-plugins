@@ -2,7 +2,8 @@ import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { matches, parseIssues, parseTriage, triagePrompt } from '../hooks/parse'
-import { PRIORITIES, STATUSES, graphPage, isIssuesQuery, optionId, adoptedStore, graphArgs } from './graph'
+import { PRIORITIES, STATUSES, graphPage, isIssuesQuery, optionId, graphArgs } from './graph'
+import { adoptedStore } from './github'
 
 const raw = (number: number, title: string, labels: string[] = []) => ({
   number,

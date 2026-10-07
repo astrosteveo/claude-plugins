@@ -5,7 +5,7 @@ import { groupsOf, isInbox, leftForDone, leftForVerification, toArchive } from '
 import { isLater, isNow, roleOf, rolesFor } from '../hooks/project'
 import { addsAsTodo, areasOf, automationsOff, automationsOn, mergeStatuses, picksFor, rolesOf, stepsOf, suggestAreas, suggestRoles } from '../hooks/setup'
 import type { Board, Issue, Project, SetupFacts } from '../types'
-import { adoptedStore, settingsLog } from './graph'
+import { adoptedStore, settingsLog } from './github'
 import { BOARD_STATUSES, complete, github, option } from './setup-github'
 
 const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } } as const

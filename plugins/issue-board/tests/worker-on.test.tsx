@@ -3,7 +3,8 @@ import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { workerOnLine } from '../hooks/parse'
-import { adoptedStore, graphPage, isIssuesQuery, graphHas, graphArgs } from './graph'
+import { graphPage, isIssuesQuery, graphHas, graphArgs } from './graph'
+import { adoptedStore } from './github'
 
 // While a background agent is on an issue, its card shows the agent in place of every start button, whoever started
 // the agent, and the buttons come back once it ends (#269).

@@ -1,9 +1,8 @@
-import type { On } from 'claude-code'
 
 // The board reads open issues over GraphQL. The tests keep their issues the way `gh issue list --json` gives them; this
 // turns them into the answer the board's query gets, with the repo's project when the test gives one.
 
-type Raw = {
+export type Raw = {
   number: number
   title: string
   url?: string
@@ -171,51 +170,3 @@ export const graphPage = (issues: Raw[], argv: readonly string[] = [], project =
   })
 }
 
-// The board writes only to a project the writeProjects setting lists. A test that has it write to the fake project
-// uses this store in place of `mock.store`: the person's own settings list the fake project, until the board writes the
-// setting, after which they hold what it wrote, as Claude Code's would. A test's fake world and the test itself may both
-// ask for it; the second call adds its entries to the first's store.
-export const ADOPTED = { id: PROJECT.id, title: PROJECT.title, owner: 'astrosteveo' }
-const ADOPTED_KEY = 'astrosteveo/8'
-
-// Every `$.config.set` the board made, answered as written, as Claude Code's settings would.
-const logs = new WeakMap<On, { key: string; value: unknown }[]>()
-export const settingsLog = (on: On): { key: string; value: unknown }[] => {
-  const had = logs.get(on)
-  if (had) return had
-  const log: { key: string; value: unknown }[] = []
-  logs.set(on, log)
-  on('config.set', async (_$, e) => {
-    log.push({ key: e.key, value: e.value })
-    return { value: e.value }
-  })
-  return log
-}
-
-const stores = new WeakMap<On, Map<string, unknown>>()
-export const adoptedStore = (on: On, entries: Readonly<Record<string, unknown>> = {}): Map<string, unknown> => {
-  const had = stores.get(on)
-  if (had) {
-    for (const [key, value] of Object.entries(entries)) had.set(key, value)
-    return had
-  }
-  const kept = new Map<string, unknown>(Object.entries(entries))
-  stores.set(on, kept)
-  const set = settingsLog(on)
-  on('settings.read', async (_$, e) => {
-    if (e.source !== 'user') return { value: {} }
-    const written = set.filter(one => one.key === 'issue-board.writeProjects').at(-1)?.value
-    return { value: { pluginConfigs: { 'issue-board@astrosteveo-plugins': { options: { writeProjects: written ?? ADOPTED_KEY } } } } }
-  })
-  on('store.get', async (_$, e) => ({ value: kept.get(e.key) }))
-  on('store.set', async (_$, e) => {
-    kept.set(e.key, e.value)
-    return { value: undefined }
-  })
-  on('store.delete', async (_$, e) => {
-    kept.delete(e.key)
-    return { value: undefined }
-  })
-  on('store.keys', async () => ({ value: [...kept.keys()] }))
-  return kept
-}

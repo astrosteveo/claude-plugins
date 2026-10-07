@@ -5,7 +5,8 @@ import type { Issue, Project, ProjectView } from '../types'
 import { groupsOf, parseFilter, parseGraph, tabOf, tabsOf, viewFieldsOf, viewGroupingOf, viewMatchOf } from '../hooks/parse'
 import { issuesQuery } from '../hooks/project'
 import type { RawView, Views } from './graph'
-import { adoptedStore, graphPage, isIssuesQuery } from './graph'
+import { graphPage, isIssuesQuery } from './graph'
+import { adoptedStore } from './github'
 
 // A project with Status, Priority, an Area field and a number field, for the filter tests that need no pane.
 const PROJECT: Project = {

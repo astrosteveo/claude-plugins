@@ -3,7 +3,8 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import { adoptReason, adoptTarget, approvedOf, linkedOf, releaseReason } from '../hooks/project'
 import { approved, refused } from './engine'
-import { PROJECT, graphPage, isIssuesQuery, settingsLog } from './graph'
+import { PROJECT, graphPage, isIssuesQuery } from './graph'
+import { settingsLog } from './github'
 
 const REFRESH = { command: 'issues', args: 'refresh', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
 const REPO = { root: '/work/void-sector', remote: null, internal: false, name: null }

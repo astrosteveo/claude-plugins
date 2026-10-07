@@ -3,7 +3,8 @@ import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { backgroundPrompt, namesIssue, startPrompt } from '../hooks/parse'
-import { STATUSES, graphPage, isIssuesQuery, adoptedStore, graphHas, graphArgs } from './graph'
+import { STATUSES, graphPage, isIssuesQuery, graphHas, graphArgs } from './graph'
+import { adoptedStore } from './github'
 
 const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 110, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } } as const
 const RUN = { origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 }, command: 'issues' } as const

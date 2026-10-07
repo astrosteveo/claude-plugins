@@ -4,7 +4,8 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import type { Board, EpicNote } from '../types'
 import { draftPrompt, liveEpicNotes, nextOf, parseDraft, parseGraph, sortIssues } from '../hooks/parse'
-import { STATUSES, graphArgs, graphHas, graphPage, isIssuesQuery, adoptedStore } from './graph'
+import { STATUSES, graphArgs, graphHas, graphPage, isIssuesQuery } from './graph'
+import { adoptedStore } from './github'
 import { letThrough } from './engine'
 
 const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 110, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } } as const

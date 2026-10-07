@@ -5,7 +5,8 @@ import type { Issue } from '../types'
 import { groupsOf, parseGraph, placedAfter, projectMoveOf } from '../hooks/parse'
 import { issuesQuery, orderFilter } from '../hooks/project'
 import { letThrough } from './engine'
-import { adoptedStore, asksProject, graphPage, isIssuesQuery } from './graph'
+import { asksProject, graphPage, isIssuesQuery } from './graph'
+import { adoptedStore } from './github'
 
 type Raw = Parameters<typeof graphPage>[0][number]
 

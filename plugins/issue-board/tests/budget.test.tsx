@@ -4,7 +4,8 @@ import type { TestBody } from 'claude-code/testing'
 
 import { captureSection } from '../hooks/parse'
 import { countCall, countContext, countPoints, countPrompt, defineTool, kindOf, loadTool, newStats, statsText } from '../hooks/stats'
-import { adoptedStore, graphPage, isIssuesQuery } from './graph'
+import { graphPage, isIssuesQuery } from './graph'
+import { adoptedStore } from './github'
 import { letThrough } from './engine'
 import { github } from './setup-github'
 

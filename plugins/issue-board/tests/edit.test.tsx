@@ -3,7 +3,8 @@ import { expect, test } from 'claude-code/testing'
 
 import type { Board, Issue } from '../types'
 import { addBoxes, changesText, commandsOf, leftForDone, leftForVerification, movedText, rewordBoxes, statusOnly, unmovedText } from '../hooks/parse'
-import { asksProject, graphArg, graphHas, graphPage, isGraphMutation, isIssuesQuery, optionId, adoptedStore } from './graph'
+import { asksProject, graphArg, graphHas, graphPage, isGraphMutation, isIssuesQuery, optionId } from './graph'
+import { adoptedStore } from './github'
 import { letThrough } from './engine'
 
 type Raw = Parameters<typeof graphPage>[0][number]

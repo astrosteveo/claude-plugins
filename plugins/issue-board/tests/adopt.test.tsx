@@ -2,7 +2,8 @@ import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { adoptText, grantsOf, isMutation, ownerOf, projectKeysOf, projectKeysText, writeRefusal } from '../hooks/project'
-import { ADOPTED, PROJECT, graphPage, isIssuesQuery, settingsLog, graphArg } from './graph'
+import { PROJECT, graphPage, isIssuesQuery, graphArg } from './graph'
+import { ADOPTED, settingsLog } from './github'
 import { letThrough, permissions } from './engine'
 import { namesText, projectPartOf, repoChangeOf } from '../hooks/parse'
 
