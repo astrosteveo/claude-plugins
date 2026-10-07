@@ -69,7 +69,11 @@ export function split(text: string): { answer: string; prompts: string[] } {
   return { answer: tidy.length > MAX ? `${tidy.slice(0, MAX)}…` : tidy, prompts }
 }
 
-function clip(text: string, width: number): string {
+// Trims first and then cuts, so the width goes to text, not to spaces. A
+// value that is not a string (a field missing from a model's JSON) clips to
+// nothing.
+export function clip(text: unknown, width: number): string {
+  if (typeof text !== 'string') return ''
   const trimmed = text.trim()
 
   return trimmed.length > width ? `${trimmed.slice(0, Math.max(1, width - 1))}…` : trimmed

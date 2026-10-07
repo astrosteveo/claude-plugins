@@ -3,7 +3,7 @@ import type { Caught, EngineInterface, HookFailure, ModelForkResult, Register, R
 
 import type { Advice, Ask, Decision, Offer, Question, Take } from '../types'
 import type { Exchange } from './parse'
-import { SUGGEST, earlier, fit, framed, pendingLine, split } from './parse'
+import { SUGGEST, clip, earlier, fit, framed, pendingLine, split } from './parse'
 import {
   ROWS_AROUND_DIALOG,
   agreed,
@@ -13,7 +13,6 @@ import {
   awayContext,
   awayNotice,
   awayPicks,
-  clip,
   decisionsOf,
   decorate,
   keyOf,
@@ -57,30 +56,34 @@ const fallBack = <E, R>($: EngineInterface, e: E, next: ((e: E) => R) & Caught, 
   return next(e)
 }
 
-function why(reply: ModelForkResult): string {
+// Why a fork or completion gave no answer: a full sentence for the pane's
+// answer list, or a short phrase for the take box beside the dialog.
+function why(reply: ModelForkResult, short = false): string {
   if (reply.isAnswered) return ''
   switch (reply.reason) {
     case 'api-error':
-      return `The API answered ${reply.status} (${reply.error}).`
+      return short ? `the API answered ${reply.status}` : `The API answered ${reply.status} (${reply.error}).`
     case 'empty-reply':
-      return 'Claude sent back no text.'
+      return short ? 'no text came back' : 'Claude sent back no text.'
     case 'aborted':
-      return 'Stopped before it finished.'
+      return short ? 'stopped' : 'Stopped before it finished.'
     default:
-      return 'No answer.'
+      return short ? 'no answer' : 'No answer.'
   }
 }
 
-// Forks the session so the answer reads the whole conversation from the
-// prompt cache; the pane's own earlier asks ride after it, in the question.
-// Before the first reply there is nothing to fork, so the question goes to a
-// plain completion instead.
+// Forks the session so the reply reads the whole conversation from the
+// prompt cache. Before the first reply there is nothing to fork, so the
+// prompt goes to a plain completion instead.
+async function forkOrComplete($: EngineInterface, prompt: string): Promise<ModelForkResult> {
+  const reply = await $.model.fork({ prompt })
+  if (!reply.isAnswered && reply.reason === 'nothing-to-fork') return $.model.complete({ model: 'sonnet', prompt })
+  return reply
+}
+
+// The pane's own earlier asks ride after the conversation, in the question.
 async function answer($: EngineInterface, question: string, before: readonly Exchange[]): Promise<Partial<Ask>> {
-  const prompt = framed(question, before)
-  let reply: ModelForkResult = await $.model.fork({ prompt })
-  if (!reply.isAnswered && reply.reason === 'nothing-to-fork') {
-    reply = await $.model.complete({ model: 'sonnet', prompt })
-  }
+  const reply = await forkOrComplete($, framed(question, before))
   if (!reply.isAnswered) return { status: 'failed', error: why(reply) }
 
   return { status: 'answered', ...split(reply.text) }
@@ -147,20 +150,6 @@ async function use($: EngineInterface, prompt: string) {
   $.ui.toast(filled.isFilled ? 'The prompt is in the box. Esc to get back to it.' : 'The prompt box could not take it right now.')
 }
 
-function shortWhy(reply: ModelForkResult): string {
-  if (reply.isAnswered) return ''
-  switch (reply.reason) {
-    case 'api-error':
-      return `the API answered ${reply.status}`
-    case 'empty-reply':
-      return 'no text came back'
-    case 'aborted':
-      return 'stopped'
-    default:
-      return 'no answer'
-  }
-}
-
 // Asks a fork of the session which option it would pick. The fork reads the
 // conversation from the prompt cache, so it knows why the question came up.
 async function think($: EngineInterface, id: string, questions: readonly Question[]) {
@@ -168,10 +157,8 @@ async function think($: EngineInterface, id: string, questions: readonly Questio
   await update($, slot, () => ({ status: 'thinking' }))
   let next: Advice
   try {
-    const prompt = takePrompt(questions)
-    let reply: ModelForkResult = await $.model.fork({ prompt })
-    if (!reply.isAnswered && reply.reason === 'nothing-to-fork') reply = await $.model.complete({ model: 'sonnet', prompt })
-    if (!reply.isAnswered) next = { status: 'failed', error: shortWhy(reply) }
+    const reply = await forkOrComplete($, takePrompt(questions))
+    if (!reply.isAnswered) next = { status: 'failed', error: why(reply, true) }
     else {
       const takes = parseTakes(reply.text, questions)
       next = takes.some(Boolean) ? { status: 'ready', takes } : { status: 'failed', error: 'the reply could not be read' }
