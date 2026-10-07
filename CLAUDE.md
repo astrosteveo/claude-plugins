@@ -58,8 +58,17 @@ entries the same.
 Test files import `test` and `expect` from `'claude-code/testing'`. A test gets `($, on)`: `on('process.run', …)` fakes
 `gh`/`git` answers, `$.command.run(...)` runs `/issues`, and `$.ui.mount({ plugin, surface, component: 'Pane', … })`
 draws the pane so `ui.find` / `ui.findAll` / `ui.press` can inspect it. There is no rendered frame, so layout is
-checked through element props (for example a `Box`'s `position`, `top`, `width`). In issue-board, `tests/graph.ts`
-turns `gh issue list`-shaped fixtures into the GraphQL answer the board's query expects.
+checked through element props (for example a `Box`'s `position`, `top`, `width`).
+
+In issue-board, use the shared helpers instead of writing your own fakes:
+
+- `tests/github.ts`: `fakeGitHub(on, { issues, prs, branch, project, routes })` answers `gh`/`git` and records what
+  ran and what it wrote. Pass `routes` for a test's own calls. It also has `session`, `registrations`, `memoryStore`,
+  `heldState`, `adoptedStore` and the named fixtures (`KESSIK`, `ASTEROIDS`, `pr335(ci)`).
+- `tests/ui.tsx`: `pane(cols, rows)`, `band(cols)`, `REFRESH`, `RUN`, `COMPOSE`, `REPO`.
+- `tests/graph.ts` turns `gh issue list`-shaped fixtures (`Raw`) into the GraphQL answer the board's query expects.
+- `tests/narrow.ts` has `assertNoSplitAtoms`. Add a new kind of row to `tests/narrow.test.tsx`'s fixture so it is
+  checked at 40 to 120 columns.
 
 When a fix comes with a regression test, add a mutant too: a patch in `scripts/mutants/` that puts the bug back, named
 `<issue>-<what-breaks>.patch`, whose first line says which issue it guards and what it breaks. Then come one or more
