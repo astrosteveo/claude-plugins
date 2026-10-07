@@ -282,9 +282,14 @@ While Claude is on it:
 - With **Working note in the system prompt** (`workingNote`) on, a short note
   in the system prompt names the issue and tells Claude to tick boxes as it
   finishes them. The note survives compaction.
-- The note also says how to name the issue in a pull request: `Closes #N`
-  only when every box is ticked, and `Refs #N` otherwise. The background agent
-  follows it too. **Closes only when every box is ticked**
+- A pull request Claude writes for the issue gets a line naming it: `Closes #N`
+  when every box is ticked, and `Refs #N` while a box is open. The board adds
+  it to the text Claude Code has Claude write into a pull request, decided from
+  the boxes as they stand when the pull request is written. It isn't in the
+  working note, so the note stays the same as boxes get ticked. While a
+  background agent runs on another issue, the line is left out, since the
+  agent's pull request would read the same text; the agent's own prompt
+  carries the rule instead. **Closes only when every box is ticked**
   (`closesWhenTicked`) turns this off, and leaves it to the repo's own
   rules. Moves to Verification on a Refs merge rely on it.
 - The next prompt carries what changed on GitHub since: boxes, new comments,
@@ -682,7 +687,7 @@ brackets is what `.claude/settings.json` takes.
 | Where Start works (`startMode`) | `main` | `main` starts an issue in this chat. `background` makes Start in background the first button, and tells Claude in the system prompt to work as an orchestrator. See [Where Start works](#where-start-works). |
 | **In Claude's prompts and the prompt box** | | |
 | Working note in the system prompt (`workingNote`) | on | While Claude is on an issue you started, a note names it and says how to tick its boxes. |
-| Closes only when every box is ticked (`closesWhenTicked`) | on | The working note and the background agent write `Closes #N` only when every box is ticked, and `Refs #N` otherwise. Off, they say nothing about it. See [The issue Claude is on](#the-issue-claude-is-on). |
+| Closes only when every box is ticked (`closesWhenTicked`) | on | A pull request for the issue Claude is on, and the background agent's, says `Closes #N` only when every box is ticked, and `Refs #N` otherwise. Off, the board says nothing about it. See [The issue Claude is on](#the-issue-claude-is-on). |
 | Capture section in the system prompt (`capture`) | on | Tells Claude to capture work it finds to the Inbox. Off, the section goes, and the tool and `/issues new` stay. |
 | Copies of issues a prompt names (`issueCopies`) | on | A prompt that names `#123` carries the board's copy of it, unseen. |
 | Suggest the next step (`suggestNextStep`) | off | After Claude's turn, the prompt box suggests the board's next step in place of Claude Code's own. |

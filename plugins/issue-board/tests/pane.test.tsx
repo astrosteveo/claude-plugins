@@ -4,7 +4,7 @@ import { tickBody } from '../hooks/boxes'
 import { matches, searched } from '../hooks/filters'
 import { parseIssues, parsePrs } from '../hooks/github'
 import { alertsOf, wentGreen } from '../hooks/news'
-import { fixPrompt, workingSection } from '../hooks/prompts'
+import { fixPrompt, prKeyword, workingSection } from '../hooks/prompts'
 import { workerPrompt } from '../hooks/workers'
 import { optionId } from './graph'
 import { KESSIK_BODY, adoptedStore, pr335 } from './github'
@@ -51,21 +51,34 @@ test('search, Mine, and CI that goes green', () => {
   expect(alertsOf(board('pass'), null, ['pass-335-abc123'], ['335-abc123'])).toEqual([])
 })
 
-test('the working note says Closes only when every box is ticked, or nothing, as closesWhenTicked says', () => {
+test('the working note leaves Closes and Refs to the pull request text, and the background agent follows closesWhenTicked', () => {
   const issue = { number: 315, title: 'Lay Kessik out', updatedAt: '' }
-  const ticked = workingSection(issue, true)
-  expect(ticked).toMatch(/^The person is working on GitHub issue #315: Lay Kessik out\./)
-  expect(ticked).toMatch(/write `Closes #315` in its body only if every acceptance box of #315 is ticked by then\. Otherwise write `Refs #315`, so the issue stays open for what is left\./)
-  expect(ticked).toMatch(/If the repository's contributing guidelines say otherwise, follow them\.$/)
+  const note = workingSection(issue)
+  expect(note).toMatch(/^The person is working on GitHub issue #315: Lay Kessik out\./)
+  expect(note).toMatch(/moving its Status needs no permission\.$/)
+  expect(note).not.toMatch(/Closes|Refs|pull request/)
 
-  const none = workingSection(issue, false)
-  expect(none).toMatch(/^The person is working on GitHub issue #315: Lay Kessik out\./)
-  expect(none).toMatch(/moving its Status needs no permission\.$/)
-  expect(none).not.toMatch(/Closes|Refs|pull request/)
-
-  // The background agent follows the same rule.
+  // The background agent's prompt carries the rule, as the pull request text can't say whose issue it is for.
   expect(workerPrompt(true)).toMatch(/Write `Closes #<number>` in its body only if every acceptance box is ticked by then, and `Refs #<number>` otherwise\./)
   expect(workerPrompt(false)).not.toMatch(/Closes|Refs/)
+})
+
+test('a pull request closes its issue only when every box is ticked', () => {
+  const box = (done: boolean) => ({ text: 'A box', done })
+  const ticked = { number: 315, checks: [box(true), box(true)] }
+  const open = { number: 315, checks: [box(true), box(false)] }
+  const worker = (number: number, status: 'running' | 'completed') => ({ number, agentId: 'a1', status, startedAt: 0, answer: null })
+  expect(prKeyword(ticked, [], true)).toBe('Closes #315')
+  expect(prKeyword(open, [], true)).toBe('Refs #315')
+  expect(prKeyword({ number: 315, checks: [] }, [], true)).toBe('Closes #315')
+  // The rule off, or no issue, adds nothing.
+  expect(prKeyword(ticked, [], false)).toBe('')
+  expect(prKeyword(open, [], false)).toBe('')
+  expect(prKeyword(null, [], true)).toBe('')
+  // A worker running on another issue would read the same text for its own pull request; one that ended wouldn't.
+  expect(prKeyword(open, [worker(289, 'running')], true)).toBe('')
+  expect(prKeyword(open, [worker(289, 'completed')], true)).toBe('Refs #315')
+  expect(prKeyword(open, [worker(315, 'running')], true)).toBe('Refs #315')
 })
 
 test('the issues tool lists the board, and the tick tool ticks a box on GitHub', async ($, on) => {
