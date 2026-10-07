@@ -417,7 +417,7 @@ The board gives Claude nine tools:
 - `project_adopt` lets the board write to a project, or releases it, only
   when you ask. It always asks first; see
   [Letting the board write to a project](#letting-the-board-write-to-a-project).
-- `project_plan` proposes many changes at once as one plan; see
+- `project_plan` proposes many changes, to issues and the repo's labels, as one plan; see
   [Plans](#plans).
 
 Each tool that changes something goes through Claude Code's permission
@@ -437,6 +437,21 @@ propose the whole change as one plan with `project_plan`, instead of one
 has a short reason. A plan can set Status, Priority and other project
 fields, add and remove labels and assignees, set the milestone and the epic,
 and move an issue in the project's order (`projectAfter`).
+
+A plan can also change the repo's labels, in its `labels` list: create one
+with a name, color and description, rename it, recolor it or change its
+description, or delete it. Label changes come first on the card, under
+*The repo's labels*, so an issue in the same plan can take a label it makes.
+
+- A delete row says how many open and closed issues carry the label, from
+  GitHub's search counts, or that it couldn't count them.
+- A rename keeps the label on its issues, as GitHub does. The board shows
+  the new names after the plan applies.
+- If the label is one your saved Bugs or Later marker goes by (see
+  `/issues labels`), the row says so. A rename moves the marker to the new
+  name, and a delete clears it, so the board guesses it again.
+- Label changes are repo writes. They go through the permission prompt but
+  don't need the board to be allowed to write to the project.
 
 The board checks the whole plan first: the issues are open on the board, the
 options, fields and milestones exist, and the board may write to the
