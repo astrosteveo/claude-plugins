@@ -104,8 +104,8 @@ test('each term a view filters by keeps the issues GitHub would', () => {
 })
 
 test("a term the board can't apply is named, and the rest of the filter still applies", () => {
-  const match = viewMatchOf('label:bug updated:>2026-01-01 iteration:@current label:*bug "story points":>2 reason:completed', PROJECT)
-  expect(match.unknown).toEqual(['updated:>2026-01-01', 'iteration:@current', 'label:*bug', '"story points":>2', 'reason:completed'])
+  const match = viewMatchOf('label:bug updated:>@yesterday iteration:@current label:*bug "story points":>many reason:completed', PROJECT)
+  expect(match.unknown).toEqual(['updated:>@yesterday', 'iteration:@current', 'label:*bug', '"story points":>many', 'reason:completed'])
   expect(ISSUES.filter(one => match.test(one, null)).map(one => one.number)).toEqual([1, 2])
   expect(viewMatchOf('status:Ready', PROJECT).unknown).toEqual([])
   // An empty value, or no: on a field the project hasn't, is one too.
@@ -279,7 +279,7 @@ const VIEWS: RawView[] = [
   { name: 'Ready', number: 2, layout: 'TABLE_LAYOUT', filter: 'status:Ready' },
   { name: 'Open bugs', number: 3, layout: 'BOARD_LAYOUT', filter: 'label:bug -status:Done', columns: 'Status' },
   { name: 'My work', number: 4, layout: 'TABLE_LAYOUT', filter: 'assignee:@me', groupBy: 'Area' },
-  { name: 'Recent docs', number: 6, layout: 'TABLE_LAYOUT', filter: 'label:docs updated:>@today-7d' },
+  { name: 'Recent docs', number: 6, layout: 'TABLE_LAYOUT', filter: 'label:docs comments:>2' },
 ]
 
 // GitHub with the project and its views; each issues query asked is kept.
@@ -336,7 +336,7 @@ test("the pane's tabs are the project's views, each with the issues its filter k
   // The view has no grouping, so the tab goes back to Status, where #3 waits in the folded Backlog.
   expect(await ui.find({ key: 'group-status:Backlog' })).toBeDefined()
   expect(await ui.find({ key: 'group-status:Ready' })).toBeUndefined()
-  expect((await ui.find({ key: 'view-note' }))?.text).toContain("The board can't apply `updated:>@today-7d` from this view's filter")
+  expect((await ui.find({ key: 'view-note' }))?.text).toContain("The board can't apply `comments:>2` from this view's filter")
   expect((await ui.findAll({ type: 'Link' })).find(link => link.props.label === '↗ Open the view')?.props).toMatchObject({ href: 'https://github.com/users/astrosteveo/projects/8/views/6', label: '↗ Open the view' })
 
   // The open-bugs board groups by its columns, Status.
