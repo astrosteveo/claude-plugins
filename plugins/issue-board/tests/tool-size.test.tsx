@@ -6,10 +6,10 @@ const REPO = '/work/void-sector'
 // The eight tools' names, descriptions and input schemas came to 12,946 characters before #223 trimmed them. They are
 // sent with every request, so they stay at least 35% shorter than that.
 const BEFORE = 12946
-// project_plan came after #223, for #236: the cap grows by its size and no more.
-const PLAN = 925
+// project_plan came after #223, for #236: the cap grows by its size and no more. #238's label changes added 282.
+const PLAN = 925 + 282
 // #239 let a plan change the project's views: the cap grows by what that added and no more.
-const VIEWS = 321
+const VIEWS = 335
 
 test('the tool definitions stay at least 35% shorter than before #223: name, description and input schema', async ($, on) => {
   const clock = mock.clock(on, { now: Date.parse('2026-10-06T10:00:00Z') })

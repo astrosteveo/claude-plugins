@@ -417,8 +417,8 @@ The board gives Claude nine tools:
 - `project_adopt` lets the board write to a project, or releases it, only
   when you ask. It always asks first; see
   [Letting the board write to a project](#letting-the-board-write-to-a-project).
-- `project_plan` proposes many changes to issues and project views at once
-  as one plan; see
+- `project_plan` proposes many changes, to issues, the repo's labels and the
+  project's views, as one plan; see
   [Plans](#plans).
 
 Each tool that changes something goes through Claude Code's permission
@@ -439,6 +439,20 @@ has a short reason. A plan can set Status, Priority and other project
 fields, add and remove labels and assignees, set the milestone and the epic,
 and move an issue in the project's order (`projectAfter`).
 
+A plan can also change the repo's labels, in its `labels` list: create one
+with a name, color and description, rename it, recolor it or change its
+description, or delete it. Label changes come first on the card, under
+*The repo's labels*, so an issue in the same plan can take a label it makes.
+
+- A delete row says how many open and closed issues carry the label, from
+  GitHub's search counts, or that it couldn't count them.
+- A rename keeps the label on its issues, as GitHub does. The board shows
+  the new names after the plan applies.
+- If the label is one your saved Bugs or Later marker goes by (see
+  `/issues labels`), the row says so. A rename moves the marker to the new
+  name, and a delete clears it, so the board guesses it again.
+- Label changes are repo writes. They go through the permission prompt but
+  don't need the board to be allowed to write to the project.
 A plan can also change the project's views, in its `views` list:
 
 - **Create** a view with a name, a layout (table, board or roadmap; table
@@ -462,8 +476,8 @@ at once, and nothing is shown or asked.
 A valid plan shows at once as a card at the top of `/issues`, and the band
 shows a `✦ PLAN` line with **Review**, which opens the pane:
 
-- The card has one row per change, grouped by issue, with view changes
-  last under the project's name. Each row has a box to tick and Claude's
+- The card has one row per change: label changes first, then the changes
+  grouped by issue, then view changes under the project's name. Each row has a box to tick and Claude's
   reason. All rows start ticked.
 - **Apply** writes the ticked rows in order, then reads GitHub once. Rows
   that went through leave the card, and so do unticked ones. A row that

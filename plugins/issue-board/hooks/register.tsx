@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentSpawnResult, Caught, EngineInterface, HookFailure, ModelForkResult, Register, ThemeKey, Timer, ToolCallResult, UiCopyArgs } from 'claude-code'
 
-import type { Adopted, Adoption, Alert, Board, BoxTask, BuiltInFilter, Check, Comment, Draft, DraftEdit, EpicNote, GroupBy, Issue, Known, Launch, Markers, Plan, PlanRow, Problem, Project, ProjectField, Role, Roles, StatusPicks, StatusUpdate, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
+import type { Adopted, Adoption, Alert, Board, BoxTask, BuiltInFilter, Check, Comment, Draft, DraftEdit, EpicNote, GroupBy, Issue, Known, LabelChange, Launch, ViewChange, Markers, Plan, PlanRow, Problem, Project, ProjectField, Role, Roles, StatusPicks, StatusUpdate, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
 import type { Ended, FilterSource, IssueChanges, NewIssue, PrRule, StartMode, Switches, Tab } from './parse'
 import type { Linked } from './project'
 import { authOf, problemsOf, problemsText, repoOf } from './access'
@@ -54,8 +54,8 @@ import {
   writeRefusal,
 } from './project'
 import type { Grants } from './project'
-import { appliedText, changeText, issueChangesOf, issueOf, kindsText, planAsk, planOf, problemsOfPlan, rowsOf, sizeText, viewDoneText, viewNoteOf } from './plan'
-import type { Planned, ViewChange } from './plan'
+import { appliedText, changeText, groupOf, issueChangesOf, kindsText, planAsk, planOf, problemsOfPlan, rowsOf, sizeText, viewDoneText, viewNoteOf } from './plan'
+import type { Planned } from './plan'
 import {
   CREATE_FIELD,
   CREATE_PROJECT,
@@ -3010,11 +3010,82 @@ const change = async ($: EngineInterface, number: number, changes: IssueChanges)
 
 // The plan project_plan's input asks for, checked against the board as it is now. A plan that changes the project is
 // refused here, before anything is asked, when the board may not write to it; each write checks again as it goes.
-const planFor = async ($: EngineInterface, input: unknown): Promise<Planned> => {
+// `count` has each label delete count the issues that carry the label, for its row on the card.
+const planFor = async ($: EngineInterface, input: unknown, count = false): Promise<Planned> => {
   const now = await read($, board)
   if (!now) return { problems: ["The issue board hasn't read GitHub yet; refresh it and try again."] }
   const refusal = now.project ? writeRefusal((await grantsNow($)).all, now.project) : null
-  return planOf(input, { issues: now.issues, project: now.project, milestones: now.milestones, refusal })
+  const planned = planOf(input, { issues: now.issues, project: now.project, milestones: now.milestones, refusal, labels: now.labels, markers: await read($, chosenMarkers) })
+  if (!count || 'problems' in planned) return planned
+  const changes = await Promise.all(
+    planned.changes.map(async one => (one.change.kind === 'label' && one.change.action === 'delete' ? { ...one, change: { ...one.change, uses: await labelUses($, now.repo, one.change.name) } } : one)),
+  )
+  return { changes }
+}
+
+// How many open and closed issues carry a label, from GitHub's search counts; null when it couldn't count.
+const labelUses = async ($: EngineInterface, repo: string, name: string): Promise<{ open: number; closed: number } | null> => {
+  try {
+    const [open, closed] = await Promise.all(
+      (['open', 'closed'] as const).map(async state =>
+        Number((await gh($, ['api', '-X', 'GET', 'search/issues', '-f', `q=repo:${repo} is:issue state:${state} label:"${name.replace(/"/g, '')}"`, '-f', 'per_page=1', '--jq', '.total_count'])).trim()),
+      ),
+    )
+    return Number.isFinite(open) && Number.isFinite(closed) ? { open: open as number, closed: closed as number } : null
+  } catch (cause) {
+    $.ui.log(`issue-board: couldn't count the issues with the label ${name}: ${messageOf(cause)}`, { to: 'debug' })
+    return null
+  }
+}
+
+// Makes, edits or deletes one of the repo's labels over REST, then moves or clears the saved markers that go by it and
+// keeps the card's label picker in step. GitHub keeps a renamed label on its issues. Answers what it did.
+const applyLabel = async ($: EngineInterface, change: LabelChange): Promise<string> => {
+  const repo = (await read($, board))?.repo
+  if (!repo) throw new Error("the issue board hasn't read GitHub yet")
+  const path = `repos/${repo}/labels/${encodeURIComponent(change.name)}`
+  const fields = [
+    ...(change.rename ? ['-f', `new_name=${change.rename}`] : []),
+    ...(change.color ? ['-f', `color=${change.color}`] : []),
+    ...(change.description !== undefined ? ['-f', `description=${change.description}`] : []),
+  ]
+  let done: string
+  if (change.action === 'create') {
+    const color = change.color ?? labelColorFor(change.name, ((await read($, board))?.labels ?? []).map(name => ({ name })))
+    await gh($, ['api', '-X', 'POST', `repos/${repo}/labels`, '-f', `name=${change.name}`, '-f', `color=${color}`, ...(change.description !== undefined ? ['-f', `description=${change.description}`] : [])])
+    done = `Created the label ${change.name}.`
+  } else if (change.action === 'delete') {
+    await gh($, ['api', '-X', 'DELETE', path])
+    done = `Deleted the label ${change.name}.`
+  } else {
+    await gh($, ['api', '-X', 'PATCH', path, ...fields])
+    done = `${change.rename ? `Renamed the label ${change.name} to ${change.rename}` : `Changed the label ${change.name}`}${change.color ? `, its color now #${change.color}` : ''}.`
+  }
+  const markers = change.markers ?? []
+  if (markers.length > 0) {
+    const to = change.action === 'edit' ? change.rename : undefined
+    await changeChoices($, was => {
+      const saved = { ...(was.markers ?? {}) }
+      if (markers.includes('bug')) {
+        if (to) saved.bug = { label: to }
+        else delete saved.bug
+      }
+      if (markers.includes('later')) {
+        if (to) saved.later = to
+        else delete saved.later
+      }
+      return { ...was, markers: saved }
+    })
+    const names = markers.map(one => (one === 'bug' ? 'Bugs' : 'Later')).join(' and ')
+    done += to ? ` The saved ${names} marker goes by ${to} now.` : ` The saved ${names} marker is cleared, so the board guesses it again.`
+  }
+  await update($, palette, was => {
+    if (!was) return was
+    const kept = was.labels.filter(name => change.action === 'create' || name.toLowerCase() !== change.name.toLowerCase())
+    const added = change.action === 'create' ? [change.name] : change.rename ? [change.rename] : change.action === 'edit' ? [change.name] : []
+    return { ...was, labels: [...new Set([...kept, ...added])].sort() }
+  })
+  return done
 }
 
 // Makes a plan's change to one of the project's views, through the project write check. An existing view is found by
@@ -3079,7 +3150,9 @@ const applyPlan = async ($: EngineInterface, id: number): Promise<string> => {
     for (const row of chosen) {
       try {
         const change = row.change
-        done.push(change.kind === 'view' ? await applyView($, change) : await applyChanges($, change.number, issueChangesOf(change), false))
+        done.push(
+          change.kind === 'label' ? await applyLabel($, change) : change.kind === 'view' ? await applyView($, change) : await applyChanges($, change.number, issueChangesOf(change), false),
+        )
       } catch (cause) {
         failed.push({ row, message: messageOf(cause) })
       }
@@ -3401,7 +3474,7 @@ export const register: Register = (on, options) => {
     await registerTool($, {
       name: 'project_plan',
       description:
-        'Proposes many issue and view changes as one plan, each with a reason, refused whole if any is invalid. ' +
+        'Proposes many issue, label and view changes as one plan, each with a reason, refused whole if any is invalid. ' +
         'The person approves it once, or applies some of it in /issues. A new plan replaces the last.',
       inputSchema: {
         type: 'object',
@@ -3426,6 +3499,22 @@ export const register: Register = (on, options) => {
                 projectAfter: { type: 'integer', minimum: 0 },
               },
               required: ['number', 'reason'],
+            },
+          },
+          labels: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                name: { type: 'string' },
+                reason: { type: 'string' },
+                create: { type: 'boolean' },
+                delete: { type: 'boolean' },
+                rename: { type: 'string' },
+                color: { type: 'string' },
+                description: { type: 'string' },
+              },
+              required: ['name', 'reason'],
             },
           },
           views: {
@@ -3949,7 +4038,7 @@ export const register: Register = (on, options) => {
   // A no leaves it on the card, for the person to apply some of it or discard it.
   on('tool.call', { tool: PLAN_TOOL }, async ($, e, next) =>
     asTool(async () => {
-      const planned = await planFor($, e)
+      const planned = await planFor($, e, true)
       if ('problems' in planned) return { deny: problemsOfPlan(planned.problems) }
       const id = await propose($, planned.changes)
       return askThenAct(e, next, async () => {
@@ -5011,8 +5100,8 @@ export const register: Register = (on, options) => {
     // Claude's reason. Apply writes the ticked rows; Discard drops the plan. A row that failed stays, saying why.
     const planRows = proposed?.rows ?? []
     const planTicked = planRows.filter(row => row.picked).length
-    // The rows grouped by issue, then the project's views under a heading of their own.
-    const planGroups = [...new Set(planRows.map(row => issueOf(row.change)))]
+    // The rows grouped: the repo's labels first, then each issue, then the project's views.
+    const planGroups = [...new Set(planRows.map(row => groupOf(row.change)))]
     const pickRow = (id: string) => () => void update($, proposal, was => was && { ...was, rows: was.rows.map(row => (row.id === id ? { ...row, picked: !row.picked } : row)) })
     const planCard = proposed && planRows.length > 0 && (
       <Box key="plan-card" flexDirection="column" borderStyle="round" borderColor="suggestion" paddingX={1} marginTop={1}>
@@ -5020,18 +5109,22 @@ export const register: Register = (on, options) => {
         <Text dimColor wrap="wrap">
           {kindsText(planRows.map(row => row.change))}
         </Text>
-        {planGroups.map(number => (
-          <Box key={number === null ? 'plan-views' : `plan-issue-${number}`} flexDirection="column" marginTop={1}>
-            {number === null ? (
+        {planGroups.map(group => (
+          <Box key={`plan-${typeof group === 'number' ? `issue-${group}` : `${group}s`}`} flexDirection="column" marginTop={1}>
+            {group === 'label' ? (
+              <Text color="claude" bold>
+                {"The repo's labels"}
+              </Text>
+            ) : group === 'view' ? (
               <Text color="claude" bold wrap="truncate-end">{`${now.project?.title ?? 'Project'} views`}</Text>
             ) : (
               <Text wrap="truncate-end">
-                <Text color="claude" bold>{`#${number} `}</Text>
-                {now.issues.find(one => one.number === number)?.title ?? ''}
+                <Text color="claude" bold>{`#${group} `}</Text>
+                {now.issues.find(one => one.number === group)?.title ?? ''}
               </Text>
             )}
             {planRows
-              .filter(row => issueOf(row.change) === number)
+              .filter(row => groupOf(row.change) === group)
               .map(row => (
                 <Box key={`plan-row-${row.id}`} flexDirection="column">
                   <Box flexDirection="row" gap={1}>
