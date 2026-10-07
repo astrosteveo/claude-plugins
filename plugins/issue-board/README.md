@@ -504,7 +504,9 @@ Claude's call asks permission once, with the plan summed up by kind, such as
 approve it from the phone app without the pane. Saying no changes nothing
 and leaves the plan on the card, to apply in part or discard. Every project
 write goes through the same write check as the other tools, so a project
-the board only reads refuses the plan.
+the board only reads refuses the plan. In auto or bypass mode, where you
+would not see the prompt, Claude's call is refused, and the plan waits on
+the card for you to apply.
 
 ## Commands
 
@@ -597,7 +599,8 @@ the pane.
   number, and refuses any other. It always shows a permission prompt with
   the same warning as the pane, even if a rule allows the tool. Saying no
   changes nothing. A background agent is refused, and so is a session in
-  auto mode, where a classifier would answer the prompt instead of you.
+  auto mode, where a classifier would answer the prompt instead of you, or
+  in bypass mode, where nothing asks.
 - Adopting adds the project to the list and keeps the others.
 - Adopting or releasing counts at once in the session that did it. Other
   sessions already open see the change by the next time they load the board:
@@ -714,8 +717,10 @@ once and still knows the issue you were on.
 
 ### What it costs
 
-`/issues stats` says what the board has spent since it loaded, per hour, and
-for its last full read:
+`/issues stats` says what the board has spent since it loaded, and for its
+last full read. Once the board has been loaded 10 minutes, it also gives
+each count per hour. Before then it says how long the board has been loaded,
+since a rate scaled up from a few seconds says little.
 
 - **GitHub calls**, as REST, REST answered 304 (nothing changed, so free
   against the rate limit), and GraphQL. `gh issue`, `gh pr` and
@@ -726,10 +731,15 @@ for its last full read:
 - **GraphQL points**, added up from the issues query's own rate limit
   answer, with what is left and when it resets.
 - **Context**: the characters the board adds to Claude's context, by
-  source. The tool definitions count once, when they are registered. The
-  working and orchestrator notes count when they first go into the system
-  prompt and when they change. Issue copies, moved lines, news, the prompts
-  the board sends, and its tools' answers count each time.
+  source, and per prompt Claude received. The working and orchestrator
+  notes count when they first go into the system prompt and when they
+  change. Issue copies, moved lines, news, the prompts the board sends, and
+  its tools' answers count each time.
+- **Tool definitions**, on their own line: the size of all the board's
+  tools, and how many are loaded so far. Claude Code defers the board's
+  tools, so only their names are in context until a tool is loaded. A tool's
+  definition counts as context once: when Claude Code lists it in the
+  prompt, when ToolSearch finds it, or when Claude first calls it.
 
 The counts stay in memory. A reload starts them over.
 
@@ -765,6 +775,11 @@ When something is missing, a `⚠ SETUP` row in the band says what, with
 The line under the prompt says `issue board needs setup` or `is limited`
 meanwhile. A tool that fails for want of a permission gives Claude the same
 fix. A folder whose repo isn't on GitHub stays quiet.
+
+Two tools need you to read their prompt, so they refuse in auto and bypass
+mode, where no prompt reaches you: `project_adopt` and `project_plan`.
+Switch to a mode that asks, or use the pane: **Let it write** to adopt a
+project, or **Apply** on the plan card.
 
 ## Limits
 

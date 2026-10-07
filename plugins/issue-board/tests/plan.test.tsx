@@ -295,6 +295,46 @@ test('Apply on the card writes only the ticked rows, and a row that fails stays 
   await ui.unmount()
 })
 
+test('in bypass or auto mode a plan is refused, stays on the card to apply in /issues, and writes nothing; default mode asks', async ($, on) => {
+  const gh = world(on)
+  on('classic.UserPromptSubmit', async () => ({}))
+  await $.command.run(REFRESH)
+  // A rule that allows the tool doesn't let a plan through unseen.
+  gh.engine.beneath = 'allow'
+
+  for (const mode of ['bypassPermissions', 'auto']) {
+    await $.classic.UserPromptSubmit({ prompt: 'tidy the board', permission_mode: mode } as never)
+    const reason =
+      `The ${mode} permission mode settles prompts without showing them, and a plan needs the person to read it. ` +
+      'The plan is on the card in /issues: ask the person to apply it there with Apply, or to switch to a mode that asks, and try again.'
+    expect(await $.tool.check({ tool: TOOL, input: PLAN })).toEqual({ decision: 'deny', reason })
+    gh.engine.verdict = 'allow'
+    expect(await $.tool.call({ tool: TOOL, ...PLAN })).toMatchObject({ deny: reason })
+    // Nothing reached the engine's prompt or GitHub.
+    expect(gh.engine.asked).toEqual([])
+    expect(gh.writes).toEqual([])
+  }
+
+  // The plan waits on the card.
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  expect(await ui.find({ text: /^Claude's plan · 4 changes to 3 issues$/ })).toBeDefined()
+  expect(await ui.find({ key: 'plan-apply' })).toMatchObject({ text: '✓ Apply 4 of 4' })
+
+  // Back in default mode, the call asks with the summary again. A rule that denies still stands in every mode.
+  await $.classic.UserPromptSubmit({ prompt: 'and now?', permission_mode: 'default' } as never)
+  gh.engine.beneath = 'ask'
+  expect(await $.tool.check({ tool: TOOL, input: PLAN })).toMatchObject({ decision: 'ask', reason: expect.stringMatching(/^Apply Claude's plan: 4 changes to 3 issues\?/) })
+  gh.engine.beneath = 'deny'
+  await $.classic.UserPromptSubmit({ prompt: 'again', permission_mode: 'bypassPermissions' } as never)
+  expect(await $.tool.check({ tool: TOOL, input: PLAN })).toEqual({ decision: 'deny', reason: 'Denied by a rule.' })
+  await $.classic.UserPromptSubmit({ prompt: 'back', permission_mode: 'default' } as never)
+
+  // Apply on the card writes it, as the person chose there.
+  await ui.press({ key: 'plan-apply' })
+  expect(gh.writes).toEqual(['#340 Status Ready', '#340 Priority P0', 'issue edit 341 --add-label bug --remove-label area:ui', 'issue edit 315 --milestone Launch'])
+  await ui.unmount()
+})
+
 test("a plan ranks issues in the project's order, each move after the one before it", async ($, on) => {
   const gh = world(on)
   gh.planned = { 340: { status: 'Ready' }, 341: { status: 'Ready' }, 315: { status: 'Ready' } }
