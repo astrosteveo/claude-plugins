@@ -7,6 +7,10 @@ Type a question in the Ask pane, or run `/ask <question>`. Claude answers in
 the background, in the pane. The main conversation never sees the question
 or the answer, so it doesn't fill up the context.
 
+It needs Claude Code v2.1.287 or later. Mods are an early access part of
+Claude Code: their API may change between releases, and a release may break
+the plugin until it is updated.
+
 The answer comes from a fork of the session. The fork reads the whole
 conversation, so Claude knows what you are working on. The prompt cache serves
 that history, so a question costs little. If the session has no reply yet,
@@ -40,7 +44,7 @@ The status line shows how many questions are still running.
 ## When Claude asks you
 
 When Claude asks a question with options (the AskUserQuestion dialog), this
-plugin adds three things.
+plugin adds four things.
 
 ### Claude's take
 

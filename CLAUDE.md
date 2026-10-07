@@ -17,7 +17,8 @@ sh scripts/typecheck.sh                     # type-check every plugin against th
 sh scripts/mutants.sh                       # put each fixed bug in scripts/mutants/ back and check the tests catch it (about a minute)
 claude plugin test plugins/issue-board      # run one plugin's *.test.ts(x); there is no per-test filter
 claude plugin validate --json plugins/issue-board   # what the module hooks and calls, state keys, gating hooks and `.catch`
-npx -p typescript tsc -p plugins/issue-board        # type-check; needs .claude-plugin/types/, see below
+npx -p typescript@7 tsc -p plugins/issue-board      # type-check; needs .claude-plugin/types/, see below
+claude --plugin-dir ./plugins/issue-board           # try a plugin from this checkout without installing it
 ```
 
 CI (`.github/workflows/validate.yml`) runs `validate.sh`, then `test.sh`, then `typecheck.sh`. A second workflow,
@@ -29,6 +30,11 @@ ticked. When that run fails, fix the plugins for the new release. Once it passes
 The marketplace is registered from this local checkout, so the installed plugins are whatever is checked out here.
 After changing a plugin, or after merging and pulling `main`, the person runs `/reload-plugins` to load it.
 
+`.claude/settings.json` sets the board's options under both `issue-board@astrosteveo-plugins` and `issue-board`.
+Claude Code keys a plugin's options by the name it loaded it under: the installed plugin is
+`issue-board@astrosteveo-plugins`, and one loaded with `claude --plugin-dir` is plain `issue-board`. Keep the two
+entries the same.
+
 ## How a mod is laid out
 
 - `hooks/hooks.json` names one module, `./register.tsx`, which exports `register: Register = (on, options) => …`.
@@ -37,8 +43,8 @@ After changing a plugin, or after merging and pulling `main`, the person runs `/
   function literal that calls `fallBack` (the site's default, `next(e)`, plus a debug log line) or, for the board's own
   tools, `toolFailed` (a deny that names the error). The engine only follows `$` into functions declared in
   `register.tsx`, so helpers that take `$` live there, not in `parse.ts`.
-- Pure logic lives in sibling `.ts` files (`parse.ts`, and in issue-board `access.ts`, `project.ts`, `setup.ts`) and
-  is imported by `register.tsx`. Tests call these directly. Put new layout or text logic there when it can be tested
+- Pure logic lives in sibling `.ts` files and is imported by `register.tsx`: `parse.ts` in both plugins, in
+  issue-board `access.ts`, `markers.ts`, `plan.ts`, `project.ts`, `setup.ts` and `stats.ts`, and in ask `decide.ts`. Tests call these directly. Put new layout or text logic there when it can be tested
   without mounting a pane.
 - `types/index.d.ts` is the plugin's state contract: every `$.state` atom (`atom({ plugin, key })`) is declared there
   under the plugin's name, and `claude plugin validate` holds the module's keys to it. Add a key there when adding an
@@ -65,6 +71,24 @@ every named test among the failures. It reports `SURVIVED` when nothing fails, `
 through a named test (a patch that breaks loading, or trips some other test), `NO TEST` when the header names none,
 and `STALE` when a patch no longer applies; any of them fails the run. Make a patch by changing the code in a scratch
 worktree and saving `git diff` below the header. Remake a stale one the same way against the current code.
+
+## The call budget
+
+`plugins/issue-board/tests/budget.test.tsx` holds the board to a budget of GitHub calls, as `/issues stats` counts
+them, so a change that adds calls fails CI and says by how many. Raise a budget only on purpose, and update this table
+with it.
+
+| What | REST | REST 304 | GraphQL |
+| --- | --- | --- | --- |
+| A refresh | 1 | 1 | 3 |
+| Start | 0 | 0 | 3 |
+| `issue_update` setting a Priority, with the refresh after it | 1 | 1 | 4 |
+| A capture: the closed issues to compare with, the issue, its project item and Status | 2 | 0 | 2 |
+| A `project_plan` of a Status and a Priority, approved, with one refresh after it | 1 | 1 | 5 |
+| Setup's Apply on a fresh repo, with the refresh after it | 7 | 0 | 16 |
+| An idle hour, at the 5-minute setting | 4 | 12 | 14 |
+
+Start adds at most 600 characters to Claude's context: the start message and the working note.
 
 ## issue-board in brief
 

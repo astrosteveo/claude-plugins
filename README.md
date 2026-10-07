@@ -8,7 +8,7 @@ maintained by astrosteveo.
 | Plugin | What it does |
 | --- | --- |
 | [issue-board](plugins/issue-board) | Open GitHub issues and pull requests in a pane and under the prompt, with acceptance progress and CI, and a button that hands an issue to Claude. |
-| [ask](plugins/ask) | Ask Claude a side question or for prompt ideas; it answers in a pane, in the background, and nothing lands in the chat. |
+| [ask](plugins/ask) | Ask Claude a side question in a pane, and get Claude's own pick, remembered answers and a decision log when Claude asks you. |
 
 ## Requirements
 
@@ -19,8 +19,8 @@ their API may change between releases, and a release may break a mod until it
 is updated.
 
 The issue board changes some things by itself and adds to Claude's prompts.
-Its README lists each, with its setting and default:
-[What the board changes, and how to turn it off](plugins/issue-board/README.md#what-the-board-changes-and-how-to-turn-it-off).
+Its README lists each, with its setting and default, under
+[Settings](plugins/issue-board/README.md#settings).
 
 ## Install
 
@@ -40,7 +40,7 @@ From a local checkout, register the checkout directory instead:
 
 The same commands work from a shell as `claude plugin marketplace add ...` and
 `claude plugin install ...`. Restart Claude Code or run `/reload-plugins` after
-installing. Plugin skills are namespaced as `/<plugin>:<skill>`.
+installing.
 
 To try a plugin without installing it, start Claude Code with the plugin
 directory: `claude --plugin-dir ./plugins/my-plugin`.
@@ -52,32 +52,33 @@ directory: `claude --plugin-dir ./plugins/my-plugin`.
   marketplace.json            # Marketplace identity and ordered plugin catalog
 plugins/                      # One directory per plugin
 scripts/validate.sh           # Strict validation of the marketplace and every plugin
-scripts/test.sh               # Every plugin's tests
+scripts/test.sh               # Every plugin's tests, and the userConfig check below
+scripts/config-rows.test.mjs  # Every userConfig field must be one /config can show as a row
 scripts/typecheck.sh          # Type-check every plugin against the installed Claude Code
-.github/workflows/validate.yml
+scripts/mutants.sh            # Proves each regression test still catches its bug
+scripts/mutants/              # One patch per fixed bug, which puts the bug back
+.github/workflows/            # validate.yml (CI) and mutants.yml
 CLAUDE.md                     # Guidance for Claude Code in this repository (AGENTS.md links to it)
 ```
 
-Each plugin uses this layout:
+Each plugin is a mod, laid out like this:
 
 ```text
 plugins/my-plugin/
   .claude-plugin/
-    plugin.json               # Plugin identity and metadata
+    plugin.json               # Plugin identity, metadata and settings (userConfig)
   README.md
-  skills/                     # Optional skills, one directory each
-    my-skill/
-      SKILL.md
-  agents/                     # Optional subagents, one Markdown file each
-    my-agent.md
-  hooks/hooks.json            # Optional hook configuration
-  .mcp.json                   # Optional MCP server configuration
-  scripts/                    # Optional supporting scripts
+  hooks/
+    hooks.json                # Names the hooks module
+    register.tsx              # The module: exports register, which hooks Claude Code's events
+    parse.ts                  # Pure logic the tests call directly (optional)
+  types/index.d.ts            # The plugin's state contract and shared types (optional)
+  tests/                      # *.test.ts(x), run by claude plugin test
+  tsconfig.json               # Extends .claude-plugin/types/tsconfig.json
 ```
 
-Only create the optional components a plugin uses. Claude Code discovers the
-default component directories automatically; `plugin.json` only needs component
-paths when the layout is non-standard. There is no root plugin manifest: this
+Claude Code writes the API's typings into `.claude-plugin/types/` each time it
+loads the mod, and git ignores them. There is no root plugin manifest: this
 repository is a catalog of plugins, each with its own manifest.
 
 ## Add a plugin
@@ -90,20 +91,40 @@ repository is a catalog of plugins, each with its own manifest.
      "name": "my-plugin",
      "displayName": "My Plugin",
      "version": "0.1.0",
-     "description": "Reusable workflows for my projects.",
+     "description": "A word of my own under the prompt.",
      "author": {
        "name": "astrosteveo"
      },
-     "keywords": ["workflow"]
+     "keywords": ["mod"]
    }
    ```
 
-2. Add components. A skill lives at `plugins/my-plugin/skills/my-skill/SKILL.md`
-   with YAML frontmatter (`name`, `description`) followed by its instructions.
-   The description tells Claude when to use the skill, so make it specific. An
-   agent lives at `plugins/my-plugin/agents/my-agent.md` with frontmatter
-   (`name`, `description`, optional `tools`, `disallowedTools`, `skills`,
-   `model`) followed by its system prompt.
+2. Add the hooks module. `plugins/my-plugin/hooks/hooks.json` names it:
+
+   ```json
+   { "modules": ["./register.tsx"] }
+   ```
+
+   `plugins/my-plugin/hooks/register.tsx` exports `register`, which hooks
+   Claude Code's events. Each hook is `($, e, next)`, and `next(e)` runs what
+   is beneath it. This one ends the line under the prompt with a word:
+
+   ```tsx
+   import type { Register } from 'claude-code'
+
+   export const register: Register = on => {
+     on('ui.render', { component: 'PromptHint' }, async (_$, e, next) =>
+       next({ ...e, props: { ...e.props, tail: e.props.tail ? `${e.props.tail} · hello` : 'hello' } }),
+     )
+   }
+   ```
+
+   Add a `tsconfig.json` that extends `./.claude-plugin/types/tsconfig.json`,
+   so `scripts/typecheck.sh` checks the module. When the mod keeps state, add
+   `types/index.d.ts` with its state contract and point `"types"` in
+   `plugin.json` at it. Load the `plugin-authoring` skill before writing more
+   hooks. A hook at a gating site, such as `tool.check` or `prompt.submit`,
+   needs a `.catch`; see [CLAUDE.md](CLAUDE.md).
 
 3. Append an entry to the `plugins` array in `.claude-plugin/marketplace.json`:
 
@@ -111,13 +132,13 @@ repository is a catalog of plugins, each with its own manifest.
    {
      "name": "my-plugin",
      "source": "./plugins/my-plugin",
-     "description": "Reusable workflows for my projects.",
+     "description": "A word of my own under the prompt.",
      "version": "0.1.0",
      "author": {
        "name": "astrosteveo"
      },
      "category": "productivity",
-     "tags": ["workflow"]
+     "tags": ["mod"]
    }
    ```
 
@@ -128,6 +149,7 @@ repository is a catalog of plugins, each with its own manifest.
 
    ```sh
    sh scripts/validate.sh
+   sh scripts/typecheck.sh
    claude --plugin-dir ./plugins/my-plugin
    ```
 
@@ -135,7 +157,7 @@ repository is a catalog of plugins, each with its own manifest.
 
    ```text
    /plugin marketplace update astrosteveo-plugins
-   /plugin install issue-board@astrosteveo-plugins
+   /plugin install my-plugin@astrosteveo-plugins
    ```
 
 ## Validate
@@ -149,17 +171,20 @@ then `scripts/test.sh`, which runs `claude plugin test` on every plugin that
 has tests, then `scripts/typecheck.sh`, which type-checks every plugin, on
 pushes to `main` and on pull requests. Run them locally before committing.
 
+`scripts/mutants.sh` puts each fixed bug in `scripts/mutants/` back, one at a
+time, and fails if the tests still pass. A second workflow, `mutants.yml`,
+runs it on pull requests that touch hooks, tests, `plugin.json` or
+`scripts/`, and weekly.
+
 ## Conventions
 
 - Keep the marketplace `name` stable; install commands use it. It is
   `astrosteveo-plugins` rather than the repository name because
   `claude plugin validate` rejects marketplace names that start with
   `claude-plugins` as impersonating an official Anthropic marketplace.
-- Use lowercase hyphenated plugin, skill, and agent names and semantic versions
-  such as `0.1.0`.
+- Use lowercase hyphenated plugin names and semantic versions such as
+  `0.1.0`.
 - Keep component paths relative to the plugin root, starting with `./`.
-- Reference bundled files from skill and agent text with `${CLAUDE_PLUGIN_ROOT}`
-  so paths resolve wherever the plugin is installed.
 - Use `claude plugin tag plugins/my-plugin` to create a `my-plugin--v0.1.0`
   release tag once the manifest and marketplace entry agree.
 
@@ -168,8 +193,6 @@ pushes to `main` and on pull requests. Run them locally before committing.
 - [Claude Code plugins](https://code.claude.com/docs/en/plugins)
 - [Plugin marketplaces](https://code.claude.com/docs/en/plugin-marketplaces)
 - [Plugins reference](https://code.claude.com/docs/en/plugins-reference)
-- [Skills](https://code.claude.com/docs/en/skills)
-- [Subagents](https://code.claude.com/docs/en/sub-agents)
 
 ## License
 
