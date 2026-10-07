@@ -1833,6 +1833,9 @@ export const TOOLS: { name: string; what: string }[] = [
   { name: 'project_adopt', what: 'lets the board write to a project, or releases it, when you ask, after a permission prompt' },
 ]
 
+// The # suggestions' feature name, which /issues help also looks for to mark its line off.
+const HASH_FEATURE = 'Issues and pull requests offered after # in the prompt box'
+
 // /issues help: the pane and its keys, the card, the band and hint, the subcommands, and Claude's tools.
 export const helpText = (filters: { hotkey: string; name: string }[], off: { feature: string; why: string }[] = [], views = false): string =>
   [
@@ -1853,6 +1856,7 @@ export const helpText = (filters: { hotkey: string; name: string }[], off: { fea
     'Under the prompt',
     `- The band above the prompt shows what needs you: failing CI, news on your issue, pull requests to merge, background agents.${off.some(one => one.feature === 'The band above the prompt') ? ' (off)' : ''}`,
     `- The hint line sums up what is open.${off.some(one => one.feature === 'The summary under the prompt') ? ' (off)' : ''}`,
+    `- # in the prompt box offers the board's issues and pull requests.${off.some(one => one.feature === HASH_FEATURE) ? ' (off)' : ''}`,
     '',
     'Subcommands',
     ...SUBCOMMANDS.map(one => `- /issues ${one.name}: ${one.what}.`),
@@ -1865,7 +1869,7 @@ export const helpText = (filters: { hotkey: string; name: string }[], off: { fea
 // The settings that turn a feature off, by their key: true where the feature is on. `refresh` is false when the board
 // reads GitHub only when asked, and `prRule` when the working note has no pull request rule.
 export type Switches = Record<
-  'moveToDone' | 'moveToVerification' | 'advanceEpics' | 'claimOnStart' | 'workingNote' | 'prRule' | 'issueCopies' | 'suggestNextStep' | 'followBranch' | 'band' | 'hintSummary' | 'refresh',
+  'moveToDone' | 'moveToVerification' | 'advanceEpics' | 'claimOnStart' | 'workingNote' | 'prRule' | 'issueCopies' | 'hashSuggestions' | 'suggestNextStep' | 'followBranch' | 'band' | 'hintSummary' | 'refresh',
   boolean
 >
 
@@ -1883,6 +1887,7 @@ const FEATURES: { feature: string; setting?: [keyof Switches, string]; role?: Ro
   { feature: 'The working note in the system prompt', setting: ['workingNote', 'Working note in the system prompt'] },
   { feature: "The working note's pull request rule", setting: ['prRule', "Working note's pull request rule"] },
   { feature: 'Copies of the issues a prompt names', setting: ['issueCopies', 'Copies of issues a prompt names'] },
+  { feature: HASH_FEATURE, setting: ['hashSuggestions', 'Suggest issues after #'] },
   { feature: 'The next step suggested in the prompt box', setting: ['suggestNextStep', 'Suggest the next step'] },
   { feature: 'Following the branch to the issue Claude is on', setting: ['followBranch', 'Follow the branch'] },
   { feature: 'The band above the prompt', setting: ['band', 'Band above the prompt'] },
