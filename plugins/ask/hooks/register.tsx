@@ -10,6 +10,9 @@ import {
   agreement,
   agreementLines,
   answerOf,
+  awayContext,
+  awayNotice,
+  awayPicks,
   clip,
   decisionsOf,
   decorate,
@@ -23,6 +26,8 @@ import {
   sureness,
   takeLines,
   takePrompt,
+  idleTimeout,
+  timedOut,
   when,
   withDecisions,
   withRemembered,
@@ -38,6 +43,7 @@ const draft = atom({ plugin: 'ask', key: 'draft' } as const, '')
 const DECISIONS = 'decisions'
 const advice = atom({ plugin: 'ask', key: 'advice' } as const, null)
 const offer = atom({ plugin: 'ask', key: 'offer' } as const, null)
+const away = atom({ plugin: 'ask', key: 'away' } as const, null)
 const log = atom({ plugin: 'ask', key: 'log' } as const, [])
 const remembered = atom({ plugin: 'ask', key: 'remembered' } as const, [])
 const search = atom({ plugin: 'ask', key: 'search' } as const, '')
@@ -206,6 +212,17 @@ async function remember($: EngineInterface, held: Offer) {
   $.ui.toast(held.items.length === 1 ? 'Remembered. Claude gets that answer next time without asking.' : `Remembered ${held.items.length} answers.`)
 }
 
+// The idle timeout the dialog runs under, or null when it never fires or the
+// settings can't be read. Then the take box just says nothing about it.
+async function timeoutOf($: EngineInterface): Promise<string | null> {
+  try {
+    return idleTimeout(await $.settings.read())
+  } catch (error) {
+    $.ui.log(`ask: settings.read: ${error instanceof Error ? error.message : String(error)}`, { to: 'debug' })
+    return null
+  }
+}
+
 async function loadDecisions($: EngineInterface) {
   const [savedLog, savedRemembered] = await Promise.all([$.store.get('log'), $.store.get('remembered')])
   await update($, log, () => decisionsOf(savedLog))
@@ -248,9 +265,10 @@ export const register: Register = on => {
     return {}
   })
 
-  // The offer to remember is about the last answer; a new prompt moves on.
+  // The band is about the last answer; a new prompt moves on.
   on('prompt.submit', async ($, e, next) => {
     if ((await read($, offer)) !== null) await update($, offer, () => null)
+    if ((await read($, away)) !== null) await update($, away, () => null)
     return next(e)
   }).catch(($, e, next) => fallBack($, e, next, 'prompt.submit'))
 
@@ -291,6 +309,10 @@ export const register: Register = on => {
 
     const result = ran.result as { answers?: Record<string, string> }
     const takes = held?.status === 'ready' ? held.takes : []
+    // Timed out with nobody at the keyboard: Claude goes with its own pick
+    // for each question left open. With no ready take there are no picks, and
+    // the timeout reaches Claude as it would without this plugin.
+    const picks = timedOut(ran.result) ? awayPicks(asked, result.answers, takes) : []
     const entries: Decision[] = []
     const items: Offer['items'] = []
     asked.forEach((q, i) => {
@@ -300,11 +322,25 @@ export const register: Register = on => {
       entries.push({ root, header: q.header, question: q.question, answer, pick: take?.pick, confidence: take?.confidence, source: 'you', at: now })
       items.push({ key: keyOf(root, q), question: q.question, answer })
     })
+    // Logged as away picks, and never offered to remember: nobody chose them.
+    for (const { question: q, take } of picks) {
+      entries.push({ root, header: q.header, question: q.question, answer: take.pick, pick: take.pick, confidence: take.confidence, source: 'away', at: now })
+    }
     await save($, entries)
     if (items.length > 0) await update($, offer, () => ({ root, items }))
+    const context = [...(ran.context ?? [])]
+    if (picks.length > 0) {
+      const noted = picks.map(({ question: q, take }) => ({ question: q.question, pick: take.pick }))
+      await update($, away, () => ({ items: noted }))
+      $.ui.toast(awayNotice(noted))
+      context.push(awayContext(picks))
+    }
 
-    if (fromMemory.length === 0) return ran
-    return { result: { ...(ran.result as object), questions, answers: { ...given, ...result.answers } } as never }
+    if (fromMemory.length === 0) return picks.length === 0 ? ran : { ...ran, context }
+    return {
+      result: { ...(ran.result as object), questions, answers: { ...given, ...result.answers } } as never,
+      ...(context.length > 0 ? { context } : {}),
+    }
   }).catch(($, e, next) => fallBack($, e, next, 'tool.call on AskUserQuestion'))
 
   // The engine's dialog, with Claude's take above it and in the option
@@ -321,7 +357,8 @@ export const register: Register = on => {
 
     const { Box, Text } = $.ui.resolve(e)
     // The border and the title take three of the rows.
-    const lines = held.status === 'ready' ? takeLines(questions, takes, ROWS_AROUND_DIALOG - 3) : []
+    const timeout = held.status === 'ready' ? await timeoutOf($) : null
+    const lines = held.status === 'ready' ? takeLines(questions, takes, ROWS_AROUND_DIALOG - 3, timeout) : []
     return (
       <Box flexDirection="column">
         <Box key="take" flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1}>
@@ -355,18 +392,31 @@ export const register: Register = on => {
   })
 
   // After an answer: offer to give the same answer next time without asking.
+  // After a timeout: say which picks Claude went with while the person was away.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const held = await read($, offer)
-    if (held === null || e.props.hasSurvey) return next(e)
+    const gone = await read($, away)
+    if ((held === null && gone === null) || e.props.hasSurvey) return next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
-    const [first] = held.items
-    const what = held.items.length === 1 && first ? `"${first.question}" → ${first.answer}` : `your ${held.items.length} answers`
+    const [first] = held?.items ?? []
+    const what = held?.items.length === 1 && first ? `"${first.question}" → ${first.answer}` : `your ${held?.items.length} answers`
     return (
-      <Box gap={1} flexWrap="wrap">
-        <Text color="claude">✦</Text>
-        <Text>Remember {what} for next time?</Text>
-        <Button key="remember" label="Remember" hotkey="r" variant="primary" onPress={() => void remember($, held)} />
-        <Button key="dismiss" label="Not now" hotkey="n" role="dismiss" onPress={() => void update($, offer, () => null)} />
+      <Box flexDirection="column">
+        {gone !== null && (
+          <Box key="away" gap={1} flexWrap="wrap">
+            <Text color="claude">✦</Text>
+            <Text>{awayNotice(gone.items)}</Text>
+            <Button key="got-it" label="Got it" hotkey="g" role="dismiss" onPress={() => void update($, away, () => null)} />
+          </Box>
+        )}
+        {held !== null && (
+          <Box key="offer" gap={1} flexWrap="wrap">
+            <Text color="claude">✦</Text>
+            <Text>Remember {what} for next time?</Text>
+            <Button key="remember" label="Remember" hotkey="r" variant="primary" onPress={() => void remember($, held)} />
+            <Button key="dismiss" label="Not now" hotkey="n" role="dismiss" onPress={() => void update($, offer, () => null)} />
+          </Box>
+        )}
       </Box>
     )
   })
@@ -440,6 +490,7 @@ export const register: Register = on => {
             <Text>
               {'  '}→ <Text bold>{d.answer}</Text>
               {d.source === 'remembered' && <Text dimColor> (remembered)</Text>}
+              {d.source === 'away' && <Text color="warning"> · picked while you were away ({d.confidence}%)</Text>}
               {agreed(d) === true && <Text color="success"> ✓ Claude agreed ({d.confidence}%)</Text>}
               {agreed(d) === false && (
                 <Text dimColor>

@@ -68,9 +68,24 @@ export function pickText(line: Extract<TakeLine, { kind: 'pick' }>): string {
 
 export const textOf = (line: TakeLine): string => (line.kind === 'pick' ? pickText(line) : line.text)
 
+// The `askUserQuestionTimeout` setting when it can fire: "60s", "5m" or
+// "10m". Anything else, "never" and a missing setting included, is null.
+export function idleTimeout(settings: unknown): string | null {
+  const value = (settings as { askUserQuestionTimeout?: unknown } | null | undefined)?.askUserQuestionTimeout
+  return typeof value === 'string' && ['60s', '5m', '10m'].includes(value) ? value : null
+}
+
+// The take box's line saying what happens if nobody answers in time.
+export function awayText(questions: readonly Question[], takes: readonly (Take | null)[], timeout: string): string {
+  const picked = questions.flatMap((_, i) => (takes[i] ? [takes[i] as Take] : []))
+  const what = questions.length === 1 && picked[0] ? clip(picked[0].pick, 28) : 'my picks'
+  return `If you're away for ${timeout}, I'll go with ${what}.`
+}
+
 // The take box's lines within `rows`. Pick lines come first in importance,
-// then why, then what the question means; notes are cut to the room left.
-export function takeLines(questions: readonly Question[], takes: readonly (Take | null)[], rows: number): TakeLine[] {
+// then the away line when there is one, then why, then what the question
+// means; notes are cut to the room left.
+export function takeLines(questions: readonly Question[], takes: readonly (Take | null)[], rows: number, timeout: string | null = null): TakeLine[] {
   const shown = questions.flatMap((q, i) => {
     const take = takes[i]
     return take ? [{ q, take }] : []
@@ -96,11 +111,12 @@ export function takeLines(questions: readonly Question[], takes: readonly (Take 
     spare -= rowsOf(fitted)
     return { kind: 'note', text: fitted }
   }
+  const away = kept.length > 0 && timeout !== null ? note(awayText(questions, takes, timeout)) : null
   if (isOne && kept.length === 1) {
     const [{ take }] = shown as [{ q: Question; take: Take }]
     const why = note(take.why ? `Why: ${take.why}` : '')
     const plain = note(take.plain ? `In plain words: ${take.plain}` : '')
-    return [plain, kept[0], why].filter((line): line is TakeLine => line !== null && line !== undefined)
+    return [plain, kept[0], why, away].filter((line): line is TakeLine => line !== null && line !== undefined)
   }
   const lines: TakeLine[] = []
   kept.forEach((line, i) => {
@@ -108,7 +124,45 @@ export function takeLines(questions: readonly Question[], takes: readonly (Take 
     const why = note(shown[i]?.take.why ?? '')
     if (why) lines.push(why)
   })
+  if (away) lines.push(away)
   return lines
+}
+
+// Claude Code's dialog, once `askUserQuestionTimeout` passes with nobody at
+// the keyboard, submits what was selected so far and sets `afkTimeoutMs`.
+// A person answering never sets it.
+export function timedOut(result: unknown): boolean {
+  return typeof (result as { afkTimeoutMs?: unknown } | null | undefined)?.afkTimeoutMs === 'number'
+}
+
+export type AwayPick = { question: Question; take: Take }
+
+// The questions a timed-out dialog left unanswered that Claude has a take
+// for. An answer selected before the timeout stands.
+export function awayPicks(questions: readonly Question[], answers: unknown, takes: readonly (Take | null)[]): AwayPick[] {
+  return questions.flatMap((question, i) => {
+    const take = takes[i]
+    return take && answerOf(answers, question) === undefined ? [{ question, take }] : []
+  })
+}
+
+// What Claude reads after the tool's result. The answers stay as the person
+// left them, so the tool's own text still says truthfully what they chose;
+// this tells Claude to go ahead with its pick for the rest.
+export function awayContext(picks: readonly AwayPick[]): string {
+  const lines = picks.map(({ question, take }) => `- "${question.question}": ${take.pick} (${take.confidence}% sure)`)
+  return [
+    'The user was away and the question timed out. The ask plugin took your earlier pick for each question they left unanswered:',
+    ...lines,
+    'The user did not choose these. Go ahead with them, and mention it when the user is back.',
+  ].join('\n')
+}
+
+// The toast and the band's text after an away pick.
+export function awayNotice(picks: readonly { question: string; pick: string }[]): string {
+  const [first] = picks
+  if (picks.length === 1 && first) return `You were away, so Claude went with ${first.pick}.`
+  return `You were away, so Claude went with its picks for ${picks.length} questions.`
 }
 
 // Reads the fork's reply. Anything that doesn't fit a question is dropped, so
@@ -193,9 +247,10 @@ export function when(at: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
-// Did the person go with Claude's pick? Only said when Claude had one.
+// Did the person go with Claude's pick? Only said when Claude had one and
+// the person chose; an away pick was nobody's choice.
 export function agreed(d: Decision): boolean | undefined {
-  if (d.pick === undefined) return undefined
+  if (d.pick === undefined || d.source === 'away') return undefined
   return d.pick.toLowerCase() === d.answer.toLowerCase()
 }
 
@@ -225,7 +280,8 @@ export function weekOf(at: number): number {
 
 // How often the person went with Claude's pick: over the whole log, over the
 // last 20 answers Claude had a pick for, and per week, newest week first.
-// Answers given from memory had no take, so they don't count.
+// Answers given from memory had no take, and nobody chose an away pick, so
+// neither counts.
 export function agreement(log: readonly Decision[]): Agreement {
   const taken = log.filter(d => d.pick !== undefined && d.source === 'you').sort((a, b) => a.at - b.at)
   const byWeek = new Map<number, Decision[]>()
@@ -269,6 +325,7 @@ export function logMarkdown(log: readonly Decision[]): string {
           : agreed(d)
             ? ` (Claude agreed, ${d.confidence}%)`
             : ` (Claude would have picked ${d.pick}, ${d.confidence}%)`
+      if (d.source === 'away') return `- **${when(d.at)}** · ${d.header}: ${d.question}\n  → ${d.answer} (picked by Claude while you were away, ${d.confidence}%)`
       const from = d.source === 'remembered' ? ' (remembered)' : ''
       return `- **${when(d.at)}** · ${d.header}: ${d.question}\n  → ${d.answer}${from}${take}`
     })
