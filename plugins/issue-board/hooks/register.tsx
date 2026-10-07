@@ -1,8 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentSpawnResult, Caught, EngineInterface, HookFailure, ModelForkResult, Register, ThemeKey, Timer, ToolCallResult, UiCopyArgs } from 'claude-code'
 
-import type { Adopted, Adoption, Alert, Board, BoxTask, Check, Comment, Draft, DraftEdit, EpicNote, Filter, GroupBy, Issue, Known, Launch, Problem, Project, ProjectField, Role, Roles, StatusPicks, StatusUpdate, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
-import type { Ended, IssueChanges, NewIssue, PrRule, StartMode, Switches } from './parse'
+import type { Adopted, Adoption, Alert, Board, BoxTask, BuiltInFilter, Check, Comment, Draft, DraftEdit, EpicNote, GroupBy, Issue, Known, Launch, Problem, Project, ProjectField, Role, Roles, StatusPicks, StatusUpdate, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
+import type { Ended, FilterSource, IssueChanges, NewIssue, PrRule, StartMode, Switches, Tab } from './parse'
 import type { Linked } from './project'
 import { authOf, problemsOf, problemsText, repoOf } from './access'
 import {
@@ -197,6 +197,13 @@ import {
   liveEpicNotes,
   subIssuesBoxOf,
   withSubIssuesBox,
+  tabOf,
+  tabsOf,
+  tabTest,
+  viewFieldsOf,
+  viewGroupingOf,
+  viewMatchOf,
+  viewUrl,
 } from './parse'
 
 const PANE = 'issue-board'
@@ -223,6 +230,8 @@ type Settings = {
   band: boolean
   hintSummary: boolean
   refreshMinutes: number | null
+  // Where the pane's tabs come from: the project's views, or the board's own filters.
+  filters: FilterSource
 }
 const settingsOf = (options: Readonly<Record<string, unknown>> | undefined): Settings => ({
   moveToDone: options?.moveToDone === true,
@@ -241,6 +250,7 @@ const settingsOf = (options: Readonly<Record<string, unknown>> | undefined): Set
   hintSummary: options?.hintSummary !== false,
   // How often the board looks at GitHub by itself, in minutes; null for only when asked.
   refreshMinutes: options?.refresh === 'manual' ? null : options?.refresh === '15' ? 15 : options?.refresh === '60' ? 60 : 5,
+  filters: options?.filters === 'board' ? 'board' : 'views',
 })
 let settings: Settings = settingsOf(undefined)
 // While a pull request's CI runs, the board looks again this often, so its pass or failure shows soon after.
@@ -385,17 +395,6 @@ const guessSeen = atom({ plugin: 'issue-board', key: 'guessSeen' } as const, [])
 // a call of the tool may reach. None set, they may.
 const mayAllow = (ceiling: 'allow' | 'ask' | 'deny' | undefined): boolean => ceiling === undefined || ceiling === 'allow'
 
-// The filters; with a project, the first two read Priority and say so.
-const FILTERS: { id: Filter; label: string; planned: string; hotkey: string }[] = [
-  { id: 'active', label: 'Active', planned: 'Now', hotkey: '1' },
-  { id: 'future', label: 'Future', planned: 'Later', hotkey: '2' },
-  { id: 'bugs', label: 'Bugs', planned: 'Bugs', hotkey: '3' },
-  { id: 'mine', label: 'Mine', planned: 'Mine', hotkey: '4' },
-  { id: 'all', label: 'All', planned: 'All', hotkey: '5' },
-  { id: 'inbox', label: 'Inbox', planned: 'Inbox', hotkey: '6' },
-  { id: 'closed', label: 'Closed', planned: 'Closed', hotkey: '7' },
-]
-
 // What the settings turn off, for /issues check and /issues help.
 const switchesOf = (now: Settings): Switches => ({
   moveToDone: now.moveToDone,
@@ -412,12 +411,8 @@ const switchesOf = (now: Settings): Switches => ({
   refresh: now.refreshMinutes !== null,
 })
 
-// Whether the project has an Inbox: an option with its role.
-const hasInbox = (project: Project | null | undefined): boolean => roleOf(project, 'inbox') !== undefined
-
-// The filters as the pane offers them, with the names it shows: Inbox only with a project that has one.
-const filtersFor = (project: Project | null | undefined): { hotkey: string; name: string }[] =>
-  FILTERS.filter(one => one.id !== 'inbox' || hasInbox(project)).map(one => ({ hotkey: one.hotkey, name: project ? one.planned : one.label }))
+// The pane's tabs as it offers them: the project's views with filters, then All and Closed; or else the built-in filters.
+const filtersFor = (project: Project | null | undefined): Tab[] => tabsOf(project, settings.filters)
 
 const GROUPINGS: { id: GroupBy; label: string }[] = [
   { id: 'status', label: 'Status' },
@@ -976,11 +971,11 @@ const fetchIssues = async ($: EngineInterface, nameWithOwner: string): Promise<{
   const preferred = kept.setup?.project.id
   // Another session may have adopted or released the project meanwhile; the prompt follows.
   await loadAdoption($)
-  const pull = async (withProject: boolean) => {
+  const pull = async (withProject: boolean, fields: readonly string[] = []): Promise<{ issues: Issue[]; project: Project | null; types: string[] }> => {
     const pages: string[] = []
     let after: string | null = null
     do {
-      const page: string = await gh($, ['api', 'graphql', '-f', `owner=${owner}`, '-f', `name=${name}`, ...(after ? ['-f', `after=${after}`] : []), '-f', `query=${issuesQuery(withProject)}`])
+      const page: string = await gh($, ['api', 'graphql', '-f', `owner=${owner}`, '-f', `name=${name}`, ...(after ? ['-f', `after=${after}`] : []), '-f', `query=${issuesQuery(withProject, fields)}`])
       pages.push(page)
       after = nextPageOf(page)
     } while (after && pages.length < PAGES)
@@ -990,7 +985,12 @@ const fetchIssues = async ($: EngineInterface, nameWithOwner: string): Promise<{
       const cost = limits.reduce((sum, limit) => sum + limit.cost, 0)
       $.ui.log(`issue-board: the issues query cost ${cost} GraphQL points over ${pages.length} ${pages.length === 1 ? 'page' : 'pages'}; ${last.remaining} left until ${last.resetAt}`, { to: 'debug' })
     }
-    const parsed = parseGraph(pages, preferred)
+    const parsed = parseGraph(pages, preferred, fields)
+    // The project's views may filter or group by fields beyond Status and Priority. Their values are read with the
+    // issues, named from the views the last read found. When the views now name a field that read didn't ask for, as on
+    // the first read or after a view changed, the issues are read once more with it.
+    const wanted = settings.filters === 'views' ? viewFieldsOf(parsed.project) : []
+    if (withProject && wanted.some(field => !fields.includes(field))) return pull(true, wanted)
     // The board goes by the roles saved for the project it reads, by setup or /issues statuses, or else by the names,
     // which is a guess for the band to confirm; and by the person's count of Now priorities.
     if (!parsed.project) return parsed
@@ -1000,7 +1000,8 @@ const fetchIssues = async ($: EngineInterface, nameWithOwner: string): Promise<{
   const unread = projectRefusal !== undefined || ((await read($, access))?.problems.some(problem => problem.id === 'scope-project') ?? false)
   if (!unread) {
     try {
-      return await pull(true)
+      const last = settings.filters === 'views' ? viewFieldsOf((await read($, board))?.project) : []
+      return await pull(true, last)
     } catch (cause) {
       const message = messageOf(cause)
       if (!PROJECT_REFUSED.test(message)) throw cause
@@ -1168,7 +1169,9 @@ const land = async ($: EngineInterface, before: Board | null, next: Board, seen:
   await save($)
   // New issues in the Inbox while it shows: Claude suggests for them too, unless its last answer failed, which waits
   // for Suggest again.
-  if ((await read($, filter)) === 'inbox' && !(await read($, triage)).failed) void suggestInbox($)
+  // The Inbox shows only while it is a tab, which it isn't once the project's views are the tabs.
+  const inboxShown = tabOf(filtersFor(next.project), await read($, filter)).id === 'inbox'
+  if (inboxShown && !(await read($, triage)).failed) void suggestInbox($)
   void moveToDone($, before, next)
   void moveToVerification($, before, next)
   // Epic lines that no longer hold on this read go before advanceEpics raises new ones.
@@ -2781,8 +2784,18 @@ const loadComments = async ($: EngineInterface, number: number): Promise<void> =
   }
 }
 
+// Choosing a tab of the pane. A view's tab takes the view's grouping, as GitHub shows it, when the board can group
+// that way; the person can pick another after.
+const pickTab = async ($: EngineInterface, tab: Tab, project: Project | null): Promise<void> => {
+  await update($, filter, () => tab.id)
+  const grouping = viewGroupingOf(tab.view, project)
+  if (grouping) await update($, groupBy, () => grouping.by)
+  if (tab.id === 'inbox') await suggestInbox($)
+  else if (tab.id === 'closed') await readRecent($)
+}
+
 // What the card's editor offers: the repo's labels and open milestones, read when it opens.
-const loadPalette = async ($: EngineInterface): Promise<void> => {
+const loadPalette = async($: EngineInterface): Promise<void> => {
   try {
     const repo = (await read($, board))?.repo
     if (!repo) return
@@ -3070,7 +3083,8 @@ export const register: Register = (on, options) => {
     }
     if (e.args.trim() === 'help') {
       const project = (await read($, board))?.project
-      return { text: helpText(filtersFor(project), featuresOff(switchesOf(settings), project, !project || (await mayWrite($, project)))) }
+      const tabs = filtersFor(project)
+      return { text: helpText(tabs, featuresOff(switchesOf(settings), project, !project || (await mayWrite($, project))), tabs.some(tab => tab.view)) }
     }
     if (e.args.trim() === 'check') {
       const problems = await checkAccess($)
@@ -3285,7 +3299,7 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: ISSUES_TOOL }, async ($, e) => {
     const input = e as unknown as {
       number?: number
-      filter?: Filter
+      filter?: BuiltInFilter
       area?: string
       query?: string
       state?: string
@@ -4072,12 +4086,26 @@ export const register: Register = (on, options) => {
 
     // Without a project the board works from labels: Active and Future, grouped by area.
     const project = now.project ?? null
-    const grouping: GroupBy = picked && (picked !== 'status' || project) ? picked : project ? 'status' : 'area'
+    // The tabs: the project's views with filters, then All and Closed; or the built-in filters. A tab chosen that is no
+    // longer there, such as Now once the views are the tabs, gives way to the first.
+    const tabs = filtersFor(project)
+    const tab = tabOf(tabs, chosen)
+    const shownTab = tab.id
+    const tabTests = new Map(tabs.map(one => [one.id, tabTest(one, project)] as const))
+    const inTab = (one: Tab, issue: Issue) => tabTests.get(one.id)?.(issue, who) ?? false
+    // A view's tab groups as the view does, when the board can: Status, epic, or another field it read. The grouping
+    // named for the view's field shows among the others while its tab does.
+    const viewGrouping = viewGroupingOf(tab.view, project)
+    const viewField = viewGrouping?.by === 'view' ? viewGrouping.field : null
+    const grouping: GroupBy =
+      picked === 'view' ? (viewField ? 'view' : project ? 'status' : 'area') : picked && (picked !== 'status' || project) ? picked : (viewGrouping?.by ?? (project ? 'status' : 'area'))
+    // The terms of the view's filter the board can't apply, for the note under the heading.
+    const unknownTerms = tab.view ? viewMatchOf(tab.view.filter, project).unknown : []
     // Whether an issue is under the filter and the search. The open card stays in the list whether or not, until it is
     // collapsed, so setting its Priority or Status doesn't take it away while it's being changed.
-    const kept = (issue: Issue) => matches(chosen, issue, who, project) && searched(typed, issue)
+    const kept = (issue: Issue) => inTab(tab, issue) && searched(typed, issue)
     const shown = now.issues.filter(issue => open.includes(issue.number) || kept(issue))
-    const closedNow = chosen === 'closed' ? await read($, recent) : null
+    const closedNow = shownTab === 'closed' ? await read($, recent) : null
     // The project's fields beyond Status and Priority, and what the open card's issue has in them.
     const otherFields = (project?.fields ?? []).filter(field => !/^(status|priority)$/i.test(field.name))
     const fieldValues = await read($, values)
@@ -4096,8 +4124,7 @@ export const register: Register = (on, options) => {
     )
     // One card open: its letter keys work.
     const single = open.filter(number => shown.some(issue => issue.number === number)).length === 1
-    const named = FILTERS.find(one => one.id === chosen)
-    const filterName = (project ? named?.planned : named?.label) ?? ''
+    const filterName = tab.name
     const bugs = now.issues.filter(isBug).length
     const failing = now.prs.filter(pr => pr.ci === 'fail').length
     const overall = sumProgress(shown)
@@ -4149,21 +4176,23 @@ export const register: Register = (on, options) => {
 
     // The Issues heading: its filters, the search and the grouping, which act on the issues below it alone. With a
     // project the first two filters read Priority, and the grouping can be Status.
-    const groupings = GROUPINGS.filter(one => one.id !== 'status' || project)
+    const groupings = [...GROUPINGS.filter(one => one.id !== 'status' || project), ...(viewField ? [{ id: 'view' as const, label: viewField }] : [])]
+    // A tab's label: its name and how many open issues it holds; Closed's count isn't known until it is read.
+    const tabLabel = (one: Tab) => (one.id === 'closed' ? one.name : `${one.name} ${now.issues.filter(issue => inTab(one, issue)).length}`)
     const issuesHeading = (
       <Box flexDirection="row" gap={1} flexWrap="wrap">
         <Text bold color="claude">
           Issues
         </Text>
-        {FILTERS.filter(one => one.id !== 'inbox' || hasInbox(project)).map(one => (
+        {tabs.map(one => (
           <Button
             key={`filter-${one.id}`}
             hotkey={one.hotkey}
-            variant={one.id === chosen ? 'primary' : undefined}
-            dimColor={one.id !== chosen}
-            onPress={() => void update($, filter, () => one.id).then(() => (one.id === 'inbox' ? suggestInbox($) : one.id === 'closed' ? readRecent($) : undefined))}
+            variant={one.id === shownTab ? 'primary' : undefined}
+            dimColor={one.id !== shownTab}
+            onPress={() => void pickTab($, one, project)}
           >
-            {one.id === 'closed' ? one.label : `${project ? one.planned : one.label} ${now.issues.filter(issue => matches(one.id, issue, who, project)).length}`}
+            {tabLabel(one)}
           </Button>
         ))}
         {Input && (
@@ -4522,7 +4551,7 @@ export const register: Register = (on, options) => {
 
     // The Inbox shows each issue with what Claude suggests for it: a row of Priority buttons and one of areas, the picked
     // one highlighted, Claude's reason, and Accept, which moves it on to the Status Claude suggests, or the other.
-    const triaging = chosen === 'inbox' && project !== null
+    const triaging = shownTab === 'inbox' && project !== null
     const areaNames = [...new Set([...triaged.areas, ...labelsOf(now.issues).filter(name => name.startsWith('area:')).map(name => name.slice('area:'.length))])].sort()
     const triageRow = (issue: Issue) => {
       const said = triaged.suggestions.find(one => one.number === issue.number)
@@ -4586,7 +4615,7 @@ export const register: Register = (on, options) => {
     // above it in the window. They are at least these: each line of the board above the list, each heading and row one
     // line, an open card none. Counting short leaves a card smaller than its room, never bigger.
     const PEEK_CLEAR = 28
-    const groups = triaging ? [] : groupsOf(shown, grouping, project)
+    const groups = triaging ? [] : groupsOf(shown, grouping, project, viewField)
     const listed$ = triaging
       ? shown.map(issue => issue.number)
       : groups.flatMap(group => [null, ...(group.folded && !opened.includes(group.key) ? [] : group.issues.map(issue => issue.number))])
@@ -4595,9 +4624,7 @@ export const register: Register = (on, options) => {
     const heading$ = wrappedLines(
       [
         cells('Issues'),
-        ...FILTERS.filter(one => one.id !== 'inbox' || hasInbox(project)).map(
-          one => cells(one.id === 'closed' ? one.label : `${project ? one.planned : one.label} ${now.issues.filter(issue => matches(one.id, issue, who, project)).length}`) + 4,
-        ),
+        ...tabs.map(one => cells(tabLabel(one)) + 4),
         cells('by'),
         ...groupings.map(one => cells(one.label) + 4),
       ],
@@ -4613,6 +4640,7 @@ export const register: Register = (on, options) => {
       ((now.milestones ?? []).length > 0 ? 1 + (sectionOpen('milestones') ? (now.milestones ?? []).length : 0) : 0) +
       (arming && now.prs.length > 0 ? 1 : 0) +
       watched.length +
+      (unknownTerms.length > 0 ? 1 : 0) +
       (triaging ? 1 + (triaged.failed ? 1 : 0) : 0)
     const { offset } = e.props.scroll
     const roomOf = (number: number) => Math.max(0, above$ + listed$.indexOf(number) - offset)
@@ -5241,7 +5269,15 @@ export const register: Register = (on, options) => {
 
         {issuesHeading}
 
-        {chosen === 'closed' && (
+        {unknownTerms.length > 0 && tab.view && project && (
+          // A term of the view's filter the board can't apply is left out, so the tab may hold more than the view.
+          <Box key="view-note" flexDirection="row" gap={1} flexWrap="wrap">
+            <Text color="warning" wrap="wrap">{`The board can't apply ${unknownTerms.map(term => `\`${term}\``).join(', ')} from this view's filter, so it may list more than GitHub does.`}</Text>
+            <Link href={viewUrl(project, tab.view)} label="↗ Open the view" />
+          </Box>
+        )}
+
+        {shownTab === 'closed' && (
           // The issues closed lately, newest change first, each with how it closed: GitHub's, not the board's copy.
           <Box key="closed-list" flexDirection="column">
             {!closedNow && <Text dimColor>◌ Reading the issues closed lately…</Text>}
@@ -5259,7 +5295,7 @@ export const register: Register = (on, options) => {
             ))}
           </Box>
         )}
-        {chosen !== 'closed' && shown.length === 0 && (
+        {shownTab !== 'closed' && shown.length === 0 && (
           <Box flexDirection="column" alignItems="center">
             <Text color="success">✓</Text>
             <Text dimColor>{typed.trim() ? `Nothing under ${filterName} matches “${typed.trim()}”.` : `Nothing open under ${filterName}.`}</Text>

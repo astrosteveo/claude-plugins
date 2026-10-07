@@ -51,7 +51,9 @@ shows 8 rows at most, and reads no more of GitHub than the board already has.
   P0 and P1, unless set otherwise), `2` Later (the rest), `3` Bugs, `4` Mine, `5` All, `6` Inbox (with a project that has one) and `7`
   Closed. Closed lists the issues closed lately, each with how it closed,
   read from GitHub when you choose it. Without a project, `1` and `2` read
-  Active and Future, from the `future` label.
+  Active and Future, from the `future` label. When the project has views
+  with filters, those views are the tabs instead: see
+  [The project's views as tabs](#the-projects-views-as-tabs).
 
 Press the **Milestones** or **Pull requests** heading to fold its section to
 one line, such as `Launch 5/7` or `3 open · ✓ 2 · ✗ 1`. On a pane shorter
@@ -99,6 +101,50 @@ epic line goes after 24 hours. Press **✕** to dismiss one sooner.
 
 Every new epic, from `/issues new epic` or `issue_create` with sub-issues, is
 filed with the "Every sub-issue is closed" box.
+
+### The project's views as tabs
+
+A team that keeps views in its GitHub Project gets them in the pane. Each
+table or board view with a filter becomes a tab, named and ordered as on
+GitHub, on keys `1` to `7`. **All** and **Closed** come after them. A view
+needs a filter to become a tab: a view with none, such as GitHub's own
+"View 1", shows every issue, which All already does. Roadmap views are left
+out, and so are views past the seventh. A project with no filtered views
+keeps the built-in tabs.
+
+A tab shows the open issues its view's filter keeps, from the board's own
+copy, with no extra GitHub request. The board knows these terms:
+
+- `status:`, `priority:`, `label:`, `assignee:` (with `@me`), `milestone:`
+  and `type:` (the issue type).
+- Any project field by name, such as `area:Engine` or
+  `"story points":3`. A hyphen can stand for a space: `story-points:3`.
+- `no:` and `has:` with any of those, such as `no:assignee` or `no:status`.
+- `is:open` and `is:issue` keep every issue on the board. `is:closed` and
+  `is:pr` keep none, since the board holds open issues.
+- `-` before any term to negate it, quotes around values with spaces, and
+  comma lists for any of several values, such as `label:bug,docs`.
+- Plain words match the title, and a number matches the issue.
+
+A term it doesn't know, such as `updated:>@today-7d`, a range or a
+wildcard, is left out. The tab then shows a note naming the term, with
+**↗ Open the view** to see it on GitHub. The tab may list more than the view
+does, never less.
+
+A tab groups its issues the way the view does, when the board can: by
+Status (a board view's columns), by epic for Parent issue, or by another
+field such as Area, which then shows among the **by** buttons. Pick another
+grouping any time. A view grouped by labels or assignees, which an issue
+can have several of, keeps the pane's grouping.
+
+The board reads the views with the issues. When a view filters or groups by
+a field beyond Status and Priority, it reads that field's values for each
+issue too. A new or changed view that names such a field costs one extra
+read the first time. The band, the hint line and **▶ Next** go by the
+issues, not the tab.
+
+To keep the built-in tabs, set **Where the pane's tabs come from**
+(`filters`) to `board`. The default is `views`.
 
 ## Work on an issue
 
@@ -480,7 +526,9 @@ Two more have no setting:
 One more setting changes no behavior, only the filters: **Priorities that
 count as Now** (`nowCount`, default 2) is how many of the project's first
 Priority options the Now filter shows, and triage sends to Ready. The rest
-are Later.
+are Later. **Where the pane's tabs come from** (`filters`, default `views`)
+picks the project's views or the built-in tabs; see
+[The project's views as tabs](#the-projects-views-as-tabs).
 
 The moves change the shared project from your session, so they start off.
 The PR rule is a repo's own convention, so it starts at none. A repo can set
