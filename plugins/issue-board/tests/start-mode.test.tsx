@@ -3,7 +3,7 @@ import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { HANDOFF_ANSWER, handoffPrompt, orchestratorSection } from '../hooks/parse'
-import { fakeGitHub } from './github'
+import { fakeGitHub, session } from './github'
 import type { Raw } from './graph'
 import { COMPOSE, REFRESH, pane } from './ui'
 
@@ -14,8 +14,7 @@ const ISSUES: Raw[] = [{ number: 43, title: 'Edit issues from the board', labels
 const world = (on: On) => {
   const state = { sent: [] as string[], filled: [] as string[] }
   fakeGitHub(on, { repo: 'astrosteveo/claude-plugins', issues: ISSUES, project: true })
-  on('session.id', async () => ({ value: 'session-1' }))
-  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  session(on)
   on('ui.toast', async () => ({ value: undefined }))
   on('ui.log', async () => ({ value: undefined }))
   on('prompt.submit', async (_$, e) => {

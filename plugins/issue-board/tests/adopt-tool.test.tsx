@@ -3,7 +3,7 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import { adoptReason, adoptTarget, approvedOf, linkedOf, releaseReason } from '../hooks/project'
 import { approved, refused } from './engine'
-import { fakeGitHub, json, memoryStore, settingsLog } from './github'
+import { fakeGitHub, json, memoryStore, session, settingsLog } from './github'
 import type { Call } from './github'
 import { PROJECT } from './graph'
 import { REFRESH, REPO } from './ui'
@@ -56,9 +56,7 @@ const world = (on: On, saved: Record<string, unknown> = {}) => {
       return gh.ran.filter(mutates).length
     },
   }
-  on('session.id', async () => ({ value: 'session-1' }))
-  on('session.repo', async () => ({ value: REPO }))
-  on('session.root', async () => ({ value: REPO.root }))
+  session(on)
   on('ui.toast', async () => ({ value: undefined }))
   on('ui.log', async () => ({ value: undefined }))
   on('tool.call', { tool: TOOL }, async () => state.answer)

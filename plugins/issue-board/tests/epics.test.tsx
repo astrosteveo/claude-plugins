@@ -5,7 +5,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Board, EpicNote } from '../types'
 import { draftPrompt, liveEpicNotes, nextOf, parseDraft, parseGraph, sortIssues } from '../hooks/parse'
 import { letThrough } from './engine'
-import { adoptedStore, fakeGitHub, json, ok } from './github'
+import { adoptedStore, fakeGitHub, json, ok, session } from './github'
 import type { Route } from './github'
 import { STATUSES, graphArgs, graphHas, graphPage, isIssuesQuery } from './graph'
 import type { Raw } from './graph'
@@ -53,7 +53,6 @@ test('an epic draft asks for sub-issues and reads them back', () => {
 const github = (on: On, issues: Raw[] = ISSUES) => {
   // These tests have the board write to the project, which the person let it do.
   adoptedStore(on)
-  on('session.root', async () => ({ value: '/work/void-sector' }))
   const state = { filed: [] as { title: string; body: string }[], linked: [] as [number, string][], next: 50 }
   // Issues filed over REST, numbered from 50, and the sub-issue links made.
   const filing: Route = ({ argv, stdin }) => {
@@ -71,9 +70,8 @@ const github = (on: On, issues: Raw[] = ISSUES) => {
     return undefined
   }
   fakeGitHub(on, { repo: 'astrosteveo/claude-plugins', issues, routes: [filing] })
-  on('session.id', async () => ({ value: 'session-1' }))
+  session(on)
   letThrough(on)
-  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
   return state
 }
 
@@ -281,7 +279,6 @@ test('a rule that denies closing an epic still stands, in the main session and i
 const lifecycle = (on: On, open: Raw[]) => {
   // These tests have the board write to the project, which the person let it do.
   adoptedStore(on)
-  on('session.root', async () => ({ value: '/work/void-sector' }))
   const state = { issues: open, writes: [] as string[], bodies: {} as Record<number, string>, created: [] as { title: string; body: string }[] }
   for (const raw of open) state.bodies[raw.number] = raw.body ?? ''
   const route: Route = ({ argv, stdin }) => {
@@ -329,9 +326,8 @@ const lifecycle = (on: On, open: Raw[]) => {
     return undefined
   }
   fakeGitHub(on, { repo: 'astrosteveo/claude-plugins', routes: [route] })
-  on('session.id', async () => ({ value: 'session-1' }))
+  session(on)
   letThrough(on)
-  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
   on('ui.toast', async () => ({ value: undefined }))
   engineBand(on)
   return state

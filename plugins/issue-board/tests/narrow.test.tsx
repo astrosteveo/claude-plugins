@@ -4,7 +4,7 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import { FINISH, FINISH_SHORT, prRowRoom } from '../hooks/parse'
 import type { Board, EpicNote, Plan, Worker } from '../types'
-import { fakeGitHub, heldState, json } from './github'
+import { fakeGitHub, heldState, json, session } from './github'
 import { assertNoSplitAtoms, breaks, splitAtoms } from './narrow'
 import { REFRESH, band, engineBand, pane } from './ui'
 
@@ -117,8 +117,7 @@ const world = async ($: Engine, on: On) => {
   const milestones = ({ argv }: { argv: readonly string[] }) =>
     argv[1] === 'api' && argv[2]?.includes('/milestones') ? json([{ number: 3, title: 'Launch day', state: 'open', due_on: null, open_issues: 4, closed_issues: 2 }]) : undefined
   fakeGitHub(on, { repo: REPO, issues: ISSUES, prs: PRS, project: true, views: VIEWS, routes: [milestones] })
-  on('session.id', async () => ({ value: 'session-1' }))
-  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  session(on)
   engineBand(on)
   // The board's state, held here as the host holds it, so the test can add what a session would have gathered.
   const held = heldState(on)

@@ -3,7 +3,7 @@ import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { backgroundPrompt, namesIssue, startPrompt } from '../hooks/parse'
-import { adoptedStore, fakeGitHub } from './github'
+import { adoptedStore, fakeGitHub, session } from './github'
 import { STATUSES, graphArgs, graphHas } from './graph'
 import type { Raw } from './graph'
 import { REFRESH, pane } from './ui'
@@ -32,7 +32,6 @@ const worker = (number: number): AgentSpawnInput => ({
 const world = (on: On) => {
   // These tests have the board write to the project, which the person let it do.
   adoptedStore(on)
-  on('session.root', async () => ({ value: '/work/void-sector' }))
   const gh = fakeGitHub(on, { repo: 'astrosteveo/claude-plugins', issues: ISSUES, project: true })
   const state = {
     // The writes Start makes, as `status #N <Status>` and `assign #N`.
@@ -50,8 +49,7 @@ const world = (on: On) => {
     tasks: [] as string[],
     spawned: [] as { description: string; prompt: string }[],
   }
-  on('session.id', async () => ({ value: 'session-1' }))
-  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  session(on)
   on('ui.toast', async () => ({ value: undefined }))
   on('ui.log', async () => ({ value: undefined }))
   on('prompt.submit', async (_$, e) => {

@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { answerPrompt, commentsOf, mergeNoteOf, parsePrs, threadsOf } from '../hooks/parse'
-import { fakeGitHub, ok } from './github'
+import { fakeGitHub, ok, session } from './github'
 import type { Call } from './github'
 import { REFRESH, pane } from './ui'
 
@@ -78,8 +78,7 @@ const github = (on: On) => {
     prs: [pr(71, 'DIRTY', [{ login: 'alice' }]), pr(72, 'BEHIND'), pr(73, 'CLEAN')],
     routes: [call => (call.argv.some(arg => arg.includes('reviewThreads')) ? ok(THREADS) : readsComments(call) ? ok(COMMENTS) : undefined)],
   })
-  on('session.id', async () => ({ value: 'session-1' }))
-  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  session(on)
   return gh
 }
 

@@ -1,7 +1,7 @@
 import type { On } from 'claude-code'
 
 import { letThrough } from './engine'
-import { adoptedStore, fail, fakeGitHub, json, ok } from './github'
+import { adoptedStore, fail, fakeGitHub, json, ok, session } from './github'
 import type { Call, Route } from './github'
 import { asksProject, graphArg, graphHas, graphPage, isGraphMutation, isIssuesQuery } from './graph'
 import type { Raw } from './graph'
@@ -21,7 +21,6 @@ type Sent = { argv: string[]; stdin?: string }
 export const github = (on: On, prs: unknown[] = [], extra: Raw[] = []) => {
   // These tests have the board write to the project, which the person let it do.
   adoptedStore(on)
-  on('session.root', async () => ({ value: '/work/void-sector' }))
   // `blocked`: what #43 is blocked by on GitHub, as the links made leave it.
   // `closed`: how an issue closed on GitHub, which takes it off the board's next read.
   // `title` and `body`: #43's on GitHub, which a PATCH changes; `patched`, what each PATCH sent.
@@ -148,9 +147,8 @@ export const github = (on: On, prs: unknown[] = [], extra: Raw[] = []) => {
     return undefined
   }
   const gh = fakeGitHub(on, { repo: 'astrosteveo/claude-plugins', prs, routes: [route] })
-  on('session.id', async () => ({ value: 'session-1' }))
+  session(on)
   letThrough(on)
-  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
   return state
 }
 
