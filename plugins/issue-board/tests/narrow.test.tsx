@@ -149,11 +149,10 @@ const world = async ($: Engine, on: On) => {
   const now = held.get('issue-board/board')?.value as Board
   expect(now.prs.map(one => one.number)).toEqual([252, 251, 249])
   put('board', { ...now, velocity: { closed: [1, 4, 2, 6, 3, 5, 2, 8], merged: [0, 2, 3, 1, 4, 2, 6, 3] } })
-  // Background agents at work, one on #302 so its open card shows the agent in place of its start buttons, an epic
-  // note, and a plan waiting on the person.
-  const agent: Worker = { number: 303, title: ISSUES[2]?.title, agentId: 'agent-1', status: 'running', startedAt: Date.now(), answer: null }
+  // A background agent at work on #302, so its open card shows the agent in place of its start buttons, an epic note,
+  // and a plan waiting on the person.
   const onCard: Worker = { number: 302, title: LONG, agentId: 'agent-2', status: 'running', startedAt: Date.now() - 4 * 60_000, answer: null }
-  put('workers', [agent, onCard])
+  put('workers', [onCard])
   const note: EpicNote = { key: 'verify-301', kind: 'verify', epic: 301, title: ISSUES[0]?.title ?? '', text: 'every sub-issue is closed, so it moved to Verification', at: Date.now() }
   put('epicNotes', [note])
   const plan: Plan = {
@@ -221,7 +220,8 @@ test('no number, link, count, badge or key hint splits across lines in the pane 
   // Each kind of band line was drawn.
   const wide = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...band(120) })
   for (const text of [/ ✗ CI /, / ◆ EPIC /, / ⚠ PROJECT /, / ✦ PLAN /, / ✚ INBOX /]) expect(await wide.find({ text })).toBeDefined()
-  expect(await wide.find({ key: 'agent-row-agent-1' })).toBeDefined()
+  // The agent at work has no band line: Claude Code lists running agents itself.
+  expect(await wide.find({ key: 'agent-row-agent-2' })).toBeUndefined()
   await wide.unmount()
   expect(checks).toEqual([])
 })

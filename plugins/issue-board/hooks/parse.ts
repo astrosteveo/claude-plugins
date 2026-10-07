@@ -1904,7 +1904,7 @@ export const helpText = (filters: { hotkey: string; name: string }[], off: { fea
     '- Change opens the editor: title, boxes, labels, assignee, epic, milestone, type, project fields, and closing.',
     '',
     'Under the prompt',
-    `- The band above the prompt shows what needs you: failing CI, news on your issue, pull requests to merge, background agents, issues captured to the Inbox.${off.some(one => one.feature === 'The band above the prompt') ? ' (off)' : ''}`,
+    `- The band above the prompt shows what needs you: failing CI, news on your issue, pull requests to merge, issues captured to the Inbox.${off.some(one => one.feature === 'The band above the prompt') ? ' (off)' : ''}`,
     `- The hint line sums up what is open.${off.some(one => one.feature === 'The summary under the prompt') ? ' (off)' : ''}`,
     `- # in the prompt box offers the board's issues and pull requests.${off.some(one => one.feature === HASH_FEATURE) ? ' (off)' : ''}`,
     '',
