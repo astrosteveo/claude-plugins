@@ -19,7 +19,8 @@ const SETUP = { ...REFRESH, args: 'setup' } as const
 
 const issue = { ...KESSIK, labels: [{ name: 'enhancement', color: 'a2eeef' }], assignees: [], body: '## Acceptance\n\n- [ ] Layout in place\n- [ ] Old saves load\n', status: 'Ready', priority: 'P1' }
 
-const pr = { ...pr335('pass'), body: 'Refs #315.' }
+// #315's pull request, on a branch named for it, so a tick that completes #315 switches its keyword.
+const pr = { ...pr335('pass'), headRefName: 'fix/315-glide', body: 'Refs #315.' }
 
 // GitHub as the board reads and writes it, with every gh call kept. The cheap checks answer 304 while nothing changed.
 const world = (on: On) => {
@@ -202,7 +203,7 @@ test('context added counts per prompt Claude received', async ($, on) => {
   expect((await spent($)).text).toMatch(/^Context added: [\d,]+ characters, [\d,]+ a prompt over 2 prompts$/m)
 })
 
-test('the budget: a refresh, the capture note, a Start, an issue_update, a capture, a plan, a tick, a comment, Finish & merge, Merge all and an idle hour', async ($, on) => {
+test('the budget: a refresh, the capture note, a Start, an issue_update, a capture, a plan, a tick, a tick that completes an issue, a comment, Finish & merge, Merge all and an idle hour', async ($, on) => {
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   const gh = world(on)
   await $.session.start({ cwd: REPO.root, surface: 'terminal', isInteractive: true })
@@ -277,6 +278,11 @@ test('the budget: a refresh, the capture note, a Start, an issue_update, a captu
   const ticked = await measure(() => $.tool.call({ tool: 'mcp__issue-board__tick', number: 315, boxes: [1] }))
   expect(calls(ticked)).toEqual({ rest: 2, rest304: 0, graphql: 0 })
   expect(ticked.ran.slice(0, 2)).toEqual(['api repos/astrosteveo/void-sector/issues/315 --jq {body, updated_at}', 'api -X PATCH repos/astrosteveo/void-sector/issues/315 --input -'])
+
+  // A tick of the last box: the same, and one REST write that switches its pull request's `Refs #315` to `Closes #315`.
+  const completed = await measure(() => $.tool.call({ tool: 'mcp__issue-board__tick', number: 315, boxes: [1, 2] }))
+  expect(calls(completed)).toEqual({ rest: 3, rest304: 0, graphql: 0 })
+  expect(completed.ran[2]).toBe('api -X PATCH repos/astrosteveo/void-sector/pulls/335 --input -')
 
   // A comment from issue_update: one REST post, then the refresh that follows it.
   const commented = await measure(() => $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 315, comment: 'Seen it.' }))

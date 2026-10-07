@@ -119,6 +119,9 @@ export type PullRequest = {
   // Who is asked to review it, by login or team name, and how many of its review threads are still open.
   reviewers?: string[]
   openThreads?: number
+  // Its body as the board last read it, so a tick can switch its `Refs #N` and `Closes #N` with one write; absent on an
+  // older board.
+  body?: string
 }
 
 // A comment on an issue, as a card shows it.

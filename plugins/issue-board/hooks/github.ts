@@ -107,6 +107,7 @@ export const parsePrs = (json: string): PullRequest[] =>
     mergeState: raw.mergeStateStatus ?? '',
     reviewers: (raw.reviewRequests ?? []).flatMap(one => (one ? [one.login ? `@${one.login}` : (one.name ?? one.slug ?? '')] : [])).filter(Boolean),
     openThreads: 0,
+    body: raw.body ?? '',
   }))
 
 // The open pull requests' review threads, to count the ones still open; gh pr list can't give them.

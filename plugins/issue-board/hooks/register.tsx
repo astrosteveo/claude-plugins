@@ -214,6 +214,11 @@ import {
   triagePrompt,
   workingSection,
   prKeyword,
+  prBodyText,
+  prKeywordCheck,
+  completionFlip,
+  switchKeyword,
+  PR_WRITE,
   orchestratorSection,
   toolListOf,
   openedText,
@@ -247,6 +252,8 @@ import {
   endedLine,
   handoffPrompt,
   issueOfBranch,
+  prIssueOf,
+  prOfIssue,
   startedByClaude,
   workerIssueOf,
   workerOfPr,
@@ -1621,10 +1628,32 @@ const tick = ($: EngineInterface, number: number, boxes: number[], done: boolean
     const step = progress(checksOf(edit.body))
     const tally = `#${number} has ${step.done}/${step.total} ticked.`
     if (edit.changed.length === 0) return { text: `Nothing changed: ${boxes.length === 1 ? 'that box was' : 'those boxes were'} already ${done ? 'ticked' : 'unticked'}. ${tally}`, before }
-    return { text: `${done ? 'Ticked' : 'Unticked'} ${edit.changed.length === 1 ? 'box' : 'boxes'} ${edit.changed.join(', ')}. ${tally}`, before }
+    // The boxes are written either way: a pull request that couldn't follow them is only logged.
+    const switched = await followKeyword($, repo, number, before, checksOf(edit.body)).catch(cause => {
+      $.ui.log(`issue-board: couldn't switch the keyword of #${number}'s pull request: ${messageOf(cause)}`, { to: 'debug' })
+      return ''
+    })
+    return { text: `${done ? 'Ticked' : 'Unticked'} ${edit.changed.length === 1 ? 'box' : 'boxes'} ${edit.changed.join(', ')}. ${tally}${switched}`, before }
   })
   ticking = run.catch(() => undefined)
   return run
+}
+
+// When a tick ticks an issue's last box, or opens one again, its open pull request follows: `Refs #N` becomes
+// `Closes #N`, so merging it closes the issue, or back, so merging leaves it open. A pull request's keyword is otherwise
+// decided once, as it is opened. One REST write, of the body as the board last read it; the board reads the open pull
+// requests on every refresh, and again after Claude's own gh. Answers what it changed, as a sentence for the tick's text.
+const followKeyword = async ($: EngineInterface, repo: string, number: number, before: Check[], after: Check[]): Promise<string> => {
+  if (!settings.closesWhenTicked) return ''
+  const closes = completionFlip(before, after)
+  if (closes === null) return ''
+  const own = { branch: await read($, branch), working: (await read($, working))?.number ?? null }
+  const pr = prOfIssue((await read($, board))?.prs ?? [], number, own, await read($, workers))
+  const body = pr?.body === undefined ? null : switchKeyword(pr.body, number, closes)
+  if (!pr || body === null) return ''
+  await gh($, ['api', '-X', 'PATCH', `repos/${repo}/pulls/${pr.number}`, '--input', '-'], JSON.stringify({ body }))
+  await update($, board, was => was && { ...was, prs: was.prs.map(one => (one.number === pr.number ? { ...one, body } : one)) })
+  return ` Pull request #${pr.number} now says \`${closes ? 'Closes' : 'Refs'} #${number}\`.`
 }
 
 // Sets Status or Priority on an issue in the repo's project, adding the issue to the project first when it isn't in it.
@@ -2853,10 +2882,29 @@ const stopTracking = async ($: EngineInterface): Promise<void> => {
 // as the board holds them. The tick tool writes what it ticked back to the board, so this asks GitHub nothing: the
 // engine may compose the text often.
 const prKeywordNow = async ($: EngineInterface): Promise<string> => {
+  const number = await myIssueNow($)
+  const issue = number === null ? undefined : (await read($, board))?.issues.find(one => one.number === number)
+  return prKeyword(issue ?? null, await read($, workers), settings.closesWhenTicked)
+}
+
+// The issue this session is on, when this session started it: one another session started isn't this one's.
+const myIssueNow = async ($: EngineInterface): Promise<number | null> => {
   const now = await read($, working)
   const mine = !!now?.sessionId && now.sessionId === (await $.session.id().catch(() => undefined))
-  const issue = mine ? (await read($, board))?.issues.find(one => one.number === now.number) : undefined
-  return prKeyword(issue ?? null, await read($, workers), settings.closesWhenTicked)
+  return mine && now ? now.number : null
+}
+
+// What the board says of a `gh pr create` or `gh pr edit` with a body, in the loop it runs in: a background agent's
+// for its issue, the main session's for the issue it is on. Unlike the attribution text, the call says whose loop it
+// is, so a worker on another issue doesn't silence it. It reads the boxes as the board holds them and asks GitHub
+// nothing, as the tick tool writes what it ticked back to the board.
+const prCheckNow = async ($: EngineInterface, agentId: string | undefined, command: string): Promise<{ deny: string } | { remind: string } | null> => {
+  if (!settings.closesWhenTicked) return null
+  const body = prBodyText(command)
+  if (body === null) return null
+  const number = prIssueOf(agentId, await myIssueNow($), await read($, workers))
+  const issue = number === null ? undefined : (await read($, board))?.issues.find(one => one.number === number)
+  return prKeywordCheck(body, issue ?? null, settings.closesWhenTicked)
 }
 
 // ---- Plan and triage, and the pane's other actions ----
@@ -4046,6 +4094,21 @@ export const register: Register = (on, options) => {
     if (e.agentId !== undefined) return { decision: 'deny' as const, reason: `${why} Close or move the sub-issues first, or leave the epic open and say so in your answer.` }
     return { decision: 'ask' as const, reason: why }
   }).catch(($, e, next) => fallBack($, e, next, 'tool.check on Bash'))
+
+  // A pull request opened or edited through gh says `Closes #N` only when every box of its issue is ticked, and `Refs #N`
+  // otherwise. The issue is the one of the loop that runs the command: a background agent's by its agent id, the main
+  // session's otherwise. A wrong keyword is refused, with the right one, and Claude writes it again; a body with none
+  // keeps its verdict, with a reminder. A body the board can't read, such as from a file, is left alone. A rule that
+  // denies the command still stands.
+  on('tool.check', { tool: 'Bash' }, async ($, e, next) => {
+    const verdict = await next(e)
+    const command = (e.input as { command?: unknown }).command
+    if (verdict.decision === 'deny' || typeof command !== 'string' || !PR_WRITE.test(command)) return verdict
+    const said = await prCheckNow($, e.agentId, command)
+    if (!said) return verdict
+    if ('deny' in said) return { decision: 'deny' as const, reason: said.deny }
+    return { ...verdict, reason: verdict.reason ? `${verdict.reason} ${said.remind}` : said.remind }
+  }).catch(($, e, next) => fallBack($, e, next, 'tool.check on a pull request'))
 
   // While Claude works on an issue the person started in this session, the system prompt names it, so compaction
   // doesn't lose it. The section changes only when the person starts another, to keep the prompt cache. In background
