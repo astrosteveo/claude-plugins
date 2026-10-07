@@ -148,6 +148,9 @@ import {
   prText,
   prsFor,
   progress,
+  namesText,
+  projectPartOf,
+  repoChangeOf,
   reviewBadge,
   runProgressOf,
   searched,
@@ -1026,6 +1029,13 @@ const projectWrite = async (
 // Whether the board may write to a project, for the work it does by itself, which skips a project it may not write
 // to without a word: /issues check and /issues help say so.
 const mayWrite = async ($: EngineInterface, project: { number: number; title: string; url: string }): Promise<boolean> => writeRefusal((await grantsNow($)).all, project) === null
+
+// Why the board may not write to the project it reads for this repo, or null when it may or reads none. The write tools
+// check this before they ask, so the person never approves a change the gate would refuse straight after.
+const boardRefusal = async ($: EngineInterface): Promise<string | null> => {
+  const project = (await read($, board))?.project
+  return project ? writeRefusal((await grantsNow($)).all, project) : null
+}
 
 // What the pane and the band ask about the project the board reads, or null: nothing once the board may write to it, or
 // once the person kept it read-only.
@@ -4072,12 +4082,20 @@ export const register: Register = (on, options) => {
       if ((e as { lock?: unknown }).lock !== undefined && changes.lock === undefined) {
         return { deny: 'lock takes true, false, or one of GitHub\'s reasons: off_topic, resolved, spam, too_heated.' }
       }
-      const { number, ...rest } = changes
+      const { number, ...asked } = changes
       const starting = (e as { start?: unknown }).start === true
+      // A project the board may not write to: a call that only changes the project is refused here, before it asks, with
+      // the gate's reason. One that changes the repo too asks, makes the repo's changes, and says which were skipped.
+      const refusal = await boardRefusal($)
+      const parts = projectPartOf(asked)
+      const skipped = refusal ? parts.project : []
+      if (skipped.length > 0 && !starting && !repoChangeOf(parts.repo)) return { deny: `Couldn't set #${number}'s ${namesText(skipped)}. ${refusal}` }
+      const rest = skipped.length > 0 ? parts.repo : asked
+      const skippedText = skipped.length > 0 ? `\nSkipped its ${namesText(skipped)}: ${refusal}` : ''
       return askThenAct(e, next, async () => {
         try {
           const started = starting ? await startHere($, number) : null
-          if (started && Object.keys(rest).length === 0) return { result: started }
+          if (started && Object.keys(rest).length === 0) return { result: `${started}${skippedText}` }
           const copy = (await read($, working))?.number === number ? await copyOf($) : null
           const result = await applyChanges($, number, rest)
           // What the tool changed that Claude is told of: a comment, and closing or reopening.
@@ -4085,7 +4103,7 @@ export const register: Register = (on, options) => {
             const closed = rest.close ? true : rest.reopen ? false : copy.closed
             await absorb($, copy, { ...copy, comments: copy.comments === null ? null : copy.comments + (rest.comment ? 1 : 0), closed })
           }
-          return { result: started ? `${started}\n${result}` : result }
+          return { result: `${started ? `${started}\n${result}` : result}${skippedText}` }
         } catch (cause) {
           const message = messageOf(cause)
           const problems = ACCESS_ERROR.test(message) ? await checkAccess($, message) : []
@@ -4183,6 +4201,9 @@ export const register: Register = (on, options) => {
       }
       const text = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : undefined)
       const status = ask.status
+      // A post is all project, so a project the board may not write to refuses it here, before anything is asked.
+      const refusal = await boardRefusal($)
+      if (refusal) return { deny: `Couldn't post the status update. ${refusal}` }
       return askThenAct(e, next, async () => {
         try {
           const note = text(ask.note)
@@ -4224,7 +4245,15 @@ export const register: Register = (on, options) => {
           return { deny: `Couldn't archive: ${messageOf(cause)}` }
         }
       }
-      return confirm ? askThenAct(e, next, archive) : archive()
+      // Archiving is all project, so a project the board may not write to refuses it here, before anything is asked. The
+      // list changes nothing and still answers, saying the archive would be refused.
+      const refusal = await boardRefusal($)
+      if (confirm && refusal) return { deny: `Couldn't archive. ${refusal}` }
+      if (!confirm) {
+        const listed = await archive()
+        return refusal && 'result' in listed ? { result: `${listed.result}\nThe archive itself would be refused: ${refusal}` } : listed
+      }
+      return askThenAct(e, next, archive)
     }),
   ).catch(($, _e, next) => toolFailed($, next, 'project_archive'))
 
