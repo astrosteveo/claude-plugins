@@ -1,10 +1,13 @@
-import type { ButtonProps, ElementTable, RenderChildren } from 'claude-code'
+import type { ButtonProps, ElementConstructor, ElementTable, InputProps, RenderChildren } from 'claude-code'
 
 import { bar, tone } from '../layout'
 
 // The elements a view draws with, from the surface's own table. A view takes them, plain data and handlers built in
 // register.tsx, and never `$`: the engine doesn't follow `$` across an import.
 export type Elements = Pick<ElementTable, 'Box' | 'Text' | 'Button' | 'Link'>
+
+// The pane's elements: those, Markdown, and the text field where the surface draws one.
+export type PaneElements = Elements & Pick<ElementTable, 'Markdown'> & { Input?: ElementConstructor<InputProps> }
 
 // The small pieces the pane's and the band's rows are built from, made with the surface's own elements.
 export const partsOf = ({ Box, Text, Button, Link }: Elements) => ({
