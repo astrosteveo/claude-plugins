@@ -300,9 +300,10 @@ const ARCHIVE_TOOL = 'mcp__issue-board__project_archive'
 const STATUS_TOOL = 'mcp__issue-board__project_status'
 const ADOPT_TOOL = 'mcp__issue-board__project_adopt'
 const PLAN_TOOL = 'mcp__issue-board__project_plan'
-// Permission modes that settle a plugin's ask without showing it to the person: auto has a classifier decide.
-// Adopting a project needs the person to read its warning, so project_adopt is refused in them.
-const UNSEEN_MODES = new Set(['auto'])
+// Permission modes that settle a plugin's ask without showing it to the person: auto has a classifier decide, and
+// bypassPermissions lets every call through. Adopting a project and applying a plan need the person to read the prompt,
+// so project_adopt and project_plan are refused in them.
+const UNSEEN_MODES = new Set(['auto', 'bypassPermissions'])
 
 const strings = (value: unknown): string[] | undefined =>
   Array.isArray(value) ? value.filter((one): one is string => typeof one === 'string' && one.trim() !== '').map(one => one.trim()) : undefined
@@ -1185,9 +1186,17 @@ const adoptPlan = async ($: EngineInterface, input: unknown): Promise<AdoptPlan>
   return { adopt: target }
 }
 
-// The permission mode as the classic hooks last gave it, for project_adopt to tell whether its prompt would be seen.
-// Undefined until one says.
+// The permission mode as the classic hooks last gave it, for project_adopt and project_plan to tell whether their
+// prompt would be seen. Undefined until one says.
 let permissionMode: string | undefined
+
+// The mode in force when it is one that settles prompts unseen, else undefined.
+const unseenMode = (): string | undefined => (permissionMode && UNSEEN_MODES.has(permissionMode) ? permissionMode : undefined)
+
+// What project_plan answers in such a mode. The plan is on the card by then, so the person can still apply it.
+const planUnseen = (mode: string): string =>
+  `The ${mode} permission mode settles prompts without showing them, and a plan needs the person to read it. ` +
+  'The plan is on the card in /issues: ask the person to apply it there with Apply, or to switch to a mode that asks, and try again.'
 
 const save = async ($: EngineInterface): Promise<void> => {
   try {
@@ -4054,12 +4063,15 @@ export const register: Register = (on, options) => {
 
   // Claude proposing a plan. An invalid plan is refused with every problem, and nothing is shown or asked. A valid one
   // goes on the pane's card at once, then the call asks, once, with the plan summed up; a yes applies its ticked rows.
-  // A no leaves it on the card, for the person to apply some of it or discard it.
+  // A no leaves it on the card, for the person to apply some of it or discard it. In a mode that settles prompts unseen,
+  // it stays on the card and the call asks nothing.
   on('tool.call', { tool: PLAN_TOOL }, async ($, e, next) =>
     asTool(async () => {
       const planned = await planFor($, e, true)
       if ('problems' in planned) return { deny: problemsOfPlan(planned.problems) }
       const id = await propose($, planned.changes)
+      const mode = unseenMode()
+      if (mode) return { deny: planUnseen(mode) }
       return askThenAct(e, next, async () => {
         try {
           return { result: await applyPlan($, id) }
@@ -4072,8 +4084,12 @@ export const register: Register = (on, options) => {
 
   // A plan's permission prompt says what it would change: its size and its changes by kind. A rule that allows or denies
   // still stands, as does an organization's ceiling; an invalid plan keeps the verdict, as the call refuses it anyway.
+  // Where nobody would see the prompt, in auto or bypass mode, it is refused whatever the verdict beneath, rules included.
   on('tool.check', { tool: PLAN_TOOL }, async ($, e, next) => {
     const verdict = await next(e)
+    if (verdict.decision === 'deny') return verdict
+    const mode = unseenMode()
+    if (mode) return { decision: 'deny' as const, reason: planUnseen(mode) }
     if (verdict.decision !== 'ask') return verdict
     const planned = await planFor($, e.input)
     return 'problems' in planned ? verdict : { ...verdict, reason: planAsk(planned.changes.map(one => one.change)) }
@@ -4183,21 +4199,23 @@ export const register: Register = (on, options) => {
 
   // Adopting or releasing a project always asks the person, whatever their rules allow, with the pane's warning in the
   // prompt: a hook's ask outranks an allow rule. A rule that denies still stands. Where nobody would see the prompt, it
-  // is refused instead: in a subagent, and in auto mode, where a classifier settles the ask.
+  // is refused instead: in a subagent, in auto mode, where a classifier settles the ask, and in bypass mode, where nothing
+  // asks.
   on('tool.check', { tool: ADOPT_TOOL }, async ($, e, next) => {
     const verdict = await next(e)
     if (verdict.decision === 'deny') return verdict
     const ask = 'Ask the person to press Let it write in /issues, or to run /issues setup.'
     if (e.agentId !== undefined) return { decision: 'deny' as const, reason: `Only the person can let the board write to a project, and nobody watches a subagent's permission prompts. ${ask}` }
-    if (permissionMode && UNSEEN_MODES.has(permissionMode)) {
-      return { decision: 'deny' as const, reason: `The ${permissionMode} permission mode settles prompts without showing them, and this one needs the person to read it. ${ask} Or switch to a mode that asks, and try again.` }
+    const mode = unseenMode()
+    if (mode) {
+      return { decision: 'deny' as const, reason: `The ${mode} permission mode settles prompts without showing them, and this one needs the person to read it. ${ask} Or switch to a mode that asks, and try again.` }
     }
     const plan = await adoptPlan($, e.input)
     if ('refusal' in plan) return { decision: 'deny' as const, reason: plan.refusal }
     return { decision: 'ask' as const, reason: 'release' in plan ? releaseReason(plan.release) : adoptReason(plan.adopt, settings.refreshMinutes) }
   }).catch(($, _e, next) => adoptCheckFailed($, next))
 
-  // The permission mode, which each prompt's classic hook carries, for project_adopt's check.
+  // The permission mode, which each prompt's classic hook carries, for project_adopt's and project_plan's checks.
   on('classic.UserPromptSubmit', async ($, e, next) => {
     if (e.permission_mode) permissionMode = e.permission_mode
     return next(e)

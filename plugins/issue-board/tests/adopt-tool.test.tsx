@@ -160,7 +160,7 @@ test('project_adopt with release releases the adopted project after asking, and 
   expect((await $.tool.call({ tool: TOOL, release: true })).deny).toBe("The board writes to no project for this repo, so there's nothing to release.")
 })
 
-test('a rule that denies stands, a subagent is refused, and so is auto mode, where nobody would see the prompt', async ($, on) => {
+test('a rule that denies stands, a subagent is refused, and so are auto and bypass mode, where nobody would see the prompt', async ($, on) => {
   const { adopted } = world(on)
   let beneath: 'allow' | 'deny' = 'deny'
   on('tool.check', async () => ({ decision: beneath, reason: 'beneath' }))
@@ -176,6 +176,19 @@ test('a rule that denies stands, a subagent is refused, and so is auto mode, whe
   const auto = await $.tool.check({ tool: TOOL, input: {} })
   expect(auto.decision).toBe('deny')
   expect(auto.reason).toMatch(/^The auto permission mode settles prompts without showing them/)
+  await $.classic.UserPromptSubmit({ prompt: 'and now?', permission_mode: 'default' } as never)
+  expect((await $.tool.check({ tool: TOOL, input: {} })).decision).toBe('ask')
+
+  // Bypass mode lets every call through without a prompt, so the warning would go unseen.
+  await $.classic.UserPromptSubmit({ prompt: 'let it write', permission_mode: 'bypassPermissions' } as never)
+  const bypass = await $.tool.check({ tool: TOOL, input: {} })
+  expect(bypass).toEqual({
+    decision: 'deny',
+    reason:
+      'The bypassPermissions permission mode settles prompts without showing them, and this one needs the person to read it. ' +
+      'Ask the person to press Let it write in /issues, or to run /issues setup. Or switch to a mode that asks, and try again.',
+  })
+  expect((await $.tool.check({ tool: TOOL, input: { release: true } })).decision).toBe('deny')
   await $.classic.UserPromptSubmit({ prompt: 'and now?', permission_mode: 'default' } as never)
   expect((await $.tool.check({ tool: TOOL, input: {} })).decision).toBe('ask')
   expect(adopted()).toBeUndefined()
