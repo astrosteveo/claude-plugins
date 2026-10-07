@@ -169,6 +169,7 @@ import {
   wentGreen,
   wrappedLines,
   workerBadge,
+  workerOnLine,
   workerIssueOf,
   workerPrOf,
   workerPrompt,
@@ -247,6 +248,7 @@ type Settings = {
   // Whether the system prompt tells Claude to capture work it finds to the Inbox.
   capture: boolean
   issueCopies: boolean
+  hashSuggestions: boolean
   suggestNextStep: boolean
   followBranch: boolean
   nowCount: number
@@ -268,6 +270,7 @@ const settingsOf = (options: Readonly<Record<string, unknown>> | undefined): Set
   prRule: PR_RULES.find(rule => rule === options?.prRule) ?? 'none',
   capture: options?.capture !== false,
   issueCopies: options?.issueCopies !== false,
+  hashSuggestions: options?.hashSuggestions !== false,
   suggestNextStep: options?.suggestNextStep === true,
   followBranch: options?.followBranch === true,
   // How many of the first Priority options count as Now.
@@ -302,9 +305,10 @@ const ARCHIVE_TOOL = 'mcp__issue-board__project_archive'
 const STATUS_TOOL = 'mcp__issue-board__project_status'
 const ADOPT_TOOL = 'mcp__issue-board__project_adopt'
 const PLAN_TOOL = 'mcp__issue-board__project_plan'
-// Permission modes that settle a plugin's ask without showing it to the person: auto has a classifier decide.
-// Adopting a project needs the person to read its warning, so project_adopt is refused in them.
-const UNSEEN_MODES = new Set(['auto'])
+// Permission modes that settle a plugin's ask without showing it to the person: auto has a classifier decide, and
+// bypassPermissions lets every call through. Adopting a project and applying a plan need the person to read the prompt,
+// so project_adopt and project_plan are refused in them.
+const UNSEEN_MODES = new Set(['auto', 'bypassPermissions'])
 
 const strings = (value: unknown): string[] | undefined =>
   Array.isArray(value) ? value.filter((one): one is string => typeof one === 'string' && one.trim() !== '').map(one => one.trim()) : undefined
@@ -440,6 +444,7 @@ const switchesOf = (now: Settings): Switches => ({
   prRule: now.prRule !== 'none',
   capture: now.capture,
   issueCopies: now.issueCopies,
+  hashSuggestions: now.hashSuggestions,
   suggestNextStep: now.suggestNextStep,
   followBranch: now.followBranch,
   band: now.band,
@@ -1184,9 +1189,17 @@ const adoptPlan = async ($: EngineInterface, input: unknown): Promise<AdoptPlan>
   return { adopt: target }
 }
 
-// The permission mode as the classic hooks last gave it, for project_adopt to tell whether its prompt would be seen.
-// Undefined until one says.
+// The permission mode as the classic hooks last gave it, for project_adopt and project_plan to tell whether their
+// prompt would be seen. Undefined until one says.
 let permissionMode: string | undefined
+
+// The mode in force when it is one that settles prompts unseen, else undefined.
+const unseenMode = (): string | undefined => (permissionMode && UNSEEN_MODES.has(permissionMode) ? permissionMode : undefined)
+
+// What project_plan answers in such a mode. The plan is on the card by then, so the person can still apply it.
+const planUnseen = (mode: string): string =>
+  `The ${mode} permission mode settles prompts without showing them, and a plan needs the person to read it. ` +
+  'The plan is on the card in /issues: ask the person to apply it there with Apply, or to switch to a mode that asks, and try again.'
 
 const save = async ($: EngineInterface): Promise<void> => {
   try {
@@ -3230,18 +3243,30 @@ const triageTarget = (project: Project | null | undefined, status: 'Ready' | 'Ba
 
 // Accept on an Inbox issue: its Priority and area as picked, Claude's suggestion unless changed, and its Status moved
 // on to Ready or Backlog, so it leaves the Inbox, where the project has that option. Another area label it had comes off.
+// On a project the board only reads, the labels still change, since they are the repo's, not the project's. The Status
+// and Priority are skipped and the toast says why. The issue stays in the Inbox then, so the person's picks stay too.
 const acceptTriage = async ($: EngineInterface, issue: Issue, choice: { priority: string | null; area: string | null }, status: 'Ready' | 'Backlog'): Promise<void> => {
   const label = choice.area ? `area:${choice.area}` : null
   const others = label ? issue.labels.map(one => one.name).filter(name => name.startsWith('area:') && name !== label) : []
-  const target = triageTarget((await read($, board))?.project, status)
-  const changes: IssueChanges = {
+  const project = (await read($, board))?.project
+  const refusal = project ? writeRefusal((await grantsNow($)).all, project) : null
+  const target = triageTarget(project, status)
+  const fields: IssueChanges = {
     ...(target ? { status: target } : {}),
     ...(choice.priority && choice.priority !== issue.priority ? { priority: choice.priority } : {}),
+  }
+  const labels: IssueChanges = {
     ...(label && !issue.labels.some(one => one.name === label) ? { addLabels: [label] } : {}),
     ...(others.length > 0 ? { removeLabels: others } : {}),
   }
   try {
-    $.ui.toast(await applyChanges($, issue.number, changes))
+    if (refusal) {
+      const done = labels.addLabels || labels.removeLabels ? await applyChanges($, issue.number, labels) : ''
+      const skipped = fields.status || fields.priority ? `Skipped its Status and Priority: ${refusal}` : ''
+      $.ui.toast([done || (skipped ? `Nothing changed on #${issue.number}.` : `Nothing to change on #${issue.number}.`), skipped].filter(Boolean).join(' '))
+      return
+    }
+    $.ui.toast(await applyChanges($, issue.number, { ...fields, ...labels }))
     await update($, triage, was => ({ ...was, picks: was.picks.filter(one => one.number !== issue.number) }))
   } catch (cause) {
     const message = messageOf(cause)
@@ -3886,8 +3911,10 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => fallBack($, e, next, 'session.receive'))
 
   // Typing `#` in the prompt box offers the board's open issues and pull requests, from the board already in state, so
-  // it costs no gh call. The rows go after any that plugins beneath gave. With no board yet, nothing is added.
+  // it costs no gh call. The rows go after any that plugins beneath gave. With no board yet, or with the setting off,
+  // nothing is added.
   on('prompt.autocomplete', { token: /^#/ }, async ($, e, next) => {
+    if (!settings.hashSuggestions) return next(e)
     const now = await read($, board)
     if (!now) return next(e)
     const given = await next(e)
@@ -4034,12 +4061,15 @@ export const register: Register = (on, options) => {
 
   // Claude proposing a plan. An invalid plan is refused with every problem, and nothing is shown or asked. A valid one
   // goes on the pane's card at once, then the call asks, once, with the plan summed up; a yes applies its ticked rows.
-  // A no leaves it on the card, for the person to apply some of it or discard it.
+  // A no leaves it on the card, for the person to apply some of it or discard it. In a mode that settles prompts unseen,
+  // it stays on the card and the call asks nothing.
   on('tool.call', { tool: PLAN_TOOL }, async ($, e, next) =>
     asTool(async () => {
       const planned = await planFor($, e, true)
       if ('problems' in planned) return { deny: problemsOfPlan(planned.problems) }
       const id = await propose($, planned.changes)
+      const mode = unseenMode()
+      if (mode) return { deny: planUnseen(mode) }
       return askThenAct(e, next, async () => {
         try {
           return { result: await applyPlan($, id) }
@@ -4052,8 +4082,12 @@ export const register: Register = (on, options) => {
 
   // A plan's permission prompt says what it would change: its size and its changes by kind. A rule that allows or denies
   // still stands, as does an organization's ceiling; an invalid plan keeps the verdict, as the call refuses it anyway.
+  // Where nobody would see the prompt, in auto or bypass mode, it is refused whatever the verdict beneath, rules included.
   on('tool.check', { tool: PLAN_TOOL }, async ($, e, next) => {
     const verdict = await next(e)
+    if (verdict.decision === 'deny') return verdict
+    const mode = unseenMode()
+    if (mode) return { decision: 'deny' as const, reason: planUnseen(mode) }
     if (verdict.decision !== 'ask') return verdict
     const planned = await planFor($, e.input)
     return 'problems' in planned ? verdict : { ...verdict, reason: planAsk(planned.changes.map(one => one.change)) }
@@ -4188,21 +4222,23 @@ export const register: Register = (on, options) => {
 
   // Adopting or releasing a project always asks the person, whatever their rules allow, with the pane's warning in the
   // prompt: a hook's ask outranks an allow rule. A rule that denies still stands. Where nobody would see the prompt, it
-  // is refused instead: in a subagent, and in auto mode, where a classifier settles the ask.
+  // is refused instead: in a subagent, in auto mode, where a classifier settles the ask, and in bypass mode, where nothing
+  // asks.
   on('tool.check', { tool: ADOPT_TOOL }, async ($, e, next) => {
     const verdict = await next(e)
     if (verdict.decision === 'deny') return verdict
     const ask = 'Ask the person to press Let it write in /issues, or to run /issues setup.'
     if (e.agentId !== undefined) return { decision: 'deny' as const, reason: `Only the person can let the board write to a project, and nobody watches a subagent's permission prompts. ${ask}` }
-    if (permissionMode && UNSEEN_MODES.has(permissionMode)) {
-      return { decision: 'deny' as const, reason: `The ${permissionMode} permission mode settles prompts without showing them, and this one needs the person to read it. ${ask} Or switch to a mode that asks, and try again.` }
+    const mode = unseenMode()
+    if (mode) {
+      return { decision: 'deny' as const, reason: `The ${mode} permission mode settles prompts without showing them, and this one needs the person to read it. ${ask} Or switch to a mode that asks, and try again.` }
     }
     const plan = await adoptPlan($, e.input)
     if ('refusal' in plan) return { decision: 'deny' as const, reason: plan.refusal }
     return { decision: 'ask' as const, reason: 'release' in plan ? releaseReason(plan.release) : adoptReason(plan.adopt, settings.refreshMinutes) }
   }).catch(($, _e, next) => adoptCheckFailed($, next))
 
-  // The permission mode, which each prompt's classic hook carries, for project_adopt's check.
+  // The permission mode, which each prompt's classic hook carries, for project_adopt's and project_plan's checks.
   on('classic.UserPromptSubmit', async ($, e, next) => {
     if (e.permission_mode) permissionMode = e.permission_mode
     return next(e)
@@ -5678,6 +5714,9 @@ export const register: Register = (on, options) => {
         if (!filled.isFilled) return
         await update($, drafted, () => (background ? null : target.number))
       }
+      // A background agent at work on what Start would start, whether Start in background set it going or Claude
+      // dispatched it: the card shows it in place of every start button, so the issue isn't started a second time.
+      const busy = working$.find(one => one.number === goes.number && ACTIVE.includes(one.status))
       const startButton = launches.some(one => one.number === goes.number && one.how === 'start') ? (
         <Text key={`starting-${issue.number}`} color="claude">
           ▶ Starting…
@@ -5692,7 +5731,7 @@ export const register: Register = (on, options) => {
         </Button>
       )
       const backgroundButton =
-        working$.some(one => one.number === goes.number && ACTIVE.includes(one.status)) || startedHere === goes.number ? null : launches.some(one => one.number === goes.number && one.how === 'background') ? (
+        startedHere === goes.number ? null : launches.some(one => one.number === goes.number && one.how === 'background') ? (
           <Text key={`starting-background-${issue.number}`} color="claude">
             ⚙ Starting in background…
           </Text>
@@ -5809,7 +5848,15 @@ export const register: Register = (on, options) => {
             </Box>
           )}
           <Box flexDirection="row" gap={1} marginTop={1} flexWrap="wrap">
-            {inBackground ? [backgroundButton, startButton, draftBackgroundButton, draftButton] : [startButton, backgroundButton, draftButton, draftBackgroundButton]}
+            {busy ? (
+              <Text key={`worker-on-${issue.number}`} color={workerBadge(busy.status).color}>
+                {workerOnLine(busy.status, ago(new Date(busy.startedAt).toISOString(), clock), goes.number === issue.number ? undefined : goes.number)}
+              </Text>
+            ) : inBackground ? (
+              [backgroundButton, startButton, draftBackgroundButton, draftButton]
+            ) : (
+              [startButton, backgroundButton, draftButton, draftBackgroundButton]
+            )}
             <Button key={`edit-${issue.number}`} variant={changing === issue.number ? 'primary' : undefined} dimColor={changing !== issue.number} onPress={openEditor(issue.number)}>
               ⚙ Change
             </Button>

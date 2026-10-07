@@ -1880,6 +1880,9 @@ export const TOOLS: { name: string; what: string }[] = [
   { name: 'project_adopt', what: 'lets the board write to a project, or releases it, when you ask, after a permission prompt' },
 ]
 
+// The # suggestions' feature name, which /issues help also looks for to mark its line off.
+const HASH_FEATURE = 'Issues and pull requests offered after # in the prompt box'
+
 // /issues help: the pane and its keys, the card, the band and hint, the subcommands, and Claude's tools.
 export const helpText = (filters: { hotkey: string; name: string }[], off: { feature: string; why: string }[] = [], views = false): string =>
   [
@@ -1900,6 +1903,7 @@ export const helpText = (filters: { hotkey: string; name: string }[], off: { fea
     'Under the prompt',
     `- The band above the prompt shows what needs you: failing CI, news on your issue, pull requests to merge, background agents, issues captured to the Inbox.${off.some(one => one.feature === 'The band above the prompt') ? ' (off)' : ''}`,
     `- The hint line sums up what is open.${off.some(one => one.feature === 'The summary under the prompt') ? ' (off)' : ''}`,
+    `- # in the prompt box offers the board's issues and pull requests.${off.some(one => one.feature === HASH_FEATURE) ? ' (off)' : ''}`,
     '',
     'Subcommands',
     ...SUBCOMMANDS.map(one => `- /issues ${one.name}: ${one.what}.`),
@@ -1912,7 +1916,7 @@ export const helpText = (filters: { hotkey: string; name: string }[], off: { fea
 // The settings that turn a feature off, by their key: true where the feature is on. `refresh` is false when the board
 // reads GitHub only when asked, and `prRule` when the working note has no pull request rule.
 export type Switches = Record<
-  'moveToDone' | 'moveToVerification' | 'advanceEpics' | 'claimOnStart' | 'workingNote' | 'prRule' | 'capture' | 'issueCopies' | 'suggestNextStep' | 'followBranch' | 'band' | 'hintSummary' | 'refresh',
+  'moveToDone' | 'moveToVerification' | 'advanceEpics' | 'claimOnStart' | 'workingNote' | 'prRule' | 'capture' | 'issueCopies' | 'hashSuggestions' | 'suggestNextStep' | 'followBranch' | 'band' | 'hintSummary' | 'refresh',
   boolean
 >
 
@@ -1931,6 +1935,7 @@ const FEATURES: { feature: string; setting?: [keyof Switches, string]; role?: Ro
   { feature: "The working note's pull request rule", setting: ['prRule', "Working note's pull request rule"] },
   { feature: 'The capture section in the system prompt', setting: ['capture', 'Capture section in the system prompt'] },
   { feature: 'Copies of the issues a prompt names', setting: ['issueCopies', 'Copies of issues a prompt names'] },
+  { feature: HASH_FEATURE, setting: ['hashSuggestions', 'Suggest issues after #'] },
   { feature: 'The next step suggested in the prompt box', setting: ['suggestNextStep', 'Suggest the next step'] },
   { feature: 'Following the branch to the issue Claude is on', setting: ['followBranch', 'Follow the branch'] },
   { feature: 'The band above the prompt', setting: ['band', 'Band above the prompt'] },
@@ -2348,6 +2353,11 @@ export const workerBadge = (status: Worker['status']): { text: string; color: Th
         : status === 'waiting' || status === 'idle'
           ? { text: '⚙ waiting', color: 'warning' }
           : { text: '⚙ working', color: 'claude' }
+
+// The line an issue's card shows in place of its start buttons while a background agent is on it, such as
+// `⚙ Worker on it · working 4m`. An epic's card names the sub-issue the agent is on.
+export const workerOnLine = (status: Worker['status'], age: string, on?: number): string =>
+  `⚙ Worker on ${on === undefined ? 'it' : `#${on}`} · ${workerBadge(status).text.replace(/^⚙ /, '')}${age ? ` ${age}` : ''}`
 
 // How a background agent's loop may end.
 export type Ended = 'completed' | 'failed' | 'killed'

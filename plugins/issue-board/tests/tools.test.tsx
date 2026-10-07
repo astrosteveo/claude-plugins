@@ -1671,7 +1671,7 @@ test('how many priorities count as Now is a setting', { options: { nowCount: 1 }
   expect(String((await $.tool.call({ tool: 'mcp__issue-board__issues', filter: 'future' })).result)).toMatch(/Issues \(later: P1 and P2, 1\):\n#315 /)
 })
 
-test('a feature a setting turned off is said in /issues check and /issues help, and nowhere else', { options: { band: false, refresh: 'manual' } }, async ($, on) => {
+test('a feature a setting turned off is said in /issues check and /issues help, and nowhere else', { options: { band: false, refresh: 'manual', hashSuggestions: false } }, async ($, on) => {
   adoptedStore(on)
   const gh = world(on)
   gh.project = true
@@ -1684,12 +1684,15 @@ test('a feature a setting turned off is said in /issues check and /issues help, 
   const said = String((await $.command.run({ ...REFRESH, args: 'check' })).text)
   expect(said).toContain('- The band above the prompt: turned off in /config by Band above the prompt (band).')
   expect(said).toContain('- Reading GitHub by itself: turned off in /config by How often the board reads GitHub (refresh).')
+  expect(said).toContain('- Issues and pull requests offered after # in the prompt box: turned off in /config by Suggest issues after # (hashSuggestions).')
   // The project has every Status, so nothing is off for want of one.
   expect(said).not.toContain('has no Status option')
 
   const help = String((await $.command.run({ ...REFRESH, args: 'help' })).text)
   expect(help).toMatch(/- The band above the prompt shows what needs you: .*\(off\)$/m)
   expect(help).toMatch(/- The hint line sums up what is open\.$/m)
+  expect(help).toMatch(/- # in the prompt box offers the board's issues and pull requests\. \(off\)$/m)
+  expect(help).toContain('- Issues and pull requests offered after # in the prompt box: turned off in /config by Suggest issues after # (hashSuggestions).')
   expect(help).toContain('\nOff:\n- Moving closed issues to Done: turned off in /config')
   expect(toasts.filter(text => /off|setting/i.test(text))).toEqual([])
   // The check reads GitHub again once it finds nothing missing: wait for that read.

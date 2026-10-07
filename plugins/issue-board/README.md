@@ -197,6 +197,11 @@ GitHub. The card shows the latest three comments, a field to reply, and
   agent, and the row follows the agent as it does for Start in background.
 - On an epic's card, both Edit first buttons follow the same sub-issue as
   Start.
+- While a background agent works on the issue, the card shows it in place of
+  both Starts and both Edit first buttons, such as
+  `⚙ Worker on it · working 4m`. That holds whether Start in background or
+  Claude started the agent. On an epic's card it names the sub-issue, such as
+  `⚙ Worker on #185`. The buttons come back when the agent ends.
 - **⚙ Change** opens the editor; see [File and plan issues](#file-and-plan-issues).
 - **↗ GitHub** opens the issue. **Collapse** (`x` or Esc) folds the card.
   With nothing open, Esc closes the pane.
@@ -521,7 +526,9 @@ Claude's call asks permission once, with the plan summed up by kind, such as
 approve it from the phone app without the pane. Saying no changes nothing
 and leaves the plan on the card, to apply in part or discard. Every project
 write goes through the same write check as the other tools, so a project
-the board only reads refuses the plan.
+the board only reads refuses the plan. In auto or bypass mode, where you
+would not see the prompt, Claude's call is refused, and the plan waits on
+the card for you to apply.
 
 ## Commands
 
@@ -615,7 +622,8 @@ the pane.
   number, and refuses any other. It always shows a permission prompt with
   the same warning as the pane, even if a rule allows the tool. Saying no
   changes nothing. A background agent is refused, and so is a session in
-  auto mode, where a classifier would answer the prompt instead of you.
+  auto mode, where a classifier would answer the prompt instead of you, or
+  in bypass mode, where nothing asks.
 - Adopting adds the project to the list and keeps the others.
 - Adopting or releasing counts at once in the session that did it. Other
   sessions already open see the change by the next time they load the board:
@@ -631,10 +639,11 @@ What stays the same without an adopted project:
   project has them.
 - Changes to issues themselves: Start still tracks the issue and assigns it
   to you, boxes still tick, an epic still closes when its last sub-issue
-  does, and issue_create still files the issue.
+  does, issue_create still files the issue, and triage's Accept still
+  changes the `area:` label.
 - What doesn't happen: Start, triage's Accept and the moves a read makes
   leave the project's Status and Priority alone, and new issues aren't added
-  as items. A tool asked to change the project, such as issue_update with a
+  as items. Accept says it skipped them, and the issue stays in the Inbox. A tool asked to change the project, such as issue_update with a
   Status or project_status posting an update, is refused, and the refusal
   says why and how to adopt the project. `/issues check` and `/issues help`
   list it under Off.
@@ -677,6 +686,7 @@ In Claude's prompts and the prompt box:
 | The note tells Claude how to name the issue in a pull request: `closes-when-ticked` (`Closes #N` only when every box is ticked, `Refs #N` otherwise), `always-closes`, or `none`. Start in background follows it too. | Working note's pull request rule (`prRule`) | `none` |
 | A short, fixed section in the system prompt tells Claude to capture work it finds to the Inbox with the `capture` tool, rather than list it in chat. Off, the section goes; the tool and `/issues new` stay. | Capture section in the system prompt (`capture`) | on |
 | A prompt that names `#123` carries the board's copy of it, unseen. | Copies of issues a prompt names (`issueCopies`) | on |
+| Typing `#` in the prompt box offers the board's open issues and pull requests, by number or title. | Suggest issues after # (`hashSuggestions`) | on |
 | After Claude's turn, the prompt box suggests the board's next step in place of Claude Code's own. | Suggest the next step (`suggestNextStep`) | off |
 | Checking out a branch named for an issue makes it the one Claude is on. | Follow the branch (`followBranch`) | off |
 
@@ -784,6 +794,11 @@ When something is missing, a `⚠ SETUP` row in the band says what, with
 The line under the prompt says `issue board needs setup` or `is limited`
 meanwhile. A tool that fails for want of a permission gives Claude the same
 fix. A folder whose repo isn't on GitHub stays quiet.
+
+Two tools need you to read their prompt, so they refuse in auto and bypass
+mode, where no prompt reaches you: `project_adopt` and `project_plan`.
+Switch to a mode that asks, or use the pane: **Let it write** to adopt a
+project, or **Apply** on the plan card.
 
 ## Limits
 
