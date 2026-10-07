@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { orchestratorSection, workerPrompt, workingSection } from '../hooks/parse'
+import { captureSection, orchestratorSection, workerPrompt, workingSection } from '../hooks/parse'
 
 const REPO = '/work/void-sector'
 // The eight tools' names, descriptions and input schemas came to 12,946 characters before #223 trimmed them. They are
@@ -10,6 +10,8 @@ const BEFORE = 12946
 const PLAN = 925 + 282
 // #239 let a plan change the project's views: the cap grows by what that added and no more.
 const VIEWS = 335
+// #262 added the capture tool: the cap grows by its size. It removed no tool text.
+const CAPTURE = 510
 
 test('the tool definitions stay at least 35% shorter than before #223: name, description and input schema', async ($, on) => {
   const clock = mock.clock(on, { now: Date.parse('2026-10-06T10:00:00Z') })
@@ -25,10 +27,11 @@ test('the tool definitions stay at least 35% shorter than before #223: name, des
   await $.session.start({ cwd: REPO, surface: 'terminal', isInteractive: true })
   await clock.settle()
 
-  expect(Object.keys(sizes).sort()).toEqual(['issue_create', 'issue_update', 'issues', 'milestone', 'project_adopt', 'project_archive', 'project_plan', 'project_status', 'tick'])
+  expect(Object.keys(sizes).sort()).toEqual(['capture', 'issue_create', 'issue_update', 'issues', 'milestone', 'project_adopt', 'project_archive', 'project_plan', 'project_status', 'tick'])
   const total = Object.values(sizes).reduce((sum, one) => sum + one, 0)
   expect(sizes.project_plan).toBeLessThanOrEqual(PLAN + VIEWS)
-  expect(total).toBeLessThanOrEqual(Math.floor(BEFORE * 0.65) + PLAN + VIEWS)
+  expect(sizes.capture).toBeLessThanOrEqual(CAPTURE)
+  expect(total).toBeLessThanOrEqual(Math.floor(BEFORE * 0.65) + PLAN + VIEWS + CAPTURE)
 })
 
 test("the worker prompt defers to the repo's guidelines in one sentence and keeps its safety rules", () => {
@@ -42,7 +45,7 @@ test("the worker prompt defers to the repo's guidelines in one sentence and keep
   }
 })
 
-test("the working and orchestrator notes don't repeat each other or the tools' own text", () => {
+test("the working, orchestrator and capture notes don't repeat each other or the tools' own text", () => {
   const working = workingSection({ number: 315, title: 'Lay Kessik out', updatedAt: '' }, 'none')
   const orchestrator = orchestratorSection()
   // The issues tool says how it numbers boxes, and only the orchestrator note says how to dispatch a worker.
@@ -50,4 +53,9 @@ test("the working and orchestrator notes don't repeat each other or the tools' o
   expect(working).not.toContain('subagent_type')
   expect(orchestrator).not.toContain('mcp__issue-board__tick')
   expect(orchestrator).not.toContain('needs no permission')
+  // The capture section says when to capture; the tool's own text says what it does with a duplicate.
+  const capture = captureSection()
+  expect(capture).not.toContain('30 days')
+  expect(capture).not.toContain('comment')
+  expect(capture.length).toBeLessThanOrEqual(240)
 })

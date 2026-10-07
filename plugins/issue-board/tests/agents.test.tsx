@@ -82,7 +82,7 @@ test("a background agent's checkout in its own worktree doesn't make its issue t
   await clock.settle()
   const pane = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   expect(await pane.find({ text: /^▶ $/ })).toBeUndefined()
-  expect((await $.prompt.compose(COMPOSE)).sections.map(section => section.id)).toEqual(['intro'])
+  expect((await $.prompt.compose(COMPOSE)).sections.map(section => section.id)).toEqual(['intro', 'issue-board:capture'])
 
   // The main session's own checkout still does.
   gh.branch = 'main'

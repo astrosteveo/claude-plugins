@@ -138,7 +138,7 @@ test('the hint line keeps the most useful keys that fit, shortens the filters be
 test('opening the pane names every filter it has, from the same list the pane draws', () => {
   expect(openedText([{ hotkey: '1', name: 'Now' }, { hotkey: '7', name: 'Closed' }])).toBe(
     'Issues pane opened. Filters: 1 Now, 7 Closed. Enter opens an issue: Start hands it to Claude, Change edits it, and Esc folds it. r refreshes. ' +
-      'Also: /issues new [epic] drafts an issue, /issues setup links a project, /issues check says what is missing. /issues help lists everything.',
+      'Also: /issues new [epic] captures an issue to the Inbox, /issues setup links a project, /issues check says what is missing. /issues help lists everything.',
   )
 })
 

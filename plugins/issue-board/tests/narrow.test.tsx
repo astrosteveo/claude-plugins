@@ -110,7 +110,8 @@ test('a word wrap breaks at spaces, and mid-word only where a word is wider than
 })
 
 // The fake GitHub and session behind the board, read once, with what a session would have gathered on top: weekly
-// counts for the sparklines, a background agent, an epic note and a plan waiting on the person. The pane shows every
+// counts for the sparklines, a background agent, an epic note, a plan waiting on the person and issues captured to the
+// Inbox. The pane shows every
 // issue grouped by epic, with #302's card open.
 const world = async ($: Engine, on: On) => {
   // No project adopted: the pane and the band ask about it.
@@ -179,6 +180,8 @@ const world = async ($: Engine, on: On) => {
     ],
   }
   put('plan', plan)
+  // Issues captured to the Inbox, which the band counts.
+  put('captured', 3)
 
   // The state is held here rather than by the host, so a drawing isn't drawn again when it changes: each press gets a
   // fresh one.
@@ -214,7 +217,7 @@ test('no number, link, count, badge or key hint splits across lines in the pane 
   }
   // Each kind of band line was drawn.
   const wide = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...band(120) })
-  for (const text of [/ ✗ CI /, / ◆ EPIC /, / ⚠ PROJECT /, / ✦ PLAN /]) expect(await wide.find({ text })).toBeDefined()
+  for (const text of [/ ✗ CI /, / ◆ EPIC /, / ⚠ PROJECT /, / ✦ PLAN /, / ✚ INBOX /]) expect(await wide.find({ text })).toBeDefined()
   expect(await wide.find({ key: 'agent-row-agent-1' })).toBeDefined()
   await wide.unmount()
   expect(checks).toEqual([])

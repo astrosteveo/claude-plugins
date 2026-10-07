@@ -2,7 +2,7 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "issue-board",
   "displayName": "Issue Board",
-  "version": "0.68.0",
+  "version": "0.69.0",
   "description": "The repository's open GitHub issues and pull requests in a pane and under the prompt, with acceptance progress and CI, and a button that hands an issue to Claude.",
   "author": {
     "name": "astrosteveo"
@@ -69,6 +69,12 @@
         "none"
       ],
       "default": "none"
+    },
+    "capture": {
+      "type": "boolean",
+      "title": "Capture section in the system prompt",
+      "description": "The system prompt tells Claude to file work it finds in conversation, such as follow-ups and bugs noticed in passing, to the Inbox with the capture tool instead of listing it in chat.",
+      "default": true
     },
     "issueCopies": {
       "type": "boolean",

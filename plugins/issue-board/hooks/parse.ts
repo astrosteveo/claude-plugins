@@ -1385,7 +1385,8 @@ export const orchestratorSection = (): string =>
     reviewText,
   ].join(' ')
 
-// What `/issues new` asks Claude for, over the conversation so far. With `epic`, a parent issue and its sub-issues.
+// What `/issues new` asks Claude for, over the conversation so far, to capture to the Inbox. With `epic`, a parent issue
+// and its sub-issues.
 export const draftPrompt = (what: string, labels: string[], epic = false): string =>
   [
     epic
@@ -1429,22 +1430,67 @@ export const parseDraft = (text: string, labels: string[]): Draft | null => {
 // Every label the board's issues carry, sorted: the ones a draft may use.
 export const labelsOf = (issues: Issue[]): string[] => [...new Set(issues.flatMap(issue => issue.labels.map(label => label.name)))].sort()
 
-// A draft's body as the editor shows it: one field a line, and null for each blank line between them.
-export const draftLines = (body: string): (string | null)[] => (body === '' ? [''] : body.split(/\r?\n/).map(line => (line.trim() === '' ? null : line)))
+// The system prompt's capture section. Its text never changes, so the prompt cache holds it.
+export const captureSection = (): string =>
+  'When you find work that will not be done in this turn, such as a follow-up, a bug noticed in passing or an idea, ' +
+  "file it with the issue board's capture tool instead of listing it in your answer. Skip trivia."
 
-// The body the editor's lines make. A line left empty is dropped, and the blank lines that leaves side by side, or at
-// the start or end, become one or none. A body nobody changed comes back as it was, save for spaces at line ends and
-// runs of blank lines.
-export const draftBody = (lines: (string | null)[]): string => {
-  const kept: string[] = []
-  for (const line of lines) {
-    if (line === null) {
-      if (kept.length > 0 && kept.at(-1) !== '') kept.push('')
-    } else if (line.trim() !== '') kept.push(line.trimEnd())
-  }
-  while (kept.at(-1) === '') kept.pop()
-  return kept.join('\n')
+// Words that say little about what an issue is, left out when titles are compared.
+const SMALL_WORDS = new Set(['a', 'an', 'and', 'as', 'at', 'be', 'by', 'for', 'from', 'in', 'into', 'is', 'it', 'its', 'of', 'on', 'or', 'so', 'the', 'to', 'when', 'with'])
+
+// A title's words for comparing: lower case, without punctuation or small words, and a plural's s dropped.
+export const titleWords = (title: string): Set<string> =>
+  new Set(
+    title
+      .toLowerCase()
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter(word => word !== '' && !SMALL_WORDS.has(word))
+      .map(word => (word.length > 3 && word.endsWith('s') && !word.endsWith('ss') ? word.slice(0, -1) : word)),
+  )
+
+// How alike two titles are, from 0 to 1: the words they share, against the words of both.
+export const titleLikeness = (a: string, b: string): number => {
+  const one = titleWords(a)
+  const two = titleWords(b)
+  if (one.size === 0 || two.size === 0) return 0
+  const shared = [...one].filter(word => two.has(word)).length
+  return (2 * shared) / (one.size + two.size)
 }
+
+// How alike a title must be to another for a capture to count as the same work.
+export const SAME_WORK = 0.7
+
+// The issue among `candidates` most like `title`, when it is alike enough to be the same work; null otherwise.
+export const sameWorkOf = <T extends { title: string }>(title: string, candidates: T[]): T | null => {
+  let best: T | null = null
+  let score = SAME_WORK
+  for (const one of candidates) {
+    const like = titleLikeness(title, one.title)
+    if (like >= score) {
+      best = one
+      score = like
+    }
+  }
+  return best
+}
+
+// Whether a view's filter keeps just the Inbox: Status at the Inbox option, or no Status, and nothing narrower save
+// `is:open` or `is:issue`.
+export const isInboxFilter = (filter: string, project: Project | null | undefined): boolean => {
+  const inbox = roleOf(project, 'inbox')?.name
+  const terms = parseFilter(filter)
+  const inboxTerm = (term: FilterTerm) =>
+    !term.negate &&
+    term.key !== null &&
+    ((same(term.key, 'status') && inbox !== undefined && term.values.length > 0 && term.values.every(value => same(value, inbox))) ||
+      (same(term.key, 'no') && term.values.length === 1 && same(term.values[0] ?? '', 'status')))
+  const harmless = (term: FilterTerm) => !term.negate && term.key !== null && same(term.key, 'is') && term.values.every(value => ['open', 'issue'].includes(value.toLowerCase()))
+  return terms.some(inboxTerm) && terms.every(term => inboxTerm(term) || harmless(term))
+}
+
+// The pane's Inbox tab: the built-in one, or a project view whose filter is the Inbox; undefined when there is none.
+export const inboxTabOf = (tabs: Tab[], project: Project | null | undefined): Tab | undefined =>
+  tabs.find(tab => tab.id === 'inbox') ?? tabs.find(tab => tab.view !== undefined && isInboxFilter(tab.view.filter, project))
 
 // A change to an issue, from its card or from Claude's issue_update tool. `parent` and `milestone` set as null remove
 // them; `assign` and `unassign` take logins, or `@me` for the signed-in user.
@@ -1804,14 +1850,14 @@ export const openedText = (filters: { hotkey: string; name: string }[]): string 
     'Issues pane opened.',
     `Filters: ${filters.map(one => `${one.hotkey} ${one.name}`).join(', ')}.`,
     'Enter opens an issue: Start hands it to Claude, Change edits it, and Esc folds it. r refreshes.',
-    'Also: /issues new [epic] drafts an issue, /issues setup links a project, /issues check says what is missing. /issues help lists everything.',
+    'Also: /issues new [epic] captures an issue to the Inbox, /issues setup links a project, /issues check says what is missing. /issues help lists everything.',
   ].join(' ')
 
 // The subcommands of /issues, what each does: the argument hint and /issues help both come from here.
 export const SUBCOMMANDS: { name: string; what: string }[] = [
   { name: 'refresh', what: 'reads GitHub again and answers with the summary' },
-  { name: 'new <what>', what: 'drafts an issue from the conversation, to check before it is filed' },
-  { name: 'new epic <what>', what: 'drafts an epic and its sub-issues' },
+  { name: 'new <what>', what: 'captures an issue from the conversation to the Inbox, to triage there' },
+  { name: 'new epic <what>', what: 'captures an epic and its sub-issues to the Inbox' },
   { name: 'setup', what: 'links or makes a project with Status and Priority, and says what it would change first' },
   { name: 'statuses', what: "picks which of the project's Status options plays each part, saved here and not on GitHub" },
   { name: 'labels', what: 'picks the label or issue type Bugs goes by, and the label Later goes by without a project, saved here and not on GitHub' },
@@ -1825,7 +1871,8 @@ export const TOOLS: { name: string; what: string }[] = [
   { name: 'issues', what: 'lists the board, one issue in full with its comments and fields, searches every issue, and lists by Status or milestones' },
   { name: 'tick', what: 'ticks or unticks acceptance boxes' },
   { name: 'issue_update', what: 'changes an issue: Status, Priority, title, body, boxes, labels, epic, fields, type, links, closing, and starting work on it' },
-  { name: 'issue_create', what: 'files an issue, or an epic with its sub-issues, into the project' },
+  { name: 'capture', what: 'files work found in conversation to the Inbox, or comments on the same work already filed, without asking' },
+  { name: 'issue_create', what: 'files an issue, or an epic with its sub-issues, into the project with a Status, Priority or fields' },
   { name: 'milestone', what: 'makes or changes a milestone' },
   { name: 'project_status', what: "reads or posts the project's status update" },
   { name: 'project_archive', what: 'archives Done items in the project' },
@@ -1851,7 +1898,7 @@ export const helpText = (filters: { hotkey: string; name: string }[], off: { fea
     '- Change opens the editor: title, boxes, labels, assignee, epic, milestone, type, project fields, and closing.',
     '',
     'Under the prompt',
-    `- The band above the prompt shows what needs you: failing CI, news on your issue, pull requests to merge, background agents.${off.some(one => one.feature === 'The band above the prompt') ? ' (off)' : ''}`,
+    `- The band above the prompt shows what needs you: failing CI, news on your issue, pull requests to merge, background agents, issues captured to the Inbox.${off.some(one => one.feature === 'The band above the prompt') ? ' (off)' : ''}`,
     `- The hint line sums up what is open.${off.some(one => one.feature === 'The summary under the prompt') ? ' (off)' : ''}`,
     '',
     'Subcommands',
@@ -1865,7 +1912,7 @@ export const helpText = (filters: { hotkey: string; name: string }[], off: { fea
 // The settings that turn a feature off, by their key: true where the feature is on. `refresh` is false when the board
 // reads GitHub only when asked, and `prRule` when the working note has no pull request rule.
 export type Switches = Record<
-  'moveToDone' | 'moveToVerification' | 'advanceEpics' | 'claimOnStart' | 'workingNote' | 'prRule' | 'issueCopies' | 'suggestNextStep' | 'followBranch' | 'band' | 'hintSummary' | 'refresh',
+  'moveToDone' | 'moveToVerification' | 'advanceEpics' | 'claimOnStart' | 'workingNote' | 'prRule' | 'capture' | 'issueCopies' | 'suggestNextStep' | 'followBranch' | 'band' | 'hintSummary' | 'refresh',
   boolean
 >
 
@@ -1882,6 +1929,7 @@ const FEATURES: { feature: string; setting?: [keyof Switches, string]; role?: Ro
   { feature: 'project_archive by doneBefore', role: 'done' },
   { feature: 'The working note in the system prompt', setting: ['workingNote', 'Working note in the system prompt'] },
   { feature: "The working note's pull request rule", setting: ['prRule', "Working note's pull request rule"] },
+  { feature: 'The capture section in the system prompt', setting: ['capture', 'Capture section in the system prompt'] },
   { feature: 'Copies of the issues a prompt names', setting: ['issueCopies', 'Copies of issues a prompt names'] },
   { feature: 'The next step suggested in the prompt box', setting: ['suggestNextStep', 'Suggest the next step'] },
   { feature: 'Following the branch to the issue Claude is on', setting: ['followBranch', 'Follow the branch'] },

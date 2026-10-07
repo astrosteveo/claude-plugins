@@ -11,6 +11,7 @@ export type ContextSource =
   | 'tool results'
   | 'working note'
   | 'orchestrator note'
+  | 'capture note'
   | 'issue copies'
   | 'moved lines'
   | 'news'

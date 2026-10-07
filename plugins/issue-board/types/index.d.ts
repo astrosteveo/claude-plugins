@@ -178,14 +178,9 @@ export type Worker = {
 // A Start or Start in background pressed on an issue, from the press until the work is under way.
 export type Launch = { number: number; how: 'start' | 'background' }
 
-// An issue Claude drafted from the conversation, waiting for the person to file it.
-// With `children`, an epic: the parent issue, and the sub-issues created under it.
+// An issue Claude wrote from the conversation for `/issues new`, to capture to the Inbox.
+// With `children`, an epic: the parent issue, and the sub-issues filed under it.
 export type Draft = { title: string; body: string; labels: string[]; children?: { title: string; body: string; labels: string[] }[] }
-
-// The draft card's editor, on a copy of the draft: its title, its body a line a field, and its labels, as the person
-// has changed them. Save puts the copy on the card; Cancel drops it. Each line has an id its field is keyed by, which
-// stays as lines are added around it; `text` is null for a blank line, which has no field.
-export type DraftEdit = { title: string; lines: { id: number; text: string | null }[]; labels: string[] }
 
 // Something the band above the prompt raises; `key` changes when it happens again.
 export type Alert =
@@ -387,14 +382,8 @@ declare module 'claude-code' {
       branch: string | null
       // `<number>-<sha>` of each pull request whose CI went from running to passing while the board watched.
       greened: string[]
-      draft: Draft | null
-      drafting: boolean
-      // The draft card's editor while it's open; null otherwise.
-      revising: DraftEdit | null
-      // The key of the element the pane's focus ring is on, as it last moved; null until it has.
-      ring: string | null
-      // The draft is being created on GitHub: Create waits, so a second press doesn't create it again.
-      creating: boolean
+      // How many issues were captured to the Inbox since the person last opened it: the band counts them.
+      captured: number
       // The issue whose card has its editor open.
       editing: number | null
       // What the editor offers: the repo's labels and open milestones; null until it first opens.
