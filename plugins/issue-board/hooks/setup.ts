@@ -1,4 +1,4 @@
-import type { RolePicks, Roles, SetupFacts, SetupOption, SetupProject, SetupStep } from '../types'
+import type { RolePicks, Roles, Setup, SetupFacts, SetupOption, SetupProject, SetupStep } from '../types'
 import { BUG_LABELS, same } from './markers'
 import type { RawNodes, RawProjectBase } from './github'
 import { fieldOf, nodesOf } from './github'
@@ -258,3 +258,61 @@ export const templatePrompt = (repo: string): string =>
     'so the issue board can show and tick them. Keep the wording short and plain.',
     'Make the change on a branch and open a pull request for me to review; don\'t merge it.',
   ].join(' ')
+
+// Apply's decisions, for applySetup in register.tsx, which makes the calls.
+
+// Setup with one step's state marked, as Apply goes, so the pane shows how far it got.
+export const markStep = (was: Setup | null, id: SetupStep['id'], state: NonNullable<SetupStep['state']>, message?: string): Setup | null =>
+  was && 'steps' in was ? { ...was, steps: was.steps.map(step => (step.id === id ? { ...step, state, ...(message ? { message } : {}) } : step)) } : was
+
+// The steps that work in a project, which Apply skips when there is none.
+export const NEEDS_PROJECT = ['status', 'priority', 'items', 'inbox'] as const
+
+// The Status field's options as Apply writes them: the project's, with the board's added for the roles picked.
+export const statusFieldOf = (options: SetupOption[], picks: RolePicks): SetupOption[] =>
+  mergeStatuses(options, picks).options.map(one => ({ ...(one.id ? { id: one.id } : {}), name: one.name, color: one.color, description: one.description }))
+
+// Each open issue's item in the project, by number: the ones already there, which Apply adds to.
+export type SetupItem = SetupFacts['issues'][number]['items'][number]
+export const itemsIn = (facts: SetupFacts, project: string): Map<number, SetupItem> =>
+  new Map(facts.issues.flatMap(issue => issue.items.filter(item => item.project === project).map(item => [issue.number, item] as const)))
+
+// The Status option picked as the Inbox, where Apply puts the items with no Status; or why there is none.
+export const inboxOf = (project: SetupProject, picks: RolePicks): { field: string; option: string } | string => {
+  const picked = picks.inbox
+  const inbox = picked === null ? undefined : project.status?.options.find(option => option.name.toLowerCase() === picked.toLowerCase())
+  if (!project.status || !inbox?.id) return `the project has no ${picked ?? 'Inbox'} status`
+  return { field: project.status.id, option: inbox.id }
+}
+
+// The gh calls that make the bug label and the area labels typed.
+export const bugLabelArgs = (repo: string): string[] => ['label', 'create', 'bug', '-R', repo, '--color', 'd73a4a', '--description', "Something isn't working"]
+export const areaLabelArgs = (repo: string, typed: string, labels: string[]): string[][] =>
+  areasOf(typed, labels).map(area => ['label', 'create', `area:${area}`, '-R', repo, '--color', '1d76db', '--description', `The ${area} part`])
+
+// The person's choices once Apply ended on a project: the board reads it from now on, and knows which Status means what.
+export const choicesAfterSetup = <C extends { preferred?: string; statuses?: Record<string, Roles> }>(was: C, ended: SetupProject, picks: RolePicks): C => ({
+  ...was,
+  preferred: ended.id,
+  ...(ended.status ? { statuses: { ...(was.statuses ?? {}), [ended.id]: rolesOf(ended.status.options, picks) } } : {}),
+})
+
+// Setup once Apply is done: the project as it now is, a new one included, so its automations still off can be linked.
+export const setupDone = (was: Setup | null, ended: SetupProject | null, adopted: string | null, picks: RolePicks): Setup | null =>
+  was?.phase === 'applying'
+    ? {
+        ...was,
+        phase: 'done' as const,
+        ...(ended
+          ? {
+              chosen: ended.id,
+              facts: {
+                ...was.facts,
+                projects: [...was.facts.projects.filter(one => one.id !== ended.id), ended],
+                adopted,
+                ...(ended.status ? { saved: { project: ended.id, roles: rolesOf(ended.status.options, picks) } } : {}),
+              },
+            }
+          : {}),
+      }
+    : was

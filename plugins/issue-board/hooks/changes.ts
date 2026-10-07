@@ -149,6 +149,52 @@ export const changesText = (number: number, changes: IssueChanges): string => {
   return said.length > 0 ? `#${number} ${said.join(', ')}.` : `Nothing to change on #${number}.`
 }
 
+// Which of the Status and Priority a change asks for the issue already has, by its project item as read for an issue
+// off the board: those are said and not written. `set` is what is left to write, in order.
+export type Settled = { already: string[]; skipped: ('status' | 'priority')[]; set: ['status' | 'priority', string][] }
+export const settledOf = (number: number, changes: IssueChanges, current: Record<string, string>): Settled => {
+  const settled: Settled = { already: [], skipped: [], set: [] }
+  for (const field of ['status', 'priority'] as const) {
+    const value = changes[field]
+    if (!value) continue
+    const name = field === 'status' ? 'Status' : 'Priority'
+    if (current[name] && current[name].toLowerCase() === value.toLowerCase()) {
+      settled.already.push(`#${number}'s ${name} is already ${current[name]}.`)
+      settled.skipped.push(field)
+      continue
+    }
+    settled.set.push([field, value])
+  }
+  return settled
+}
+
+// The repo an issue moves to, as `owner/name`: a bare name is the same owner's, and another owner's is refused, so an
+// issue doesn't leave the owner's hands by a slip.
+export const sameOwner = (repo: string, target: string): string => {
+  const owner = repo.split('/')[0] ?? ''
+  const [first = '', second] = target.split('/')
+  const full = second === undefined ? `${owner}/${first}` : target
+  if (full.split('/')[0]?.toLowerCase() !== owner.toLowerCase()) throw new Error(`an issue moves only to another of ${owner}'s repos, not to ${target}`)
+  if (full.toLowerCase() === repo.toLowerCase()) throw new Error(`the issue is in ${repo} already`)
+  return full
+}
+
+// Why a move to another repo waits: GitHub moves an issue from a public repo to a private one, but not back, so that
+// takes a second, confirmed call. Null when it may go.
+export const transferRefusal = (number: number, repo: string, to: string, privacy: { from: boolean; to: boolean }, confirmed: boolean): string | null =>
+  !privacy.from && privacy.to && !confirmed
+    ? `${to} is private and ${repo} is public, so GitHub won't move #${number} back once it's there. Call again with confirmTransfer: true to move it anyway`
+    : null
+
+// What a change did, for a toast and for Claude: what was already so, what changed, and the labels made for it.
+export const changedText = (number: number, changes: IssueChanges, settled: Pick<Settled, 'already' | 'skipped'>, made: string[]): string => {
+  const left = { ...changes }
+  for (const field of settled.skipped) delete left[field]
+  const done = changesText(number, left)
+  const said = [...settled.already, ...(settled.already.length > 0 && done.startsWith('Nothing to change') ? [] : [done])].join(' ')
+  return `${said}${made.length > 0 ? ` Created the ${made.length === 1 ? 'label' : 'labels'} ${made.join(', ')}, new to the repo.` : ''}`
+}
+
 // What the board did on its own in one read, in a line for a toast: the issues it moved to a Status and why, many at
 // once in one line. `why` reads for one issue; `whyMany` for several.
 export const movedText = (to: string, moved: number[], why: string, whyMany: string): string =>

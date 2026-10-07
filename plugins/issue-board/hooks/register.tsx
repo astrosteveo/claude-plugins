@@ -63,13 +63,19 @@ import {
   PRIORITIES,
   PROJECT_QUERY,
   UPDATE_FIELD,
-  areasOf,
+  NEEDS_PROJECT,
+  areaLabelArgs,
+  bugLabelArgs,
+  choicesAfterSetup,
+  inboxOf,
+  itemsIn,
+  markStep,
+  setupDone,
+  statusFieldOf,
   factsOf,
-  mergeStatuses,
   nextItemsOf,
   picksFor,
   projectOf,
-  rolesOf,
   stepsOf,
   suggestAreas,
   templatePrompt,
@@ -84,7 +90,10 @@ import {
   withSubIssuesBox,
 } from './boxes'
 import {
-  changesText,
+  changedText,
+  sameOwner,
+  settledOf,
+  transferRefusal,
   commandsOf,
   commentCommand,
   sameWorkOf,
@@ -108,6 +117,8 @@ import {
   liveEpicNotes,
 } from './epics'
 import { candidatesOf, planMoves, questionsOf } from './moves'
+import { assigneesOf, filedIssueOf, filedSaid, issueFieldsOf, milestoneNamed, parentAfter, projectStepOf, withFiled } from './filing'
+import type { Filed } from './filing'
 import type { Answer, Answers, Questions, Unmoved } from './moves'
 import {
   inboxTabOf,
@@ -124,14 +135,17 @@ import {
 } from './filters'
 import {
   THREADS_QUERY,
+  OPEN_PRS,
+  RATE_LIMITED,
+  boardOf,
+  rateLimitTexts,
+  velocityKept,
   commentsOf,
   graphqlData,
   nextPageOf,
   parseGraph,
   parseIssues,
-  parsePrs,
   threadsOf,
-  timesOf,
   TOOL_COMMENTS,
   commentsText,
   statusEnumOf,
@@ -145,7 +159,6 @@ import {
   since,
   sumProgress,
   summary,
-  weekly,
   roomAbove,
 } from './layout'
 import type { PaneElements } from './views/parts'
@@ -579,7 +592,6 @@ const schedule = async ($: EngineInterface, now: Board | null): Promise<void> =>
 // Until when GitHub's rate limit has run out for the account, if it has. Every session and agent shares the limit, so
 // the board reads nothing until then rather than spend what is left.
 let pausedUntil = 0
-const RATE_LIMITED = /rate limit/i
 
 // The ETag GitHub last answered each cheap check with, by path. A check sends it back, and an answer of 304, nothing
 // changed, doesn't count against the rate limit.
@@ -1219,20 +1231,11 @@ const readGitHub = async ($: EngineInterface, seen: boolean): Promise<void> => {
     const repo = await repoNow($)
     const listIssues = (args: string[]) => (repo.hasIssuesEnabled ? gh($, ['issue', 'list', ...args]) : Promise.resolve('[]'))
     const [owner = '', name = ''] = repo.nameWithOwner.split('/')
-    // The weekly counts change a little a day, and reading them takes up to ten GraphQL searches: kept for an hour.
-    const kept = before?.repo === repo.nameWithOwner && before.velocityAt !== undefined && (await nowOf($)) - before.velocityAt < VELOCITY_MS ? before : null
+    // The weekly counts are kept for an hour.
+    const kept = velocityKept(before, repo.nameWithOwner, await nowOf($), VELOCITY_MS)
     const [graph, prs, threads, closed, merged, login, current, milestones] = await Promise.all([
       repo.hasIssuesEnabled ? fetchIssues($, repo.nameWithOwner) : Promise.resolve({ issues: [], project: null, types: [], labels: undefined }),
-      gh($, [
-        'pr',
-        'list',
-        '--state',
-        'open',
-        '--limit',
-        '50',
-        '--json',
-        'number,title,url,author,headRefName,headRefOid,isDraft,statusCheckRollup,reviewDecision,additions,deletions,updatedAt,body,closingIssuesReferences,mergeStateStatus,reviewRequests',
-      ]),
+      gh($, OPEN_PRS),
       // Review threads still open on each pull request; without them, the rows just don't count threads.
       getGraphql($, ['api', 'graphql', '-f', `owner=${owner}`, '-f', `name=${name}`, '-f', `query=${THREADS_QUERY}`]).then(threadsOf, () => new Map<number, number>()),
       kept ? null : listIssues(['--state', 'closed', '--search', `closed:>=${from}`, '--limit', '500', '--json', 'closedAt']),
@@ -1243,34 +1246,9 @@ const readGitHub = async ($: EngineInterface, seen: boolean): Promise<void> => {
       // The open milestones, over REST; the last read's stand when they can't be read.
       repoMilestones($, repo.nameWithOwner).catch(() => before?.milestones ?? []),
     ])
-    // Each open epic's sub-issues in GitHub's order, over REST; an epic whose order can't be read keeps the board's own.
-    const issues = await Promise.all(
-      graph.issues.map(async issue => {
-        if ((issue.subIssues?.total ?? 0) === 0) return issue
-        try {
-          const listed = JSON.parse(await gh($, ['api', `repos/${repo.nameWithOwner}/issues/${issue.number}/sub_issues?per_page=100`])) as { number: number }[]
-          return { ...issue, subOrder: listed.map(one => one.number) }
-        } catch {
-          return issue
-        }
-      }),
-    )
+    const issues = await withSubOrder($, repo.nameWithOwner, graph.issues)
     const fetchedAt = await nowOf($)
-    const next: Board = {
-      repo: repo.nameWithOwner,
-      issues,
-      prs: parsePrs(prs).map(pr => ({ ...pr, openThreads: threads.get(pr.number) ?? 0 })),
-      velocity:
-        kept && closed === null && merged === null
-          ? kept.velocity
-          : { closed: weekly(timesOf(closed ?? '[]', 'closedAt'), fetchedAt), merged: weekly(timesOf(merged ?? '[]', 'mergedAt'), fetchedAt) },
-      velocityAt: kept?.velocityAt ?? fetchedAt,
-      milestones,
-      issueTypes: graph.types,
-      ...(graph.labels ? { labels: graph.labels } : {}),
-      fetchedAt,
-      project: graph.project,
-    }
+    const next = boardOf({ repo: repo.nameWithOwner, graph, issues, prs, threads, closed, merged, milestones, kept, fetchedAt })
     after = next
     if (login !== known) await update($, viewer, () => login)
     await land($, before, next, seen)
@@ -1283,22 +1261,41 @@ const readGitHub = async ($: EngineInterface, seen: boolean): Promise<void> => {
     const calls = stats.calls['full read'] ?? spent.calls
     stats.lastRead = { at: fetchedAt, calls: minus(calls, spent.calls), points: stats.points - spent.points }
   } catch (cause) {
-    const message = messageOf(cause)
-    repoInfo = undefined
-    if (RATE_LIMITED.test(message)) {
-      const was = pausedUntil
-      const clock = await nowOf($)
-      pausedUntil = await resetOf($, message)
-      const at = new Date(pausedUntil).toTimeString().slice(0, 5)
-      await update($, error, () => `GitHub's rate limit for this account ran out. The board reads again at ${at}.`)
-      if (was <= clock) $.ui.toast(`GitHub's rate limit ran out; the issue board waits until ${at}`)
-    } else {
-      await update($, error, () => message)
-      void checkAccess($, message)
-    }
+    await readFailed($, messageOf(cause))
   } finally {
     await update($, loading, () => false)
     schedule($, after)
+  }
+}
+
+// Each open epic's sub-issues in GitHub's order, over REST; an epic whose order can't be read keeps the board's own.
+const withSubOrder = ($: EngineInterface, repo: string, issues: Issue[]): Promise<Issue[]> =>
+  Promise.all(
+    issues.map(async issue => {
+      if ((issue.subIssues?.total ?? 0) === 0) return issue
+      try {
+        const listed = JSON.parse(await gh($, ['api', `repos/${repo}/issues/${issue.number}/sub_issues?per_page=100`])) as { number: number }[]
+        return { ...issue, subOrder: listed.map(one => one.number) }
+      } catch {
+        return issue
+      }
+    }),
+  )
+
+// A full read that failed: a rate limit pauses the board until it resets, and anything else shows, and may be a
+// missing permission.
+const readFailed = async ($: EngineInterface, message: string): Promise<void> => {
+  repoInfo = undefined
+  if (RATE_LIMITED.test(message)) {
+    const was = pausedUntil
+    const clock = await nowOf($)
+    pausedUntil = await resetOf($, message)
+    const said = rateLimitTexts(pausedUntil)
+    await update($, error, () => said.error)
+    if (was <= clock) $.ui.toast(said.toast)
+  } else {
+    await update($, error, () => message)
+    void checkAccess($, message)
   }
 }
 
@@ -1700,17 +1697,6 @@ const moveInProject = async ($: EngineInterface, number: number, beside: number 
   await save($)
 }
 
-// The repo an issue moves to, as `owner/name`: a bare name is the same owner's, and another owner's is refused, so an
-// issue doesn't leave the owner's hands by a slip.
-const sameOwner = (repo: string, target: string): string => {
-  const owner = repo.split('/')[0] ?? ''
-  const [first = '', second] = target.split('/')
-  const full = second === undefined ? `${owner}/${first}` : target
-  if (full.split('/')[0]?.toLowerCase() !== owner.toLowerCase()) throw new Error(`an issue moves only to another of ${owner}'s repos, not to ${target}`)
-  if (full.toLowerCase() === repo.toLowerCase()) throw new Error(`the issue is in ${repo} already`)
-  return full
-}
-
 // The repo's issue type a name stands for, ignoring case; or why it can't be one.
 const typeOf = async ($: EngineInterface, name: string): Promise<string> => {
   const types = (await read($, board))?.issueTypes ?? []
@@ -2029,40 +2015,37 @@ const fileOne = async ($: EngineInterface, spec: NewIssue, quiet = false): Promi
   if (!now) throw new Error(NOT_READ)
   const repo = now.repo
   const me = await read($, viewer)
-  let milestone: { number: number; title: string } | undefined
+  let milestone: Milestone | undefined
   if (spec.milestone) {
     // The board's own list first, as its last read had it; GitHub's when that lacks it, as for one made since.
-    const named = (list: readonly Milestone[]) => list.find(one => one.title.toLowerCase() === spec.milestone?.toLowerCase())
-    milestone = named(now.milestones ?? []) ?? named(await repoMilestones($, repo))
+    const name = spec.milestone
+    milestone = milestoneNamed(now.milestones ?? [], name) ?? milestoneNamed(await repoMilestones($, repo), name)
     if (!milestone) throw new Error(`the repo has no open milestone called ${spec.milestone}`)
   }
-  const assignees = (spec.assign ?? []).flatMap(login => (login === '@me' ? (me ? [me] : []) : [login]))
+  const assignees = assigneesOf(spec.assign, me)
   const type = spec.type ? await typeOf($, spec.type) : undefined
   const made = spec.labels?.length ? await ensureLabels($, repo, spec.labels) : []
-  const fields = { title: spec.title, body: spec.body, labels: spec.labels ?? [], assignees, ...(milestone ? { milestone: milestone.number } : {}), ...(type ? { type } : {}) }
-  const raw = JSON.parse(await gh($, ['api', '-X', 'POST', `repos/${repo}/issues`, '--input', '-'], JSON.stringify(fields))) as {
-    number: number
-    id: number
-    node_id: string
-    html_url: string
-    updated_at: string
-    labels: { name: string; color?: string }[]
-    assignees: { login: string }[]
-  }
-  const did = [`“${spec.title}”`]
+  const fields = issueFieldsOf(spec, assignees, milestone, type)
+  const raw = JSON.parse(await gh($, ['api', '-X', 'POST', `repos/${repo}/issues`, '--input', '-'], JSON.stringify(fields))) as Filed
+  const did = filedSaid(spec, raw, milestone, type, made)
   const failed: string[] = []
-  if (raw.labels.length > 0) did.push(`labelled ${raw.labels.map(label => label.name).join(', ')}`)
-  if (raw.assignees.length > 0) did.push(`assigned ${raw.assignees.map(user => user.login).join(', ')}`)
-  if (milestone) did.push(`on ${milestone.title}`)
-  if (type) did.push(`typed ${type}`)
-  if (made.length > 0) did.push(`with the new ${made.length === 1 ? 'label' : 'labels'} ${made.join(', ')}`)
+  const parent = await placeFiled($, now, spec, raw, did, failed)
+  const { item, set } = await addFiled($, now, spec, raw, did, failed)
+  const issue = filedIssueOf(spec, raw, { item, set, milestone, type, parent, did, held: now.issues })
+  await update($, board, was => was && withFiled(was, issue, parent))
+  await save($)
+  if (!quiet) $.ui.toast(`Filed #${raw.number}`)
+  return { number: raw.number, text: filedText(raw.number, did, failed) }
+}
 
+// A new issue's place among the others: under its epic and blocked by its blockers, each said in `did` or `failed`.
+// Answers the epic it went under, with its new count.
+const placeFiled = async ($: EngineInterface, now: Board, spec: NewIssue, raw: Filed, did: string[], failed: string[]): Promise<Issue['parent']> => {
   let parent: Issue['parent'] = null
   if (spec.parent) {
     try {
-      await gh($, ['api', '-X', 'POST', `repos/${repo}/issues/${spec.parent}/sub_issues`, '-F', `sub_issue_id=${raw.id}`])
-      const above = now.issues.find(one => one.number === spec.parent)
-      parent = { number: spec.parent, title: above?.title ?? '', total: (above?.subIssues?.total ?? 0) + 1, completed: above?.subIssues?.completed ?? 0 }
+      await gh($, ['api', '-X', 'POST', `repos/${now.repo}/issues/${spec.parent}/sub_issues`, '-F', `sub_issue_id=${raw.id}`])
+      parent = parentAfter(now.issues, spec.parent)
       did.push(`under #${spec.parent}`)
     } catch (cause) {
       failed.push(`put it under #${spec.parent} (${messageOf(cause)})`)
@@ -2072,27 +2055,29 @@ const fileOne = async ($: EngineInterface, spec: NewIssue, quiet = false): Promi
   if (spec.blockedBy?.length) {
     try {
       // The issue isn't on the board yet: the links show with it, below.
-      await block($, repo, raw.number, spec.blockedBy, true)
+      await block($, now.repo, raw.number, spec.blockedBy, true)
       did.push(`blocked by ${spec.blockedBy.map(one => `#${one}`).join(', ')}`)
     } catch (cause) {
       failed.push(`mark it blocked by ${spec.blockedBy.map(one => `#${one}`).join(', ')} (${messageOf(cause)})`)
     }
   }
+  return parent
+}
 
-  // Into the project, at the Status asked for, or the Inbox where the project has one, to be triaged.
+// A new issue into the board's project, as projectStepOf plans, each step said in `did` or `failed`. Answers its item
+// and the fields set.
+const addFiled = async ($: EngineInterface, now: Board, spec: NewIssue, raw: Filed, did: string[], failed: string[]): Promise<{ item: string | null; set: { status?: string; priority?: string } }> => {
   const project = now.project
   let item: string | null = null
   const set: { status?: string; priority?: string } = {}
-  // A project the person hasn't let the board write to gets nothing: the issue is filed, and Claude reads why.
-  const refusal = await boardRefusal($, now)
-  if (project && refusal) {
-    if (spec.status || spec.priority) failed.push(`set its Status or Priority: ${refusal}`)
-    else did.push(`not added to ${project.title}, which the board only reads`)
-  } else if (project) {
+  const step = projectStepOf(spec, project, await boardRefusal($, now))
+  if (!step) return { item, set }
+  if ('failed' in step) failed.push(step.failed)
+  else if ('did' in step) did.push(step.did)
+  else if (project) {
     try {
       item = await addItem($, project, raw.node_id)
-      for (const [field, wanted] of [['status', spec.status ?? roleOf(project, 'inbox')?.name], ['priority', spec.priority]] as const) {
-        if (!wanted) continue
+      for (const [field, wanted] of step.add) {
         try {
           set[field] = await setField($, { number: raw.number, id: raw.node_id, item }, field, wanted)
         } catch (cause) {
@@ -2103,45 +2088,8 @@ const fileOne = async ($: EngineInterface, spec: NewIssue, quiet = false): Promi
     } catch (cause) {
       failed.push(`add it to ${project.title} (${messageOf(cause)})`)
     }
-  } else if (spec.status || spec.priority) {
-    failed.push('set its Status or Priority: the board reads no project for this repo')
   }
-
-  const issue: Issue = {
-    number: raw.number,
-    title: spec.title,
-    url: raw.html_url,
-    labels: raw.labels.map(label => ({ name: label.name, color: label.color ?? '' })),
-    assignees: raw.assignees.map(user => user.login),
-    checks: checksOf(spec.body),
-    updatedAt: raw.updated_at,
-    body: spec.body,
-    id: raw.node_id,
-    item,
-    status: set.status ?? null,
-    priority: set.priority ?? null,
-    milestone: milestone?.title ?? null,
-    ...(type ? { type } : {}),
-    parent,
-    blockedBy: did.some(said => said.startsWith('blocked by')) ? (spec.blockedBy ?? []).filter(one => now.issues.some(issue => issue.number === one)) : [],
-  }
-  await update($, board, was => {
-    if (!was) return was
-    // The epic's count, on the epic and on each of its sub-issues, which carry it too.
-    const counted = (one: Issue): Issue =>
-      !parent
-        ? one
-        : one.number === parent.number
-          ? { ...one, subIssues: { total: parent.total, completed: parent.completed } }
-          : one.parent?.number === parent.number
-            ? { ...one, parent: { ...one.parent, total: parent.total, completed: parent.completed } }
-            : one
-    const issues = was.issues.map(counted)
-    return { ...was, issues: [issue, ...issues.filter(one => one.number !== issue.number)] }
-  })
-  await save($)
-  if (!quiet) $.ui.toast(`Filed #${raw.number}`)
-  return { number: raw.number, text: filedText(raw.number, did, failed) }
+  return { item, set }
 }
 
 // How far back a capture looks for the same work among closed issues.
@@ -2320,9 +2268,8 @@ const applySetup = async ($: EngineInterface): Promise<void> => {
   const now = await read($, setup)
   if (now?.phase !== 'ready') return
   const { facts } = now
-  const mark = (id: SetupStep['id'], state: NonNullable<SetupStep['state']>, message?: string) =>
-    update($, setup, was => (was && 'steps' in was ? { ...was, steps: was.steps.map(step => (step.id === id ? { ...step, state, ...(message ? { message } : {}) } : step)) } : was))
-  const run = async (id: SetupStep['id'], work: () => Promise<unknown>): Promise<void> => {
+  const mark = (id: SetupStep['id'], state: NonNullable<SetupStep['state']>, message?: string) => update($, setup, was => markStep(was, id, state, message))
+  const run: SetupRun = async (id, work) => {
     if (!now.steps.some(step => step.id === id)) return
     await mark(id, 'running')
     try {
@@ -2332,7 +2279,6 @@ const applySetup = async ($: EngineInterface): Promise<void> => {
       await mark(id, 'failed', messageOf(cause))
     }
   }
-  const reread = async (id: string): Promise<SetupProject> => projectOf((await postGraphql($, PROJECT_QUERY, { id })).node)
   await update($, setup, was => (was?.phase === 'ready' ? { ...was, phase: 'applying' as const } : was))
 
   let project: SetupProject | null = facts.projects.find(one => one.id === now.chosen) ?? null
@@ -2355,97 +2301,80 @@ const applySetup = async ($: EngineInterface): Promise<void> => {
   await run('project', async () => {
     const title = facts.repo.name.split('/')[1] ?? facts.repo.name
     const made = await projectWrite($, 'new', CREATE_PROJECT, { owner: facts.repo.ownerId, title, repo: facts.repo.id })
-    project = await reread(made.createProjectV2.projectV2.id)
+    project = await rereadProject($, made.createProjectV2.projectV2.id)
     // The person asked setup to make it, so the board may write to it, which the steps after need.
     await adoptProject($, project, true)
     adopted = project
   })
   // Without a project, the steps that work in one can't run.
-  const needsProject = ['status', 'priority', 'items', 'inbox'] as const
   if (!project) {
-    for (const id of needsProject) if (now.steps.some(step => step.id === id)) await mark(id, 'skipped', 'There is no project to change.')
+    for (const id of NEEDS_PROJECT) if (now.steps.some(step => step.id === id)) await mark(id, 'skipped', 'There is no project to change.')
   } else {
-    let current: SetupProject = project
-    await run('status', async () => {
-      if (!current.status) throw new Error('the project has no Status field')
-      const { options } = mergeStatuses(current.status.options, now.roles)
-      await projectWrite($, current, UPDATE_FIELD, { field: current.status.id, options: options.map(one => ({ ...(one.id ? { id: one.id } : {}), name: one.name, color: one.color, description: one.description })) })
-      current = await reread(current.id)
-    })
-    // The roles are saved with the rest once Apply ends.
-    await run('roles', async () => undefined)
-    await run('priority', async () => {
-      await projectWrite($, current, CREATE_FIELD, { project: current.id, name: 'Priority', options: PRIORITIES })
-      current = await reread(current.id)
-    })
-    // Each open issue's item in the project, the ones already there and the ones added now.
-    const items = new Map(facts.issues.flatMap(issue => issue.items.filter(item => item.project === current.id).map(item => [issue.number, item] as const)))
-    await run('items', async () => {
-      for (const issue of facts.issues) {
-        if (items.has(issue.number)) continue
-        const added = await projectWrite($, current, ADD_ITEM, { project: current.id, content: issue.id })
-        items.set(issue.number, { project: current.id, item: added.addProjectV2ItemById.item.id, status: null })
-      }
-    })
-    await run('inbox', async () => {
-      const picked = now.roles.inbox
-      const inbox = picked === null ? undefined : current.status?.options.find(option => option.name.toLowerCase() === picked.toLowerCase())
-      if (!current.status || !inbox?.id) throw new Error(`the project has no ${picked ?? 'Inbox'} status`)
-      for (const { item, status } of items.values()) {
-        if (status) continue
-        await projectWrite($, current, SET_FIELD, { project: current.id, item, field: current.status.id, option: inbox.id })
-      }
-    })
-    project = current
+    project = await applyInProject($, now, project, run)
   }
-  await run('bug', () => gh($, ['label', 'create', 'bug', '-R', facts.repo.name, '--color', 'd73a4a', '--description', "Something isn't working"]))
+  await run('bug', () => gh($, bugLabelArgs(facts.repo.name)))
   await run('areas', async () => {
-    for (const area of areasOf(now.areas, facts.labels)) {
-      await gh($, ['label', 'create', `area:${area}`, '-R', facts.repo.name, '--color', '1d76db', '--description', `The ${area} part`])
+    for (const args of areaLabelArgs(facts.repo.name, now.areas, facts.labels)) await gh($, args)
+  })
+  // Set inside the steps' callbacks, which the compiler can't follow.
+  await endSetup($, now, project, adopted as { number: number; title: string } | null)
+}
+
+// One of Apply's steps: marked running, then done or failed, and skipped when the plan hasn't got it.
+type SetupRun = (id: SetupStep['id'], work: () => Promise<unknown>) => Promise<void>
+type SetupPlan = Extract<Setup, { facts: unknown }>
+
+// A project as setup reads it, read again after Apply changed it.
+const rereadProject = async ($: EngineInterface, id: string): Promise<SetupProject> => projectOf((await postGraphql($, PROJECT_QUERY, { id })).node)
+
+// Apply's steps in the project: its Status options, its Priority field, an item for each open issue, and the Inbox for
+// the items with no Status. Answers the project as it ends.
+const applyInProject = async ($: EngineInterface, now: SetupPlan, project: SetupProject, run: SetupRun): Promise<SetupProject> => {
+  let current: SetupProject = project
+  await run('status', async () => {
+    if (!current.status) throw new Error('the project has no Status field')
+    await projectWrite($, current, UPDATE_FIELD, { field: current.status.id, options: statusFieldOf(current.status.options, now.roles) })
+    current = await rereadProject($, current.id)
+  })
+  // The roles are saved with the rest once Apply ends.
+  await run('roles', async () => undefined)
+  await run('priority', async () => {
+    await projectWrite($, current, CREATE_FIELD, { project: current.id, name: 'Priority', options: PRIORITIES })
+    current = await rereadProject($, current.id)
+  })
+  // Each open issue's item in the project, the ones already there and the ones added now.
+  const items = itemsIn(now.facts, current.id)
+  await run('items', async () => {
+    for (const issue of now.facts.issues) {
+      if (items.has(issue.number)) continue
+      const added = await projectWrite($, current, ADD_ITEM, { project: current.id, content: issue.id })
+      items.set(issue.number, { project: current.id, item: added.addProjectV2ItemById.item.id, status: null })
     }
   })
+  await run('inbox', async () => {
+    const inbox = inboxOf(current, now.roles)
+    if (typeof inbox === 'string') throw new Error(inbox)
+    for (const { item, status } of items.values()) {
+      if (status) continue
+      await projectWrite($, current, SET_FIELD, { project: current.id, item, field: inbox.field, option: inbox.option })
+    }
+  })
+  return current
+}
 
-  // The board reads the project setup ended with from now on, and knows which Status means what.
-  const ended: SetupProject | null = project
-  if (ended) {
-    const status = ended.status
-    await changeChoices($, was => ({
-      ...was,
-      preferred: ended.id,
-      ...(status ? { statuses: { ...(was.statuses ?? {}), [ended.id]: rolesOf(status.options, now.roles) } } : {}),
-    }))
-  }
-  // The project Apply adopted, in the setting now that its steps are done.
-  // Set inside the steps' callbacks, which the compiler can't follow.
-  const wrote = adopted as { number: number; title: string } | null
-  if (wrote) {
+// Apply's end: the board reads the project setup ended with from now on, and knows which Status means what; the
+// project Apply adopted goes in the setting now that its steps are done; and the pane shows the project as it now is.
+const endSetup = async ($: EngineInterface, now: SetupPlan, ended: SetupProject | null, adopted: { number: number; title: string } | null): Promise<void> => {
+  if (ended) await changeChoices($, was => choicesAfterSetup(was, ended, now.roles))
+  if (adopted) {
     try {
       await writeSetting($, (await grantsNow($)).own)
     } catch (cause) {
-      $.ui.toast(`Couldn't save that the board may write to ${wrote.title}: ${messageOf(cause)}`)
+      $.ui.toast(`Couldn't save that the board may write to ${adopted.title}: ${messageOf(cause)}`)
     }
   }
-  // Done: the pane shows the project as it now is, a new one included, so its automations still off can be linked.
   const adoptedId = (await adoptedNow($))?.id ?? null
-  await update($, setup, was =>
-    was?.phase === 'applying'
-      ? {
-          ...was,
-          phase: 'done' as const,
-          ...(ended
-            ? {
-                chosen: ended.id,
-                facts: {
-                  ...was.facts,
-                  projects: [...was.facts.projects.filter(one => one.id !== ended.id), ended],
-                  adopted: adoptedId,
-                  ...(ended.status ? { saved: { project: ended.id, roles: rolesOf(ended.status.options, now.roles) } } : {}),
-                },
-              }
-            : {}),
-        }
-      : was,
-  )
+  await update($, setup, was => setupDone(was, ended, adoptedId, now.roles))
   projectRefusal = undefined
   void refresh($)
 }
@@ -2825,30 +2754,17 @@ const applyChanges = async ($: EngineInterface, number: number, changes: IssueCh
   // asked, as when the board moved it to Done as it closed: that is said, and nothing is written.
   const target = issue ?? (changes.status || changes.priority || fields ? await offBoard($, number) : null)
   const current = !issue && target?.item ? itemValuesOf(await postGraphql($, ITEM_VALUES, { item: target.item })) : {}
-  const already: string[] = []
-  const skipped: ('status' | 'priority')[] = []
-  for (const field of ['status', 'priority'] as const) {
-    const value = changes[field]
-    if (!value || !target) continue
-    const name = field === 'status' ? 'Status' : 'Priority'
-    if (current[name] && current[name].toLowerCase() === value.toLowerCase()) {
-      already.push(`#${number}'s ${name} is already ${current[name]}.`)
-      skipped.push(field)
-      continue
-    }
-    await setField($, target, field, value)
-  }
+  const settled = settledOf(number, changes, current)
+  if (target) for (const [field, value] of settled.set) await setField($, target, field, value)
   if (fields && target) await setFields($, target, fields)
   const repo = (await read($, board))?.repo
   if (repo && (changes.title || changes.body !== undefined || changes.addBoxes?.length || changes.rewordBoxes?.length)) await rewrite($, repo, number, changes)
   const made = repo && changes.addLabels?.length ? await ensureLabels($, repo, changes.addLabels) : []
   if (repo && changes.transferTo) {
     changes.transferTo = sameOwner(repo, changes.transferTo)
-    // GitHub moves an issue from a public repo to a private one, but not back: that takes a second, confirmed call.
-    const [from, to] = await Promise.all([repo, changes.transferTo].map(async one => (await gh($, ['api', `repos/${one}`, '--jq', '.private'])).trim() === 'true'))
-    if (!from && to && !changes.confirmTransfer) {
-      throw new Error(`${changes.transferTo} is private and ${repo} is public, so GitHub won't move #${number} back once it's there. Call again with confirmTransfer: true to move it anyway`)
-    }
+    const [from = false, to = false] = await Promise.all([repo, changes.transferTo].map(async one => (await gh($, ['api', `repos/${one}`, '--jq', '.private'])).trim() === 'true'))
+    const refusal = transferRefusal(number, repo, changes.transferTo, { from, to }, Boolean(changes.confirmTransfer))
+    if (refusal) throw new Error(refusal)
   }
   for (const command of commandsOf(number, changes, repo)) await gh($, command.argv, command.stdin)
   if (changes.transferTo) {
@@ -2862,11 +2778,7 @@ const applyChanges = async ($: EngineInterface, number: number, changes: IssueCh
   if (repo && changes.addBlockedBy?.length) await block($, repo, number, changes.addBlockedBy, true)
   if (repo && changes.removeBlockedBy?.length) await block($, repo, number, changes.removeBlockedBy, false)
   if (refresh$) await refreshAfter($)
-  const left = { ...changes }
-  for (const field of skipped) delete left[field]
-  const done = changesText(number, left)
-  const said = [...already, ...(already.length > 0 && done.startsWith('Nothing to change') ? [] : [done])].join(' ')
-  return `${said}${made.length > 0 ? ` Created the ${made.length === 1 ? 'label' : 'labels'} ${made.join(', ')}, new to the repo.` : ''}`
+  return changedText(number, changes, settled, made)
 }
 
 // A change made on a card: said in a toast, and an error that may be a missing permission checked.
