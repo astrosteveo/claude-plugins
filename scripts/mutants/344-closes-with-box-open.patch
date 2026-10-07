@@ -1,0 +1,17 @@
+Guards #344: a pull request for the issue Claude is on says Closes once any box is ticked, not only when every box is.
+Test: plugins/issue-board: a pull request closes its issue only when every box is ticked
+Test: plugins/issue-board: by default the pull request text says Refs while a box is open and Closes once every box is ticked, and the note stays the same
+
+diff --git a/plugins/issue-board/hooks/prompts.ts b/plugins/issue-board/hooks/prompts.ts
+index c047e4d..c42f01f 100644
+--- a/plugins/issue-board/hooks/prompts.ts
++++ b/plugins/issue-board/hooks/prompts.ts
+@@ -238,7 +238,7 @@ export const prKeyword = (issue: { number: number; checks: Check[] } | null, oth
+   if (!closesWhenTicked || !issue) return ''
+   if (others.some(worker => worker.number !== issue.number && !WORKER_ENDED.includes(worker.status))) return ''
+   const step = progress(issue.checks)
+-  return `${step.done === step.total ? 'Closes' : 'Refs'} #${issue.number}`
++  return `${step.done > 0 ? 'Closes' : 'Refs'} #${issue.number}`
+ }
+
+ // A worker in one of these states writes no more pull requests.

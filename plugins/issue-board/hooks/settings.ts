@@ -9,9 +9,9 @@ export const START_MODES: readonly StartMode[] = ['main', 'background']
 // The person's settings, from the manifest's userConfig, each under its key there. plugin.json declares them for
 // /config; this file is the one place the board defines them. What changes the shared project by itself is off for a
 // new install; Start's own changes are on, since the person pressed Start. Of what the board adds to Claude's prompts,
-// the working note with its pull request rule, the capture section and the copies of issues a prompt names are on. The
-// next-step suggestion changes how Claude Code behaves, so it is off. Start works in the main chat unless the person
-// asks for background workers.
+// the working note, the pull request's Closes or Refs line, the capture section and the copies of issues a prompt names
+// are on. The next-step suggestion changes how Claude Code behaves, so it is off. Start works in the main chat unless
+// the person asks for background workers.
 export type Settings = {
   // Moves the board makes by itself: closed issues to Done, a Refs merge to Verification, and epics with their
   // sub-issues. Each also needs its Status role, so setting a role to none skips that one move.
@@ -19,8 +19,8 @@ export type Settings = {
   claimOnStart: boolean
   startMode: StartMode
   workingNote: boolean
-  // The working note and the background agent say `Closes #N` only when every box is ticked, else `Refs #N`. Off, they
-  // say nothing, which leaves it to the repository's own rules.
+  // A pull request for the issue Claude is on, and the background agent's, say `Closes #N` only when every box is
+  // ticked, else `Refs #N`. Off, the board says nothing, which leaves it to the repository's own rules.
   closesWhenTicked: boolean
   // Whether the system prompt tells Claude to capture work it finds to the Inbox.
   capture: boolean
@@ -100,7 +100,7 @@ const FEATURES: { feature: string; setting?: SwitchKey; role?: Role }[] = [
   { feature: "The Backlog folding, and triage's Accept moving issues to it", role: 'backlog' },
   { feature: 'project_archive by doneBefore', role: 'done' },
   { feature: 'The working note in the system prompt', setting: 'workingNote' },
-  { feature: "The working note's pull request rule", setting: 'closesWhenTicked' },
+  { feature: "The Closes or Refs line in a pull request's text", setting: 'closesWhenTicked' },
   { feature: 'The capture section in the system prompt', setting: 'capture' },
   { feature: 'Copies of the issues a prompt names', setting: 'issueCopies' },
   { feature: 'The next step suggested in the prompt box', setting: 'suggestNextStep' },
