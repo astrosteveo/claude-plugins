@@ -21,7 +21,8 @@ import {
   adoptTarget,
   approvedOf,
   adoptText,
-  adoptedOf,
+  projectNumberOf,
+  savedAdoptionOf,
   guessKey,
   guessOf,
   guessText,
@@ -232,6 +233,7 @@ type Settings = {
   refreshMinutes: number | null
   // Where the pane's tabs come from: the project's views, or the board's own filters.
   filters: FilterSource
+  writeProject: number | null
 }
 const settingsOf = (options: Readonly<Record<string, unknown>> | undefined): Settings => ({
   moveToDone: options?.moveToDone === true,
@@ -251,6 +253,8 @@ const settingsOf = (options: Readonly<Record<string, unknown>> | undefined): Set
   // How often the board looks at GitHub by itself, in minutes; null for only when asked.
   refreshMinutes: options?.refresh === 'manual' ? null : options?.refresh === '15' ? 15 : options?.refresh === '60' ? 60 : 5,
   filters: options?.filters === 'board' ? 'board' : 'views',
+  // The number of the project the board may write to; null, read-only.
+  writeProject: projectNumberOf(options?.writeProject),
 })
 let settings: Settings = settingsOf(undefined)
 // While a pull request's CI runs, the board looks again this often, so its pass or failure shows soon after.
@@ -677,9 +681,11 @@ const costOf = (page: string): { cost: number; remaining: number; resetAt: strin
   }
 }
 
-// What the board keeps between sessions, one entry per repository; `setup` is what `/issues setup` last saved. Every
-// session on the repo, of any version, rewrites this entry whole, so the person's choices live under a key of their own
-// (see Choices). An entry from before that may still hold them; the board moves them across once and then ignores them.
+// What the board keeps between sessions, one entry per repository: a cache of what it can read from GitHub again, and
+// `setup`, what `/issues setup` last saved. Every session on the repo, of any version, rewrites this entry whole. So
+// what the board may write to is a setting (writeProject), and the person's other choices live under a key of their
+// own (see Choices). An entry from an earlier board may still hold `adopted` (the project's id, title and owner, or
+// null once released) and the choices; the board moves them across once and then ignores them.
 type Saved = {
   board: Board | null
   working: Working | null
@@ -687,18 +693,21 @@ type Saved = {
   viewer: string | null
   setup?: SavedSetup
   sections?: Record<string, boolean>
-  adopted?: Adopted | null
+  adopted?: { id: string; title: string; owner: string | null } | null
   declined?: string[]
   statuses?: Record<string, Roles>
   guessSeen?: string[]
 }
 
-// The person's choices for the repo, kept apart from the shared entry so a board from before they existed can't erase
-// them when it saves: `adopted` the project the board may write to (null once released; absent before adopting
-// existed), `declined` the projects whose prompt the person turned down, `statuses` the Status mapping /issues statuses
-// or Looks right saved, by project id, and `guessSeen` the guessed mappings the person answered.
-type Choices = Pick<Saved, 'adopted' | 'declined' | 'statuses' | 'guessSeen'>
-const CHOICES = ['adopted', 'declined', 'statuses', 'guessSeen'] as const
+// The person's choices for the repo that grant nothing, kept apart from the shared entry so a board from before they
+// existed can't erase them when it saves: `declined` the projects whose prompt the person turned down, `statuses` the
+// Status mapping /issues statuses or Looks right saved, by project id, and `guessSeen` the guessed mappings the person
+// answered. `adoptionMoved` says an adoption an earlier board kept in the store was moved into the setting, or that a
+// later choice made it moot, so a release isn't undone by moving it again.
+type Choices = Pick<Saved, 'declined' | 'statuses' | 'guessSeen'> & { adoptionMoved?: true }
+const CHOICES = ['declined', 'statuses', 'guessSeen'] as const
+// The fields an earlier board kept in the shared entry that this one keeps elsewhere.
+const MOVED = ['adopted', ...CHOICES] as const
 
 // The choice fields an entry holds, and only those.
 const choicesIn = (saved: Partial<Saved>): Choices => {
@@ -706,6 +715,11 @@ const choicesIn = (saved: Partial<Saved>): Choices => {
   for (const name of CHOICES) if (saved[name] !== undefined) found[name] = saved[name]
   return found as Choices
 }
+
+// The setting that names the project the board may write to, as `$.config.set` names it.
+const WRITE_PROJECT = 'issue-board.writeProject'
+// The project last adopted in this module, so the gate can name it before the board reads it, as after setup made it.
+let lastAdopted: Adopted | null = null
 
 let storeRoot: string | undefined
 const rootOf = async ($: EngineInterface): Promise<string> => {
@@ -745,45 +759,92 @@ const savedAll = async ($: EngineInterface): Promise<Partial<Saved>> => {
   try {
     const shared = await sharedOf($)
     const rest: Partial<Saved> = { ...shared }
-    for (const name of CHOICES) delete rest[name]
+    for (const name of MOVED) delete rest[name]
     return { ...rest, ...(await choicesOf($, shared)) }
   } catch {
     return {}
   }
 }
 
-// The project the board may write to, read from the store each time: the store is what adopting and releasing change,
-// in this session or another on the same repo.
-const adoptedNow = async ($: EngineInterface): Promise<Adopted | null> => adoptedOf(await savedAll($))
+// The project the board may write to: the writeProject setting, named after the project the board reads when the
+// numbers match, or the one this module adopted last. Null when the setting is empty.
+const adoptedNow = async ($: EngineInterface): Promise<Adopted | null> => {
+  const number = settings.writeProject
+  if (number === null) return null
+  const reads = (await read($, board))?.project
+  if (reads?.number === number) return { number, id: reads.id, title: reads.title, owner: ownerOf(reads.url) }
+  if (lastAdopted?.number === number) return lastAdopted
+  return { number, id: null, title: `project ${number}`, owner: null }
+}
 
-// The adoption as the store has it, for the prompt and setup to draw.
+// Sets writeProject. A plugin's options are fixed for each load, and Claude Code reloads the board with the new value
+// after the change, so the module goes by it from here: the change counts at once in this session, before and after
+// the reload. Other sessions see it by the next time they load the board.
+const writeSetting = async ($: EngineInterface, number: number | null): Promise<void> => {
+  const done = await $.config.set({ key: WRITE_PROJECT, value: number === null ? '' : String(number) })
+  if (done.deny !== undefined) throw new Error(done.deny)
+  settings = { ...settings, writeProject: number }
+  await loadAdoption($)
+}
+
+// Moves an adoption an earlier board kept in the store into the setting, once: only while the setting is empty, and
+// only for the project it named. Then the store's `adopted` is never read again. `known` is the projects setup read;
+// otherwise the one the board reads.
+const moveAdoption = async ($: EngineInterface, known?: readonly { id: string; number: number }[]): Promise<void> => {
+  try {
+    const shared = await sharedOf($)
+    // Nothing an earlier board kept counts as adopting: nothing to move, and nothing to write.
+    if (shared.adopted === undefined && !shared.setup) return
+    const choices = await choicesOf($, shared)
+    if (choices.adoptionMoved) return
+    const reads = (await read($, board))?.project
+    const number = settings.writeProject === null ? savedAdoptionOf(shared, known ?? (reads ? [reads] : [])) : null
+    if (number === undefined) return
+    if (number !== null) await writeSetting($, number)
+    const key = await choicesKeyOf($)
+    await $.store.set(key, { ...(((await $.store.get(key)) as Choices | undefined) ?? choices), adoptionMoved: true })
+  } catch (cause) {
+    $.ui.log(`issue-board: couldn't move the saved adoption to the writeProject setting: ${messageOf(cause)}`, { to: 'debug' })
+  }
+}
+
+// The adoption as the setting has it and the declines as the store does, for the prompt and setup to draw.
 const loadAdoption = async ($: EngineInterface): Promise<void> => {
+  await moveAdoption($)
   const saved = await savedAll($)
-  const next = { adopted: adoptedOf(saved), declined: saved.declined ?? [] }
+  const next = { adopted: await adoptedNow($), declined: saved.declined ?? [] }
   const was = await read($, adoption)
-  if (was.adopted?.id !== next.adopted?.id || was.declined.join() !== next.declined.join()) await update($, adoption, () => next)
+  if (was.adopted?.number !== next.adopted?.number || was.adopted?.id !== next.adopted?.id || was.declined.join() !== next.declined.join()) {
+    await update($, adoption, () => next)
+  }
   const seen = saved.guessSeen ?? []
   if ((await read($, guessSeen)).join() !== seen.join()) await update($, guessSeen, () => seen)
 }
 
-// Changes the person's choices: adopting, releasing, turning a prompt down, a Status mapping, an answered guess. It reads
-// the choices key just before writing it, so a change another session made meanwhile to a different field stays.
+// Changes the person's choices: turning a prompt down, a Status mapping, an answered guess. It reads the choices key just
+// before writing it, so a change another session made meanwhile to a different field stays.
 const changeChoices = async ($: EngineInterface, change: (was: Choices) => Choices): Promise<void> => {
   const was = await choicesOf($, await sharedOf($))
   await $.store.set(await choicesKeyOf($), change(was))
   await loadAdoption($)
 }
 
-// The person let the board write to a project, through its prompt or Apply in setup.
-const adoptProject = async ($: EngineInterface, project: { id: string; title: string; url: string }): Promise<void> => {
-  const adopted: Adopted = { id: project.id, title: project.title, owner: ownerOf(project.url) }
-  await changeChoices($, was => ({ ...was, adopted, declined: (was.declined ?? []).filter(id => id !== project.id) }))
+// The person let the board write to a project, through its prompt, Apply in setup or project_adopt: the setting names it.
+// The setting is written last, since the reload it brings may cut short what the module does after. Apply passes
+// `later` and writes it once its steps are done, going by the project meanwhile.
+const adoptProject = async ($: EngineInterface, project: { id: string; number: number; title: string; url: string }, later = false): Promise<void> => {
+  await changeChoices($, was => ({ ...was, adoptionMoved: true, declined: (was.declined ?? []).filter(id => id !== project.id) }))
+  lastAdopted = { number: project.number, id: project.id, title: project.title, owner: ownerOf(project.url) }
+  if (!later) return writeSetting($, project.number)
+  settings = { ...settings, writeProject: project.number }
+  await loadAdoption($)
 }
 
-// `/issues setup`'s Release: the board only reads the project again. Kept as null, so a saved setup that names the
-// project doesn't count as adopting it.
+// Release, in setup or project_adopt: the setting is emptied, and the board only reads the project again. An adoption
+// an earlier board kept in the store isn't moved after that.
 const releaseProject = async ($: EngineInterface): Promise<void> => {
-  await changeChoices($, was => ({ ...was, adopted: null }))
+  await changeChoices($, was => ({ ...was, adoptionMoved: true }))
+  await writeSetting($, null)
 }
 
 // Keep read-only on the prompt: it isn't asked again for that project. Setup can still adopt it.
@@ -796,7 +857,7 @@ const declineProject = async ($: EngineInterface, project: { id: string }): Prom
 // as gh's `-f` fields, the way the single-select writes always went; otherwise they go as JSON, which carries lists.
 const projectWrite = async (
   $: EngineInterface,
-  target: { id: string; title: string } | 'new',
+  target: { number: number; title: string } | 'new',
   query: string,
   variables: Record<string, string | number | boolean | null | object>,
   fields = false,
@@ -818,12 +879,12 @@ const projectWrite = async (
 
 // Whether the board may write to a project, for the work it does by itself, which skips a project it may not write
 // to without a word: /issues check and /issues help say so.
-const mayWrite = async ($: EngineInterface, project: { id: string; title: string }): Promise<boolean> => writeRefusal(await adoptedNow($), project) === null
+const mayWrite = async ($: EngineInterface, project: { number: number; title: string }): Promise<boolean> => writeRefusal(await adoptedNow($), project) === null
 
 // What the pane and the band ask about the project the board reads, or null: nothing once the board may write to it, or
 // once the person kept it read-only.
 const adoptAsk = (project: Project, now: Adoption): { title: string; lines: string[] } | null =>
-  now.adopted?.id === project.id || now.declined.includes(project.id) ? null : adoptText(project, settings.refreshMinutes)
+  now.adopted?.number === project.number || now.declined.includes(project.id) ? null : adoptText(project, settings.refreshMinutes)
 
 // Let it write, on the prompt.
 const adoptFromPrompt = async ($: EngineInterface, project: Project): Promise<void> => {
@@ -949,7 +1010,7 @@ const adoptPlan = async ($: EngineInterface, input: unknown): Promise<AdoptPlan>
   }
   const target = adoptTarget(reads, linked, number, now.repo)
   if (typeof target === 'string') return { refusal: target }
-  if (was?.id === target.id) return { refusal: `The board already writes to ${target.title}; nothing changed.` }
+  if (was?.number === target.number) return { refusal: `The board already writes to ${target.title}; nothing changed.` }
   return { adopt: target, was }
 }
 
@@ -970,8 +1031,9 @@ const save = async ($: EngineInterface): Promise<void> => {
       viewer: await read($, viewer),
       sections: await read($, sections),
       ...(before.setup ? { setup: before.setup } : {}),
-      // Choices an earlier board left here stay as they were, for a board of that version still running on the repo.
-      // This board keeps its own under the choices key.
+      // What an earlier board left here stays as it was, for a board of that version still running on the repo. This
+      // board keeps the choices under their own key, and what it may write to in the writeProject setting.
+      ...(before.adopted !== undefined ? { adopted: before.adopted } : {}),
       ...choicesIn(before),
     }
     await $.store.set(await keyOf($), saved)
@@ -1209,6 +1271,8 @@ const land = async ($: EngineInterface, before: Board | null, next: Board, seen:
   }
   await update($, error, () => null)
   await save($)
+  // The project the board reads now names the adopted one, and lets an adoption an earlier board kept move across.
+  await loadAdoption($)
   // New issues in the Inbox while it shows: Claude suggests for them too, unless its last answer failed, which waits
   // for Suggest again.
   // The Inbox shows only while it is a tab, which it isn't once the project's views are the tabs.
@@ -2165,7 +2229,8 @@ const readSetup = async ($: EngineInterface): Promise<void> => {
     const kept = await savedAll($)
     const saved = kept.setup
     const read$ = factsOf(JSON.stringify({ data: facts }), pages, suggestAreas(labels, await foldersOf($, root)), await hasTemplate($, root))
-    const known = { ...read$, adopted: adoptedOf(kept)?.id ?? null }
+    await moveAdoption($, read$.projects)
+    const known = { ...read$, adopted: read$.projects.find(one => one.number === settings.writeProject)?.id ?? null }
     // The project the board already reads, when setup saved one and it's still linked; else the first linked.
     const chosen = known.projects.find(one => one.id === saved?.project.id)?.id ?? known.projects[0]?.id ?? null
     // The mapping saved for it, by an earlier setup or by /issues statuses, which setup starts from.
@@ -2206,14 +2271,22 @@ const applySetup = async ($: EngineInterface): Promise<void> => {
   // First, since the steps that change the project go through the board's write check. Pressing Apply on the plan that
   // says so is the person letting the board write to the project.
   const chosen = project
-  if (chosen) await run('adopt', () => adoptProject($, chosen))
+  // The project Apply adopted, whose setting it writes once its steps are done.
+  let adopted: { number: number; title: string } | null = null
+  if (chosen) {
+    await run('adopt', async () => {
+      await adoptProject($, chosen, true)
+      adopted = chosen
+    })
+  }
   await run('issues', () => gh($, ['repo', 'edit', facts.repo.name, '--enable-issues']))
   await run('project', async () => {
     const title = facts.repo.name.split('/')[1] ?? facts.repo.name
     const made = await projectWrite($, 'new', CREATE_PROJECT, { owner: facts.repo.ownerId, title, repo: facts.repo.id })
     project = await reread(made.createProjectV2.projectV2.id)
     // The person asked setup to make it, so the board may write to it, which the steps after need.
-    await adoptProject($, project)
+    await adoptProject($, project, true)
+    adopted = project
   })
   // Without a project, the steps that work in one can't run.
   const needsProject = ['status', 'priority', 'items', 'inbox'] as const
@@ -2272,6 +2345,16 @@ const applySetup = async ($: EngineInterface): Promise<void> => {
     const key = await keyOf($)
     const before = ((await $.store.get(key).catch(() => undefined)) as Partial<Saved> | undefined) ?? {}
     await $.store.set(key, { ...before, setup: kept })
+  }
+  // The project Apply adopted, in the setting now that its steps are done.
+  // Set inside the steps' callbacks, which the compiler can't follow.
+  const wrote = adopted as { number: number; title: string } | null
+  if (wrote) {
+    try {
+      await writeSetting($, wrote.number)
+    } catch (cause) {
+      $.ui.toast(`Couldn't save that the board may write to ${wrote.title}: ${messageOf(cause)}`)
+    }
   }
   // Done: the pane shows the project as it now is, a new one included, so its automations still off can be linked.
   const adoptedId = (await adoptedNow($))?.id ?? null

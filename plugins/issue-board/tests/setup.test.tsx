@@ -5,7 +5,7 @@ import { groupsOf, isInbox, leftForDone, leftForVerification, toArchive } from '
 import { isLater, isNow, roleOf, rolesFor } from '../hooks/project'
 import { addsAsTodo, areasOf, automationsOff, automationsOn, mergeStatuses, picksFor, rolesOf, stepsOf, suggestAreas, suggestRoles } from '../hooks/setup'
 import type { Board, Issue, Project, SetupFacts, SetupOption } from '../types'
-import { adoptedStore } from './graph'
+import { adoptedStore, settingsLog } from './graph'
 
 const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } } as const
 const SETUP = { command: 'issues', args: 'setup', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
@@ -196,6 +196,7 @@ test('setup on a fresh repo shows its plan, changes nothing until Apply, then ma
     kept.set(e.key, e.value)
     return { value: undefined }
   })
+  const set = settingsLog(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-05T03:00:00Z') })
   const gh = github(on, { hasIssues: false, projects: [], labels: ['enhancement'], issues: [{ number: 1, items: [] }, { number: 2, items: [] }] })
   const sent: string[] = []
@@ -250,6 +251,8 @@ test('setup on a fresh repo shows its plan, changes nothing until Apply, then ma
   expect(saved.setup?.project.id).toBe('PVT_new')
   expect(saved.setup?.priority.id).toBe('F_priority')
   expect(saved.setup?.status.roles).toMatchObject({ inbox: 'n1', started: 'd1', done: 'd2' })
+  // The board may write to the project it made: the setting names it.
+  expect(set).toEqual([{ key: 'issue-board.writeProject', value: '9' }])
 
   await ui.press({ key: 'setup-close' })
   expect(await ui.find({ key: 'setup-plan' })).toBeUndefined()
@@ -295,6 +298,7 @@ test('setup says which project the board may write to; Release makes it read-onl
     return { value: undefined }
   })
   on('ui.toast', async () => ({ value: undefined }))
+  const set = settingsLog(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-05T03:00:00Z') })
   const gh = github(on, { hasIssues: true, projects: [complete], labels: ['bug', 'area:sim'], issues: [{ number: 1, items: [{ project: 'PVT_8', item: 'PVTI_1', status: 'Ready' }] }] })
   await $.command.run(SETUP)
@@ -302,16 +306,19 @@ test('setup says which project the board may write to; Release makes it read-onl
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   expect(await ui.find({ text: /^the board may write to Void Sector$/ })).toBeDefined()
   expect(await ui.find({ text: /^✓ Nothing to change/ })).toBeDefined()
+  // The saved setup's project moved into the setting, once.
+  expect(set).toEqual([{ key: 'issue-board.writeProject', value: '8' }])
 
   await ui.press({ key: 'setup-release' })
-  expect((kept.get('choices:/work/void-sector') as { adopted?: unknown }).adopted).toBeNull()
+  expect(set.at(-1)).toEqual({ key: 'issue-board.writeProject', value: '' })
   expect(await ui.find({ text: /^none: the board only reads Void Sector until Apply$/ })).toBeDefined()
   expect(await ui.find({ text: /^Let the board write to Void Sector$/ })).toBeDefined()
   expect(await ui.find({ key: 'setup-release' })).toBeUndefined()
 
   await ui.press({ key: 'setup-apply' })
   await clock.settle()
-  expect((kept.get('choices:/work/void-sector') as { adopted?: unknown }).adopted).toEqual({ id: 'PVT_8', title: 'Void Sector', owner: 'astrosteveo' })
+  expect(set.at(-1)).toEqual({ key: 'issue-board.writeProject', value: '8' })
+  expect(set).toHaveLength(3)
   expect(await ui.find({ text: /^the board may write to Void Sector$/ })).toBeDefined()
   // Adopting is the board's own note; GitHub isn't changed.
   expect(gh.writes).toEqual([])

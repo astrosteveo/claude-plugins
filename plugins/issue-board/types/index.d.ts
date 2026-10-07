@@ -284,10 +284,11 @@ export type Setup =
 // name for one setup adds. null: none, and the role's features are off.
 export type RolePicks = Record<Role, string | null>
 
-// A project the person let the board write to, for one repo, by its id: through the board's prompt, or Apply in
-// `/issues setup`. The board reads any linked project, but writes only to this one. `owner` is the login or
-// organization the project belongs to, when the board could tell.
-export type Adopted = { id: string; title: string; owner: string | null }
+// The project the person let the board write to: the writeProject setting, by number, set through the board's prompt,
+// Apply in `/issues setup` or project_adopt. The board reads any linked project, but writes only to this one. `id`,
+// `title` and `owner` (the login or organization it belongs to) come from the project when the board has read it;
+// otherwise `id` and `owner` are null and the title is "project 9".
+export type Adopted = { number: number; id: string | null; title: string; owner: string | null }
 
 // Which project the board may write to, and the projects whose prompt the person turned down, by id, so it isn't
 // asked again.

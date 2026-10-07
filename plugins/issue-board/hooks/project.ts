@@ -206,22 +206,40 @@ export const isLater = (project: Project | null | undefined, issue: Issue): bool
 // The login or organization a project belongs to, from its page: `github.com/users/<login>/projects/8` or the `orgs/` one.
 export const ownerOf = (url: string): string | null => /github\.com\/(?:users|orgs)\/([^/]+)\/projects\//.exec(url)?.[1] ?? null
 
-// The project the board may write to, from what it saved for the repo. A choice made through the prompt or setup counts,
-// a release included. A repo saved before adopting existed, whose setup names a project, has that project adopted: the
-// person picked it in setup and pressed Apply.
-export const adoptedOf = (saved: { adopted?: Adopted | null; setup?: { project: { id: string; title: string } } } | null | undefined): Adopted | null => {
-  if (saved?.adopted !== undefined) return saved.adopted
-  return saved?.setup ? { id: saved.setup.project.id, title: saved.setup.project.title, owner: null } : null
+// The writeProject setting as a project number: digits, such as "9", or a number. Anything else, empty included, is
+// none, and the board only reads.
+export const projectNumberOf = (value: unknown): number | null => {
+  const text = typeof value === 'number' ? String(value) : typeof value === 'string' ? value.trim() : ''
+  return /^[1-9]\d*$/.test(text) ? Number(text) : null
+}
+
+// The project number an adoption an earlier board kept in the store stands for, to move into the writeProject setting
+// once. The store kept the project's id, so the number comes from the saved setup or the projects the board has read
+// (`known`). null: there is nothing to move (a release, nothing saved, or none of the projects read is it). undefined:
+// the board can't tell until it has read a project. A repo saved before adopting existed, whose setup names a project,
+// has that project adopted: the person picked it in setup and pressed Apply.
+export const savedAdoptionOf = (
+  saved: { adopted?: { id: string } | null; setup?: { project: { id: string; number: number } } },
+  known: readonly { id: string; number: number }[],
+): number | null | undefined => {
+  if (saved.adopted === null) return null
+  const id = saved.adopted?.id ?? saved.setup?.project.id
+  if (id === undefined) return null
+  if (saved.setup?.project.id === id) return saved.setup.project.number
+  const found = known.find(one => one.id === id)
+  if (found) return found.number
+  return known.length > 0 ? null : undefined
 }
 
 // How to let the board write to a project, for a refusal to say.
 const HOW_TO_ADOPT = 'press Let it write where the issues pane or the band asks, or run /issues setup, pick the project and press Apply'
 
 // Why the board won't write to a project, or null when it may: the one rule every project write is held to. The board
-// writes only to the project adopted for this repo. `new` is setup creating a project, which can't touch one the
-// person already has; setup adopts the new one straight after.
-export const writeRefusal = (adopted: Adopted | null, target: { id: string; title: string } | 'new'): string | null => {
-  if (target === 'new' || adopted?.id === target.id) return null
+// writes only to the project the writeProject setting names, by number. Every target is the project the board reads
+// for the repo or one linked to it, which is what makes the number enough. `new` is setup creating a project, which
+// can't touch one the person already has; setup adopts the new one straight after.
+export const writeRefusal = (adopted: Adopted | null, target: { number: number; title: string } | 'new'): string | null => {
+  if (target === 'new' || adopted?.number === target.number) return null
   if (!adopted) return `The issue board only reads ${target.title}: nobody has let it write there. To let it, ${HOW_TO_ADOPT}.`
   return `The issue board only reads ${target.title}: the project it may write to for this repo is ${adopted.title}. To switch, run /issues setup, pick ${target.title} and press Apply.`
 }
@@ -279,9 +297,9 @@ export const adoptTarget = (reads: Linked | null, linked: Linked[], number: numb
 
 // What the permission prompt for project_adopt says: the same warning the pane shows, and the project it stops writing
 // to when it switches.
-export const adoptReason = (project: { id: string; title: string; url: string }, was: Adopted | null, refresh: number | null): string => {
+export const adoptReason = (project: { number: number; title: string; url: string }, was: Adopted | null, refresh: number | null): string => {
   const text = adoptText(project, refresh)
-  const switching = was && was.id !== project.id ? [`It stops writing to ${was.title}.`] : []
+  const switching = was && was.number !== project.number ? [`It stops writing to ${was.title}.`] : []
   return [text.title, ...text.lines, ...switching].join('\n')
 }
 

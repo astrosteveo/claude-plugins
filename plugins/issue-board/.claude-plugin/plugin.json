@@ -127,6 +127,12 @@
         "board"
       ],
       "default": "views"
+    },
+    "writeProject": {
+      "type": "string",
+      "title": "Project the board may write to",
+      "description": "The number of the GitHub project the board may change, such as 9. It must be the project the board reads for the repo. Empty means the board only reads. Let it write, Apply in /issues setup and the project_adopt tool set it, and Release clears it.",
+      "default": ""
     }
   }
 }
