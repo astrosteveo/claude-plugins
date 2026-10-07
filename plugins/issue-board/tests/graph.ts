@@ -24,6 +24,8 @@ type Raw = {
   type?: string
   // Its values in other project fields, by field name, for the views that filter or group by them.
   fields?: Record<string, string>
+  // Its item's place in the project's own order, 0 first. An issue with one is in the project.
+  position?: number
 }
 
 // A project view as GitHub answers it, and the project's extra fields a test adds for its views.
@@ -98,7 +100,7 @@ const node = (raw: Raw, project: boolean, aliases: [string, string][] = []) => (
     ? {
         projectItems: {
           nodes:
-            raw.status || raw.priority || raw.fields
+            raw.status || raw.priority || raw.fields || raw.position !== undefined
               ? [
                   {
                     id: `PVTI_${raw.number}`,
@@ -122,7 +124,10 @@ export const asksProject = (argv: readonly string[]): boolean => argv.some(arg =
 export const graphPage = (issues: Raw[], argv: readonly string[] = [], project = false, types: string[] = [], views: Views = {}): string => {
   const withProject = project && asksProject(argv)
   const aliases = aliasesOf(argv)
-  const linked = { ...PROJECT, fields: { nodes: [...PROJECT.fields.nodes, ...(views.fields ?? [])] }, views: { nodes: (views.views ?? []).map(viewNode) } }
+  // The project's open issues in its own order, when the query asks for the order.
+  const ordered = issues.filter(raw => raw.position !== undefined).sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+  const order = argv.some(arg => arg.includes('order: items(')) ? { order: { nodes: ordered.map(raw => ({ id: `PVTI_${raw.number}` })) } } : {}
+  const linked = { ...PROJECT, fields: { nodes: [...PROJECT.fields.nodes, ...(views.fields ?? [])] }, views: { nodes: (views.views ?? []).map(viewNode) }, ...order }
   return JSON.stringify({
     data: {
       rateLimit: { cost: 1, remaining: 4999, resetAt: '2026-10-04T11:00:00Z' },
