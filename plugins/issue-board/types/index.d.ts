@@ -379,6 +379,9 @@ declare module 'claude-code' {
       dismissed: string[]
       // Close out all was pressed and waits on its confirm.
       confirming: boolean
+      // A pull request whose Finish & merge was pressed while a worker owns its branch or its CI hasn't passed; it waits
+      // on its confirm.
+      confirmingPr: number | null
       // What the search field holds.
       query: string
       // The GitHub login gh is signed in as, for the Mine filter.

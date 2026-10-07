@@ -2306,6 +2306,26 @@ export const workerBadge = (status: Worker['status']): { text: string; color: Th
 export const workerOnLine = (status: Worker['status'], age: string, on?: number): string =>
   `⚙ Worker on ${on === undefined ? 'it' : `#${on}`} · ${workerBadge(status).text.replace(/^⚙ /, '')}${age ? ` ${age}` : ''}`
 
+// Where a background agent's loop may still move on from.
+export const ACTIVE: readonly Worker['status'][] = ['pending', 'running', 'waiting', 'idle']
+
+// The active background agent that owns a pull request's branch: one on an issue the pull request closes or refers to.
+// A worker records its issue but not the branch it made, so the linked issue is how the board tells.
+export const workerOfPr = (pr: PullRequest, workers: Worker[]): Worker | undefined =>
+  workers.find(one => ACTIVE.includes(one.status) && (pr.issues ?? []).includes(one.number))
+
+// Why closing out a pull request now may go wrong, as one sentence, or null when nothing says so: a background agent
+// may still push to its branch, or its CI hasn't passed yet.
+export const closeOutRisk = (pr: PullRequest, worker?: Worker): string | null => {
+  const reasons = [
+    ...(worker ? [`a background agent is still on #${worker.number} and may push to its branch`] : []),
+    ...(pr.ci === 'pending' ? ['its CI is still running'] : pr.ci === 'fail' ? ['its CI is failing'] : []),
+  ]
+  if (reasons.length === 0) return null
+  const said = reasons.join(', and ')
+  return `${said.charAt(0).toUpperCase()}${said.slice(1)}.`
+}
+
 // How a background agent's loop may end.
 export type Ended = 'completed' | 'failed' | 'killed'
 
