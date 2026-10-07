@@ -60,7 +60,15 @@ const world = (on: On, adopted = true) => {
     }
     if (argv[1] === 'api' && argv[2] === 'graphql' && argv.includes('--input')) {
       const asked = JSON.parse(e.init?.stdin ?? '{}') as { query: string; variables: Record<string, unknown> }
-      if (asked.query.includes('updateProjectV2ItemPosition')) state.writes.push(`move ${String(asked.variables.item)} after ${String(asked.variables.after)}`)
+      if (asked.query.includes('updateProjectV2ItemPosition')) {
+        state.writes.push(`move ${String(asked.variables.item)} after ${String(asked.variables.after)}`)
+        // The project's order as GitHub keeps it, so the next read has the move.
+        const item = (number: number) => `PVTI_${number}`
+        const order = [...state.issues].sort((a, b) => a.position - b.position).map(one => one.number).filter(number => item(number) !== asked.variables.item)
+        const at = asked.variables.after ? order.findIndex(number => item(number) === asked.variables.after) + 1 : 0
+        order.splice(at, 0, Number(String(asked.variables.item).slice('PVTI_'.length)))
+        state.issues = state.issues.map(one => ({ ...one, position: order.indexOf(one.number) }))
+      }
       else if (/^\s*mutation\b/.test(asked.query)) state.writes.push(`${String(asked.variables.item)} ${String(asked.variables.field)} ${JSON.stringify(asked.variables.value)}`)
       if (asked.query.includes('fieldValues')) return answer(JSON.stringify({ data: { node: { fieldValues: { nodes: [] } } } }))
       return answer(JSON.stringify({ data: {} }))
@@ -261,6 +269,7 @@ test('Apply on the card writes only the ticked rows, and a row that fails stays 
 
 test("a plan ranks issues in the project's order, each move after the one before it", async ($, on) => {
   const gh = world(on)
+  gh.planned = { 340: { status: 'Ready' }, 341: { status: 'Ready' }, 315: { status: 'Ready' } }
   await $.command.run(REFRESH)
   const order = { issues: [{ number: 340, reason: 'Most pressing.', projectAfter: 0 }, { number: 315, reason: 'Next.', projectAfter: 340 }] }
   expect(await $.tool.check({ tool: TOOL, input: order })).toMatchObject({ reason: expect.stringMatching(/^Apply Claude's plan: 2 changes to 2 issues\?\norder 2\n/) })
@@ -268,10 +277,15 @@ test("a plan ranks issues in the project's order, each move after the one before
   gh.engine.answer = 'no'
   await $.tool.call({ tool: TOOL, ...order })
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'filter-all' })
+  const rows = async () => (await ui.findAll({ type: 'Button' })).map(one => one.key ?? '').filter(key => /^issue-3\d\d$/.test(key))
+  expect(await rows()).toEqual(['issue-315', 'issue-341', 'issue-340'])
   expect((await ui.findAll({ type: 'Button', text: /^[☑☐] / })).map(one => one.text)).toEqual(["☑ top of the project's order", '☑ after #340 in the order'])
   await ui.press({ key: 'plan-apply' })
   expect(gh.writes).toEqual(['move PVTI_340 after null', 'move PVTI_315 after PVTI_340'])
   expect(gh.toasts.at(-1)).toBe('Applied the plan: 2 changes.')
+  // The pane shows the new order once the plan is applied.
+  expect(await rows()).toEqual(['issue-340', 'issue-315', 'issue-341'])
   await ui.unmount()
 
   // A move the project can't make is refused with the rest of the plan's problems.
