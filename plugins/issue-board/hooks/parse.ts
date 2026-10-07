@@ -2301,6 +2301,11 @@ export const workerBadge = (status: Worker['status']): { text: string; color: Th
           ? { text: '⚙ waiting', color: 'warning' }
           : { text: '⚙ working', color: 'claude' }
 
+// The line an issue's card shows in place of its start buttons while a background agent is on it, such as
+// `⚙ Worker on it · working 4m`. An epic's card names the sub-issue the agent is on.
+export const workerOnLine = (status: Worker['status'], age: string, on?: number): string =>
+  `⚙ Worker on ${on === undefined ? 'it' : `#${on}`} · ${workerBadge(status).text.replace(/^⚙ /, '')}${age ? ` ${age}` : ''}`
+
 // How a background agent's loop may end.
 export type Ended = 'completed' | 'failed' | 'killed'
 

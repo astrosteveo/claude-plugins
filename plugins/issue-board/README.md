@@ -197,6 +197,11 @@ GitHub. The card shows the latest three comments, a field to reply, and
   agent, and the row follows the agent as it does for Start in background.
 - On an epic's card, both Edit first buttons follow the same sub-issue as
   Start.
+- While a background agent works on the issue, the card shows it in place of
+  both Starts and both Edit first buttons, such as
+  `⚙ Worker on it · working 4m`. That holds whether Start in background or
+  Claude started the agent. On an epic's card it names the sub-issue, such as
+  `⚙ Worker on #185`. The buttons come back when the agent ends.
 - **⚙ Change** opens the editor; see [File and plan issues](#file-and-plan-issues).
 - **↗ GitHub** opens the issue. **Collapse** (`x` or Esc) folds the card.
   With nothing open, Esc closes the pane.
@@ -605,10 +610,11 @@ What stays the same without an adopted project:
   project has them.
 - Changes to issues themselves: Start still tracks the issue and assigns it
   to you, boxes still tick, an epic still closes when its last sub-issue
-  does, and issue_create still files the issue.
+  does, issue_create still files the issue, and triage's Accept still
+  changes the `area:` label.
 - What doesn't happen: Start, triage's Accept and the moves a read makes
   leave the project's Status and Priority alone, and new issues aren't added
-  as items. A tool asked to change the project, such as issue_update with a
+  as items. Accept says it skipped them, and the issue stays in the Inbox. A tool asked to change the project, such as issue_update with a
   Status or project_status posting an update, is refused, and the refusal
   says why and how to adopt the project. `/issues check` and `/issues help`
   list it under Off.

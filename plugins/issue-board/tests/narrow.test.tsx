@@ -148,9 +148,11 @@ const world = async ($: Engine, on: On) => {
   const now = held.get('issue-board/board')?.value as Board
   expect(now.prs.map(one => one.number)).toEqual([252, 251, 249])
   put('board', { ...now, velocity: { closed: [1, 4, 2, 6, 3, 5, 2, 8], merged: [0, 2, 3, 1, 4, 2, 6, 3] } })
-  // A background agent at work, an epic note, and a plan waiting on the person.
+  // Background agents at work, one on #302 so its open card shows the agent in place of its start buttons, an epic
+  // note, and a plan waiting on the person.
   const agent: Worker = { number: 303, title: ISSUES[2]?.title, agentId: 'agent-1', status: 'running', startedAt: Date.now(), answer: null }
-  put('workers', [agent])
+  const onCard: Worker = { number: 302, title: LONG, agentId: 'agent-2', status: 'running', startedAt: Date.now() - 4 * 60_000, answer: null }
+  put('workers', [agent, onCard])
   const note: EpicNote = { key: 'verify-301', kind: 'verify', epic: 301, title: ISSUES[0]?.title ?? '', text: 'every sub-issue is closed, so it moved to Verification', at: Date.now() }
   put('epicNotes', [note])
   const plan: Plan = {
@@ -192,6 +194,7 @@ const world = async ($: Engine, on: On) => {
     expect(await setup.find({ key }), key).toBeDefined()
   expect(await setup.find({ text: /^⚠ The board can't apply sprint:@current/ })).toBeDefined()
   expect(await setup.find({ text: /last \d+ weeks/ })).toBeDefined()
+  expect(await setup.find({ text: /^⚙ Worker on it · working \d+m$/ })).toBeDefined()
   await setup.unmount()
 }
 

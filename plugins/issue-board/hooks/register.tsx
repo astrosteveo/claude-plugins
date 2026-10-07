@@ -168,6 +168,7 @@ import {
   wentGreen,
   wrappedLines,
   workerBadge,
+  workerOnLine,
   workerIssueOf,
   workerPrOf,
   workerPrompt,
@@ -3240,18 +3241,30 @@ const triageTarget = (project: Project | null | undefined, status: 'Ready' | 'Ba
 
 // Accept on an Inbox issue: its Priority and area as picked, Claude's suggestion unless changed, and its Status moved
 // on to Ready or Backlog, so it leaves the Inbox, where the project has that option. Another area label it had comes off.
+// On a project the board only reads, the labels still change, since they are the repo's, not the project's. The Status
+// and Priority are skipped and the toast says why. The issue stays in the Inbox then, so the person's picks stay too.
 const acceptTriage = async ($: EngineInterface, issue: Issue, choice: { priority: string | null; area: string | null }, status: 'Ready' | 'Backlog'): Promise<void> => {
   const label = choice.area ? `area:${choice.area}` : null
   const others = label ? issue.labels.map(one => one.name).filter(name => name.startsWith('area:') && name !== label) : []
-  const target = triageTarget((await read($, board))?.project, status)
-  const changes: IssueChanges = {
+  const project = (await read($, board))?.project
+  const refusal = project ? writeRefusal((await grantsNow($)).all, project) : null
+  const target = triageTarget(project, status)
+  const fields: IssueChanges = {
     ...(target ? { status: target } : {}),
     ...(choice.priority && choice.priority !== issue.priority ? { priority: choice.priority } : {}),
+  }
+  const labels: IssueChanges = {
     ...(label && !issue.labels.some(one => one.name === label) ? { addLabels: [label] } : {}),
     ...(others.length > 0 ? { removeLabels: others } : {}),
   }
   try {
-    $.ui.toast(await applyChanges($, issue.number, changes))
+    if (refusal) {
+      const done = labels.addLabels || labels.removeLabels ? await applyChanges($, issue.number, labels) : ''
+      const skipped = fields.status || fields.priority ? `Skipped its Status and Priority: ${refusal}` : ''
+      $.ui.toast([done || (skipped ? `Nothing changed on #${issue.number}.` : `Nothing to change on #${issue.number}.`), skipped].filter(Boolean).join(' '))
+      return
+    }
+    $.ui.toast(await applyChanges($, issue.number, { ...fields, ...labels }))
     await update($, triage, was => ({ ...was, picks: was.picks.filter(one => one.number !== issue.number) }))
   } catch (cause) {
     const message = messageOf(cause)
@@ -5847,6 +5860,9 @@ export const register: Register = (on, options) => {
         if (!filled.isFilled) return
         await update($, drafted, () => (background ? null : target.number))
       }
+      // A background agent at work on what Start would start, whether Start in background set it going or Claude
+      // dispatched it: the card shows it in place of every start button, so the issue isn't started a second time.
+      const busy = working$.find(one => one.number === goes.number && ACTIVE.includes(one.status))
       const startButton = launches.some(one => one.number === goes.number && one.how === 'start') ? (
         <Text key={`starting-${issue.number}`} color="claude">
           ▶ Starting…
@@ -5861,7 +5877,7 @@ export const register: Register = (on, options) => {
         </Button>
       )
       const backgroundButton =
-        working$.some(one => one.number === goes.number && ACTIVE.includes(one.status)) || startedHere === goes.number ? null : launches.some(one => one.number === goes.number && one.how === 'background') ? (
+        startedHere === goes.number ? null : launches.some(one => one.number === goes.number && one.how === 'background') ? (
           <Text key={`starting-background-${issue.number}`} color="claude">
             ⚙ Starting in background…
           </Text>
@@ -5978,7 +5994,15 @@ export const register: Register = (on, options) => {
             </Box>
           )}
           <Box flexDirection="row" gap={1} marginTop={1} flexWrap="wrap">
-            {inBackground ? [backgroundButton, startButton, draftBackgroundButton, draftButton] : [startButton, backgroundButton, draftButton, draftBackgroundButton]}
+            {busy ? (
+              <Text key={`worker-on-${issue.number}`} color={workerBadge(busy.status).color}>
+                {workerOnLine(busy.status, ago(new Date(busy.startedAt).toISOString(), clock), goes.number === issue.number ? undefined : goes.number)}
+              </Text>
+            ) : inBackground ? (
+              [backgroundButton, startButton, draftBackgroundButton, draftButton]
+            ) : (
+              [startButton, backgroundButton, draftButton, draftBackgroundButton]
+            )}
             <Button key={`edit-${issue.number}`} variant={changing === issue.number ? 'primary' : undefined} dimColor={changing !== issue.number} onPress={openEditor(issue.number)}>
               ⚙ Change
             </Button>
