@@ -34,6 +34,9 @@ export const matches = (filter: BuiltInFilter, issue: Issue, viewer: string | nu
 export const isInbox = (issue: Issue, project: Project | null | undefined): boolean =>
   roleOf(project, 'inbox') !== undefined && (!issue.status || isRole(project, issue.status, 'inbox'))
 
+// The project's option for Ready or Backlog, by name, if it has one.
+export const triageTarget = (project: Project | null | undefined, status: 'Ready' | 'Backlog'): string | undefined => roleOf(project, status === 'Ready' ? 'ready' : 'backlog')?.name
+
 // Whether the issue matches what was typed in the search field: words of its title, `#42` or `42`, or a label.
 export const searched = (query: string, issue: Issue): boolean => {
   const words = query.toLowerCase().split(/\s+/).filter(Boolean)
@@ -488,3 +491,40 @@ export const isInboxFilter = (filter: string, project: Project | null | undefine
 // The pane's Inbox tab: the built-in one, or a project view whose filter is the Inbox; undefined when there is none.
 export const inboxTabOf = (tabs: Tab[], project: Project | null | undefined): Tab | undefined =>
   tabs.find(tab => tab.id === 'inbox') ?? tabs.find(tab => tab.view !== undefined && isInboxFilter(tab.view.filter, project))
+
+const GROUPINGS: { id: GroupBy; label: string }[] = [
+  { id: 'status', label: 'Status' },
+  { id: 'epic', label: 'Epic' },
+  { id: 'area', label: 'Area' },
+]
+
+// What the pane lists under the Issues heading: the tab shown, how it groups, and the issues under it.
+export const listOf = ({ now, chosen, picked, typed, who, open, marks }: { now: Board; chosen: Filter; picked: GroupBy | null; typed: string; who: string | null; open: number | null; marks: Markers }) => {
+  // Without a project the board works from labels: Active and Future, grouped by area.
+  const project = now.project ?? null
+  // The tabs: the project's views with filters, then All and Closed; or the built-in filters. A tab chosen that is no
+  // longer there, such as Now once the views are the tabs, gives way to the first.
+  const tabs = tabsOf(project)
+  const tab = tabOf(tabs, chosen)
+  const tabTests = new Map(tabs.map(one => [one.id, tabTest(one, project, marks)] as const))
+  const inTab = (one: Tab, issue: Issue) => tabTests.get(one.id)?.(issue, who) ?? false
+  // A view's tab groups as the view does, when the board can: Status, epic, or another field it read. The grouping
+  // named for the view's field shows among the others while its tab does.
+  const viewGrouping = viewGroupingOf(tab.view, project)
+  const viewField = viewGrouping?.by === 'view' ? viewGrouping.field : null
+  const grouping = groupingOf(picked, viewGrouping, Boolean(project))
+  // Whether an issue is under the filter and the search. The open card stays in the list whether or not, until it is
+  // collapsed, so setting its Priority or Status doesn't take it away while it's being changed.
+  const kept = (issue: Issue) => inTab(tab, issue) && searched(typed, issue)
+  const shown = now.issues.filter(issue => open === issue.number || kept(issue))
+  // The Inbox lists each issue with what Claude suggests for it, rather than in groups.
+  const triaging = tab.id === 'inbox' && project !== null
+  // The groupings offered. With a project the grouping can be Status.
+  const groupings = [...GROUPINGS.filter(one => one.id !== 'status' || project), ...(viewField ? [{ id: 'view' as const, label: viewField }] : [])]
+  // A tab's label: its name and how many open issues it holds; Closed's count isn't known until it is read.
+  const tabLabel = (one: Tab) => (one.id === 'closed' ? one.name : `${one.name} ${now.issues.filter(issue => inTab(one, issue)).length}`)
+  const groups = triaging ? [] : groupsOf(shown, grouping, project, viewField, marks)
+  // The terms of the view's filter the board can't apply, for the note under the heading.
+  const unknownTerms = tab.view ? viewMatchOf(tab.view.filter, project).unknown : []
+  return { project, tabs, tab, kept, shown, triaging, grouping, groupings, tabLabel, groups, unknownTerms }
+}

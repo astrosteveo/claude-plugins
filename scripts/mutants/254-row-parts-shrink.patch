@@ -2,28 +2,19 @@ Guards #254: a row's number, badge, link and counts never split across lines. Th
 Test: plugins/issue-board: no number, link, count, badge or key hint splits across lines in the pane or the band, from 40 to 120 columns
 Test: plugins/issue-board: a pull request's row keeps its number, badge, linked issue and counts whole, and cuts the title, narrow and wide
 
-diff --git a/plugins/issue-board/hooks/register.tsx b/plugins/issue-board/hooks/register.tsx
-index 258891b..72fbfcb 100644
---- a/plugins/issue-board/hooks/register.tsx
-+++ b/plugins/issue-board/hooks/register.tsx
-@@ -5033,7 +5033,7 @@ export const register: Register = (on, options) => {
-               </Text>
-               {issue.checks.map((check, index) => (
-                 <Box key={`box-row-${issue.number}-${index + 1}`} flexDirection="row">
--                  <Box flexShrink={0}>
-+                  <Box flexShrink={1}>
-                     <Text color={check.done ? 'success' : 'warning'}>{check.done ? '✔ ' : '☐ '}</Text>
-                   </Box>
-                   <Box flexShrink={1}>
-@@ -5287,7 +5287,7 @@ export const register: Register = (on, options) => {
-                         </Text>
-                         <Text dimColor>{` ${count}`}</Text>
-                       </Text>
--                      <Box flexDirection="row" gap={1} flexShrink={0}>
-+                      <Box flexDirection="row" gap={1} flexShrink={1}>
-                         {meter(epic.completed, epic.total, 10)}
-                         <Text dimColor>{closed}</Text>
-                         {next && (
+diff --git a/plugins/issue-board/hooks/views/card.tsx b/plugins/issue-board/hooks/views/card.tsx
+index 3cb6bf5..be38aec 100644
+--- a/plugins/issue-board/hooks/views/card.tsx
++++ b/plugins/issue-board/hooks/views/card.tsx
+@@ -170,7 +170,7 @@ export const issueCard = (elements: PaneElements, data: CardData & { issue: Issu
+           </Text>
+           {issue.checks.map((check, index) => (
+             <Box key={`box-row-${issue.number}-${index + 1}`} flexDirection="row">
+-              <Box flexShrink={0}>
++              <Box flexShrink={1}>
+                 <Text color={check.done ? 'success' : 'warning'}>{check.done ? '✔ ' : '☐ '}</Text>
+               </Box>
+               <Box flexShrink={1}>
 diff --git a/plugins/issue-board/hooks/views/header.tsx b/plugins/issue-board/hooks/views/header.tsx
 index 3143e91..ff0222d 100644
 --- a/plugins/issue-board/hooks/views/header.tsx
@@ -59,11 +50,24 @@ index e265840..26fd389 100644
          {badge && <Text color={badge.color}>{badge.text}</Text>}
          {blocked && <Text color="warning">{blocked}</Text>}
          {linked && <Text color={ciBadge[linked.ci].color}>{pr}</Text>}
+diff --git a/plugins/issue-board/hooks/views/list.tsx b/plugins/issue-board/hooks/views/list.tsx
+index 377fe36..538b767 100644
+--- a/plugins/issue-board/hooks/views/list.tsx
++++ b/plugins/issue-board/hooks/views/list.tsx
+@@ -105,7 +105,7 @@ export const groupList = (elements: Elements, data: GroupsData, handlers: Groups
+                   </Text>
+                   <Text dimColor>{` ${count}`}</Text>
+                 </Text>
+-                <Box flexDirection="row" gap={1} flexShrink={0}>
++                <Box flexDirection="row" gap={1} flexShrink={1}>
+                   {meter(epic.completed, epic.total, 10)}
+                   <Text dimColor>{closed}</Text>
+                   {next && (
 diff --git a/plugins/issue-board/hooks/views/parts.tsx b/plugins/issue-board/hooks/views/parts.tsx
-index c13902a..936c471 100644
+index 128bcf7..82e0c1c 100644
 --- a/plugins/issue-board/hooks/views/parts.tsx
 +++ b/plugins/issue-board/hooks/views/parts.tsx
-@@ -17,7 +17,7 @@ export const partsOf = ({ Box, Text, Button, Link }: Elements) => ({
+@@ -20,7 +20,7 @@ export const partsOf = ({ Box, Text, Button, Link }: Elements) => ({
    ),
    // A part of a one-line row that keeps its width: a number, a badge, a count or a button. A row short of room
    // squeezes only the part left to shrink, which cuts its text, rather than breaking `#252` into `#25` over `2`.

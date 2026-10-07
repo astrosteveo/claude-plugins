@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
-import type { AgentSpawnResult, Caught, EngineInterface, HookFailure, ModelForkResult, Register, ThemeKey, Timer, ToolCallResult, UiCopyArgs } from 'claude-code'
+import type { AgentSpawnResult, Caught, EngineInterface, HookFailure, ModelForkResult, Register, Timer, ToolCallResult, UiCopyArgs } from 'claude-code'
 
-import type { Adopted, Adoption, Armed, Board, FieldValues, BoxTask, BuiltInFilter, Check, Comment, EpicNote, GroupBy, Issue, Known, LabelChange, Launch, ViewChange, Markers, Milestone, Plan, PlanRow, Problem, Project, Role, Roles, StatusUpdate, PullRequest, RunWatch, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
+import type { Adopted, Adoption, Armed, Board, FieldValues, BoxTask, BuiltInFilter, Check, Comment, EpicNote, Issue, Known, LabelChange, Launch, ViewChange, Markers, Milestone, Plan, PlanRow, Problem, Project, Role, Roles, StatusUpdate, PullRequest, RunWatch, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
 import type { IssueChanges, NewIssue } from './changes'
 import type { Tab } from './filters'
 import type { Ended } from './workers'
@@ -28,8 +28,6 @@ import {
   POST_STATUS,
   SET_FIELD,
   SET_VALUE,
-  ROLE_NAMES,
-  ROLE_ORDER,
   LINKED_QUERY,
   adoptReason,
   adoptedOf,
@@ -55,7 +53,7 @@ import {
   writeRefusal,
 } from './project'
 import type { Grants } from './project'
-import { appliedText, cardParts, groupOf, issueChangesOf, kindsText, planAsk, planOf, problemsOfPlan, rowsOf, rowsToMake, sizeText, viewDoneText, viewNoteOf } from './plan'
+import { appliedText, issueChangesOf, planAsk, planOf, problemsOfPlan, rowsOf, rowsToMake, viewDoneText } from './plan'
 import type { Planned } from './plan'
 import {
   CREATE_FIELD,
@@ -66,16 +64,12 @@ import {
   PROJECT_QUERY,
   UPDATE_FIELD,
   areasOf,
-  addsAsTodo,
-  automationsOn,
-  automationsOff,
   factsOf,
   mergeStatuses,
   nextItemsOf,
   picksFor,
   projectOf,
   rolesOf,
-  statusOptionsOf,
   stepsOf,
   suggestAreas,
   templatePrompt,
@@ -103,7 +97,6 @@ import {
   captureOf,
   changesOf,
   textOf,
-  issueNumberIn,
   NOT_READ,
   NOT_READ_SENTENCE,
   movedText,
@@ -117,30 +110,23 @@ import {
 import { candidatesOf, planMoves, questionsOf } from './moves'
 import type { Answer, Answers, Questions, Unmoved } from './moves'
 import {
-  areaOf,
   inboxTabOf,
-  groupsOf,
   hashRows,
   isInbox,
-  nextOf,
+  listOf,
   noReadyText,
   startTargetOf,
-  searched,
-  groupingOf,
+  triageTarget,
   tabOf,
   tabsOf,
-  tabTest,
   viewFieldsOf,
   viewGroupingOf,
-  viewMatchOf,
-  viewUrl,
 } from './filters'
 import {
   THREADS_QUERY,
   commentsOf,
   graphqlData,
   nextPageOf,
-  proseOf,
   parseGraph,
   parseIssues,
   parsePrs,
@@ -153,23 +139,16 @@ import {
   updateWords,
 } from './github'
 import {
-  ago,
-  agoText,
-  cells,
   fit,
-  hex,
   named,
   progress,
   since,
   sumProgress,
   summary,
   weekly,
-  wrappedLines,
-  prCountsText,
-  filterKeys,
-  hintFit,
+  roomAbove,
 } from './layout'
-import { partsOf } from './views/parts'
+import type { PaneElements } from './views/parts'
 import { issueRow as issueRowView } from './views/issue-row'
 import type { IssueRowHandlers } from './views/issue-row'
 import { prRow as prRowView } from './views/pr-row'
@@ -178,6 +157,16 @@ import { band as bandView } from './views/band'
 import type { BandHandlers } from './views/band'
 import { header as headerView, trends as trendsView } from './views/header'
 import { issuesHeading as issuesHeadingView } from './views/tabs'
+import { issueCard as issueCardView } from './views/card'
+import type { CardData, CardHandlers } from './views/card'
+import { planCard } from './views/plan'
+import type { PlanHandlers } from './views/plan'
+import { accessCard, adoptCard, labelsCard, setupCard, statusesCard } from './views/setup'
+import { milestones as milestonesView, mergeConfirm, noBoard, projectUpdate, prsHeading, runRow } from './views/sections'
+import { closedList, emptyNote, groupList, hint, viewNote } from './views/list'
+import type { GroupsHandlers } from './views/list'
+import { triageEntries, triageFailed, triageNote } from './views/triage'
+import type { TriageHandlers } from './views/triage'
 import {
   absorbed,
   alertsOf,
@@ -208,7 +197,6 @@ import {
   parseTriage,
   prText,
   startPrompt,
-  statusFor,
   triagePrompt,
   workingSection,
   orchestratorSection,
@@ -218,9 +206,7 @@ import {
   helpText,
 } from './prompts'
 import {
-  pageOf,
   notFoundText,
-  milestoneDue,
   foundLine,
   foundOf,
   searchTerms,
@@ -246,8 +232,6 @@ import {
   handoffPrompt,
   issueOfBranch,
   startedByClaude,
-  workerBadge,
-  workerOnLine,
   workerIssueOf,
   workerPrOf,
   workerPrompt,
@@ -352,12 +336,6 @@ const mayAllow = (ceiling: 'allow' | 'ask' | 'deny' | undefined): boolean => cei
 // The pane's tabs as it offers them: the project's views with filters, then Inbox, All and Closed; or else the built-in
 // filters.
 const filtersFor = (project: Project | null | undefined): Tab[] => tabsOf(project)
-
-const GROUPINGS: { id: GroupBy; label: string }[] = [
-  { id: 'status', label: 'Status' },
-  { id: 'epic', label: 'Epic' },
-  { id: 'area', label: 'Area' },
-]
 
 // What the board has cost this session, for /issues stats. In memory only: a reload starts the counts over.
 const stats = newStats(Date.now())
@@ -3136,9 +3114,6 @@ const suggestAgain = async ($: EngineInterface): Promise<void> => {
   await suggestInbox($)
 }
 
-// The project's option for Ready or Backlog, by name, if it has one.
-const triageTarget = (project: Project | null | undefined, status: 'Ready' | 'Backlog'): string | undefined => roleOf(project, status === 'Ready' ? 'ready' : 'backlog')?.name
-
 // Accept on an Inbox issue: its Priority and area as picked, Claude's suggestion unless changed, and its Status moved
 // on to Ready or Backlog, so it leaves the Inbox, where the project has that option. Another area label it had comes off.
 // On a project the board only reads, the labels still change, since they are the repo's, not the project's. The Status
@@ -3212,6 +3187,121 @@ const loadPalette = async($: EngineInterface): Promise<void> => {
     $.ui.toast(`Couldn't read the repo's labels and milestones: ${messageOf(cause)}`)
   }
 }
+
+// What the pane's buttons do. The pane hook builds its handlers from these and hands them to the views.
+
+// Start: the issue is the one Claude is on, and Claude gets it. Its button says so from the press on.
+const startFromPane = ($: EngineInterface, issue: Issue): Promise<void> =>
+  launch($, issue, 'start', async () => {
+    // A start message Edit first left in the prompt box is spent: sending it later doesn't start the issue again.
+    await update($, drafted, () => null)
+    await track($, issue, true)
+    const listed = await makeTasks($, issue)
+    // The board's own prompt.submit hook doesn't see a prompt the board submits, so this message goes without the
+    // issue's copy and lists the boxes itself.
+    await submit($, 'start prompts', { text: startPrompt(issue, listed > 0), asUser: true })
+    $.ui.toast(`Sent #${issue.number} to Claude`)
+    await claim($, issue)
+    return true
+  })
+
+// Edit first puts the start message in the prompt box. Sending the foreground message starts the issue, by the
+// prompt.submit hook; the background one asks Claude to dispatch the worker, and the agent.spawn hook claims it and
+// follows it.
+const draftStart = async ($: EngineInterface, target: Issue, background: boolean): Promise<void> => {
+  const filled = await $.prompt.fill({ text: background ? backgroundPrompt(target) : startPrompt(target, false, await copyGoes($, target)) })
+  if (!filled.isFilled) return
+  await update($, drafted, () => (background ? null : target.number))
+}
+
+const flipBox = async ($: EngineInterface, issue: Issue, box: number, done: boolean): Promise<void> => {
+  try {
+    await tick($, issue.number, [box], done)
+    $.ui.toast(`${done ? 'Ticked' : 'Unticked'} box ${box} on #${issue.number}`)
+  } catch (cause) {
+    toastFailure($, `Couldn't change box ${box} on #${issue.number}`, cause)
+  }
+}
+
+const closeOutPr = async ($: EngineInterface, pr: PullRequest): Promise<void> => {
+  await disarm($, 'pr')
+  await submit($, 'other prompts', { text: closeOutPrompt(pr), asUser: true })
+  $.ui.toast(`Sent PR #${pr.number} to Claude to finish and merge`)
+}
+
+// Merge all merges every open pull request, so it asks once more before it goes.
+const closeOutAll = async ($: EngineInterface, prs: PullRequest[]): Promise<void> => {
+  await disarm($, 'merge-all')
+  // The pull requests it was asked for may have merged while it waited on its confirm.
+  if (prs.length === 0) {
+    $.ui.toast('No pull requests are open now, so there is nothing to merge.')
+    return
+  }
+  await submit($, 'other prompts', { text: closeOutAllPrompt(prs), asUser: true })
+  $.ui.toast(`Sent ${prs.length} ${prs.length === 1 ? 'PR' : 'PRs'} to Claude to finish and merge`)
+}
+
+// One card at a time, so its letter keys always work; an opened card is scrolled into view.
+const toggleCard = async ($: EngineInterface, number: number, open: number | null, now: Board | null): Promise<void> => {
+  const opening = open !== number
+  await update($, expanded, () => (opening ? number : null))
+  await update($, editing, () => null)
+  if (opening) await $.ui.scroll({ to: { key: `card-${number}` }, in: PANE }).catch(() => undefined)
+  if (opening) await loadComments($, number)
+  const issue = opening ? now?.issues.find(one => one.number === number) : undefined
+  if (issue && (now?.project?.fields ?? []).some(field => !/^(status|priority)$/i.test(field.name))) await readValues($, issue)
+}
+
+// Stop tracking the issue this session is on: no row has the ▶ until Start or a branch names one again.
+const stopTracking = async ($: EngineInterface): Promise<void> => {
+  await update($, working, () => null)
+  await save($)
+}
+
+// Change opens the card's editor, and reads the repo's labels and milestones the first time.
+const openEditor = async ($: EngineInterface, number: number, changing: number | null, offered: { labels: string[]; milestones: string[] } | null): Promise<void> => {
+  const opening = changing !== number
+  await update($, editing, () => (opening ? number : null))
+  await disarm($, 'close')
+  if (opening && !offered) await loadPalette($)
+}
+
+// Close in the card's editor. Closing an epic whose sub-issues are still open takes a second press.
+const closeFromCard = async ($: EngineInterface, n: number, open: number, armedClose: number | null, reason: 'completed' | 'not planned'): Promise<void> => {
+  if (open > 0 && armedClose !== n) {
+    await update($, armed, (): Armed => ({ kind: 'close', number: n }))
+    return
+  }
+  await disarm($, 'close')
+  await update($, editing, () => null)
+  await change($, n, { close: reason })
+}
+
+// `/issues statuses`: picking an option for a part.
+const pickStatus = ($: EngineInterface, role: Role, id: string | null): Promise<unknown> =>
+  update($, statusPicks, was => {
+    if (!was) return was
+    // One option plays one part: picking it for this role takes it from any other.
+    const picks: Roles = Object.fromEntries(Object.entries(was.picks).filter(([other, one]) => other !== role && one !== id))
+    return { ...was, picks: id === null ? picks : { ...picks, [role]: id } }
+  })
+
+// `/issues setup`: the project picked, the area labels typed and the option picked for a part each work out the
+// changes again.
+const chooseProject = ($: EngineInterface, id: string | null): Promise<unknown> =>
+  update($, setup, was => {
+    if (was?.phase !== 'ready') return was
+    const roles = picksFor(was.facts, id)
+    return { ...was, chosen: id, roles, steps: stepsOf(was.facts, id, was.areas, roles) }
+  })
+const typeAreas = ($: EngineInterface, text: string): Promise<unknown> =>
+  update($, setup, was => (was?.phase === 'ready' ? { ...was, areas: text, steps: stepsOf(was.facts, was.chosen, text, was.roles) } : was))
+const pickRole = ($: EngineInterface, role: Role, name: string | null): Promise<unknown> =>
+  update($, setup, was => {
+    if (was?.phase !== 'ready') return was
+    const roles = { ...was.roles, [role]: name }
+    return { ...was, roles, steps: stepsOf(was.facts, was.chosen, was.areas, roles) }
+  })
 
 // The text of each section the board last added to the system prompt, by id. A section is counted as context when it
 // first goes in and each time its text changes, not on every request that carries it again.
@@ -3973,8 +4063,6 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const elements = $.ui.resolve(e)
-    const { Box, Text, Button, Link } = elements
-    const { link, choice, meter } = partsOf(elements)
     const problems = (await read($, access))?.problems ?? []
     const width = Math.max(40, e.props.bodyColumns)
     const roomy = width >= 72
@@ -4007,1345 +4095,178 @@ export const register: Register = (on, options) => {
     const launches = await read($, launching)
     const adopting = await read($, adoption)
     const proposed = await read($, proposal)
+    const mapping = await read($, statusPicks)
+    const marking = await read($, markerPicks)
     // The issue Start sent Claude in this session: its Start says so rather than starting it again.
     const startedHere = doing?.started && doing.sessionId !== undefined && doing.sessionId === (await $.session.id().catch(() => undefined)) ? doing.number : null
     const clock = Date.now()
     // The mobile app draws no text field: its table hands out one that draws nothing.
     const Input = 'Input' in elements && e.surface !== 'mobile' ? elements.Input : undefined
-    const Markdown = elements.Markdown
+    const { Box, Text, Button, Link, Markdown } = elements
+    const els: PaneElements = { Box, Text, Button, Link, Markdown, Input }
 
-    // Start: the issue is the one Claude is on, and Claude gets it. Its button says so from the press on.
-    const start = (issue: Issue) =>
-      launch($, issue, 'start', async () => {
-        // A start message Edit first left in the prompt box is spent: sending it later doesn't start the issue again.
-        await update($, drafted, () => null)
-        await track($, issue, true)
-        const listed = await makeTasks($, issue)
-        // The board's own prompt.submit hook doesn't see a prompt the board submits, so this message goes without the
-        // issue's copy and lists the boxes itself.
-        await submit($, 'start prompts', { text: startPrompt(issue, listed > 0), asUser: true })
-        $.ui.toast(`Sent #${issue.number} to Claude`)
-        await claim($, issue)
-        return true
-      })
-
-    const flip = async (issue: Issue, box: number, done: boolean) => {
-      try {
-        await tick($, issue.number, [box], done)
-        $.ui.toast(`${done ? 'Ticked' : 'Unticked'} box ${box} on #${issue.number}`)
-          } catch (cause) {
-        toastFailure($, `Couldn't change box ${box} on #${issue.number}`, cause)
-      }
-    }
-
-    const closeOut = async (pr: PullRequest) => {
-      await disarm($, 'pr')
-      await submit($, 'other prompts', { text: closeOutPrompt(pr), asUser: true })
-      $.ui.toast(`Sent PR #${pr.number} to Claude to finish and merge`)
-    }
-
-    // Merge all merges every open pull request, so it asks once more before it goes.
-    const closeOutAll = async (prs: PullRequest[]) => {
-      await disarm($, 'merge-all')
-      // The pull requests it was asked for may have merged while it waited on its confirm.
-      if (prs.length === 0) {
-        $.ui.toast('No pull requests are open now, so there is nothing to merge.')
-        return
-      }
-      await submit($, 'other prompts', { text: closeOutAllPrompt(prs), asUser: true })
-      $.ui.toast(`Sent ${prs.length} ${prs.length === 1 ? 'PR' : 'PRs'} to Claude to finish and merge`)
-    }
-    const arm = (to: boolean) => () => void (to ? update($, armed, (): Armed => ({ kind: 'merge-all' })) : disarm($, 'merge-all'))
-
-    // One card at a time, so its letter keys always work; an opened card is scrolled into view.
-    const toggle = (number: number) => async () => {
-      const opening = open !== number
-      await update($, expanded, () => (opening ? number : null))
-      await update($, editing, () => null)
-      if (opening) await $.ui.scroll({ to: { key: `card-${number}` }, in: PANE }).catch(() => undefined)
-      if (opening) await loadComments($, number)
-      const issue = opening ? now?.issues.find(one => one.number === number) : undefined
-      if (issue && (project?.fields ?? []).some(field => !/^(status|priority)$/i.test(field.name))) await readValues($, issue)
-    }
-    const togglePr = (number: number) => () => void update($, openPr, was => (was === number ? null : number))
-
-    // The header, drawn by views/header.tsx: before there is a board, the repo and the sync.
+    const start = (issue: Issue) => startFromPane($, issue)
+    const toggle = (number: number) => () => toggleCard($, number, open, now)
     const headerHandlers = { refresh: () => refresh($) }
-    const header = headerView(elements, { repo: now ? now.repo : null, busy, fetchedAt: now ? now.fetchedAt : null, clock, totals: null }, headerHandlers)
 
-    // What the last permission check found missing, each with its fix.
-    const blocked = problems.some(problem => problem.blocks)
-    const setupCard = problems.length > 0 && (
-      <Box flexDirection="column" borderStyle="round" borderColor={blocked ? 'error' : 'warning'} paddingX={1} marginTop={1}>
-        <Text color={blocked ? 'error' : 'warning'} bold>
-          {blocked ? '✗ Setup needed' : '⚠ The board is limited'}
-        </Text>
-        {problems.map(problem => (
-          <Box key={`problem-${problem.id}`} flexDirection="column" marginTop={1}>
-            <Text bold wrap="wrap">
-              {problem.title}
-            </Text>
-            <Text dimColor wrap="wrap">
-              {problem.detail}
-            </Text>
-            <Text wrap="wrap">{problem.fix}</Text>
-            {problem.command && (
-              <Box flexDirection="row">
-                <Button key={`copy-fix-${problem.id}`} onPress={press => void copyFix($, problem, press.surface)}>
-                  Copy command
-                </Button>
-              </Box>
-            )}
-            {problem.url && !problem.command && <Link href={problem.url} label={`↗ ${problem.url.replace(/^https:\/\//, '')}`} />}
-          </Box>
-        ))}
-        <Box flexDirection="row" marginTop={1}>
-          <Button key="recheck" variant="primary" onPress={() => void recheck($)}>
-            Check again
-          </Button>
-        </Box>
-      </Box>
-    )
-
-    // The one-time ask before the board writes to the project it reads: what it would write and what that costs. Setup
-    // showing asks the same through Apply, so this waits.
+    // The cards above the board, drawn by views/setup.tsx: what the last permission check found missing, the ask before
+    // the board writes to the project it reads, `/issues statuses`, `/issues labels` and `/issues setup`. Setup showing
+    // asks the same as the adoption ask through Apply, so that waits.
+    const accessNote = accessCard(els, { problems }, { copyFix: (problem, surface) => copyFix($, problem, surface), recheck: () => recheck($) })
     const asked = !planned && now?.project ? now.project : null
-    const asking = asked ? adoptAsk(asked, adopting) : null
-    const adoptCard = asking && asked && (
-      <Box key="adopt-card" flexDirection="column" borderStyle="round" borderColor="warning" paddingX={1} marginTop={1}>
-        <Text color="warning" bold wrap="wrap">
-          {`⚠ ${asking.title}`}
-        </Text>
-        {asking.lines.map((line, index) => (
-          <Text key={`adopt-line-${index}`} dimColor={index > 0} wrap="wrap">
-            {line}
-          </Text>
-        ))}
-        <Box flexDirection="row" gap={1} marginTop={1} flexWrap="wrap">
-          <Button key="adopt-yes" variant="primary" onPress={() => void adoptFromPrompt($, asked)}>
-            Let it write
-          </Button>
-          <Button key="adopt-no" dimColor onPress={() => void declineFromPrompt($, asked)}>
-            Keep read-only
-          </Button>
-          {link(asked.url)}
-        </Box>
-      </Box>
+    const adoptNote = adoptCard(els, { asked, asking: asked ? adoptAsk(asked, adopting) : null }, { adopt: one => adoptFromPrompt($, one), decline: one => declineFromPrompt($, one) })
+    const statusesNote = statusesCard(els, { mapping }, { pick: (role, id) => () => void pickStatus($, role, id), save: () => saveStatuses($), cancel: () => update($, statusPicks, () => null) })
+    const labelsNote = labelsCard(
+      els,
+      { marking },
+      { pick: picks => () => void update($, markerPicks, was => was && { ...was, picks: { ...was.picks, ...picks } }), save: () => saveMarkerPicks($), cancel: () => update($, markerPicks, () => null) },
     )
+    const setupNote = setupCard(els, { planned, autoMove: settings.autoMove }, {
+      choose: id => () => void chooseProject($, id),
+      typeAreas: text => typeAreas($, text),
+      pickRole: (role, name) => () => void pickRole($, role, name),
+      release: one => releaseFromSetup($, one),
+      askTemplate: repo => submit($, 'other prompts', { text: templatePrompt(repo), asUser: true }).then(() => $.ui.toast('Asked Claude for an issue template, as a pull request to review')),
+      apply: () => within('setup', () => applySetup($)),
+      close: () => update($, setup, () => null),
+    })
 
-    // `/issues statuses`: Which Status is which alone, picked among the project's own options. Save keeps it in the
-    // store; adding an option the project lacks stays in /issues setup.
-    const mapping = await read($, statusPicks)
-    const pickStatus = (role: Role, id: string | null) => () =>
-      void update($, statusPicks, was => {
-        if (!was) return was
-        // One option plays one part: picking it for this role takes it from any other.
-        const picks: Roles = Object.fromEntries(Object.entries(was.picks).filter(([other, one]) => other !== role && one !== id))
-        return { ...was, picks: id === null ? picks : { ...picks, [role]: id } }
-      })
-    const statusesCard = mapping && (
-      <Box key="statuses-card" flexDirection="column" borderStyle="round" borderColor="suggestion" paddingX={1} marginTop={1}>
-        <Text color="suggestion" bold>
-          {`⚙ Which Status is which in ${mapping.project.title}`}
-        </Text>
-        <Text dimColor wrap="wrap">
-          Pick the option that plays each part, or none to turn that part off. Save keeps it here and changes nothing on GitHub.
-        </Text>
-        {ROLE_ORDER.map(role => {
-          const pick = mapping.picks[role] ?? null
-          const option = (key: string, label: string, id: string | null) => choice(`statuses-${role}-${key}`, label, pick === id, pickStatus(role, id))
-          return (
-            <Box key={`statuses-${role}`} flexDirection="row" gap={1} flexWrap="wrap">
-              <Text dimColor>{`${ROLE_NAMES[role]}${role === 'backlog' ? ' (folds)' : ''}`}</Text>
-              {mapping.options.map(one => option(one.id, one.name, one.id))}
-              {option('none', 'none', null)}
-            </Box>
-          )
-        })}
-        <Box flexDirection="row" gap={1} marginTop={1}>
-          <Button key="statuses-save" variant="primary" onPress={() => void saveStatuses($)}>
-            Save
-          </Button>
-          <Button key="statuses-cancel" dimColor onPress={() => void update($, statusPicks, () => null)}>
-            Cancel
-          </Button>
-        </Box>
-      </Box>
-    )
-
-    // `/issues labels`: which label or issue type Bugs goes by, and without a project which label Later does, picked
-    // among the repo's own. Save keeps it in the store.
-    const marking = await read($, markerPicks)
-    const pickMarker = (picks: Partial<Markers>) => () => void update($, markerPicks, was => was && { ...was, picks: { ...was.picks, ...picks } })
-    const labelsCard = marking && (
-      <Box key="labels-card" flexDirection="column" borderStyle="round" borderColor="suggestion" paddingX={1} marginTop={1}>
-        <Text color="suggestion" bold>
-          ⚙ Which labels Bugs and Later go by
-        </Text>
-        <Text dimColor wrap="wrap">
-          {marking.later
-            ? 'Pick what marks a bug, and the label for Later. Save keeps it here and changes nothing on GitHub.'
-            : 'Pick what marks a bug. With a project, Later goes by Priority. Save keeps it here and changes nothing on GitHub.'}
-        </Text>
-        <Box key="labels-bug" flexDirection="row" gap={1} flexWrap="wrap">
-          <Text dimColor>Bugs</Text>
-          {marking.types.map(type =>
-            choice(`labels-bug-type-${type}`, `${type} type`, 'type' in marking.picks.bug && marking.picks.bug.type === type, pickMarker({ bug: { type } })),
-          )}
-          {marking.labels.map(label =>
-            choice(`labels-bug-${label}`, label, 'label' in marking.picks.bug && marking.picks.bug.label === label, pickMarker({ bug: { label } })),
-          )}
-        </Box>
-        {marking.later && (
-          <Box key="labels-later" flexDirection="row" gap={1} flexWrap="wrap">
-            <Text dimColor>Later</Text>
-            {marking.labels.map(label => choice(`labels-later-${label}`, label, marking.picks.later === label, pickMarker({ later: label })))}
-          </Box>
-        )}
-        <Box flexDirection="row" gap={1} marginTop={1}>
-          <Button key="labels-save" variant="primary" onPress={() => void saveMarkerPicks($)}>
-            Save
-          </Button>
-          <Button key="labels-cancel" dimColor onPress={() => void update($, markerPicks, () => null)}>
-            Cancel
-          </Button>
-        </Box>
-      </Box>
-    )
-
-    // `/issues setup`: the project it would use, what it would change, what only the project's settings can turn on,
-    // and Apply, the one ask before anything changes. While Apply runs, each change is marked as it goes.
-    const MARKS = { running: ['◌', 'warning'], done: ['✓', 'success'], failed: ['✗', 'error'], skipped: ['–', 'inactive'] } as const
-    const facts = planned && 'facts' in planned ? planned.facts : undefined
-    const chosenProject = facts && planned && 'chosen' in planned ? facts.projects.find(one => one.id === planned.chosen) : undefined
-    const choose = (id: string | null) => () =>
-      void update($, setup, was => {
-        if (was?.phase !== 'ready') return was
-        const roles = picksFor(was.facts, id)
-        return { ...was, chosen: id, roles, steps: stepsOf(was.facts, id, was.areas, roles) }
-      })
-    const typeAreas = (text: string) =>
-      void update($, setup, was => (was?.phase === 'ready' ? { ...was, areas: text, steps: stepsOf(was.facts, was.chosen, text, was.roles) } : was))
-    const pickRole = (role: Role, name: string | null) => () =>
-      void update($, setup, was => {
-        if (was?.phase !== 'ready') return was
-        const roles = { ...was.roles, [role]: name }
-        return { ...was, roles, steps: stepsOf(was.facts, was.chosen, was.areas, roles) }
-      })
-    const manual = facts ? automationsOff(chosenProject) : []
-    const unwanted = facts && planned && 'roles' in planned ? automationsOn(chosenProject, settings.autoMove && planned.roles.done !== null) : []
-    const setupPlan = planned && (
-      <Box key="setup-plan" flexDirection="column" borderStyle="round" borderColor="suggestion" paddingX={1} marginTop={1}>
-        <Text color="suggestion" bold>
-          {`⚙ Set up ${facts?.repo.name ?? 'the repo'} for the board`}
-        </Text>
-        {planned.phase === 'reading' && <Text dimColor>◌ Reading the repo, its project and its issues…</Text>}
-        {planned.phase === 'failed' && (
-          <Box flexDirection="column">
-            <Text color="error" wrap="wrap">{`Couldn't read what setup needs: ${planned.message}`}</Text>
-            <Text dimColor>/issues check says what is missing and how to fix it.</Text>
-          </Box>
-        )}
-        {facts && 'steps' in planned && (
-          <Box flexDirection="column">
-            <Box flexDirection="row" gap={1} flexWrap="wrap" marginTop={1}>
-              <Text dimColor>Project</Text>
-              {facts.projects.length === 0 && <Text>{`none is linked to ${facts.repo.name}`}</Text>}
-              {facts.projects.length === 1 && chosenProject && <Text bold>{`${chosenProject.title} (#${chosenProject.number})`}</Text>}
-              {facts.projects.length > 1 &&
-                facts.projects.map(one =>
-                  choice(`setup-project-${one.number}`, `${one.title} #${one.number}`, one.id === planned.chosen, planned.phase === 'ready' ? choose(one.id) : () => undefined),
-                )}
-              {chosenProject && link(chosenProject.url)}
-            </Box>
-            {facts.adopted !== undefined && (
-              <Box key="setup-adopted" flexDirection="row" gap={1} flexWrap="wrap">
-                <Text dimColor>Writes</Text>
-                {facts.adopted ? (
-                  <Text>{`the board may write to ${facts.projects.find(one => one.id === facts.adopted)?.title ?? 'a project of this repo'}`}</Text>
-                ) : (
-                  <Text>{chosenProject ? `none: the board only reads ${chosenProject.title} until Apply` : 'none: the board writes to no project'}</Text>
-                )}
-                {facts.adopted && facts.granted && <Text dimColor>{"granted by this repo's .claude/settings.json; edit writeProjects there to release it"}</Text>}
-                {facts.adopted && !facts.granted && planned.phase !== 'applying' && (
-                  <Button key="setup-release" dimColor onPress={() => void releaseFromSetup($, facts.projects.find(one => one.id === facts.adopted))}>
-                    Release
-                  </Button>
-                )}
-              </Box>
-            )}
-            {planned.steps.length === 0 ? (
-              <Text color="success">✓ Nothing to change: the repo and its project are set up for the board.</Text>
-            ) : (
-              <Box flexDirection="column" marginTop={1}>
-                <Text bold>{planned.phase === 'ready' ? 'Apply will:' : 'Changes:'}</Text>
-                {planned.steps.map(step => {
-                  const [mark, color] = step.state ? MARKS[step.state] : (['✚', 'suggestion'] as const)
-                  return (
-                    <Box key={`setup-step-${step.id}`} flexDirection="column">
-                      <Text wrap="wrap">
-                        <Text color={color}>{`${mark} `}</Text>
-                        <Text>{step.title}</Text>
-                      </Text>
-                      {step.message && (
-                        <Text dimColor wrap="wrap">
-                          {`  ${step.message}`}
-                        </Text>
-                      )}
-                    </Box>
-                  )
-                })}
-              </Box>
-            )}
-            {planned.phase === 'ready' && Input && !facts.labels.some(label => label.startsWith('area:')) && (
-              <Box flexDirection="row" marginTop={1}>
-                <Input
-                  key="setup-areas"
-                  label="area labels to create: "
-                  placeholder="such as simulation, interface"
-                  value={planned.areas}
-                  submitLabel="update"
-                  onInput={typeAreas}
-                  onSubmit={typeAreas}
-                />
-              </Box>
-            )}
-            {chosenProject?.status && (
-              <Box key="setup-roles" flexDirection="column" marginTop={1}>
-                <Text bold>Which Status is which</Text>
-                {ROLE_ORDER.map(role => {
-                  const options = statusOptionsOf(chosenProject).map(one => one.name)
-                  const own = ROLE_NAMES[role]
-                  const pick = planned.roles[role]
-                  const ready = planned.phase === 'ready'
-                  const option = (key: string, label: string, name: string | null) =>
-                    choice(`setup-role-${role}-${key}`, label, pick === name, ready ? pickRole(role, name) : () => undefined)
-                  return (
-                    <Box key={`setup-role-${role}`} flexDirection="row" gap={1} flexWrap="wrap">
-                      <Text dimColor>{`${own}${role === 'backlog' ? ' (folds)' : ''}`}</Text>
-                      {options.map(name => option(name, name, name))}
-                      {!options.some(name => name.toLowerCase() === own.toLowerCase()) && option('add', `＋ ${own}`, own)}
-                      {option('none', 'none', null)}
-                    </Box>
-                  )
-                })}
-              </Box>
-            )}
-            {(manual.length > 0 || unwanted.length > 0 || addsAsTodo(chosenProject, planned.roles.inbox)) && (
-              <Box flexDirection="column" marginTop={1}>
-                <Text color="warning">In the project's Workflows settings, by hand:</Text>
-                {manual.length > 0 && <Text color="warning" wrap="wrap">{`  · turn on ${manual.join(', ')}`}</Text>}
-                {unwanted.length > 0 && (
-                  <Text color="warning" wrap="wrap">
-                    {`  · turn off ${unwanted.join(', ')}: it marks every closed issue Done, even an abandoned one; the board moves issues closed as completed`}
-                  </Text>
-                )}
-                {addsAsTodo(chosenProject, planned.roles.inbox) && (
-                  <Text color="warning" wrap="wrap">
-                    {`  · new issues arrive with Status Todo, GitHub's default, so they skip the Inbox: open Item added to project and set its Status to ${planned.roles.inbox}. Once it's set, delete the Todo option, which this note looks for.`}
-                  </Text>
-                )}
-                {chosenProject && <Link href={`${chosenProject.url}/workflows`} label="↗ Workflows" />}
-              </Box>
-            )}
-            {!facts.hasTemplate && (
-              <Box flexDirection="row" gap={1} flexWrap="wrap" marginTop={1}>
-                <Text dimColor>No issue template has an Acceptance list.</Text>
-                <Button
-                  key="setup-template"
-                  dimColor
-                  onPress={() => void submit($, 'other prompts', { text: templatePrompt(facts.repo.name), asUser: true }).then(() => $.ui.toast('Asked Claude for an issue template, as a pull request to review'))}
-                >
-                  Have Claude add one
-                </Button>
-              </Box>
-            )}
-            <Box flexDirection="row" gap={1} marginTop={1}>
-              {planned.phase === 'ready' && planned.steps.length > 0 && (
-                <Button key="setup-apply" variant="primary" onPress={() => void within('setup', () => applySetup($))}>
-                  Apply
-                </Button>
-              )}
-              {planned.phase === 'applying' && <Text color="warning">◌ Applying…</Text>}
-              {planned.phase !== 'applying' && (
-                <Button key="setup-close" dimColor onPress={() => void update($, setup, () => null)}>
-                  {planned.phase === 'ready' && planned.steps.length > 0 ? 'Cancel' : 'Close'}
-                </Button>
-              )}
-            </Box>
-          </Box>
-        )}
-        {planned.phase === 'failed' && (
-          <Box flexDirection="row" marginTop={1}>
-            <Button key="setup-close" dimColor onPress={() => void update($, setup, () => null)}>
-              Close
-            </Button>
-          </Box>
-        )}
-      </Box>
-    )
-
+    // Before there is a board: the header with the repo and the sync, the cards, and why there is no board yet.
     if (!now) {
       return (
         <Box flexDirection="column">
-          {header}
-          {statusesCard}
-          {labelsCard}
-          {setupPlan}
-          {setupCard ||
-            (failure ? (
-            <Box flexDirection="column" borderStyle="round" borderColor="error" paddingX={1} marginTop={1}>
-              <Text color="error" bold>
-                ✗ Couldn't reach GitHub
-              </Text>
-              <Text>{failure}</Text>
-              <Text dimColor>Press r to try again, or run /issues check.</Text>
-            </Box>
-          ) : (
-            <Box marginTop={1}>
-              <Text dimColor>◌ Fetching issues and pull requests…</Text>
-            </Box>
-          ))}
+          {headerView(els, { repo: null, busy, fetchedAt: null, clock, totals: null }, headerHandlers)}
+          {statusesNote}
+          {labelsNote}
+          {setupNote}
+          {accessNote || noBoard(els, { failure })}
         </Box>
       )
     }
 
-    // Without a project the board works from labels: Active and Future, grouped by area.
-    const project = now.project ?? null
-    // The tabs: the project's views with filters, then All and Closed; or the built-in filters. A tab chosen that is no
-    // longer there, such as Now once the views are the tabs, gives way to the first.
-    const tabs = filtersFor(project)
-    const tab = tabOf(tabs, chosen)
-    const shownTab = tab.id
     const marks = await markersNow($, now)
-    const tabTests = new Map(tabs.map(one => [one.id, tabTest(one, project, marks)] as const))
-    const inTab = (one: Tab, issue: Issue) => tabTests.get(one.id)?.(issue, who) ?? false
-    // A view's tab groups as the view does, when the board can: Status, epic, or another field it read. The grouping
-    // named for the view's field shows among the others while its tab does.
-    const viewGrouping = viewGroupingOf(tab.view, project)
-    const viewField = viewGrouping?.by === 'view' ? viewGrouping.field : null
-    const grouping = groupingOf(picked, viewGrouping, Boolean(project))
-    // The terms of the view's filter the board can't apply, for the note under the heading.
-    const unknownTerms = tab.view ? viewMatchOf(tab.view.filter, project).unknown : []
-    // Whether an issue is under the filter and the search. The open card stays in the list whether or not, until it is
-    // collapsed, so setting its Priority or Status doesn't take it away while it's being changed.
-    const kept = (issue: Issue) => inTab(tab, issue) && searched(typed, issue)
-    const shown = now.issues.filter(issue => open === issue.number || kept(issue))
+    const { project, tabs, tab, kept, shown, triaging, grouping, groupings, tabLabel, groups, unknownTerms } = listOf({ now, chosen, picked, typed, who, open, marks })
+    const shownTab = tab.id
     const closedNow = shownTab === 'closed' ? await read($, recent) : null
-    // The project's fields beyond Status and Priority, and what the open card's issue has in them.
-    const otherFields = (project?.fields ?? []).filter(field => !/^(status|priority)$/i.test(field.name))
     const fieldValues = await read($, values)
     const more = await read($, editorMore)
     // The sections above the issues: open or folded as the person left them, else folded on a short pane.
     const opened$ = await read($, sections)
     const sectionOpen = (key: string) => opened$[key] ?? e.props.scroll.bodyRows >= SHORT_ROWS
     const fold = (key: string) => () => void update($, sections, was => ({ ...was, [key]: !sectionOpen(key) })).then(() => save($))
-    const heading = (key: string, title: string) => (
-      <Box key={`section-head-${key}`}>
-        <Button key={`section-${key}`} plain hover={{ bold: true }} onPress={fold(key)}>
-          {`${sectionOpen(key) ? '▾' : '▸'} ${title}`}
-        </Button>
-      </Box>
-    )
     // One card open: its letter keys work.
     const single = open !== null && shown.some(issue => issue.number === open)
-    const filterName = tab.name
-    const bugs = now.issues.filter(issue => isBug(issue, marks)).length
-    const failing = now.prs.filter(pr => pr.ci === 'fail').length
-    const overall = sumProgress(shown)
-
-    // With a board, its totals too.
-    const topLine = headerView(
-      elements,
-      { repo: now.repo, busy, fetchedAt: now.fetchedAt, clock, totals: { issues: now.issues.length, bugs, prs: now.prs.length, failing, overall, wide } },
-      headerHandlers,
-    )
-
-    // A board kept from before velocity was fetched has none until it refreshes.
-    const velocity = now.velocity ?? { closed: [], merged: [] }
-    const trends = trendsView(elements, { wide, velocity })
-
-    // The Issues heading, drawn by views/tabs.tsx. With a project the grouping can be Status.
-    const groupings = [...GROUPINGS.filter(one => one.id !== 'status' || project), ...(viewField ? [{ id: 'view' as const, label: viewField }] : [])]
-    // A tab's label: its name and how many open issues it holds; Closed's count isn't known until it is read.
-    const tabLabel = (one: Tab) => (one.id === 'closed' ? one.name : `${one.name} ${now.issues.filter(issue => inTab(one, issue)).length}`)
-    const issuesHeading = issuesHeadingView(
-      { Box, Text, Button, Link, Input },
-      { tabs: tabs.map(one => ({ tab: one, label: tabLabel(one) })), shown: shownTab, typed, groupings, grouping },
-      {
-        pickTab: one => pickTab($, one, project),
-        search: text => update($, query, () => text),
-        group: id => update($, groupBy, () => id),
-      },
-    )
-
-    // The plan Claude proposed with project_plan: a row per change, grouped by issue, each with a box to tick and
-    // Claude's reason. Apply writes the ticked rows; Discard drops the plan. A row that failed stays, saying why. A row
-    // the board shows as made already, as when Claude made it another way, isn't drawn.
-    const planRows = proposed ? rowsToMake(proposed.rows, now) : []
-    const planTicked = planRows.filter(row => row.picked).length
-    // The rows grouped: the repo's labels first, then each issue, then the project's views.
-    const planGroups = [...new Set(planRows.map(row => groupOf(row.change)))]
-    const pickRow = (id: string) => () => void update($, proposal, was => was && { ...was, rows: was.rows.map(row => (row.id === id ? { ...row, picked: !row.picked } : row)) })
-    const planCard = proposed && planRows.length > 0 && (
-      <Box key="plan-card" flexDirection="column" borderStyle="round" borderColor="suggestion" paddingX={1} marginTop={1}>
-        <Text color="suggestion" bold>{`Claude's plan · ${sizeText(planRows.map(row => row.change))}`}</Text>
-        <Text dimColor wrap="wrap">
-          {kindsText(planRows.map(row => row.change))}
-        </Text>
-        {planGroups.map(group => (
-          <Box key={`plan-${typeof group === 'number' ? `issue-${group}` : `${group}s`}`} flexDirection="column" marginTop={1}>
-            {group === 'label' ? (
-              <Text color="claude" bold>
-                {"The repo's labels"}
-              </Text>
-            ) : group === 'view' ? (
-              <Text color="claude" bold wrap="truncate-end">{`${now.project?.title ?? 'Project'} views`}</Text>
-            ) : (
-              <Text wrap="truncate-end">
-                <Text color="claude" bold>{`#${group} `}</Text>
-                {now.issues.find(one => one.number === group)?.title ?? ''}
-              </Text>
-            )}
-            {planRows
-              .filter(row => groupOf(row.change) === group)
-              .map(row => (
-                <Box key={`plan-row-${row.id}`} flexDirection="column">
-                  <Box flexDirection="row" gap={1} flexWrap="wrap">
-                    {choice(`plan-pick-${row.id}`, `${row.picked ? '☑' : '☐'} ${cardParts(row.change).head}`, row.picked, pickRow(row.id))}
-                    {cardParts(row.change).detail && <Text wrap="wrap">{cardParts(row.change).detail}</Text>}
-                    <Text dimColor wrap="wrap">
-                      {row.reason}
-                    </Text>
-                  </Box>
-                  {viewNoteOf(row.change) && (
-                    <Text color="warning" wrap="wrap">
-                      {`⚠ ${viewNoteOf(row.change)}`}
-                    </Text>
-                  )}
-                  {row.failed && <Text color="error" wrap="wrap">{`✗ ${row.failed}`}</Text>}
-                </Box>
-              ))}
-          </Box>
-        ))}
-        {proposed.note && (
-          <Box marginTop={1}>
-            <Text color="warning" wrap="wrap">
-              {proposed.note}
-            </Text>
-          </Box>
-        )}
-        {proposed.applying ? (
-          <Box marginTop={1}>
-            <Text color="warning">◌ Applying the plan…</Text>
-          </Box>
-        ) : (
-          <Box flexDirection="row" gap={1} marginTop={1} flexWrap="wrap">
-            <Button key="plan-apply" variant="primary" dimColor={planTicked === 0} onPress={() => void applyFromCard($, proposed.id)}>
-              {`✓ Apply ${planTicked} of ${planRows.length}`}
-            </Button>
-            <Button key="plan-discard" dimColor onPress={() => void update($, proposal, () => null)}>
-              Discard
-            </Button>
-          </Box>
-        )}
-      </Box>
-    )
-
-    // The pull request rows, drawn by views/pr-row.tsx with these handlers.
-    const prHandlers: PrRowHandlers = {
-      toggle: togglePr,
-      arm: pr => void update($, armed, (): Armed => ({ kind: 'pr', number: pr.number })),
-      closeOut: pr => void closeOut(pr),
-      cancel: () => void disarm($, 'pr'),
-    }
-    const prRow = (pr: PullRequest) => prRowView(elements, { pr, width, roomy, repo: now.repo, here, shownPr, armedPr, workers: working$, clock }, prHandlers)
-
-    // Stop tracking the issue this session is on: no row has the ▶ until Start or a branch names one again.
-    const stopTracking = async () => {
-      await update($, working, () => null)
-      await save($)
-    }
-
-    // The issue rows, drawn by views/issue-row.tsx with its peek above it.
-    const issueHandlers: IssueRowHandlers = { toggle, stop: () => void stopTracking() }
-    const issueRow = (issue: Issue) =>
-      issueRowView(elements, { issue, width, roomy, open, marks, project, prs: now.prs, workers: working$, doing, clock, room: roomOf(issue.number) }, issueHandlers)
-
-    // The Inbox shows each issue with what Claude suggests for it: a row of Priority buttons and one of areas, the picked
-    // one highlighted, Claude's reason, and Accept, which moves it on to the Status Claude suggests, or the other.
-    const triaging = shownTab === 'inbox' && project !== null
-    const areaNames = [...new Set([...triaged.areas, ...labelsOf(now.issues).filter(name => name.startsWith('area:')).map(name => name.slice('area:'.length))])].sort()
-    const triageRow = (issue: Issue) => {
-      const said = triaged.suggestions.find(one => one.number === issue.number)
-      const mine = triaged.picks.find(one => one.number === issue.number)
-      const had = areaOf(issue)
-      const priority = mine?.priority ?? said?.priority ?? issue.priority ?? null
-      const area = mine && 'area' in mine ? (mine.area ?? null) : said ? said.area : had === 'other' ? null : had
-      const status = said?.status ?? statusFor(project, priority)
-      const other = status === 'Ready' ? 'Backlog' : 'Ready'
-      const target = triageTarget(project, status)
-      const otherTarget = triageTarget(project, other)
-      const choosing = (edit: { priority?: string; area?: string | null }) => () =>
-        void update($, triage, was => ({ ...was, picks: [...was.picks.filter(one => one.number !== issue.number), { ...was.picks.find(one => one.number === issue.number), number: issue.number, ...edit }] }))
-      const age = ago(issue.updatedAt, clock)
-      return (
-        <Box key={`triage-${issue.number}`} flexDirection="column" marginTop={1}>
-          <Box flexDirection="row" justifyContent="space-between">
-            <Box flexDirection="row" gap={1}>
-              <Text color="claude">{`#${issue.number}`}</Text>
-              <Button key={`issue-${issue.number}`} plain hover={{ bold: true }} onPress={toggle(issue.number)}>
-                {fit(issue.title, Math.max(12, width - String(issue.number).length - age.length - 4))}
-              </Button>
-            </Box>
-            <Text dimColor>{age}</Text>
-          </Box>
-          <Box flexDirection="row" gap={1} flexWrap="wrap" paddingLeft={2}>
-            {(project?.priority?.options ?? []).map(one => choice(`triage-${issue.number}-priority-${one.name}`, one.name, one.name === priority, choosing({ priority: one.name })))}
-            <Text dimColor>·</Text>
-            {areaNames.map(name => choice(`triage-${issue.number}-area-${name}`, name, name === area, choosing({ area: name })))}
-            {choice(`triage-${issue.number}-area-none`, 'no area', area === null, choosing({ area: null }))}
-            <Text dimColor>·</Text>
-            <Button key={`triage-${issue.number}-accept`} variant="primary" onPress={() => void acceptTriage($, issue, { priority, area }, status)}>
-              {target ? `✓ Accept → ${target}` : '✓ Accept'}
-            </Button>
-            {otherTarget && (
-              <Button key={`triage-${issue.number}-${other.toLowerCase()}`} dimColor onPress={() => void acceptTriage($, issue, { priority, area }, other)}>
-                {`→ ${otherTarget}`}
-              </Button>
-            )}
-          </Box>
-          <Box paddingLeft={2}>
-            <Text dimColor wrap="wrap">
-              {said ? `✦ ${said.reason || 'No reason given.'}` : triaged.asking ? '◌ waiting on Claude' : '✦ No suggestion yet: pick, then accept.'}
-            </Text>
-          </Box>
-        </Box>
-      )
-    }
-
-    // A card above a row too near the pane's top would be pushed down over the row, so each row knows the lines free
-    // above it in the window. They are at least these: each line of the board above the list, each heading and row one
-    // line, an open card none. Counting short leaves a card smaller than its room, never bigger.
-    const groups = triaging ? [] : groupsOf(shown, grouping, project, viewField, marks)
-    const listed$ = triaging
-      ? shown.map(issue => issue.number)
-      : groups.flatMap(group => [null, ...(group.folded && !opened.includes(group.key) ? [] : group.issues.map(issue => issue.number))])
-    // The Issues heading wraps its buttons, each its label and four cells of brackets; the search field, of no known
-    // width, isn't counted.
-    const heading$ = wrappedLines(
-      [
-        cells('Issues'),
-        ...tabs.map(one => cells(tabLabel(one)) + 4),
-        cells('by'),
-        ...groupings.map(one => cells(one.label) + 4),
-      ],
-      width,
-    )
-    const above$ =
-      1 +
-      heading$ +
-      (trends ? 1 : 0) +
-      (failure ? 1 : 0) +
-      (project?.update ? 1 : 0) +
-      (now.prs.length > 0 ? 1 + (sectionOpen('prs') ? now.prs.length : 0) : 0) +
-      ((now.milestones ?? []).length > 0 ? 1 + (sectionOpen('milestones') ? (now.milestones ?? []).length : 0) : 0) +
-      (arming && now.prs.length > 0 ? 1 : 0) +
-      watched.length +
-      (unknownTerms.length > 0 ? 1 : 0) +
-      (triaging ? 1 + (triaged.failed ? 1 : 0) : 0)
-    const { offset } = e.props.scroll
-    const roomOf = (number: number) => Math.max(0, above$ + listed$.indexOf(number) - offset)
-
-    // A project field on a card: its options as buttons, the one set drawn as the primary. Buttons rather than a
-    // Select, which the terminal opens by keyboard alone: a click on its options does nothing.
-    const picker = (issue: Issue, field: 'status' | 'priority', label: string, options: { id: string; name: string }[], value: string | null | undefined) => (
-      <Box key={`${field}-${issue.number}`} flexDirection="row" gap={1} flexWrap="wrap">
-        <Text dimColor>{label}</Text>
-        {options.map(option =>
-          choice(`${field}-${issue.number}-${option.id}`, option.name, option.name === value, () => void (option.name === value ? undefined : pick($, issue, field, option.name))),
-        )}
-      </Box>
-    )
-
-    // Change opens the card's editor, and reads the repo's labels and milestones the first time.
-    const openEditor = (number: number) => async () => {
-      const opening = changing !== number
-      await update($, editing, () => (opening ? number : null))
-      await disarm($, 'close')
-      if (opening && !offered) await loadPalette($)
-    }
-
-    // The card's editor: each row a change made on GitHub as soon as it's pressed or entered. Closing an epic whose
-    // sub-issues are still open takes a second press.
-    const editor = (issue: Issue) => {
-      const n = issue.number
-      const me = who ?? '@me'
-      const mine = issue.assignees.includes(me)
-      const open = (issue.subIssues?.total ?? 0) - (issue.subIssues?.completed ?? 0)
-      const labels = [...new Set([...(offered?.labels ?? labelsOf(now.issues)), ...issue.labels.map(label => label.name)])].sort()
-      const closeAs = (reason: 'completed' | 'not planned') => async () => {
-        if (open > 0 && armedClose !== n) {
-          await update($, armed, (): Armed => ({ kind: 'close', number: n }))
-          return
-        }
-        await disarm($, 'close')
-        await update($, editing, () => null)
-        await change($, n, { close: reason })
-      }
-      const row = (label: string) => <Text dimColor>{label.padEnd(9)}</Text>
-      return (
-        <Box key={`editor-${n}`} flexDirection="column" marginTop={1}>
-          {/* What it is. */}
-          {Input && (
-            <Box flexDirection="row" gap={1} flexWrap="wrap">
-              {row('Title')}
-              <Input
-                key={`title-${n}`}
-                label=""
-                placeholder={fit(issue.title, 50)}
-                value={fields.title ?? ''}
-                submitLabel="rename"
-                onInput={text => void update($, typing, was => ({ ...was, title: text }))}
-                onSubmit={text => {
-                  if (!text.trim() || text.trim() === issue.title) return
-                  void update($, typing, was => ({ ...was, title: '' })).then(() => change($, n, { title: text.trim() }))
-                }}
-              />
-            </Box>
-          )}
-          <Box flexDirection="row" gap={1} flexWrap="wrap">
-            {row('Boxes')}
-            {Input && (
-              <Input
-                key={`box-${n}`}
-                label="+ "
-                placeholder="add an acceptance box"
-                value={fields.box ?? ''}
-                submitLabel="add"
-                onInput={text => void update($, typing, was => ({ ...was, box: text }))}
-                onSubmit={text => {
-                  if (!text.trim()) return
-                  void update($, typing, was => ({ ...was, box: '' })).then(() => change($, n, { addBoxes: [text.trim()] }))
-                }}
-              />
-            )}
-            <Button key={`body-${n}`} dimColor onPress={() => void $.prompt.fill({ text: `Edit the body of #${n}: ` })}>
-              ✎ Edit the body with Claude
-            </Button>
-          </Box>
-          <Box flexDirection="row" gap={1} flexWrap="wrap">
-            {row('Labels')}
-            {labels.map(name => {
-              const has = issue.labels.some(label => label.name === name)
-              return choice(`label-${n}-${name}`, name, has, () => void change($, n, has ? { removeLabels: [name] } : { addLabels: [name] }))
-            })}
-            {Input && (
-              // A label the repo hasn't got yet is made, then put on the issue; Claude Code doesn't ask, as the person typed it.
-              <Input
-                key={`new-label-${n}`}
-                label="+ "
-                placeholder="new label"
-                value={fields.label ?? ''}
-                submitLabel="add"
-                onInput={text => void update($, typing, was => ({ ...was, label: text }))}
-                onSubmit={text => {
-                  if (!text.trim()) return
-                  void update($, typing, was => ({ ...was, label: '' })).then(() => change($, n, { addLabels: [text.trim()] }))
-                }}
-              />
-            )}
-          </Box>
-          {more && ((now.issueTypes ?? []).length > 0 && (
-            <Box key={`type-row-${n}`} flexDirection="row" gap={1} flexWrap="wrap">
-              {row('Type')}
-              {(now.issueTypes ?? []).map(name => choice(`type-${n}-${name}`, name, name === issue.type, () => void change($, n, { type: name === issue.type ? null : name })))}
-            </Box>
-          ))}
-          {/* Where it sits. */}
-          <Box flexDirection="row" gap={1} flexWrap="wrap">
-            {row('Epic')}
-            <Text>{issue.parent ? `#${issue.parent.number} ${fit(issue.parent.title, 30)}` : 'none'}</Text>
-            {issue.parent && (
-              <Button key={`unparent-${n}`} dimColor onPress={() => void change($, n, { parent: null })}>
-                Take out
-              </Button>
-            )}
-            {Input && (
-              <Input
-                key={`parent-${n}`}
-                label="put under #"
-                placeholder="epic number"
-                value={fields.parent ?? ''}
-                submitLabel="set"
-                onInput={text => void update($, typing, was => ({ ...was, parent: text }))}
-                onSubmit={text => {
-                  const parent = issueNumberIn(text)
-                  if (parent === null) return
-                  void update($, typing, was => ({ ...was, parent: '' })).then(() => change($, n, { parent }))
-                }}
-              />
-            )}
-          </Box>
-          {more && (
-            <Box flexDirection="row" gap={1} flexWrap="wrap">
-              {row('Milestone')}
-              {!offered && <Text dimColor>reading…</Text>}
-              {offered && offered.milestones.length === 0 && <Text dimColor>none in this repo</Text>}
-              {(offered?.milestones ?? []).map(title => {
-                const has = issue.milestone === title
-                return choice(`milestone-${n}-${title}`, title, has, () => void change($, n, { milestone: has ? null : title }))
-              })}
-            </Box>
-          )}
-          {more && (otherFields.map(field => {
-            const now$ = fieldValues[n]?.[field.name]
-            const key = `${n}-${field.id}`
-            return (
-              <Box key={`field-row-${key}`} flexDirection="row" gap={1} flexWrap="wrap">
-                {row(fit(field.name, 9))}
-                {field.kind === 'select' || field.kind === 'iteration'
-                  ? (field.options ?? []).map(option =>
-                      choice(`field-${key}-${option.id}`, option.name, option.name === now$, () => void change($, n, { fields: { [field.name]: option.name === now$ ? null : option.name } })),
-                    )
-                  : Input && (
-                      <Input
-                        key={`field-${key}`}
-                        label=""
-                        placeholder={now$ ?? (field.kind === 'date' ? 'YYYY-MM-DD' : field.kind === 'number' ? 'a number' : 'text')}
-                        value={fields[key] ?? ''}
-                        submitLabel="set"
-                        onInput={text => void update($, typing, was => ({ ...was, [key]: text }))}
-                        onSubmit={text => {
-                          if (!text.trim()) return
-                          void update($, typing, was => ({ ...was, [key]: '' })).then(() => change($, n, { fields: { [field.name]: text.trim() } }))
-                        }}
-                      />
-                    )}
-                {now$ !== undefined && (
-                  <Button key={`field-clear-${key}`} dimColor onPress={() => void change($, n, { fields: { [field.name]: null } })}>
-                    clear
-                  </Button>
-                )}
-              </Box>
-            )
-          }))}
-          {/* Who has it. */}
-          <Box flexDirection="row" gap={1} flexWrap="wrap">
-            {row('Assignee')}
-            {issue.assignees.filter(login => login !== me).map(login => (
-              <Text color="suggestion">{`@${login}`}</Text>
-            ))}
-            <Button key={`assign-${n}`} dimColor={mine} onPress={() => void change($, n, mine ? { unassign: ['@me'] } : { assign: ['@me'] })}>
-              {mine ? `Unassign me (@${me})` : 'Assign me'}
-            </Button>
-          </Box>
-          {/* Ending it. */}
-          <Box flexDirection="row" gap={1} flexWrap="wrap">
-            {row('Close')}
-            <Button key={`close-completed-${n}`} dimColor onPress={() => void closeAs('completed')()}>
-              as completed
-            </Button>
-            <Button key={`close-not-planned-${n}`} dimColor onPress={() => void closeAs('not planned')()}>
-              as not planned
-            </Button>
-            {more && Input && (
-              <Input
-                key={`duplicate-${n}`}
-                label="as duplicate of #"
-                placeholder="issue number"
-                value={fields.duplicate ?? ''}
-                submitLabel="close"
-                onInput={text => void update($, typing, was => ({ ...was, duplicate: text }))}
-                onSubmit={text => {
-                  const of = issueNumberIn(text)
-                  if (of === null || of === n) return
-                  void update($, typing, was => ({ ...was, duplicate: '' }))
-                    .then(() => update($, editing, () => null))
-                    .then(() => change($, n, { duplicateOf: of }))
-                }}
-              />
-            )}
-          </Box>
-          {armedClose === n && (
-            <Text color="warning" wrap="wrap">{`#${n} is an epic with ${open} open ${open === 1 ? 'sub-issue' : 'sub-issues'}. Closing it leaves them open under a closed epic. Press again to close it anyway.`}</Text>
-          )}
-          <Box key={`more-row-${n}`} flexDirection="row">
-            <Button key={`more-${n}`} dimColor onPress={() => void update($, editorMore, was => !was)}>
-              {more ? '▴ Less' : `▾ More: ${[(now.issueTypes ?? []).length > 0 ? 'type' : '', 'milestone', otherFields.length > 0 ? 'fields' : '', 'duplicate'].filter(Boolean).join(', ')}`}
-            </Button>
-          </Box>
-        </Box>
-      )
-    }
-
-    // The card's comments: the latest few, a field to reply in, and Ask Claude to answer, which hands Claude the last
-    // comment with how to reply. A reply posted here reads the comments again.
-    const conversation = (issue: Issue) => {
-      const n = issue.number
-      const mine = said?.number === n ? said : null
-      const comments = mine?.comments
-      const last = comments?.at(-1)
-      const reply = (text: string) => {
-        if (!text.trim()) return
-        void update($, typing, was => ({ ...was, comment: '' }))
-          .then(() => change($, n, { comment: text }))
-          .then(() => loadComments($, n))
-      }
-      return (
-        <Box key={`talk-${n}`} flexDirection="column" marginTop={1}>
-          <Text bold>
-            {comments === undefined || comments === null
-              ? 'Comments'
-              : mine && mine.total > comments.length
-                ? `Comments · latest ${comments.length} of ${mine.total}`
-                : `Comments · ${comments.length}`}
-          </Text>
-          {(comments === undefined || comments === null) && <Text dimColor>◌ reading…</Text>}
-          {comments?.length === 0 && <Text dimColor>None yet.</Text>}
-          {comments?.map((comment, index) => (
-            <Box key={`comment-${n}-${index}`} flexDirection="column" marginTop={index > 0 ? 1 : 0}>
-              <Text>
-                <Text color="suggestion">{`@${comment.author}`}</Text>
-                <Text dimColor>{agoText(comment.at, clock) ? ` · ${agoText(comment.at, clock)}` : ''}</Text>
-              </Text>
-              <Markdown text={comment.body.length > 800 ? `${comment.body.slice(0, 799)}…` : comment.body || '(empty)'} />
-            </Box>
-          ))}
-          <Box flexDirection="row" gap={1} marginTop={1} flexWrap="wrap">
-            {Input && (
-              <Input
-                key={`reply-${n}`}
-                label="reply "
-                placeholder="write a comment, Enter posts it"
-                value={fields.comment ?? ''}
-                submitLabel="post"
-                onInput={text => void update($, typing, was => ({ ...was, comment: text }))}
-                onSubmit={reply}
-              />
-            )}
-            {last && (
-              <Button key={`ask-${n}`} dimColor onPress={() => void submit($, 'other prompts', { text: answerPrompt(issue, last), asUser: true }).then(() => $.ui.toast(`Asked Claude to answer @${last.author} on #${n}`))}>
-                Ask Claude to answer
-              </Button>
-            )}
-          </Box>
-        </Box>
-      )
-    }
-
-    // An opened issue: a card with its labels, its text, its boxes and what to do with it.
-    const issueCard = (issue: Issue, hotkeys: boolean) => {
-      const step = progress(issue.checks)
-      const prose = proseOf(issue.body ?? '')
-      // The background agent Start in background set on it, with what it last said.
-      const worker = working$.find(one => one.number === issue.number)
-      const workerAge = worker ? agoText(worker.startedAt, clock) : ''
-      // What Start starts: on an epic's card, its first ready sub-issue, which the button names; null when none is.
-      const isEpic = (issue.subIssues?.total ?? 0) > 0
-      const target = startTargetOf(now.issues, issue, project, marks)
-      const goes = target ?? issue
-      const startLabel = isEpic && target && target.number !== issue.number ? `▶ Start #${target.number}` : '▶ Start'
-      const startIt = () => (target ? start(target) : Promise.resolve($.ui.toast(noReadyText(issue.number))))
-      const backgroundIt = () => (target ? startInBackground($, target) : Promise.resolve($.ui.toast(noReadyText(issue.number))))
-      // In background start mode the background start is the card's first and primary one: `s`, and `e` for its Edit
-      // first. The main-chat start moves to `b`, one key away.
-      const inBackground = settings.startMode === 'background'
-      // Edit first puts the start message in the prompt box. Sending the foreground message starts the issue, by the
-      // prompt.submit hook; the background one asks Claude to dispatch the worker, and the agent.spawn hook claims it and
-      // follows it.
-      const draftIt = async (background: boolean) => {
-        if (!target) return $.ui.toast(noReadyText(issue.number))
-        const filled = await $.prompt.fill({ text: background ? backgroundPrompt(target) : startPrompt(target, false, await copyGoes($, target)) })
-        if (!filled.isFilled) return
-        await update($, drafted, () => (background ? null : target.number))
-      }
-      // A background agent at work on what Start would start, whether Start in background set it going or Claude
-      // dispatched it: the card shows it in place of every start button, so the issue isn't started a second time.
-      const busy = working$.find(one => one.number === goes.number && ACTIVE.includes(one.status))
-      const startButton = launches.some(one => one.number === goes.number && one.how === 'start') ? (
-        <Text key={`starting-${issue.number}`} color="claude">
-          ▶ Starting…
-        </Text>
-      ) : startedHere === goes.number ? (
-        <Text key={`started-${issue.number}`} color="claude">
-          ▶ Started
-        </Text>
-      ) : (
-        <Button key={`start-${issue.number}`} variant={inBackground ? undefined : 'primary'} hotkey={hotkeys ? (inBackground ? 'b' : 's') : undefined} onPress={() => void startIt()}>
-          {startLabel}
-        </Button>
-      )
-      const backgroundButton =
-        startedHere === goes.number ? null : launches.some(one => one.number === goes.number && one.how === 'background') ? (
-          <Text key={`starting-background-${issue.number}`} color="claude">
-            ⚙ Starting in background…
-          </Text>
-        ) : (
-          <Button key={`background-${issue.number}`} variant={inBackground ? 'primary' : undefined} hotkey={hotkeys ? (inBackground ? 's' : 'b') : undefined} onPress={() => void backgroundIt()}>
-            {isEpic && target && target.number !== issue.number ? `⚙ Start #${target.number} in background` : '⚙ Start in background'}
-          </Button>
-        )
-      const draftButton = (
-        <Button key={`draft-${issue.number}`} dimColor={inBackground} hotkey={hotkeys && !inBackground ? 'e' : undefined} onPress={() => void draftIt(false)}>
-          ✎ Edit first
-        </Button>
-      )
-      const draftBackgroundButton = (
-        <Button key={`draft-background-${issue.number}`} dimColor={!inBackground} hotkey={hotkeys && inBackground ? 'e' : undefined} onPress={() => void draftIt(true)}>
-          ✎ Edit first in background
-        </Button>
-      )
-      return (
-        <Box key={`card-${issue.number}`} flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1} marginLeft={2} marginBottom={1}>
-          <Text bold wrap="wrap">
-            {issue.title}
-          </Text>
-          {!kept(issue) && (
-            <Text color="warning" wrap="wrap">{`Not under ${filterName}${typed.trim() ? ` or the search` : ''} any more. It leaves the list when you collapse it.`}</Text>
-          )}
-          <Box flexDirection="row" gap={2} flexWrap="wrap">
-            {issue.labels.map(label => (
-              <Text>
-                <Text color={hex(label)}>●</Text>
-                <Text dimColor>{` ${label.name}`}</Text>
-              </Text>
-            ))}
-            {issue.assignees.map(login => (
-              <Text color="suggestion">{`@${login}`}</Text>
-            ))}
-            <Text dimColor>{`updated ${agoText(issue.updatedAt, clock)}`}</Text>
-            {issue.parent && <Text dimColor>{`in #${issue.parent.number}`}</Text>}
-            {(issue.subIssues?.total ?? 0) > 0 && <Text dimColor>{`epic · ${issue.subIssues?.completed}/${issue.subIssues?.total} sub-issues closed`}</Text>}
-            {issue.milestone && <Text dimColor>{`⚑ ${issue.milestone}`}</Text>}
-            {(issue.blockedBy ?? []).length > 0 && <Text color="warning">{`blocked by ${issue.blockedBy?.map(number => `#${number}`).join(', ')}`}</Text>}
-          </Box>
-          {project && (project.status || project.priority) && (
-            <Box flexDirection="column" marginTop={1}>
-              {project.status && picker(issue, 'status', 'Status  ', project.status.options, issue.status)}
-              {project.priority && picker(issue, 'priority', 'Priority', project.priority.options, issue.priority)}
-            </Box>
-          )}
-          {prose && (
-            <Box marginTop={1}>
-              <Markdown key={`body-${issue.number}`} text={prose} />
-            </Box>
-          )}
-          {step.total > 0 ? (
-            <Box flexDirection="column" marginTop={1}>
-              <Text>
-                {meter(step.done, step.total, Math.max(10, Math.min(30, width - 24)))}
-                <Text bold>{` ${step.done}/${step.total}`}</Text>
-                <Text dimColor>{` · ${Math.round((step.done / step.total) * 100)}%`}</Text>
-              </Text>
-              {issue.checks.map((check, index) => (
-                <Box key={`box-row-${issue.number}-${index + 1}`} flexDirection="row">
-                  <Box flexShrink={0}>
-                    <Text color={check.done ? 'success' : 'warning'}>{check.done ? '✔ ' : '☐ '}</Text>
-                  </Box>
-                  <Box flexShrink={1}>
-                    <Button
-                      key={`box-${issue.number}-${index + 1}`}
-                      plain
-                      dimColor={check.done}
-                      hover={{ bold: true }}
-                      onPress={() => void flip(issue, index + 1, !check.done)}
-                    >
-                      {check.text}
-                    </Button>
-                  </Box>
-                </Box>
-              ))}
-            </Box>
-          ) : (
-            <Box marginTop={1}>
-              <Text dimColor italic>
-                No acceptance boxes in this issue.
-              </Text>
-            </Box>
-          )}
-          {issue.type && (
-            <Text>
-              <Text dimColor>Type </Text>
-              {issue.type}
-            </Text>
-          )}
-          {(() => {
-            const set = Object.entries(fieldValues[issue.number] ?? {}).filter(([name]) => otherFields.some(field => field.name === name))
-            return set.length > 0 ? (
-              <Text wrap="wrap">
-                <Text dimColor>Fields </Text>
-                {set.map(([name, value]) => `${name} ${value}`).join(' · ')}
-              </Text>
-            ) : null
-          })()}
-          {conversation(issue)}
-          {worker && (
-            <Box flexDirection="column" marginTop={1}>
-              <Text>
-                <Text color={workerBadge(worker.status).color}>{`${workerBadge(worker.status).text} `}</Text>
-                <Text dimColor>{`a background agent, started ${workerAge}`}</Text>
-              </Text>
-              {worker.answer && (
-                <Text dimColor wrap="wrap">
-                  {worker.answer}
-                </Text>
-              )}
-            </Box>
-          )}
-          <Box flexDirection="row" gap={1} marginTop={1} flexWrap="wrap">
-            {busy ? (
-              <Text key={`worker-on-${issue.number}`} color={workerBadge(busy.status).color}>
-                {workerOnLine(busy.status, ago(busy.startedAt, clock), goes.number === issue.number ? undefined : goes.number)}
-              </Text>
-            ) : inBackground ? (
-              [backgroundButton, startButton, draftBackgroundButton, draftButton]
-            ) : (
-              [startButton, backgroundButton, draftButton, draftBackgroundButton]
-            )}
-            {choice(`edit-${issue.number}`, '⚙ Change', changing === issue.number, openEditor(issue.number))}
-            {link(pageOf(now.repo, 'issues', issue))}
-            <Button key={`close-${issue.number}`} dimColor hotkey={hotkeys ? 'x' : undefined} onPress={toggle(issue.number)}>
-              Collapse
-            </Button>
-          </Box>
-          {changing === issue.number && editor(issue)}
-        </Box>
-      )
-    }
-
     // Merge all's confirm, while there is still something to merge.
     const confirm = arming && now.prs.length > 0
 
+    // With a board, its totals too. A board kept from before velocity was fetched has none until it refreshes.
+    const totals = { issues: now.issues.length, bugs: now.issues.filter(issue => isBug(issue, marks)).length, prs: now.prs.length, failing: now.prs.filter(pr => pr.ci === 'fail').length, overall: sumProgress(shown), wide }
+    const trends = trendsView(els, { wide, velocity: now.velocity ?? { closed: [], merged: [] } })
+
+    // The Issues heading, drawn by views/tabs.tsx.
+    const issuesHeading = issuesHeadingView(
+      els,
+      { tabs: tabs.map(one => ({ tab: one, label: tabLabel(one) })), shown: shownTab, typed, groupings, grouping },
+      { pickTab: one => pickTab($, one, project), search: text => update($, query, () => text), group: id => update($, groupBy, () => id) },
+    )
+
+    // A card above a row too near the pane's top would be pushed down over the row, so each row knows the lines free
+    // above it in the window, as roomAbove counts them.
+    const roomOf = roomAbove({
+      now, width, tabs: tabs.map(tabLabel), groupings: groupings.map(one => one.label), trends: Boolean(trends), failure, sectionOpen, arming, runs: watched.length,
+      unknownTerms: unknownTerms.length, triaging, triageFailed: Boolean(triaged.failed), shown, groups, opened, offset: e.props.scroll.offset,
+    })
+
+    // The rows and the open card, drawn by views/pr-row.tsx, views/issue-row.tsx and views/card.tsx with these handlers.
+    const prHandlers: PrRowHandlers = {
+      toggle: number => () => void update($, openPr, was => (was === number ? null : number)),
+      arm: pr => void update($, armed, (): Armed => ({ kind: 'pr', number: pr.number })),
+      closeOut: pr => void closeOutPr($, pr),
+      cancel: () => void disarm($, 'pr'),
+    }
+    const prRow = (pr: PullRequest) => prRowView(els, { pr, width, roomy, repo: now.repo, here, shownPr, armedPr, workers: working$, clock }, prHandlers)
+    const issueHandlers: IssueRowHandlers = { toggle, stop: () => void stopTracking($) }
+    const issueRow = (issue: Issue) =>
+      issueRowView(els, { issue, width, roomy, open, marks, project, prs: now.prs, workers: working$, doing, clock, room: roomOf(issue.number) }, issueHandlers)
+    const cardData: CardData = {
+      issues: now.issues, repo: now.repo, project, marks, width, clock, kept, filterName: tab.name, typed, workers: working$, launches, startedHere,
+      inBackground: settings.startMode === 'background', changing, who, offered, issueTypes: now.issueTypes ?? [], fields, more, fieldValues, armedClose, talk: said,
+      // The project's fields beyond Status and Priority.
+      otherFields: (project?.fields ?? []).filter(field => !/^(status|priority)$/i.test(field.name)),
+    }
+    const cardHandlers: CardHandlers = {
+      toggle,
+      start,
+      pick: (issue, field, name) => pick($, issue, field, name),
+      flip: (issue, box, done) => flipBox($, issue, box, done),
+      background: issue => startInBackground($, issue),
+      draft: (issue, background) => draftStart($, issue, background),
+      noReady: number => $.ui.toast(noReadyText(number)),
+      openEditor: number => () => openEditor($, number, changing, offered),
+      type: (key, text) => update($, typing, was => ({ ...was, [key]: text })),
+      submit: (number, key, edit) => update($, typing, was => ({ ...was, [key]: '' })).then(() => change($, number, edit)),
+      change: (number, edit) => change($, number, edit),
+      fillBody: number => $.prompt.fill({ text: `Edit the body of #${number}: ` }),
+      close: (number, left, reason) => closeFromCard($, number, left, armedClose, reason),
+      duplicate: (number, of) => update($, typing, was => ({ ...was, duplicate: '' })).then(() => update($, editing, () => null)).then(() => change($, number, { duplicateOf: of })),
+      toggleMore: () => update($, editorMore, was => !was),
+      reply: (number, text) => update($, typing, was => ({ ...was, comment: '' })).then(() => change($, number, { comment: text })).then(() => loadComments($, number)),
+      ask: (issue, last) => submit($, 'other prompts', { text: answerPrompt(issue, last), asUser: true }).then(() => $.ui.toast(`Asked Claude to answer @${last.author} on #${issue.number}`)),
+    }
+    const issueCard = (issue: Issue, hotkeys: boolean) => issueCardView(els, { ...cardData, issue, hotkeys }, cardHandlers)
+    const prsHandlers = { fold, closeOutAll: (prs: PullRequest[]) => closeOutAll($, prs), arm: (to: boolean) => () => void (to ? update($, armed, (): Armed => ({ kind: 'merge-all' })) : disarm($, 'merge-all')) }
+    const rows = { issueRow, issueCard }
+    const planHandlers: PlanHandlers = {
+      pickRow: id => () => void update($, proposal, was => was && { ...was, rows: was.rows.map(row => (row.id === id ? { ...row, picked: !row.picked } : row)) }),
+      apply: id => applyFromCard($, id),
+      discard: () => update($, proposal, () => null),
+    }
+    const triageHandlers: TriageHandlers = {
+      ...rows,
+      toggle,
+      accept: (issue, choice, status) => acceptTriage($, issue, choice, status),
+      again: () => suggestAgain($),
+      choose: (number, edit) => () =>
+        void update($, triage, was => ({ ...was, picks: [...was.picks.filter(one => one.number !== number), { ...was.picks.find(one => one.number === number), number, ...edit }] })),
+    }
+    const groupHandlers: GroupsHandlers = {
+      ...rows,
+      start,
+      foldGroup: key => () => void update($, unfolded, list => (list.includes(key) ? list.filter(one => one !== key) : [...list, key])),
+    }
+
     return (
       <Box flexDirection="column">
-        {topLine}
-        {project?.update && (
-          // The project's latest status update, colored by how it stands.
-          <Text wrap="truncate-end">
-            <Text color={{ 'On track': 'success', 'At risk': 'warning', 'Off track': 'error', Complete: 'claude' }[project.update.status] as ThemeKey | undefined}>{'◉ '}</Text>
-            {updateLine(project.update, clock)}
-          </Text>
-        )}
-        {planCard}
-        {statusesCard}
-        {labelsCard}
-        {setupPlan}
+        {headerView(els, { repo: now.repo, busy, fetchedAt: now.fetchedAt, clock, totals }, headerHandlers)}
+        {projectUpdate(els, { update: project?.update, clock })}
+        {planCard(els, { proposed, now }, planHandlers)}
+        {statusesNote}
+        {labelsNote}
+        {setupNote}
         {trends}
-        {setupCard}
-        {adoptCard}
+        {accessNote}
+        {adoptNote}
         {failure && <Text color="error">{`✗ Last refresh failed: ${failure}`}</Text>}
 
-        {now.prs.length > 0 && (
-          <Box flexDirection="row" justifyContent="space-between">
-            <Box flexDirection="row" gap={1}>
-              {heading('prs', 'Pull requests')}
-              <Text dimColor>
-                {sectionOpen('prs')
-                  ? `${now.prs.length} open`
-                  : prCountsText(now.prs)}
-              </Text>
-            </Box>
-            {!arming && (
-              <Button key="close-out-all" dimColor hotkey="m" onPress={arm(true)}>
-                {`⇶ Merge all ${now.prs.length}…`}
-              </Button>
-            )}
-          </Box>
-        )}
-        {confirm && (
-          <Box flexDirection="row" gap={1} flexWrap="wrap">
-            <Text color="warning">{`Finish and merge all ${now.prs.length} open ${now.prs.length === 1 ? 'PR' : 'PRs'}?`}</Text>
-            <Button key="close-out-all-yes" variant="primary" hotkey="y" onPress={() => void closeOutAll(now.prs)}>
-              Yes, merge them
-            </Button>
-            <Button key="close-out-all-no" dimColor hotkey="n" onPress={arm(false)}>
-              Cancel
-            </Button>
-          </Box>
-        )}
+        {prsHeading(els, { prs: now.prs, open: sectionOpen('prs'), arming }, prsHandlers)}
+        {confirm && mergeConfirm(els, { prs: now.prs }, prsHandlers)}
         {sectionOpen('prs') && now.prs.map(prRow)}
-        {watched.map(run => (
-          <Box key={`run-${run.id}`} flexDirection="row" gap={1}>
-            <Text color={run.failed > 0 ? 'error' : 'warning'}>◷</Text>
-            <Text>
-              <Text bold>{fit(run.workflow, 28)}</Text>
-              <Text dimColor>{` on ${fit(run.branch, 28)}`}</Text>
-            </Text>
-            {run.total > 0 && (
-              <Text>
-                {meter(run.done, run.total, 8)}
-                <Text dimColor>{` ${run.done}/${run.total} jobs${run.failed > 0 ? `, ${run.failed} failed` : ''}`}</Text>
-              </Text>
-            )}
-            {run.running && <Text dimColor>{fit(`${run.running}${run.step ? ` › ${run.step}` : ''}`, Math.max(12, width - 76))}</Text>}
-          </Box>
-        ))}
+        {watched.map(run => runRow(els, { run, width }))}
 
-        {(now.milestones ?? []).length > 0 && (
-          // The open milestones, release scope: how far along each is, and when it is due.
-          <Box key="milestones" flexDirection="column">
-            <Box flexDirection="row" gap={1}>
-              {heading('milestones', 'Milestones')}
-              <Text dimColor>
-                {sectionOpen('milestones')
-                  ? `${(now.milestones ?? []).length} open`
-                  : fit((now.milestones ?? []).map(one => `${one.title} ${one.closed}/${one.open + one.closed}`).join(' · '), Math.max(12, width - 16))}
-              </Text>
-            </Box>
-            {(sectionOpen('milestones') ? (now.milestones ?? []) : []).map(one => {
-              const total = one.open + one.closed
-              const due = milestoneDue(one, new Date(clock).toISOString().slice(0, 10))
-              return (
-                <Box key={`milestone-${one.number}`} flexDirection="row" justifyContent="space-between">
-                  <Text>{fit(one.title, Math.max(12, width - 34))}</Text>
-                  <Box flexDirection="row" gap={1}>
-                    {meter(one.closed, total, 8)}
-                    <Text dimColor>{`${one.closed}/${total}`}</Text>
-                    <Text color={due.late ? 'error' : undefined} dimColor={!due.late}>
-                      {due.text}
-                    </Text>
-                  </Box>
-                </Box>
-              )
-            })}
-          </Box>
-        )}
+        {milestonesView(els, { milestones: now.milestones ?? [], open: sectionOpen('milestones'), width, clock }, { fold })}
 
         {issuesHeading}
 
-        {unknownTerms.length > 0 && tab.view && project && (
-          // A term of the view's filter the board can't apply is left out, so the tab may hold more than the view.
-          <Box key="view-note" flexDirection="row" gap={1} flexWrap="wrap">
-            <Text color="warning" wrap="wrap">{`The board can't apply ${unknownTerms.map(term => `\`${term}\``).join(', ')} from this view's filter, so it may list more than GitHub does.`}</Text>
-            <Link href={viewUrl(project, tab.view)} label="↗ Open the view" />
-          </Box>
-        )}
+        {viewNote(els, { unknownTerms, view: tab.view, project })}
 
-        {shownTab === 'closed' && (
-          // The issues closed lately, newest change first, each with how it closed: GitHub's, not the board's copy.
-          <Box key="closed-list" flexDirection="column">
-            {!closedNow && <Text dimColor>◌ Reading the issues closed lately…</Text>}
-            {closedNow?.failed && <Text color="error" wrap="wrap">{`Couldn't read closed issues: ${closedNow.failed}`}</Text>}
-            {closedNow && !closedNow.failed && closedNow.items.length === 0 && <Text dimColor>Nothing closed yet.</Text>}
-            {(closedNow?.items ?? []).map(one => (
-              <Box key={`closed-${one.number}`} flexDirection="row" justifyContent="space-between">
-                <Text>
-                  <Text color={one.reason === 'not_planned' ? 'inactive' : 'success'}>{one.reason === 'not_planned' ? '⊘ ' : '✓ '}</Text>
-                  <Text dimColor>{`#${one.number} `}</Text>
-                  {fit(one.title, Math.max(12, width - 30))}
-                </Text>
-                <Text dimColor>{standing(one, clock).replace(/^closed /, '')}</Text>
-              </Box>
-            ))}
-          </Box>
-        )}
-        {shownTab !== 'closed' && shown.length === 0 && (
-          <Box flexDirection="column" alignItems="center">
-            <Text color="success">✓</Text>
-            <Text dimColor>{typed.trim() ? `Nothing under ${filterName} matches “${typed.trim()}”.` : `Nothing open under ${filterName}.`}</Text>
-          </Box>
-        )}
-        {triaging && (
-          <Box flexDirection="row" gap={1} flexWrap="wrap">
-            <Text color={triaged.asking ? 'warning' : undefined} dimColor={!triaged.asking}>
-              {triaged.asking ? '◌ Claude is suggesting a Priority, area and Status for each…' : '✦ Claude suggests a Priority, area and Status for each. Change any, then accept.'}
-            </Text>
-            {!triaged.asking && shown.length > 0 && (
-              <Button key="triage-again" dimColor onPress={() => void suggestAgain($)}>
-                Suggest again
-              </Button>
-            )}
-          </Box>
-        )}
-        {triaging && triaged.failed && <Text color="error" wrap="wrap">{`Couldn't get suggestions: ${triaged.failed}`}</Text>}
-        {triaging &&
-          shown.map(issue => (
-            <Box key={`triage-entry-${issue.number}`} flexDirection="column">
-              {isInbox(issue, project) ? triageRow(issue) : issueRow(issue)}
-              {open === issue.number && issueCard(issue, single)}
-            </Box>
-          ))}
-        {groups.map(group => {
-          const count = String(group.issues.length)
-          const shut = group.folded && !opened.includes(group.key)
-          // A folded group, such as Backlog, is a heading the person opens; open, its heading folds it again.
-          const fold = () => void update($, unfolded, list => (list.includes(group.key) ? list.filter(one => one !== group.key) : [...list, group.key]))
-          return (
-            <Box key={`group-${group.key}`} flexDirection="column">
-              {group.folded ? (
-                <Box flexDirection="row" gap={1}>
-                  <Button key={`fold-${group.key}`} plain hover={{ bold: true }} onPress={fold}>
-                    {`${shut ? '▸' : '▾'} ${group.title}`}
-                  </Button>
-                  <Text dimColor>{shut ? `${count} folded` : count}</Text>
-                </Box>
-              ) : group.epic ? (
-                // An epic: how many of its sub-issues are closed, as a bar, and Next, which starts the first ready one.
-                (() => {
-                  const epic = group.epic
-                  const next = nextOf(now.issues, epic.number, project, marks)
-                  const closed = `${epic.completed}/${epic.total} closed`
-                  return (
-                    <Box flexDirection="row" justifyContent="space-between" gap={1}>
-                      <Text wrap="truncate-end">
-                        <Text bold color="claude">
-                          {fit(group.title, Math.max(12, width - 12 - cells(closed) - (next ? 10 : 0) - 5 - count.length))}
-                        </Text>
-                        <Text dimColor>{` ${count}`}</Text>
-                      </Text>
-                      <Box flexDirection="row" gap={1} flexShrink={0}>
-                        {meter(epic.completed, epic.total, 10)}
-                        <Text dimColor>{closed}</Text>
-                        {next && (
-                          <Button key={`next-${epic.number}`} dimColor hover={{ dimColor: false, color: 'claude' }} onPress={() => void start(next)}>
-                            ▶ Next
-                          </Button>
-                        )}
-                      </Box>
-                    </Box>
-                  )
-                })()
-              ) : (
-                // One short label with its count, such as `In Progress 1`.
-                <Box flexDirection="row" gap={1}>
-                  <Text bold color="claude">
-                    {fit(group.title, Math.max(12, width - count.length - 1))}
-                  </Text>
-                  <Text dimColor>{count}</Text>
-                </Box>
-              )}
-              {!shut &&
-                group.issues.map(issue => (
-                  <Box flexDirection="column">
-                    {issueRow(issue)}
-                    {open === issue.number && issueCard(issue, single)}
-                  </Box>
-                ))}
-            </Box>
-          )
-        })}
+        {shownTab === 'closed' && closedList(els, { closedNow, width, clock })}
+        {shownTab !== 'closed' && shown.length === 0 && emptyNote(els, { filterName: tab.name, typed })}
+        {triaging && triageNote(els, { triaged, any: shown.length > 0 }, triageHandlers)}
+        {triaging && triageFailed(els, { triaged })}
+        {triaging && triageEntries(els, { issues: shown, all: now.issues, triaged, project, width, clock, open, single }, triageHandlers)}
+        {groupList(els, { groups, opened, issues: now.issues, project, marks, width, open, single }, groupHandlers)}
 
-        <Box>
-          <Text dimColor>
-            {
-              // The keys for what shows, most useful first, cut to the pane's width rather than wrapped.
-              hintFit(
-                confirm
-                  ? ['y merge every open PR', 'n cancel']
-                  : single
-                      ? ['s start', 'e edit first', 'x or esc collapse', 'press a box to tick it', 'r refresh']
-                      : [
-                          '⏎ open an issue',
-                          filterKeys(filtersFor(project)),
-                          'r refresh',
-                          ...(now.prs.length > 0 ? ['m merge all PRs'] : []),
-                        ],
-                width,
-              )
-            }
-          </Text>
-        </Box>
+        {hint(els, { confirm, single, tabs, prs: now.prs.length, width })}
       </Box>
     )
   })

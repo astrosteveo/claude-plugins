@@ -55,10 +55,15 @@ entries the same.
     `setup.ts`, `stats.ts` and `tools.ts`.
 - Drawing moved out of `register.tsx` lives in `hooks/views/`, one `.tsx` file per piece. In issue-board these are
   `parts.tsx` (`partsOf`, the small parts rows are built from), `issue-row.tsx`, `pr-row.tsx`, `peek.tsx`,
-  `header.tsx` (the pane's header and trends), `tabs.tsx` (the Issues heading) and `band.tsx` (the band's lines). A
-  view is `(elements, data, handlers) => tree`: the surface's element table, plain data, and handlers. Views take
-  handlers rather than `$`. A handler that calls `$` is built in `register.tsx`, inside the hook that draws, and passed
-  in.
+  `header.tsx` (the pane's header and trends), `tabs.tsx` (the Issues heading), `card.tsx` (the opened issue's card,
+  its field buttons, Start buttons and acceptance boxes), `editor.tsx` (the card's editor), `comments.tsx` (the card's
+  comments), `plan.tsx` (the project_plan review), `setup.tsx` (setup, the access problems, the adoption ask, and the
+  Status and label pickers), `sections.tsx` (the project's update, pull requests and Merge all, CI runs, milestones),
+  `list.tsx` (the view note, Closed, the groups with their epic meters, the key hints), `triage.tsx` (the Inbox's
+  rows) and `band.tsx` (the band's lines). A view is `(elements, data, handlers) => tree`: the surface's element
+  table, plain data, and handlers. Views take handlers rather than `$`. A handler that calls `$` is built in
+  `register.tsx`, inside the hook that draws, and passed in; what it does at length is a `$` function there. The
+  pane's `ui.render` hook only reads atoms, builds handlers and puts the views together.
 - `types/index.d.ts` is the plugin's state contract: every `$.state` atom (`atom({ plugin, key })`) is declared there
   under the plugin's name, and `claude plugin validate` holds the module's keys to it. Add a key there when adding an
   atom. Shared value types (`Issue`, `Board`, `Worker`…) live there too.
