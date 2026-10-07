@@ -164,9 +164,9 @@ export const commentsText = (comments: Comment[], total: number, now: number): s
   return [
     left > 0 ? `Comments (the latest ${shown.length} of ${total}; ${left} earlier left out):` : `Comments (${total}):`,
     ...shown.map(one => {
-      const when = one.at ? ago(one.at, now) : ''
+      const when = one.at ? agoText(one.at, now) : ''
       const text = one.body.length > TOOL_COMMENT_TEXT ? `${one.body.slice(0, TOOL_COMMENT_TEXT - 1)}…` : one.body
-      return `— @${one.author}${when ? `, ${when === 'now' ? 'just now' : `${when} ago`}` : ''}:\n${text.replace(/^/gm, '  ')}`
+      return `— @${one.author}${when ? `, ${when}` : ''}:\n${text.replace(/^/gm, '  ')}`
     }),
   ].join('\n')
 }
@@ -802,9 +802,9 @@ const updateOf = (raw: RawUpdate | undefined): StatusUpdate | null =>
 
 // A status update in a line: how the project stands, the note's first line, and when.
 export const updateLine = (update: StatusUpdate, now: number): string => {
-  const when = ago(update.at, now)
+  const when = agoText(update.at, now)
   const note = update.body.split('\n')[0]?.trim() ?? ''
-  return [update.status, note, update.target ? `target ${update.target}` : '', when === 'now' ? 'just now' : when ? `${when} ago` : ''].filter(Boolean).join(' · ')
+  return [update.status, note, update.target ? `target ${update.target}` : '', when].filter(Boolean).join(' · ')
 }
 
 // Where the next page of issues starts, or null after the last.
@@ -973,9 +973,10 @@ export const clockTime = (at: number): string => {
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
 }
 
-// How long ago, the way GitHub's lists say it: now, 5m, 3h, 2d, 6w, 1y.
-export const ago = (iso: string, now: number): string => {
-  const at = Date.parse(iso)
+// How long ago, the way GitHub's lists say it: now, 5m, 3h, 2d, 6w, 1y. It takes a time in milliseconds or an ISO
+// string, and gives '' for one it can't read.
+export const ago = (when: number | string, now: number): string => {
+  const at = typeof when === 'number' ? when : Date.parse(when)
   if (Number.isNaN(at)) return ''
   const minutes = Math.max(0, Math.floor((now - at) / 60_000))
   if (minutes < 1) return 'now'
@@ -986,6 +987,13 @@ export const ago = (iso: string, now: number): string => {
   if (days < 14) return `${days}d`
   if (days < 365) return `${Math.floor(days / 7)}w`
   return `${Math.floor(days / 365)}y`
+}
+
+// How long ago as words for a sentence: "just now" under a minute, else "5m ago". Bare `ago` says "now" then, which
+// reads wrong with " ago" after it. Gives '' for a time it can't read.
+export const agoText = (when: number | string, now: number): string => {
+  const age = ago(when, now)
+  return age === 'now' ? 'just now' : age ? `${age} ago` : ''
 }
 
 // Characters a terminal draws two cells wide: emoji shown as emoji, such as ⛔, and East Asian wide characters.
@@ -1284,8 +1292,8 @@ export const foundOf = (items: unknown[]): Found[] =>
 // How an issue stands, in a few words: open, or closed, how and when.
 export const standing = (found: Found, now: number): string => {
   if (found.state === 'open') return 'open'
-  const when = found.closedAt ? ago(found.closedAt, now) : ''
-  return `closed${found.reason ? ` as ${found.reason.replace('_', ' ')}` : ''}${when ? ` ${when === 'now' ? 'just now' : `${when} ago`}` : ''}`
+  const when = found.closedAt ? agoText(found.closedAt, now) : ''
+  return `closed${found.reason ? ` as ${found.reason.replace('_', ' ')}` : ''}${when ? ` ${when}` : ''}`
 }
 
 // One line a found issue, as the issues tool lists it.
@@ -1328,9 +1336,8 @@ export const boardText = (board: Board, issues: Issue[], label: string, clock: n
     return `#${issue.number} ${issue.title}${parts.length > 0 ? ` [${parts.join('; ')}]` : ''}`
   }
   const listed = issues.slice(0, LISTED)
-  const age = ago(new Date(board.fetchedAt).toISOString(), clock)
   return [
-    `${board.repo}: ${board.issues.length} open issues, ${board.prs.length} open pull requests (synced ${age === 'now' || age === '' ? 'just now' : `${age} ago`}).`,
+    `${board.repo}: ${board.issues.length} open issues, ${board.prs.length} open pull requests (synced ${agoText(board.fetchedAt, clock)}).`,
     '',
     'Pull requests:',
     ...(board.prs.length > 0 ? board.prs.map(prText) : ['none']),
@@ -1878,8 +1885,8 @@ export const TOOLS: { name: string; what: string }[] = [
   { name: 'issue_create', what: 'files an issue, or an epic with its sub-issues, into the project with a Status, Priority or fields' },
   { name: 'milestone', what: 'makes or changes a milestone' },
   { name: 'project_status', what: "reads or posts the project's status update" },
-  { name: 'project_archive', what: 'archives Done items in the project' },
-  { name: 'project_plan', what: 'proposes many issue changes as one plan, which you approve once or apply in part from its card in the pane' },
+  { name: 'project_archive', what: "archives the project's Done items closed before a date, or one issue's item" },
+  { name: 'project_plan', what: 'proposes many issue, label and view changes as one plan, which you approve once or apply in part from its card in the pane' },
   { name: 'project_adopt', what: 'lets the board write to a project, or releases it, when you ask, after a permission prompt' },
 ]
 
@@ -1904,7 +1911,7 @@ export const helpText = (filters: { hotkey: string; name: string }[], off: { fea
     '- Change opens the editor: title, boxes, labels, assignee, epic, milestone, type, project fields, and closing.',
     '',
     'Under the prompt',
-    `- The band above the prompt shows what needs you: failing CI, news on your issue, pull requests to merge, issues captured to the Inbox.${off.some(one => one.feature === 'The band above the prompt') ? ' (off)' : ''}`,
+    `- The band above the prompt shows what needs you: setup problems, failing CI, pull requests to merge, news on your issue, boxes to tick, a plan to approve, notes on epics, a project to adopt, the board's guesses at Status names and labels, and issues captured to the Inbox.${off.some(one => one.feature === 'The band above the prompt') ? ' (off)' : ''}`,
     `- The hint line sums up what is open.${off.some(one => one.feature === 'The summary under the prompt') ? ' (off)' : ''}`,
     `- # in the prompt box offers the board's issues and pull requests.${off.some(one => one.feature === HASH_FEATURE) ? ' (off)' : ''}`,
     '',
@@ -2093,8 +2100,7 @@ const MENTION_TEXT = 2000
 // What a prompt that names `#number` carries for Claude, unseen by the person: the board's copy of that issue, with the
 // pull requests for it and its text, or of that pull request. Null when the board has neither open.
 export const mentionText = (board: Board, number: number, clock: number): string | null => {
-  const age = ago(new Date(board.fetchedAt).toISOString(), clock)
-  const as = `the issue board's copy, synced ${age === 'now' || age === '' ? 'just now' : `${age} ago`}`
+  const as = `the issue board's copy, synced ${agoText(board.fetchedAt, clock)}`
   const issue = board.issues.find(one => one.number === number)
   if (issue) {
     const prs = prsFor(issue, board.prs)
