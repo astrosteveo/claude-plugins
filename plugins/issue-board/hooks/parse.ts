@@ -1,5 +1,6 @@
 import type { ModelTextBlock, ThemeKey } from 'claude-code'
-import type { Alert, Board, BoxTask, BuiltInFilter, Check, Ci, Comment, Draft, EpicNote, Field, Filter, Found, GroupBy, Issue, Known, Label, Milestone, ProjectField, ProjectView, StatusUpdate, Project, PullRequest, Role, RunWatch, Suggestion, Worker, Working } from '../types'
+import type { Alert, Board, BoxTask, BuiltInFilter, Check, Ci, Comment, Draft, EpicNote, Field, Filter, Found, GroupBy, Issue, Known, Label, Markers, Milestone, ProjectField, ProjectView, StatusUpdate, Project, PullRequest, Role, RunWatch, Suggestion, Worker, Working } from '../types'
+import { DEFAULT_MARKERS, isBug, isBugLabel, isFuture } from './markers'
 import { ROLE_NAMES, isLater, isNow, isRole, nowCountOf, priorityRank, roleOf } from './project'
 
 type RawLabel = { name: string; color?: string }
@@ -187,32 +188,28 @@ export const issuesOf = (closing: { number: number }[], body: string): number[] 
   ...new Set([...closing.map(one => one.number), ...[...body.matchAll(REFERENCE)].map(match => Number(match[1]))]),
 ]
 
-const hasLabel = (issue: Issue, name: string): boolean => issue.labels.some(label => label.name === name)
-
-export const isBug = (issue: Issue): boolean => hasLabel(issue, 'bug')
-export const isFuture = (issue: Issue): boolean => hasLabel(issue, 'future')
-
 export const areaOf = (issue: Issue): string => {
   const label = issue.labels.find(one => one.name.startsWith('area:'))
   return label ? label.name.slice('area:'.length) : 'other'
 }
 
-// The labels worth a chip on a row: not the area it is grouped under, not bug (a badge of its own).
-export const chipsOf = (issue: Issue): Label[] => issue.labels.filter(one => !one.name.startsWith('area:') && one.name !== 'bug')
+// The labels worth a chip on a row: not the area it is grouped under, not the bug label (a badge of its own).
+export const chipsOf = (issue: Issue, markers: Markers = DEFAULT_MARKERS): Label[] => issue.labels.filter(one => !one.name.startsWith('area:') && !isBugLabel(one, markers))
 
 // A label's color as a surface draws it: GitHub's hex, or nothing for a label without one.
 export const hex = (label: Label): string | undefined => (/^[0-9a-f]{6}$/i.test(label.color) ? `#${label.color}` : undefined)
 
 // Whether the issue belongs under the filter; `viewer` is the login Mine means. With a project, Active is Now (P0 and
-// P1) and Future is Later (P2); without one they read the `future` label.
-export const matches = (filter: BuiltInFilter, issue: Issue, viewer: string | null = null, project: Project | null = null): boolean => {
+// P1) and Future is Later (P2); without one they read the repo's later label. `markers` are the bug and later labels
+// the board goes by.
+export const matches = (filter: BuiltInFilter, issue: Issue, viewer: string | null = null, project: Project | null = null, markers: Markers = DEFAULT_MARKERS): boolean => {
   switch (filter) {
     case 'active':
-      return project ? isNow(project, issue) : !isFuture(issue)
+      return project ? isNow(project, issue) : !isFuture(issue, markers)
     case 'future':
-      return project ? isLater(project, issue) : isFuture(issue)
+      return project ? isLater(project, issue) : isFuture(issue, markers)
     case 'bugs':
-      return isBug(issue)
+      return isBug(issue, markers)
     case 'mine':
       return viewer !== null && issue.assignees.includes(viewer)
     case 'all':
@@ -357,13 +354,13 @@ export const hashRows = (board: Board, token: string): HashRow[] => {
 }
 
 // Bugs first, then issues under way (some boxes ticked), then the newest.
-const rank = (issue: Issue): number => {
-  if (isBug(issue)) return 0
+const rank = (issue: Issue, markers: Markers = DEFAULT_MARKERS): number => {
+  if (isBug(issue, markers)) return 0
   const done = issue.checks.filter(check => check.done).length
   return done > 0 && done < issue.checks.length ? 1 : 2
 }
 
-export const byArea = (issues: Issue[]): [string, Issue[]][] => {
+export const byArea = (issues: Issue[], markers: Markers = DEFAULT_MARKERS): [string, Issue[]][] => {
   const groups = new Map<string, Issue[]>()
   for (const issue of issues) {
     const area = areaOf(issue)
@@ -371,7 +368,7 @@ export const byArea = (issues: Issue[]): [string, Issue[]][] => {
   }
   return [...groups.entries()]
     .sort(([a], [b]) => (a === 'other' ? 1 : b === 'other' ? -1 : a.localeCompare(b)))
-    .map(([area, list]) => [area, [...list].sort((a, b) => rank(a) - rank(b) || b.number - a.number)])
+    .map(([area, list]) => [area, [...list].sort((a, b) => rank(a, markers) - rank(b, markers) || b.number - a.number)])
 }
 
 // Whether an issue waits on another that is still open.
@@ -380,7 +377,7 @@ export const isBlocked = (issue: Issue): boolean => (issue.blockedBy ?? []).leng
 // The most pressing first: by priority when there is a project, then bugs, issues under way and the newest. With
 // `readyFirst`, as within an epic, the ones nothing blocks come before the ones that wait, and the oldest before the
 // newest: an epic's sub-issues are mostly written in the order they're meant to be done.
-export const sortIssues = (issues: Issue[], project: Project | null = null, readyFirst = false, order?: number[]): Issue[] => {
+export const sortIssues = (issues: Issue[], project: Project | null = null, readyFirst = false, order?: number[], markers: Markers = DEFAULT_MARKERS): Issue[] => {
   // GitHub's order of an epic's sub-issues settles what the board has no reason to: one it doesn't list goes last.
   const at = (issue: Issue) => {
     const index = order?.indexOf(issue.number) ?? -1
@@ -390,28 +387,29 @@ export const sortIssues = (issues: Issue[], project: Project | null = null, read
     (a, b) =>
       (readyFirst ? Number(isBlocked(a)) - Number(isBlocked(b)) : 0) ||
       priorityRank(project, a.priority) - priorityRank(project, b.priority) ||
-      rank(a) - rank(b) ||
+      rank(a, markers) - rank(b, markers) ||
       (order ? at(a) - at(b) : 0) ||
       (readyFirst ? a.number - b.number : b.number - a.number),
   )
 }
 
 // The sub-issue an epic's Next starts: the first open one nothing blocks, in the order the epic lists them.
-export const nextOf = (issues: Issue[], epic: number, project: Project | null = null): Issue | undefined =>
+export const nextOf = (issues: Issue[], epic: number, project: Project | null = null, markers: Markers = DEFAULT_MARKERS): Issue | undefined =>
   sortIssues(
     issues.filter(issue => issue.parent?.number === epic),
     project,
     true,
     issues.find(issue => issue.number === epic)?.subOrder,
+    markers,
   ).find(issue => !isBlocked(issue))
 
 // What Start on an issue starts. An epic is worked one sub-issue at a time, so Start on one starts its next ready
 // sub-issue, as Next does; null when its open sub-issues are all blocked. An epic whose sub-issues are all closed
 // starts itself, so its own open boxes can be finished. Any other issue starts itself.
-export const startTargetOf = (issues: Issue[], issue: Issue, project: Project | null = null): Issue | null => {
+export const startTargetOf = (issues: Issue[], issue: Issue, project: Project | null = null, markers: Markers = DEFAULT_MARKERS): Issue | null => {
   const subs = issue.subIssues
   if (!subs || subs.total === 0 || subs.completed >= subs.total) return issue
-  return nextOf(issues, issue.number, project) ?? null
+  return nextOf(issues, issue.number, project, markers) ?? null
 }
 
 // What Start on an epic says when every open sub-issue is blocked.
@@ -424,17 +422,17 @@ export type Group = { key: string; title: string; issues: Issue[]; folded: boole
 
 // The issues in groups: by the project's Status in the project's order, by the epic they are sub-issues of, or by
 // `area:` label. Issues that don't fit a group come last, under No status, No epic or other.
-export const groupsOf = (issues: Issue[], by: GroupBy, project: Project | null = null, field: string | null = null): Group[] => {
-  if (by === 'view' && field) return groupsByField(issues, field, project)
+export const groupsOf = (issues: Issue[], by: GroupBy, project: Project | null = null, field: string | null = null, markers: Markers = DEFAULT_MARKERS): Group[] => {
+  if (by === 'view' && field) return groupsByField(issues, field, project, markers)
   if (by === 'status' && project) {
     const named = (project.status?.options ?? []).map(option => ({
       key: `status:${option.name}`,
       title: option.name,
-      issues: sortIssues(issues.filter(issue => issue.status === option.name), project),
+      issues: sortIssues(issues.filter(issue => issue.status === option.name), project, false, undefined, markers),
       folded: isRole(project, option.name, 'backlog'),
     }))
     const known = new Set(named.map(group => group.title))
-    const rest = sortIssues(issues.filter(issue => !issue.status || !known.has(issue.status)), project)
+    const rest = sortIssues(issues.filter(issue => !issue.status || !known.has(issue.status)), project, false, undefined, markers)
     return [...named, { key: 'status:none', title: 'No status', issues: rest, folded: false }].filter(group => group.issues.length > 0)
   }
   if (by === 'epic') {
@@ -450,20 +448,21 @@ export const groupsOf = (issues: Issue[], by: GroupBy, project: Project | null =
           project,
           true,
           issues.find(issue => issue.number === parent.number)?.subOrder,
+          markers,
         ),
         folded: false,
         epic: { number: parent.number, total: parent.total, completed: parent.completed },
       }))
     // An open epic is its group's heading, so it isn't listed again under No epic.
-    const rest = sortIssues(issues.filter(issue => !issue.parent && !parents.has(issue.number)), project)
+    const rest = sortIssues(issues.filter(issue => !issue.parent && !parents.has(issue.number)), project, false, undefined, markers)
     return [...epics, { key: 'epic:none', title: 'No epic', issues: rest, folded: false }].filter(group => group.issues.length > 0)
   }
-  return byArea(issues).map(([area, list]) => ({ key: `area:${area}`, title: area, issues: project ? sortIssues(list, project) : list, folded: false }))
+  return byArea(issues, markers).map(([area, list]) => ({ key: `area:${area}`, title: area, issues: project ? sortIssues(list, project, false, undefined, markers) : list, folded: false }))
 }
 
 // The issues grouped by a field a project view groups by, such as Area or Sprint: the field's options in the project's
 // order, then any other value an issue has, then the issues with none.
-const groupsByField = (issues: Issue[], name: string, project: Project | null): Group[] => {
+const groupsByField = (issues: Issue[], name: string, project: Project | null, markers: Markers): Group[] => {
   const options = projectFieldOf(name, project)?.options?.map(option => option.name) ?? []
   const valueOf = (issue: Issue) => fieldValuesOf(issue, name, project)[0] ?? ''
   const others = [...new Set(issues.map(valueOf).filter(value => value !== '' && !options.some(option => same(option, value))))].sort()
@@ -473,12 +472,18 @@ const groupsByField = (issues: Issue[], name: string, project: Project | null): 
     issues: sortIssues(
       issues.filter(issue => same(valueOf(issue), value)),
       project,
+      false,
+      undefined,
+      markers,
     ),
     folded: false,
   }))
   const rest = sortIssues(
     issues.filter(issue => valueOf(issue) === ''),
     project,
+    false,
+    undefined,
+    markers,
   )
   return [...named, { key: `field:${name}:none`, title: `No ${name}`, issues: rest, folded: false }].filter(group => group.issues.length > 0)
 }
@@ -689,10 +694,10 @@ export const tabsOf = (project: Project | null | undefined, source: FilterSource
 export const tabOf = (tabs: Tab[], chosen: Filter): Tab => tabs.find(tab => tab.id === chosen) ?? tabs[0] ?? { id: 'all', name: 'All', hotkey: '5' }
 
 // Whether an issue belongs under a tab: its view's filter, or its built-in filter. Made once a tab, then used per issue.
-export const tabTest = (tab: Tab, project: Project | null | undefined): IssueTest => {
+export const tabTest = (tab: Tab, project: Project | null | undefined, markers: Markers = DEFAULT_MARKERS): IssueTest => {
   if (tab.view) return viewMatchOf(tab.view.filter, project).test
   const id = tab.id as BuiltInFilter
-  return (issue, viewer) => matches(id, issue, viewer, project ?? null)
+  return (issue, viewer) => matches(id, issue, viewer, project ?? null, markers)
 }
 
 // How a view's tab groups its issues: by Status or by epic as the pane does, by another field the board read, or not
@@ -772,7 +777,7 @@ type RawGraphIssue = {
   comments?: { totalCount?: number } | null
   issueType?: { name: string } | null
 }
-type RawPage = { data?: { repository?: { issueTypes?: RawNodes<{ name: string }>; projectsV2?: RawNodes<RawProject>; issues?: { pageInfo?: { hasNextPage: boolean; endCursor: string | null }; nodes?: (RawGraphIssue | null)[] } } } }
+type RawPage = { data?: { repository?: { issueTypes?: RawNodes<{ name: string }>; labels?: RawNodes<{ name: string }>; projectsV2?: RawNodes<RawProject>; issues?: { pageInfo?: { hasNextPage: boolean; endCursor: string | null }; nodes?: (RawGraphIssue | null)[] } } } }
 
 const nodesOf = <T>(list: RawNodes<T>): T[] => (list?.nodes ?? []).filter((one): one is T => one !== null && one !== undefined)
 
@@ -805,7 +810,11 @@ export const nextPageOf = (json: string): string | null => {
 // The issues of every page, and the repo's project, read from the first page: the one `/issues setup` saved when it's
 // still linked and open, else the first open one linked to the repo. `fields` are the extra field values the query
 // asked each item for, in its order.
-export const parseGraph = (pages: string[], preferred?: string, fields: readonly string[] = []): { issues: Issue[]; project: Project | null; types: string[] } => {
+export const parseGraph = (
+  pages: string[],
+  preferred?: string,
+  fields: readonly string[] = [],
+): { issues: Issue[]; project: Project | null; types: string[]; labels?: string[] } => {
   const parsed = pages.map(page => JSON.parse(page) as RawPage)
   const open = nodesOf(parsed[0]?.data?.repository?.projectsV2).filter(one => !one.closed)
   const linked = open.find(one => one.id === preferred) ?? open[0]
@@ -824,8 +833,12 @@ export const parseGraph = (pages: string[], preferred?: string, fields: readonly
       }
     : null
   const issues = parsed.flatMap(page => (page.data?.repository?.issues?.nodes ?? []).filter((one): one is RawGraphIssue => one !== null))
+  // The repo's labels, for the Bugs and Later guess; left out when the answer has none, so the guess goes by the labels
+  // the issues carry.
+  const labels = parsed[0]?.data?.repository?.labels ? nodesOf(parsed[0].data.repository.labels).map(one => one.name) : undefined
   return {
     types: nodesOf(parsed[0]?.data?.repository?.issueTypes).map(one => one.name),
+    ...(labels ? { labels } : {}),
     project,
     issues: issues.map(raw => {
       const item = project ? nodesOf(raw.projectItems).find(one => one.project?.id === project.id) : undefined
@@ -1015,8 +1028,8 @@ export const rowRoom = (
 export const pad = (text: string, width: number): string => `${text}${' '.repeat(Math.max(0, width - cells(text)))}`
 
 // The board in a line, such as `35 issues · 1 bug · PR #335✓`; undefined with nothing open, so nothing shows.
-export const summary = (issues: Issue[], prs: PullRequest[]): string | undefined => {
-  const bugs = issues.filter(isBug).length
+export const summary = (issues: Issue[], prs: PullRequest[], markers: Markers = DEFAULT_MARKERS): string | undefined => {
+  const bugs = issues.filter(issue => isBug(issue, markers)).length
   const parts: string[] = []
   if (issues.length > 0) parts.push(`${issues.length} issue${issues.length === 1 ? '' : 's'}`)
   if (bugs > 0) parts.push(`${bugs} bug${bugs === 1 ? '' : 's'}`)
@@ -1735,6 +1748,7 @@ export const SUBCOMMANDS: { name: string; what: string }[] = [
   { name: 'new epic <what>', what: 'drafts an epic and its sub-issues' },
   { name: 'setup', what: 'links or makes a project with Status and Priority, and says what it would change first' },
   { name: 'statuses', what: "picks which of the project's Status options plays each part, saved here and not on GitHub" },
+  { name: 'labels', what: 'picks the label or issue type Bugs goes by, and the label Later goes by without a project, saved here and not on GitHub' },
   { name: 'check', what: 'says what the board is missing, such as a gh permission, and how to fix it' },
   { name: 'stats', what: "counts the board's GitHub calls, the GraphQL points they spent, and the text it added to Claude's context" },
   { name: 'help', what: 'this list' },

@@ -1,10 +1,11 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentSpawnResult, Caught, EngineInterface, HookFailure, ModelForkResult, Register, ThemeKey, Timer, ToolCallResult, UiCopyArgs } from 'claude-code'
 
-import type { Adopted, Adoption, Alert, Board, BoxTask, BuiltInFilter, Check, Comment, Draft, DraftEdit, EpicNote, GroupBy, Issue, Known, Launch, Problem, Project, ProjectField, Role, Roles, StatusPicks, StatusUpdate, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
+import type { Adopted, Adoption, Alert, Board, BoxTask, BuiltInFilter, Check, Comment, Draft, DraftEdit, EpicNote, GroupBy, Issue, Known, Launch, Markers, Problem, Project, ProjectField, Role, Roles, StatusPicks, StatusUpdate, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
 import type { Ended, FilterSource, IssueChanges, NewIssue, PrRule, StartMode, Switches, Tab } from './parse'
 import type { Linked } from './project'
 import { authOf, problemsOf, problemsText, repoOf } from './access'
+import { isBug, markerAskOf, markerKey, markerOptionsOf, markerText, markersOf } from './markers'
 import type { Cause, ContextSource, Tally } from './stats'
 import { countCall, countContext, countPoints, kindOf, minus, newStats, statsText } from './stats'
 import {
@@ -107,7 +108,6 @@ import {
   handoffPrompt,
   hashRows,
   hex,
-  isBug,
   isInbox,
   issueOfBranch,
   knownOf,
@@ -401,6 +401,12 @@ const adoption = atom({ plugin: 'issue-board', key: 'adoption' } as const, { ado
 // `/issues statuses` while it shows, and the guessed Status mappings the person answered, as the store last said.
 const statusPicks = atom({ plugin: 'issue-board', key: 'statusPicks' } as const, null)
 const guessSeen = atom({ plugin: 'issue-board', key: 'guessSeen' } as const, [])
+// The Bugs and Later markers the person chose, as the store last said, and `/issues labels` while it shows.
+const chosenMarkers = atom({ plugin: 'issue-board', key: 'markers' } as const, {})
+const markerPicks = atom({ plugin: 'issue-board', key: 'markerPicks' } as const, null)
+
+// The bug and later labels the board goes by: the person's choice, else the repo's own names, else `bug` and `future`.
+const markersNow = async ($: EngineInterface, now: Board | null | undefined): Promise<Markers> => markersOf(now, await read($, chosenMarkers))
 
 // Whether a tool's calls may be allowed without asking: an organization can set a ceiling, the most permissive verdict
 // a call of the tool may reach. None set, they may.
@@ -763,9 +769,10 @@ type Saved = {
 // The person's choices for the repo that grant nothing, kept apart from the shared entry so a board from before they
 // existed can't erase them when it saves: `declined` the projects whose prompt the person turned down, `statuses` the
 // Status mapping /issues statuses or Looks right saved, by project id, and `guessSeen` the guessed mappings the person
-// answered. `adoptionMoved` says an adoption an earlier board kept in the store was moved into the setting, or that a
-// later choice made it moot, so a release isn't undone by moving it again.
-type Choices = Pick<Saved, 'declined' | 'statuses' | 'guessSeen'> & { adoptionMoved?: true }
+// answered (the Bugs and Later guesses among them). `markers` are the Bugs and Later labels /issues labels or Looks
+// right saved. `adoptionMoved` says an adoption an earlier board kept in the store was moved into the setting, or that
+// a later choice made it moot, so a release isn't undone by moving it again.
+type Choices = Pick<Saved, 'declined' | 'statuses' | 'guessSeen'> & { markers?: Partial<Markers>; adoptionMoved?: true }
 const CHOICES = ['declined', 'statuses', 'guessSeen'] as const
 // The fields an earlier board kept in the shared entry that this one keeps elsewhere.
 const MOVED = ['adopted', ...CHOICES] as const
@@ -816,7 +823,7 @@ const choicesOf = async ($: EngineInterface, shared: Partial<Saved>): Promise<Ch
 
 // What the board saved for this repo, as a whole: the shared entry, with the person's choices from their own key in
 // place of any copies in it. Empty when nothing is, or the store can't be read.
-const savedAll = async ($: EngineInterface): Promise<Partial<Saved>> => {
+const savedAll = async ($: EngineInterface): Promise<Partial<Saved> & Choices> => {
   try {
     const shared = await sharedOf($)
     const rest: Partial<Saved> = { ...shared }
@@ -903,6 +910,8 @@ const loadAdoption = async ($: EngineInterface): Promise<void> => {
   if (JSON.stringify(was.adopted) !== JSON.stringify(next.adopted) || was.declined.join() !== next.declined.join()) await update($, adoption, () => next)
   const seen = saved.guessSeen ?? []
   if ((await read($, guessSeen)).join() !== seen.join()) await update($, guessSeen, () => seen)
+  const marks = saved.markers ?? {}
+  if (JSON.stringify(await read($, chosenMarkers)) !== JSON.stringify(marks)) await update($, chosenMarkers, () => marks)
 }
 
 // Changes the person's choices: turning a prompt down, a Status mapping, an answered guess. It reads the choices key just
@@ -1062,6 +1071,46 @@ const saveStatuses = async ($: EngineInterface): Promise<void> => {
   }
 }
 
+// Saves the Bugs and Later markers the person chose, in the store only: nothing goes to GitHub. The board goes by them at
+// once, in this session and the next.
+const saveMarkers = async ($: EngineInterface, chosen: Partial<Markers>): Promise<void> => {
+  await changeChoices($, was => ({ ...was, markers: { ...(was.markers ?? {}), ...chosen } }))
+}
+
+// Looks right, on the band's Bugs and Later guess: saved, so it isn't a guess any more.
+const confirmMarkers = async ($: EngineInterface, ask: Partial<Markers>): Promise<void> => {
+  try {
+    await saveMarkers($, ask)
+    await seeGuess($, markerKey(ask))
+    $.ui.toast('Saved which labels Bugs and Later go by. Change them with /issues labels.')
+  } catch (cause) {
+    $.ui.toast(`Couldn't save which labels Bugs and Later go by: ${messageOf(cause)}`)
+  }
+}
+
+// `/issues labels`, and Change on the band's guess: which label or issue type Bugs goes by, and without a project which
+// label Later does, at the top of the pane, starting from what the board goes by now.
+const openMarkers = async ($: EngineInterface): Promise<void> => {
+  if ((await read($, board)) === null) await refresh($)
+  const now = await read($, board)
+  const picks = await markersNow($, now)
+  await update($, markerPicks, () => ({ ...markerOptionsOf(now, picks), later: !now?.project, picks }))
+  await $.ui.open(OPEN)
+}
+
+// Save, in /issues labels.
+const saveMarkerPicks = async ($: EngineInterface): Promise<void> => {
+  const shown = await read($, markerPicks)
+  if (!shown) return
+  try {
+    await saveMarkers($, shown.later ? shown.picks : { bug: shown.picks.bug })
+    await update($, markerPicks, () => null)
+    $.ui.toast('Saved which labels Bugs and Later go by. Nothing changed on GitHub.')
+  } catch (cause) {
+    $.ui.toast(`Couldn't save which labels Bugs and Later go by: ${messageOf(cause)}`)
+  }
+}
+
 // Releases the adopted project, and has setup, when it shows, offer to adopt it once more. Release in setup and the
 // project_adopt tool both come here.
 const releaseNow = async ($: EngineInterface, project: Adopted): Promise<void> => {
@@ -1171,13 +1220,13 @@ const PAGES = 3
 let projectRefusal: string | undefined
 
 // The open issues over GraphQL, up to 300, with the repo's project when gh may read it.
-const fetchIssues = async ($: EngineInterface, nameWithOwner: string): Promise<{ issues: Issue[]; project: Project | null; types: string[] }> => {
+const fetchIssues = async ($: EngineInterface, nameWithOwner: string): Promise<{ issues: Issue[]; project: Project | null; types: string[]; labels?: string[] }> => {
   const [owner = '', name = ''] = nameWithOwner.split('/')
   const kept = await savedAll($)
   const preferred = kept.setup?.project.id
   // Another session may have adopted or released the project meanwhile; the prompt follows.
   await loadAdoption($)
-  const pull = async (withProject: boolean, fields: readonly string[] = []): Promise<{ issues: Issue[]; project: Project | null; types: string[] }> => {
+  const pull = async (withProject: boolean, fields: readonly string[] = []): Promise<{ issues: Issue[]; project: Project | null; types: string[]; labels?: string[] }> => {
     const pages: string[] = []
     let after: string | null = null
     do {
@@ -1282,7 +1331,7 @@ const readGitHub = async ($: EngineInterface, seen: boolean): Promise<void> => {
     // The weekly counts change a little a day, and reading them takes up to ten GraphQL searches: kept for an hour.
     const kept = before?.repo === repo.nameWithOwner && before.velocityAt !== undefined && (await nowOf($)) - before.velocityAt < VELOCITY_MS ? before : null
     const [graph, prs, threads, closed, merged, login, current, milestones] = await Promise.all([
-      repo.hasIssuesEnabled ? fetchIssues($, repo.nameWithOwner) : Promise.resolve({ issues: [], project: null, types: [] }),
+      repo.hasIssuesEnabled ? fetchIssues($, repo.nameWithOwner) : Promise.resolve({ issues: [], project: null, types: [], labels: undefined }),
       gh($, [
         'pr',
         'list',
@@ -1329,6 +1378,7 @@ const readGitHub = async ($: EngineInterface, seen: boolean): Promise<void> => {
       velocityAt: kept?.velocityAt ?? fetchedAt,
       milestones,
       issueTypes: graph.types,
+      ...(graph.labels ? { labels: graph.labels } : {}),
       fetchedAt,
       project: graph.project,
     }
@@ -2277,7 +2327,7 @@ const startHere = async ($: EngineInterface, number: number): Promise<string> =>
   const target = pr ? pr.issues.find(one => now?.issues.some(issue => issue.number === one)) : number
   const asked = now?.issues.find(one => one.number === target)
   if (!asked) throw new Error(pr ? `pull request #${number} names no issue open on the board` : `#${number} isn't open on the board`)
-  const issue = startTargetOf(now?.issues ?? [], asked, now?.project ?? null)
+  const issue = startTargetOf(now?.issues ?? [], asked, now?.project ?? null, await markersNow($, now))
   if (!issue) throw new Error(noReadyText(asked.number))
   const epic = issue.number !== asked.number ? `, the next ready sub-issue of epic #${asked.number}` : ''
   await track($, issue, true)
@@ -3348,6 +3398,12 @@ export const register: Register = (on, options) => {
       }
       return { text: `Which Status is which for ${project.title} shows at the top of the issues pane. Save keeps it here, and nothing changes on GitHub.` }
     }
+    if (e.args.trim() === 'labels') {
+      await openMarkers($)
+      const now = await read($, board)
+      const later = now?.project ? '' : ', and which label Later does,'
+      return { text: `Which label or issue type Bugs goes by${later} shows at the top of the issues pane. Save keeps it here, and nothing changes on GitHub.` }
+    }
     if (e.args.trim() === 'stats') return { text: statsText(stats, await nowOf($)) }
     if (e.args.trim() === 'help') {
       const project = (await read($, board))?.project
@@ -3363,7 +3419,12 @@ export const register: Register = (on, options) => {
       // A mapping found by common names, until the person answers it, with how to change it.
       const guess = guessOf(project)
       const guessed = project && guess.length > 0 && !(await read($, guessSeen)).includes(guessKey(project, guess))
-      const said = guessed ? [`The board guessed which Status is which. ${guessText(guess)}. Press Looks right in the band to keep it, or run /issues statuses to change it.`] : []
+      const markerAsk = markerAskOf((await read($, board)) ?? null, await read($, chosenMarkers))
+      const marked = Object.keys(markerAsk).length > 0 && !(await read($, guessSeen)).includes(markerKey(markerAsk))
+      const said = [
+        ...(guessed ? [`The board guessed which Status is which. ${guessText(guess)}. Press Looks right in the band to keep it, or run /issues statuses to change it.`] : []),
+        ...(marked ? [`The board guessed which labels Bugs and Later go by. ${markerText(markerAsk)}. Press Looks right in the band to keep it, or run /issues labels to change it.`] : []),
+      ]
       const withOff = (text: string) => ({ text: [text, ...(said.length > 0 ? ['', ...said] : []), ...(off.length > 0 ? ['', ...off] : [])].join('\n') })
       if (problems.length > 0) {
         const count = problems.length === 1 ? 'one problem' : `${problems.length} problems`
@@ -3385,7 +3446,7 @@ export const register: Register = (on, options) => {
       await refresh($)
       const now = await read($, board)
       return {
-        text: now ? `Refreshed: ${summary(now.issues, now.prs) ?? 'nothing open'}.` : `Couldn't refresh: ${(await read($, error)) ?? 'unknown error'}`,
+        text: now ? `Refreshed: ${summary(now.issues, now.prs, await markersNow($, now)) ?? 'nothing open'}.` : `Couldn't refresh: ${(await read($, error)) ?? 'unknown error'}`,
       }
     }
     await $.ui.open(OPEN)
@@ -3413,6 +3474,10 @@ export const register: Register = (on, options) => {
     // /issues statuses steps back first: it shows above setup, and saves nothing on the way out.
     if (await read($, statusPicks)) {
       await update($, statusPicks, () => null)
+      return { value: undefined }
+    }
+    if (await read($, markerPicks)) {
+      await update($, markerPicks, () => null)
       return { value: undefined }
     }
     // Setup showing steps back first, unless Apply is running: that keeps the pane open until it's done.
@@ -3623,10 +3688,11 @@ export const register: Register = (on, options) => {
       const who = await read($, viewer)
       const area = input.area?.replace(/^area:/, '')
       const project = now.project ?? null
+      const marks = await markersNow($, now)
       const kept = groupsOf(
         now.issues.filter(
           issue =>
-            matches(chosen, issue, who, project) &&
+            matches(chosen, issue, who, project, marks) &&
             (!area || areaOf(issue) === area) &&
             (!input.query || searched(input.query, issue)) &&
             (!input.label || issue.labels.some(label => label.name.toLowerCase() === input.label?.toLowerCase())) &&
@@ -3635,6 +3701,8 @@ export const register: Register = (on, options) => {
         ),
         project ? 'status' : 'area',
         project,
+        null,
+        marks,
       ).flatMap(group => group.issues)
       const label =
         project && (chosen === 'active' || chosen === 'future')
@@ -4168,6 +4236,63 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
+    // `/issues labels`: which label or issue type Bugs goes by, and without a project which label Later does, picked
+    // among the repo's own. Save keeps it in the store.
+    const marking = await read($, markerPicks)
+    const pickMarker = (picks: Partial<Markers>) => () => void update($, markerPicks, was => was && { ...was, picks: { ...was.picks, ...picks } })
+    const labelsCard = marking && (
+      <Box key="labels-card" flexDirection="column" borderStyle="round" borderColor="suggestion" paddingX={1} marginTop={1}>
+        <Text color="suggestion" bold>
+          ⚙ Which labels Bugs and Later go by
+        </Text>
+        <Text dimColor wrap="wrap">
+          {marking.later
+            ? 'Pick what marks a bug, and the label for Later. Save keeps it here and changes nothing on GitHub.'
+            : 'Pick what marks a bug. With a project, Later goes by Priority. Save keeps it here and changes nothing on GitHub.'}
+        </Text>
+        <Box key="labels-bug" flexDirection="row" gap={1} flexWrap="wrap">
+          <Text dimColor>Bugs</Text>
+          {marking.types.map(type => {
+            const isPick = 'type' in marking.picks.bug && marking.picks.bug.type === type
+            return (
+              <Button key={`labels-bug-type-${type}`} variant={isPick ? 'primary' : undefined} dimColor={!isPick} onPress={pickMarker({ bug: { type } })}>
+                {`${type} type`}
+              </Button>
+            )
+          })}
+          {marking.labels.map(label => {
+            const isPick = 'label' in marking.picks.bug && marking.picks.bug.label === label
+            return (
+              <Button key={`labels-bug-${label}`} variant={isPick ? 'primary' : undefined} dimColor={!isPick} onPress={pickMarker({ bug: { label } })}>
+                {label}
+              </Button>
+            )
+          })}
+        </Box>
+        {marking.later && (
+          <Box key="labels-later" flexDirection="row" gap={1} flexWrap="wrap">
+            <Text dimColor>Later</Text>
+            {marking.labels.map(label => {
+              const isPick = marking.picks.later === label
+              return (
+                <Button key={`labels-later-${label}`} variant={isPick ? 'primary' : undefined} dimColor={!isPick} onPress={pickMarker({ later: label })}>
+                  {label}
+                </Button>
+              )
+            })}
+          </Box>
+        )}
+        <Box flexDirection="row" gap={1} marginTop={1}>
+          <Button key="labels-save" variant="primary" onPress={() => void saveMarkerPicks($)}>
+            Save
+          </Button>
+          <Button key="labels-cancel" dimColor onPress={() => void update($, markerPicks, () => null)}>
+            Cancel
+          </Button>
+        </Box>
+      </Box>
+    )
+
     // `/issues setup`: the project it would use, what it would change, what only the project's settings can turn on,
     // and Apply, the one ask before anything changes. While Apply runs, each change is marked as it goes.
     const MARKS = { running: ['◌', 'warning'], done: ['✓', 'success'], failed: ['✗', 'error'], skipped: ['–', 'inactive'] } as const
@@ -4355,6 +4480,7 @@ export const register: Register = (on, options) => {
         <Box flexDirection="column">
           {header}
           {statusesCard}
+          {labelsCard}
           {setupPlan}
           {setupCard ||
             (failure ? (
@@ -4381,7 +4507,8 @@ export const register: Register = (on, options) => {
     const tabs = filtersFor(project)
     const tab = tabOf(tabs, chosen)
     const shownTab = tab.id
-    const tabTests = new Map(tabs.map(one => [one.id, tabTest(one, project)] as const))
+    const marks = await markersNow($, now)
+    const tabTests = new Map(tabs.map(one => [one.id, tabTest(one, project, marks)] as const))
     const inTab = (one: Tab, issue: Issue) => tabTests.get(one.id)?.(issue, who) ?? false
     // A view's tab groups as the view does, when the board can: Status, epic, or another field it read. The grouping
     // named for the view's field shows among the others while its tab does.
@@ -4415,7 +4542,7 @@ export const register: Register = (on, options) => {
     // One card open: its letter keys work.
     const single = open.filter(number => shown.some(issue => issue.number === number)).length === 1
     const filterName = tab.name
-    const bugs = now.issues.filter(isBug).length
+    const bugs = now.issues.filter(issue => isBug(issue, marks)).length
     const failing = now.prs.filter(pr => pr.ci === 'fail').length
     const overall = sumProgress(shown)
 
@@ -4768,8 +4895,8 @@ export const register: Register = (on, options) => {
     const issueRow = (issue: Issue) => {
       const isOpen = open.includes(issue.number)
       const step = progress(issue.checks)
-      const bug = isBug(issue)
-      const chipList = roomy ? chipsOf(issue).slice(0, 2) : []
+      const bug = isBug(issue, marks)
+      const chipList = roomy ? chipsOf(issue, marks).slice(0, 2) : []
       const age = ago(issue.updatedAt, clock)
       const count = `${step.done}/${step.total}`.padEnd(5)
       const linked = prsFor(issue, now.prs)[0]
@@ -4905,7 +5032,7 @@ export const register: Register = (on, options) => {
     // above it in the window. They are at least these: each line of the board above the list, each heading and row one
     // line, an open card none. Counting short leaves a card smaller than its room, never bigger.
     const PEEK_CLEAR = 28
-    const groups = triaging ? [] : groupsOf(shown, grouping, project, viewField)
+    const groups = triaging ? [] : groupsOf(shown, grouping, project, viewField, marks)
     const listed$ = triaging
       ? shown.map(issue => issue.number)
       : groups.flatMap(group => [null, ...(group.folded && !opened.includes(group.key) ? [] : group.issues.map(issue => issue.number))])
@@ -5292,7 +5419,7 @@ export const register: Register = (on, options) => {
       const workerAge = worker ? ago(new Date(worker.startedAt).toISOString(), clock) : ''
       // What Start starts: on an epic's card, its first ready sub-issue, which the button names; null when none is.
       const isEpic = (issue.subIssues?.total ?? 0) > 0
-      const target = startTargetOf(now.issues, issue, project)
+      const target = startTargetOf(now.issues, issue, project, marks)
       const goes = target ?? issue
       const startLabel = isEpic && target && target.number !== issue.number ? `▶ Start #${target.number}` : '▶ Start'
       const startIt = () => (target ? start(target) : Promise.resolve($.ui.toast(noReadyText(issue.number))))
@@ -5468,6 +5595,7 @@ export const register: Register = (on, options) => {
           </Text>
         )}
         {statusesCard}
+        {labelsCard}
         {setupPlan}
         {trends}
         {setupCard}
@@ -5629,7 +5757,7 @@ export const register: Register = (on, options) => {
                 // An epic: how many of its sub-issues are closed, as a bar, and Next, which starts the first ready one.
                 (() => {
                   const epic = group.epic
-                  const next = nextOf(now.issues, epic.number, project)
+                  const next = nextOf(now.issues, epic.number, project, marks)
                   const closed = `${epic.completed}/${epic.total} closed`
                   return (
                     <Box flexDirection="row" justifyContent="space-between">
@@ -5708,7 +5836,7 @@ export const register: Register = (on, options) => {
     const loud = ((await read($, access))?.problems ?? []).filter(problem => problem.blocks || !gone.includes(accessKey(problem)))
     const note = loud.length > 0 ? `issue board ${loud.some(problem => problem.blocks) ? 'needs setup' : 'is limited'} (/issues check)` : undefined
     // Turned off, the summary goes, but a problem the check found still says so.
-    const text = [settings.hintSummary && now && summary(now.issues, now.prs), note].filter(Boolean).join(' · ')
+    const text = [settings.hintSummary && now && summary(now.issues, now.prs, await markersNow($, now)), note].filter(Boolean).join(' · ')
     if (!text) return next(e)
 
     return next({ ...e, props: { ...e.props, tail: e.props.tail ? `${e.props.tail} · ${text}` : text } })
@@ -5741,7 +5869,10 @@ export const register: Register = (on, options) => {
     // Which Status is which, when the board found it by common names and the person hasn't answered: once per guess.
     const guess = guessOf(now?.project)
     const guessed = now?.project && guess.length > 0 && !(await read($, guessSeen)).includes(guessKey(now.project, guess)) ? now.project : null
-    if (problems.length === 0 && alerts.length === 0 && offers.length === 0 && agents.length === 0 && notes.length === 0 && !unadopted && !guessed) return next(e)
+    // Which labels Bugs and Later go by, when the board found them by the repo's names and the person hasn't answered.
+    const markerAsk = markerAskOf(now, await read($, chosenMarkers))
+    const marked = Object.keys(markerAsk).length > 0 && !(await read($, guessSeen)).includes(markerKey(markerAsk))
+    if (problems.length === 0 && alerts.length === 0 && offers.length === 0 && agents.length === 0 && notes.length === 0 && !unadopted && !guessed && !marked) return next(e)
 
     const { Box, Text, Button, Link } = $.ui.resolve(e)
     const width = e.props.bodyColumns
@@ -5961,6 +6092,29 @@ export const register: Register = (on, options) => {
       )
     }
 
+    // `? LABELS Bugs: the Bug issue type · Later: the label someday`. Looks right saves it; Change opens /issues labels;
+    // ✕ leaves it a guess, unasked.
+    const markerLine = () => {
+      const key = markerKey(markerAsk)
+      return (
+        <Box key="labels-row" flexDirection="row" gap={1}>
+          <Text color="suggestion" inverse bold>
+            {' ? LABELS '}
+          </Text>
+          <Text>{fit(markerText(markerAsk), Math.max(16, width - 44))}</Text>
+          <Button key="labels-yes" variant="primary" onPress={() => void confirmMarkers($, markerAsk)}>
+            Looks right
+          </Button>
+          <Button key="labels-change" dimColor onPress={() => void seeGuess($, key).then(() => openMarkers($))}>
+            Change
+          </Button>
+          <Button key="labels-dismiss" dimColor onPress={() => void seeGuess($, key)}>
+            ✕
+          </Button>
+        </Box>
+      )
+    }
+
     // A background agent at work: `⚙ #90 <title> · working · ━━━━━━ 0/4`, the bar only when the issue has boxes.
     const agentLine = (worker: Worker) => {
       const issue = now?.issues.find(one => one.number === worker.number)
@@ -6002,6 +6156,7 @@ export const register: Register = (on, options) => {
         {problems.slice(0, 2).map(problemLine)}
         {unadopted && adoptLine(unadopted)}
         {guessed && guessLine(guessed)}
+        {marked && markerLine()}
         {alerts.slice(0, 3).map(line)}
         {offers.slice(0, 3).map(offerLine)}
         {agents.slice(0, 3).map(agentLine)}

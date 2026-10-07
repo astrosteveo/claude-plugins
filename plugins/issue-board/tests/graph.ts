@@ -119,7 +119,8 @@ export const isIssuesQuery = (argv: readonly string[]): boolean => argv[1] === '
 export const asksProject = (argv: readonly string[]): boolean => argv.some(arg => arg.includes('projectsV2'))
 
 // One page of the answer; the project only when the query asked for it and the test gives one.
-export const graphPage = (issues: Raw[], argv: readonly string[] = [], project = false, types: string[] = [], views: Views = {}): string => {
+// `labels` are the repo's labels; left out, the answer has none, as before the board read them.
+export const graphPage = (issues: Raw[], argv: readonly string[] = [], project = false, types: string[] = [], views: Views = {}, labels?: string[]): string => {
   const withProject = project && asksProject(argv)
   const aliases = aliasesOf(argv)
   const linked = { ...PROJECT, fields: { nodes: [...PROJECT.fields.nodes, ...(views.fields ?? [])] }, views: { nodes: (views.views ?? []).map(viewNode) } }
@@ -128,6 +129,7 @@ export const graphPage = (issues: Raw[], argv: readonly string[] = [], project =
       rateLimit: { cost: 1, remaining: 4999, resetAt: '2026-10-04T11:00:00Z' },
       repository: {
         issueTypes: types.length > 0 ? { nodes: types.map(name => ({ name })) } : null,
+        ...(labels ? { labels: { nodes: labels.map(name => ({ name })) } } : {}),
         ...(withProject ? { projectsV2: { nodes: [linked] } } : {}),
         issues: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: issues.map(raw => node(raw, withProject, aliases)) },
       },

@@ -34,6 +34,8 @@ export const issuesQuery = (withProject: boolean, fields: readonly string[] = []
   [
     'query($owner: String!, $name: String!, $after: String) { rateLimit { cost remaining resetAt } repository(owner: $owner, name: $name) {',
     'issueTypes(first: 20) { nodes { name } }',
+    // The repo's labels, which the board guesses the Bugs and Later labels from. A hundred names cost a point at most.
+    'labels(first: 100) { nodes { name } }',
     withProject ? PROJECTS : '',
     'issues(first: 100, states: OPEN, after: $after, orderBy: {field: UPDATED_AT, direction: DESC}) {',
     'pageInfo { hasNextPage endCursor }',
