@@ -261,9 +261,9 @@ cut.
 **The band above the prompt** speaks up only for what needs you: CI that
 fails (**Fix** hands it to Claude), CI that passes (**Finish & merge**), news
 on the issue you started, its closing, a task Claude finished whose box is
-still open (**Tick box N**), background agents at work, and how many issues
-were captured to the Inbox since you last opened it. `✕` waves an alert off
-until it happens again.
+still open (**Tick box N**), and how many issues were captured to the Inbox
+since you last opened it. `✕` waves an alert off until it happens again. It
+doesn't list background agents, since Claude Code already shows them.
 
 ## Pull requests and CI
 
@@ -707,7 +707,7 @@ On screen, and how often it reads GitHub:
 
 | What | Setting | Default |
 |---|---|---|
-| The band above the prompt raises what needs you: CI, news on your issue, boxes to tick, background agents, captures to the Inbox. | Band above the prompt (`band`) | on |
+| The band above the prompt raises what needs you: CI, news on your issue, boxes to tick, captures to the Inbox. | Band above the prompt (`band`) | on |
 | The line under the prompt ends with the board in a few words. A problem the check found shows either way. | Summary under the prompt (`hintSummary`) | on |
 | The board looks at GitHub every 5, 15 or 60 minutes, or `manual`: only on `/issues refresh`, `r`, and after Claude's turns that ran git or gh. While a pull request's CI runs it still looks every 30 seconds, unless set to `manual`. | How often the board reads GitHub (`refresh`) | `5` |
 
