@@ -3,7 +3,7 @@ import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { backgroundPrompt, namesIssue, startPrompt } from '../hooks/parse'
-import { STATUSES, graphPage, isIssuesQuery, adoptedStore } from './graph'
+import { STATUSES, graphPage, isIssuesQuery, adoptedStore, graphHas, graphArgs } from './graph'
 
 const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 110, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } } as const
 const RUN = { origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 }, command: 'issues' } as const
@@ -40,9 +40,10 @@ const world = (on: On) => {
     if (argv[0] === 'git') return answer('main\n')
     if (isIssuesQuery(argv)) return answer(graphPage(ISSUES, argv, true))
     if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/claude-plugins', hasIssuesEnabled: true }))
-    if (argv[1] === 'api' && argv[2] === 'graphql' && argv.some(arg => arg.includes('updateProjectV2ItemFieldValue'))) {
-      const item = argv.find(arg => arg.startsWith('item='))?.slice('item=PVTI_'.length) ?? ''
-      state.writes.push(`status #${item} ${STATUSES[Number(argv.find(arg => arg.startsWith('option='))?.slice('option=S'.length))]}`)
+    if (graphHas(argv, e.init?.stdin, 'updateProjectV2ItemFieldValue')) {
+      const asked = graphArgs(argv, e.init?.stdin)
+      const item = asked.item?.slice('PVTI_'.length) ?? ''
+      state.writes.push(`status #${item} ${STATUSES[Number(asked.option?.slice('S'.length))]}`)
       return answer(JSON.stringify({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: item } } } }))
     }
     if (argv[1] === 'issue' && argv[2] === 'edit' && argv.includes('--add-assignee')) {

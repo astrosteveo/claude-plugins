@@ -3,7 +3,7 @@ import { expect, test } from 'claude-code/testing'
 
 import type { Board, Issue } from '../types'
 import { addBoxes, changesText, commandsOf, leftForDone, leftForVerification, movedText, rewordBoxes, statusOnly, unmovedText } from '../hooks/parse'
-import { asksProject, graphPage, isIssuesQuery, optionId, adoptedStore } from './graph'
+import { asksProject, graphArg, graphHas, graphPage, isGraphMutation, isIssuesQuery, optionId, adoptedStore } from './graph'
 import { letThrough } from './engine'
 
 type Raw = Parameters<typeof graphPage>[0][number]
@@ -12,9 +12,9 @@ const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Iss
 const RUN = { command: 'issues', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
 
 test('a change becomes gh commands in order: the edit, then the comment, then the close', () => {
-  expect(commandsOf(43, { addLabels: ['bug'], removeLabels: ['future'], assign: ['@me'], parent: 35, milestone: null, comment: ' Done here. ', close: 'not planned' })).toEqual([
+  expect(commandsOf(43, { addLabels: ['bug'], removeLabels: ['future'], assign: ['@me'], parent: 35, milestone: null, comment: ' Done here. ', close: 'not planned' }, 'o/r')).toEqual([
     { argv: ['issue', 'edit', '43', '--add-label', 'bug', '--remove-label', 'future', '--add-assignee', '@me', '--parent', '35', '--remove-milestone'] },
-    { argv: ['issue', 'comment', '43', '--body-file', '-'], stdin: 'Done here.' },
+    { argv: ['api', '-X', 'POST', 'repos/o/r/issues/43/comments', '--input', '-'], stdin: '{"body":"Done here."}' },
     { argv: ['issue', 'close', '43', '--reason', 'not planned'] },
   ])
   expect(commandsOf(43, { parent: null, milestone: 'Launch', reopen: true })).toEqual([
@@ -68,13 +68,13 @@ const github = (on: On, prs: unknown[] = [], extra: Raw[] = []) => {
     gone: [] as number[],
     // When set, GitHub refuses to set a project field.
     refuseFields: false,
-    // Every command run, answered or not, as one line each.
+    // Every command run, answered or not, as one line each, with what went on stdin.
     ran: [] as string[],
   }
   on('process.run', async (_$, e) => {
     const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
     const argv = [...e.argv]
-    state.ran.push(argv.join(' '))
+    state.ran.push(e.init?.stdin === undefined ? argv.join(' ') : `${argv.join(' ')} ${e.init.stdin}`)
     if (argv[0] === 'git') return answer('main\n')
     if (isIssuesQuery(argv)) {
       state.reads += 1
@@ -121,7 +121,7 @@ const github = (on: On, prs: unknown[] = [], extra: Raw[] = []) => {
       return answer('{}')
     }
     if (argv[1] === 'api' && argv[3] === 'POST' && argv[4]?.endsWith('/comments')) {
-      state.posted.push(`${/issues\/(\d+)\//.exec(argv[4])?.[1]} ${argv[6]?.slice(5)}`)
+      state.posted.push(`${/issues\/(\d+)\//.exec(argv[4])?.[1]} ${(JSON.parse(e.init?.stdin ?? '{}') as { body?: string }).body}`)
       return answer('{}')
     }
     if (argv[1] === 'api' && argv[3] === 'PATCH' && argv.includes('state=closed')) {
@@ -171,7 +171,7 @@ const github = (on: On, prs: unknown[] = [], extra: Raw[] = []) => {
       return { value: { exitCode: 1, stdout: '', stderr: `GraphQL: Could not resolve to an issue or pull request with the number of ${argv[3]}. (repository.issue)`, isStdoutTruncated: false, isStderrTruncated: false } }
     }
     if (argv[1] === 'issue' && argv[2] === 'view') return answer(JSON.stringify({ number: 43, title: 'Edit issues from the board', labels: [], body: '- [ ] Edit', updatedAt: '2026-10-05T00:00:00Z' }))
-    if (argv[1] === 'api' && argv[2] === 'graphql' && state.refuseFields && argv.some(arg => arg.includes('updateProjectV2ItemFieldValue')))
+    if (state.refuseFields && graphHas(argv, e.init?.stdin, 'updateProjectV2ItemFieldValue'))
       return { value: { exitCode: 1, stdout: '', stderr: 'gh: Resource not accessible by integration', isStdoutTruncated: false, isStderrTruncated: false } }
     if (argv[1] === 'api' && argv[2] === 'graphql') return answer(JSON.stringify({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: 'x' } } } }))
     return answer(argv[1] === 'api' ? 'astrosteveo\n' : '[]')
@@ -182,9 +182,12 @@ const github = (on: On, prs: unknown[] = [], extra: Raw[] = []) => {
   return state
 }
 
-// The gh commands that change an issue, without the board's reads.
+// The gh commands that change an issue, without the board's reads: the edits, comments, closes and project writes.
 const writes = (calls: { argv: string[]; stdin?: string }[]) =>
-  calls.filter(call => ['edit', 'comment', 'close', 'reopen'].includes(call.argv[1] ?? '') || (call.argv[0] === 'api' && call.argv.some(arg => arg.startsWith('query=mutation'))))
+  calls.filter(call => ['edit', 'close', 'reopen'].includes(call.argv[1] ?? '') || (call.argv[2] === 'POST' && call.argv[3]?.endsWith('/comments')) || isGraphMutation(call))
+
+// A write as a line: a project write by the option it sets, anything else as its command.
+const writeLine = (call: { argv: string[]; stdin?: string }): string => (isGraphMutation(call) ? `project ${graphArg(call, 'option')}` : call.argv.join(' '))
 
 test("Claude's issue_update tool makes the changes in order and the board reads GitHub straight after", async ($, on) => {
   adoptedStore(on)
@@ -194,13 +197,13 @@ test("Claude's issue_update tool makes the changes in order and the board reads 
 
   const done = await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, status: 'Verification', addLabels: ['bug'], assign: ['@me'], comment: 'Built; checking it live.', close: 'completed' })
   expect(String(done.result)).toBe('#43 moved to Verification, labelled bug, assigned @me, commented on, closed as completed.')
-  expect(writes(gh.calls).map(call => (call.argv[0] === 'api' ? `project ${call.argv.find(arg => arg.startsWith('option='))}` : call.argv.join(' ')))).toEqual([
+  expect(writes(gh.calls).map(writeLine)).toEqual([
     `project option=${optionId('Verification')}`,
     'issue edit 43 --add-label bug --add-assignee @me',
-    'issue comment 43 --body-file -',
+    'api -X POST repos/astrosteveo/claude-plugins/issues/43/comments --input -',
     'issue close 43 --reason completed',
   ])
-  expect(writes(gh.calls)[2]?.stdin).toBe('Built; checking it live.')
+  expect(writes(gh.calls)[2]?.stdin).toBe('{"body":"Built; checking it live."}')
   expect(gh.reads).toBeGreaterThan(before)
 
   // An issue the board doesn't hold is looked up on GitHub; one GitHub hasn't got says so, in GitHub's words.
@@ -239,7 +242,7 @@ test('Claude starting on an issue in the conversation marks it as Start does, an
 
   const started = await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, start: true })
   expect(String(started.result)).toBe('Started #43: it is the issue this session is on, In progress and assigned.')
-  expect(writes(gh.calls).map(call => (call.argv[0] === 'api' ? `project ${call.argv.find(arg => arg.startsWith('option='))}` : call.argv.join(' ')))).toEqual([
+  expect(writes(gh.calls).map(writeLine)).toEqual([
     `project option=${optionId('In progress')}`,
     'issue edit 43 --add-assignee @me',
   ])
@@ -306,7 +309,7 @@ test('an issue that closes as completed moves to Done in the project; one closed
   await $.command.run({ ...RUN, args: 'refresh' })
   await $.command.run({ ...RUN, args: 'refresh' })
   const moved = writes(gh.calls).slice(before)
-  expect(moved.map(call => [call.argv.find(arg => arg.startsWith('item=')), call.argv.find(arg => arg.startsWith('option='))])).toEqual([[expect.stringMatching(/43/), `option=${optionId('Done')}`]])
+  expect(moved.map(call => [graphArg(call, 'item'), graphArg(call, 'option')])).toEqual([[expect.stringMatching(/43/), `option=${optionId('Done')}`]])
   // The person sees it once: what moved, and why.
   expect(toasts.filter(text => text.startsWith('Moved'))).toEqual(['Moved #43 to Done: it closed as completed.'])
 })
@@ -505,7 +508,7 @@ test('an issue a merged pull request refers to with Refs moves to Verification, 
   await $.command.run({ ...RUN, args: 'refresh' })
   await $.command.run({ ...RUN, args: 'refresh' })
   const moved = writes(gh.calls).slice(before)
-  expect(moved.map(call => [call.argv.find(arg => arg.startsWith('item=')), call.argv.find(arg => arg.startsWith('option='))])).toEqual([[expect.stringMatching(/43/), `option=${optionId('Verification')}`]])
+  expect(moved.map(call => [graphArg(call, 'item'), graphArg(call, 'option')])).toEqual([[expect.stringMatching(/43/), `option=${optionId('Verification')}`]])
 
   await $.prompt.submit({ text: 'What next?', wait: false, origin: { kind: 'composer' } })
   expect(prompts.at(-1)).toContain('#43 moved to Verification: pull request #50, which refers to it without closing it, merged.')
@@ -759,7 +762,7 @@ test("the card's editor changes labels, assignee and milestone, comments, and as
     'issue edit 43 --add-assignee @me',
     'issue edit 43 --milestone Launch',
     'issue edit 43 --remove-parent',
-    'issue comment 43 --body-file -',
+    'api -X POST repos/astrosteveo/claude-plugins/issues/43/comments --input -',
     'issue edit 43 --parent 35',
   ])
   await ui.press({ key: 'close-not-planned-43' })

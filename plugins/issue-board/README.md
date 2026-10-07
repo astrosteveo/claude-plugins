@@ -845,6 +845,10 @@ changed, and at least every 15 minutes. It also reads straight after Claude
 changes GitHub, after a turn that ran `git` or `gh`, and when a GitHub event
 arrives for a pull request the session follows.
 
+Ticking a box, rewriting a body and posting a comment go over REST, so they
+spend none of the GraphQL limit the board reads with. The card's editor offers
+the labels and milestones the last read found, without asking GitHub again.
+
 Sessions on the same repo share the board. The rate limit is shared by every
 session and agent on your account. If it runs out, the board says when it
 resets and waits.

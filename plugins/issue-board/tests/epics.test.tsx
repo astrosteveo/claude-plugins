@@ -4,7 +4,7 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import type { Board, EpicNote } from '../types'
 import { draftPrompt, liveEpicNotes, nextOf, parseDraft, parseGraph, sortIssues } from '../hooks/parse'
-import { STATUSES, graphPage, isIssuesQuery, adoptedStore } from './graph'
+import { STATUSES, graphArgs, graphHas, graphPage, isIssuesQuery, adoptedStore } from './graph'
 import { letThrough } from './engine'
 
 const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 110, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } } as const
@@ -292,18 +292,25 @@ const lifecycle = (on: On, open: Raw[]) => {
     if (argv[0] === 'git') return answer('main\n')
     if (isIssuesQuery(argv)) return answer(graphPage(state.issues.map(raw => ({ ...raw, body: state.bodies[raw.number] ?? raw.body })), argv, true))
     if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/claude-plugins', hasIssuesEnabled: true }))
-    if (argv[1] === 'api' && argv[2] === 'graphql' && argv.some(arg => arg.includes('updateProjectV2ItemFieldValue'))) {
-      const item = argv.find(arg => arg.startsWith('item='))?.slice('item=PVTI_'.length) ?? ''
-      const status = STATUSES[Number(argv.find(arg => arg.startsWith('option='))?.slice('option=S'.length))]
+    if (graphHas(argv, e.init?.stdin, 'updateProjectV2ItemFieldValue')) {
+      const asked = graphArgs(argv, e.init?.stdin)
+      const item = asked.item?.slice('PVTI_'.length) ?? ''
+      const status = STATUSES[Number(asked.option?.slice('S'.length))]
       state.writes.push(`status #${item} ${status}`)
       state.issues = state.issues.map(raw => (String(raw.number) === item ? { ...raw, status } : raw))
       return answer(JSON.stringify({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: item } } } }))
     }
     if (argv[1] === 'api' && argv[2] === 'graphql') return answer(JSON.stringify({ data: { addProjectV2ItemById: { item: { id: 'PVTI_new' } } } }))
-    if (argv[1] === 'issue' && argv[2] === 'edit' && argv.includes('--body-file')) {
-      state.writes.push(`body #${argv[3]}`)
-      state.bodies[Number(argv[3])] = e.init?.stdin ?? ''
-      return answer('')
+    // An issue's body over REST: read with the time it last changed, and written with a PATCH.
+    const rest = /^repos\/[^/]+\/[^/]+\/issues\/(\d+)$/.exec((argv[2] === '-X' ? argv[4] : argv[2]) ?? '')
+    if (argv[1] === 'api' && rest && argv.includes('{body, updated_at}')) return answer(JSON.stringify({ body: state.bodies[Number(rest[1])] ?? '', updated_at: '2026-10-05T00:00:00Z' }))
+    if (argv[1] === 'api' && rest && argv[3] === 'PATCH') {
+      const number = Number(rest[1])
+      const fields = JSON.parse(e.init?.stdin ?? '{}') as { body?: string }
+      state.writes.push(`body #${number}`)
+      state.bodies[number] = fields.body ?? state.bodies[number] ?? ''
+      const raw = state.issues.find(one => one.number === number)
+      return answer(JSON.stringify({ title: raw?.title ?? '', body: state.bodies[number], updated_at: '2026-10-05T00:00:00Z' }))
     }
     if (argv[1] === 'issue' && argv[2] === 'edit' && argv.includes('--add-assignee')) {
       state.writes.push(`assign #${argv[3]}`)

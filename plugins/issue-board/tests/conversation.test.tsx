@@ -77,12 +77,15 @@ const world = (on: On) => {
       return answer(graphPage([issue(state.body, state.comments.length), other]))
     }
     if (argv[1] === 'api' && argv[2] === 'graphql') return answer(JSON.stringify({ data: { repository: { pullRequests: { nodes: [] } } } }))
-    if (argv[1] === 'api') return answer('astrosteveo\n')
-    if (argv[1] === 'issue' && argv[2] === 'edit' && argv.includes('--body-file')) {
-      state.body = (e.init?.stdin ?? '').replace(/^Kessik needs a layout\.\n\n/, '')
+    // #43's body over REST: read with when it last changed, and written with a PATCH, which answers the issue as it is.
+    if (argv[1] === 'api' && argv.includes('{body, updated_at}')) return answer(JSON.stringify({ body: issue(state.body).body, updated_at: issue(state.body).updatedAt }))
+    if (argv[1] === 'api' && argv[3] === 'PATCH') {
+      state.body = ((JSON.parse(e.init?.stdin ?? '{}') as { body?: string }).body ?? '').replace(/^Kessik needs a layout\.\n\n/, '')
       state.edits.push(state.body)
-      return answer('')
+      const now = issue(state.body)
+      return answer(JSON.stringify({ title: now.title, body: now.body, updated_at: now.updatedAt }))
     }
+    if (argv[1] === 'api') return answer('astrosteveo\n')
     if (argv[1] === 'issue' && argv[2] === 'edit') return answer('')
     if (argv[1] === 'issue' && argv[2] === 'view') {
       const fields = argv[argv.indexOf('--json') + 1]

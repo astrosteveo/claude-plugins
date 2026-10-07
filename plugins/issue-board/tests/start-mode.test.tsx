@@ -3,7 +3,7 @@ import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { HANDOFF_ANSWER, handoffPrompt, orchestratorSection } from '../hooks/parse'
-import { graphPage, isIssuesQuery } from './graph'
+import { graphPage, isIssuesQuery, graphHas } from './graph'
 
 const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 110, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } } as const
 const RUN = { origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 }, command: 'issues' } as const
@@ -22,7 +22,7 @@ const world = (on: On) => {
     if (isIssuesQuery(argv)) return answer(graphPage(ISSUES, argv, true))
     if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/claude-plugins', hasIssuesEnabled: true }))
     if (argv[1] === 'api' && argv[2] === 'user') return answer('astrosteveo\n')
-    if (argv[1] === 'api' && argv[2] === 'graphql' && argv.some(arg => arg.includes('updateProjectV2ItemFieldValue'))) {
+    if (graphHas(argv, e.init?.stdin, 'updateProjectV2ItemFieldValue')) {
       return answer(JSON.stringify({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: 'PVTI_43' } } } }))
     }
     if (argv[1] === 'issue' && argv[2] === 'view') {

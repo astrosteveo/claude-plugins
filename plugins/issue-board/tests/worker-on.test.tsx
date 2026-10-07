@@ -3,7 +3,7 @@ import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { workerOnLine } from '../hooks/parse'
-import { adoptedStore, graphPage, isIssuesQuery } from './graph'
+import { adoptedStore, graphPage, isIssuesQuery, graphHas, graphArgs } from './graph'
 
 // While a background agent is on an issue, its card shows the agent in place of every start button, whoever started
 // the agent, and the buttons come back once it ends (#269).
@@ -46,8 +46,8 @@ const world = async ($: Engine, on: On, open: number) => {
     if (argv[0] === 'git') return answer('main\n')
     if (isIssuesQuery(argv)) return answer(graphPage(ISSUES, argv, true))
     if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/claude-plugins', hasIssuesEnabled: true }))
-    if (argv[1] === 'api' && argv[2] === 'graphql' && argv.some(arg => arg.includes('updateProjectV2ItemFieldValue'))) {
-      const item = argv.find(arg => arg.startsWith('item='))?.slice('item=PVTI_'.length) ?? ''
+    if (graphHas(argv, e.init?.stdin, 'updateProjectV2ItemFieldValue')) {
+      const item = graphArgs(argv, e.init?.stdin).item?.slice('PVTI_'.length) ?? ''
       return answer(JSON.stringify({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: item } } } }))
     }
     if (argv[1] === 'api' && argv[2] === 'user') return answer('astrosteveo\n')

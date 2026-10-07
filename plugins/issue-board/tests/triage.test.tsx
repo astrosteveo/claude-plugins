@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { matches, parseIssues, parseTriage, triagePrompt } from '../hooks/parse'
-import { PRIORITIES, STATUSES, graphPage, isIssuesQuery, optionId, adoptedStore } from './graph'
+import { PRIORITIES, STATUSES, graphPage, isIssuesQuery, optionId, adoptedStore, graphArgs } from './graph'
 
 const raw = (number: number, title: string, labels: string[] = []) => ({
   number,
@@ -40,7 +40,7 @@ const world = (on: On, answer: string, adopted = true) => {
     if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true }))
     if (isIssuesQuery(argv)) return answer(graphPage(state.issues.map(one => ({ ...one, ...state.planned[one.number] })), argv, true))
     if (argv[1] === 'api' && argv[2] === 'graphql') {
-      const args = Object.fromEntries(argv.flatMap((arg, index) => (argv[index - 1] === '-f' ? [arg.split(/=(.*)/s).slice(0, 2) as [string, string]] : [])))
+      const args = graphArgs(argv, e.init?.stdin)
       if (args.query?.includes('reviewThreads')) return answer(JSON.stringify({ data: { repository: { pullRequests: { nodes: [] } } } }))
       state.fields.push(args)
       if (args.query?.includes('addProjectV2ItemById')) return answer(JSON.stringify({ data: { addProjectV2ItemById: { item: { id: `PVTI_${args.content?.slice(2)}` } } } }))
@@ -49,8 +49,9 @@ const world = (on: On, answer: string, adopted = true) => {
       state.planned[number] = { ...state.planned[number], ...(args.field === 'F_status' ? { status: name } : { priority: name }) }
       return answer(JSON.stringify({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: args.item } } } }))
     }
+    // The repo's labels, over REST.
+    if (argv[1] === 'api' && argv[2]?.endsWith('/labels?per_page=100')) return answer(JSON.stringify(['bug', 'area:simulation', 'area:interface'].map(name => ({ name }))))
     if (argv[1] === 'api') return answer('astrosteveo\n')
-    if (argv[1] === 'label') return answer(JSON.stringify(['bug', 'area:simulation', 'area:interface'].map(name => ({ name }))))
     if (argv[1] === 'issue' && argv[2] === 'edit') {
       state.edits.push([...argv])
       return answer('')

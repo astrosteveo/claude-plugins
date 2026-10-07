@@ -4,7 +4,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import { parseIssues } from '../hooks/parse'
 import { PLAN_LIMIT, alreadyTrue, cardParts, changeText, issueOf, kindsText, planAsk, planOf, rowText, rowsOf, sizeText, viewDoneText, viewNoteOf } from '../hooks/plan'
 import type { PlanChange, Project } from '../types'
-import { PRIORITIES, STATUSES, adoptedStore, graphPage, isIssuesQuery, optionId } from './graph'
+import { PRIORITIES, STATUSES, adoptedStore, graphPage, isIssuesQuery, optionId, graphArgs, isItemWrite } from './graph'
 import type { RawView } from './graph'
 import { permissions } from './engine'
 
@@ -65,7 +65,7 @@ const world = (on: On, adopted = true) => {
       state.reads += 1
       return answer(graphPage(state.issues.map(one => ({ ...one, ...state.planned[one.number] })), argv, true, [], { views: state.views }, state.labels))
     }
-    if (argv[1] === 'api' && argv[2] === 'graphql' && argv.includes('--input')) {
+    if (argv[1] === 'api' && argv[2] === 'graphql' && argv.includes('--input') && !isItemWrite(argv, e.init?.stdin)) {
       const asked = JSON.parse(e.init?.stdin ?? '{}') as { query: string; variables: Record<string, unknown> }
       const view = viewWrite(state, asked)
       if (view) return answer(JSON.stringify(view))
@@ -83,7 +83,7 @@ const world = (on: On, adopted = true) => {
       return answer(JSON.stringify({ data: {} }))
     }
     if (argv[1] === 'api' && argv[2] === 'graphql') {
-      const args = Object.fromEntries(argv.flatMap((arg, index) => (argv[index - 1] === '-f' ? [arg.split(/=(.*)/s).slice(0, 2) as [string, string]] : [])))
+      const args = graphArgs(argv, e.init?.stdin)
       if (args.query?.includes('reviewThreads')) return answer(JSON.stringify({ data: { repository: { pullRequests: { nodes: [] } } } }))
       const number = Number(args.item?.slice('PVTI_'.length))
       const name = [...STATUSES, ...PRIORITIES].find(one => optionId(one) === args.option) ?? ''

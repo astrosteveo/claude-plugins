@@ -120,6 +120,35 @@ const node = (raw: Raw, project: boolean, aliases: [string, string][] = []) => (
 export const isIssuesQuery = (argv: readonly string[]): boolean => argv[1] === 'api' && argv[2] === 'graphql' && argv.some(arg => arg.includes('issues(first: 100'))
 export const asksProject = (argv: readonly string[]): boolean => argv.some(arg => arg.includes('projectsV2'))
 
+// What a GraphQL call asks: its query and its variables by name, each as text. The board sends a query with variables
+// as JSON on stdin; its fixed reads, the issues pages and the review threads, go as gh's `-f name=value` fields.
+export const graphArgs = (argv: readonly string[], stdin?: string): Record<string, string> => {
+  const fields = Object.fromEntries(argv.flatMap((arg, index) => (argv[index - 1] === '-f' ? [arg.split(/=(.*)/s).slice(0, 2) as [string, string]] : [])))
+  if (!argv.includes('--input') || !stdin) return fields
+  const asked = JSON.parse(stdin) as { query?: string; variables?: Record<string, unknown> }
+  const variables = Object.entries(asked.variables ?? {}).map(([name, value]) => [name, typeof value === 'string' ? value : JSON.stringify(value)] as const)
+  return { ...fields, query: asked.query ?? '', ...Object.fromEntries(variables) }
+}
+
+// Whether a gh call is GraphQL whose query or variables hold `text`, as fields or on stdin.
+export const graphHas = (argv: readonly string[], stdin: string | undefined, text: string): boolean =>
+  argv.includes('graphql') && (argv.some(arg => arg.includes(text)) || (stdin ?? '').includes(text))
+
+// One variable of a GraphQL call a test kept, as `name=value`, the way a list of what was sent shows it.
+export const graphArg = (call: { argv: readonly string[]; stdin?: string }, name: string): string | undefined => {
+  const value = graphArgs(call.argv, call.stdin)[name]
+  return value === undefined ? undefined : `${name}=${value}`
+}
+
+// Whether a gh call adds an item to the project or sets a single-select option, Status or Priority: the writes the
+// tests answer by their variables, apart from the board's other GraphQL.
+export const isItemWrite = (argv: readonly string[], stdin?: string): boolean =>
+  graphHas(argv, stdin, 'singleSelectOptionId') || graphHas(argv, stdin, 'addProjectV2ItemById')
+
+// Whether a gh call a test kept is a GraphQL mutation.
+export const isGraphMutation = (call: { argv: readonly string[]; stdin?: string }): boolean =>
+  call.argv.includes('graphql') && /^\s*mutation\b/.test(graphArgs(call.argv, call.stdin).query ?? '')
+
 // One page of the answer; the project only when the query asked for it and the test gives one.
 // `labels` are the repo's labels; left out, the answer has none, as before the board read them.
 export const graphPage = (issues: Raw[], argv: readonly string[] = [], project = false, types: string[] = [], views: Views = {}, labels?: string[]): string => {

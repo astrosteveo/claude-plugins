@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { adoptText, grantsOf, isMutation, ownerOf, projectKeysOf, projectKeysText, writeRefusal } from '../hooks/project'
-import { ADOPTED, PROJECT, graphPage, isIssuesQuery, settingsLog } from './graph'
+import { ADOPTED, PROJECT, graphPage, isIssuesQuery, settingsLog, graphArg } from './graph'
 import { letThrough, permissions } from './engine'
 import { namesText, projectPartOf, repoChangeOf } from '../hooks/parse'
 
@@ -87,6 +87,12 @@ const world = (on: On, asks = false) => {
       return ok(JSON.stringify({ number: 80, id: 9080, node_id: 'I_80', html_url: 'https://github.com/astrosteveo/void-sector/issues/80', updated_at: '2026-10-05T10:00:00Z', labels: [], assignees: [] }))
     }
     if (argv[1] === 'api' && argv[2]?.includes('/milestones')) return ok('[]')
+    // An issue's body over REST, as a tick or an epic's close reads it, and the PATCH that writes it.
+    const rest = /\/issues\/(\d+)$/.exec((argv[2] === '-X' ? argv[4] : argv[2]) ?? '')
+    if (argv[1] === 'api' && rest && (argv.includes('{body, updated_at}') || argv[3] === 'PATCH')) {
+      const found = (state.issues.find(one => one.number === Number(rest[1])) ?? BEFORE.find(one => one.number === Number(rest[1]))) as Record<string, unknown> | undefined
+      return ok(JSON.stringify({ title: found?.title ?? '', body: found?.body ?? '', updated_at: '2026-10-05T10:00:00Z' }))
+    }
     if (argv[1] === 'api') return ok('astrosteveo\n')
     if (argv[1] === 'issue' && argv[2] === 'view') {
       const found = (state.issues.find(one => one.number === Number(argv[3])) ?? BEFORE.find(one => one.number === Number(argv[3]))) as Record<string, unknown> | undefined
@@ -268,7 +274,7 @@ test('the pane and the band ask once before writing, naming the project, its own
 
   // Writes go through at once, to the adopted project, before Claude Code reloads the board with the new setting.
   await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, priority: 'P0' })
-  expect(mutations().map(call => call.argv.find(arg => arg.startsWith('project=')))).toEqual(['project=PVT_8'])
+  expect(mutations().map(call => graphArg(call, 'project'))).toEqual(['project=PVT_8'])
   await ui.unmount()
 })
 
