@@ -132,6 +132,8 @@ export type Board = {
   milestones?: Milestone[]
   // The issue types the repo offers, by name; none outside an organization that has them.
   issueTypes?: string[]
+  // The repo's labels, by name, for the Bugs and Later guess; absent on an older board.
+  labels?: string[]
   // The repo's project; null without one, or when gh may not read projects. The board then works from labels.
   project?: Project | null
 }
@@ -299,6 +301,16 @@ export type Adopted = { key: string; number: number; id: string; title: string; 
 // asked again.
 export type Adoption = { adopted: Adopted | null; declined: string[] }
 
+// What marks an issue as a bug: a label, by name, or an issue type, such as GitHub's Bug.
+export type BugMarker = { label: string } | { type: string }
+
+// What the Bugs tab, the bug badge and the bug count go by, and the label Later goes by without a project.
+export type Markers = { bug: BugMarker; later: string }
+
+// `/issues labels` while it shows in the pane: the issue types and labels it offers, whether Later is asked (only
+// without a project), and what is picked.
+export type MarkerPicks = { types: string[]; labels: string[]; later: boolean; picks: Markers }
+
 // `/issues statuses` while it shows in the pane: the project, its Status options, and the option picked for each role,
 // by id. A role left out has none.
 export type StatusPicks = { project: { id: string; title: string }; options: { id: string; name: string }[]; picks: Roles }
@@ -382,8 +394,12 @@ declare module 'claude-code' {
       adoption: Adoption
       // `/issues statuses` while it shows in the pane; null otherwise.
       statusPicks: StatusPicks | null
-      // The guessed Status mappings the person answered in the band, by guessKey, so each shows once.
+      // The guessed Status mappings and Bugs and Later labels the person answered in the band, by key, so each shows once.
       guessSeen: string[]
+      // The Bugs and Later markers the person chose, in /issues labels or with Looks right; empty when none.
+      markers: Partial<Markers>
+      // `/issues labels` while it shows in the pane; null otherwise.
+      markerPicks: MarkerPicks | null
     }
   }
 }
