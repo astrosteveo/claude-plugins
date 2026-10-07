@@ -14,12 +14,14 @@ element prop.
 sh scripts/validate.sh                      # strict `claude plugin validate` on the marketplace and every plugin, and every gating hook has a .catch (what CI runs)
 sh scripts/test.sh                          # run every plugin's tests (what CI runs after validate.sh)
 sh scripts/typecheck.sh                     # type-check every plugin against the installed Claude Code (CI runs it last)
+sh scripts/mutants.sh                       # put each fixed bug in scripts/mutants/ back and check the tests catch it (about a minute)
 claude plugin test plugins/issue-board      # run one plugin's *.test.ts(x); there is no per-test filter
 claude plugin validate --json plugins/issue-board   # what the module hooks and calls, state keys, gating hooks and `.catch`
 npx -p typescript tsc -p plugins/issue-board        # type-check; needs .claude-plugin/types/, see below
 ```
 
-CI (`.github/workflows/validate.yml`) runs `validate.sh`, then `test.sh`, then `typecheck.sh`.
+CI (`.github/workflows/validate.yml`) runs `validate.sh`, then `test.sh`, then `typecheck.sh`. A second workflow,
+`mutants.yml`, runs `mutants.sh` on pull requests that touch hooks, tests, `plugin.json` or `scripts/`, and weekly.
 
 The marketplace is registered from this local checkout, so the installed plugins are whatever is checked out here.
 After changing a plugin, or after merging and pulling `main`, the person runs `/reload-plugins` to load it.
@@ -49,6 +51,12 @@ Test files import `test` and `expect` from `'claude-code/testing'`. A test gets 
 draws the pane so `ui.find` / `ui.findAll` / `ui.press` can inspect it. There is no rendered frame, so layout is
 checked through element props (for example a `Box`'s `position`, `top`, `width`). In issue-board, `tests/graph.ts`
 turns `gh issue list`-shaped fixtures into the GraphQL answer the board's query expects.
+
+When a fix comes with a regression test, add a mutant too: a patch in `scripts/mutants/` that puts the bug back, named
+`<issue>-<what-breaks>.patch`, whose first line says which issue it guards and what it breaks. `scripts/mutants.sh`
+applies each one to a clean worktree and fails if the tests still pass, or if a patch no longer applies. Make a patch
+by changing the code in a scratch worktree and saving `git diff`. Remake a stale one the same way against the current
+code.
 
 ## issue-board in brief
 

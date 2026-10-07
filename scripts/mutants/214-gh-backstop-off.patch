@@ -1,0 +1,14 @@
+Guards #214: gh() refuses a GraphQL mutation that skipped the write check. The backstop is turned off.
+
+diff --git a/plugins/issue-board/hooks/project.ts b/plugins/issue-board/hooks/project.ts
+index f52c601..0a9f79a 100644
+--- a/plugins/issue-board/hooks/project.ts
++++ b/plugins/issue-board/hooks/project.ts
+@@ -308,6 +308,7 @@ export const writeRefusal = (allowed: readonly string[], target: { number: numbe
+ // Whether a gh call is a GraphQL mutation: the query given as a field, or in the JSON sent on stdin. Every project write
+ // is one, and the board sends none but through its project write check.
+ export const isMutation = (args: readonly string[], stdin?: string): boolean => {
++  return false
+   if (!args.includes('graphql')) return false
+   const mutation = (query: unknown) => typeof query === 'string' && /^\s*mutation\b/.test(query)
+   if (args.some(arg => arg.startsWith('query=') && mutation(arg.slice('query='.length)))) return true

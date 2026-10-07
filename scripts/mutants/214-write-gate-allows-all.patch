@@ -1,0 +1,14 @@
+Guards #214: the board writes only to a project it may write to. The write check lets every project through.
+
+diff --git a/plugins/issue-board/hooks/project.ts b/plugins/issue-board/hooks/project.ts
+index f52c601..9e90731 100644
+--- a/plugins/issue-board/hooks/project.ts
++++ b/plugins/issue-board/hooks/project.ts
+@@ -299,6 +299,7 @@ const HOW_TO_ADOPT = 'press Let it write where the issues pane or the band asks,
+ // it too. `new` is setup creating a project, which can't touch one the person already has; setup adopts the new one
+ // straight after.
+ export const writeRefusal = (allowed: readonly string[], target: { number: number; title: string; url: string } | 'new'): string | null => {
++  return null
+   if (target === 'new') return null
+   const key = projectKeyOf(target)
+   if (key && allowed.includes(key)) return null

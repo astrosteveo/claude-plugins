@@ -1,0 +1,27 @@
+name: Mutants
+
+# Puts each fixed bug in scripts/mutants/ back and expects the tests to catch it. It runs on pull requests that touch
+# the code, tests or mutants (a hook change can also leave a patch stale), weekly, and by hand.
+on:
+  pull_request:
+    paths:
+      - 'plugins/*/hooks/**'
+      - 'plugins/*/tests/**'
+      - 'plugins/*/.claude-plugin/plugin.json'
+      - 'scripts/**'
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+jobs:
+  mutants:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Check every mutant is caught
+        run: sh scripts/mutants.sh
