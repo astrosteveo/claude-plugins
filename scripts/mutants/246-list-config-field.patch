@@ -1,4 +1,5 @@
 Guards #246: every userConfig field can be a /config row. writeProjects becomes a list field, which has no row.
+Test: scripts/config-rows.test.mjs: every userConfig field of issue-board can be a /config row
 
 diff --git a/plugins/issue-board/.claude-plugin/plugin.json b/plugins/issue-board/.claude-plugin/plugin.json
 index e23f377..79486d2 100644

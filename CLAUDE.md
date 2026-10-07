@@ -22,6 +22,9 @@ npx -p typescript tsc -p plugins/issue-board        # type-check; needs .claude-
 
 CI (`.github/workflows/validate.yml`) runs `validate.sh`, then `test.sh`, then `typecheck.sh`. A second workflow,
 `mutants.yml`, runs `mutants.sh` on pull requests that touch hooks, tests, `plugin.json` or `scripts/`, and weekly.
+Both install the Claude Code version pinned in `.github/claude-code-version`, so a Claude Code release can't turn CI
+red with no change here. `validate.yml` also runs weekly against the latest Claude Code, and by hand with `latest`
+ticked. When that run fails, fix the plugins for the new release. Once it passes, bump the pin in its own PR.
 
 The marketplace is registered from this local checkout, so the installed plugins are whatever is checked out here.
 After changing a plugin, or after merging and pulling `main`, the person runs `/reload-plugins` to load it.
@@ -53,10 +56,15 @@ checked through element props (for example a `Box`'s `position`, `top`, `width`)
 turns `gh issue list`-shaped fixtures into the GraphQL answer the board's query expects.
 
 When a fix comes with a regression test, add a mutant too: a patch in `scripts/mutants/` that puts the bug back, named
-`<issue>-<what-breaks>.patch`, whose first line says which issue it guards and what it breaks. `scripts/mutants.sh`
-applies each one to a clean worktree and fails if the tests still pass, or if a patch no longer applies. Make a patch
-by changing the code in a scratch worktree and saving `git diff`. Remake a stale one the same way against the current
-code.
+`<issue>-<what-breaks>.patch`, whose first line says which issue it guards and what it breaks. Then come one or more
+`Test:` lines, each naming a test that must catch the bug, as `Test: <where>: <test name>`. `<where>` is a plugin
+folder such as `plugins/issue-board`, run with `claude plugin test`, or a test file such as
+`scripts/config-rows.test.mjs`, run with `node --test`. The name is the test's name exactly as the run prints it after
+`(fail)` or `✖`. `scripts/mutants.sh` applies each patch to a clean worktree, runs each named place once, and needs
+every named test among the failures. It reports `SURVIVED` when nothing fails, `WRONG KILL` when the run fails but not
+through a named test (a patch that breaks loading, or trips some other test), `NO TEST` when the header names none,
+and `STALE` when a patch no longer applies; any of them fails the run. Make a patch by changing the code in a scratch
+worktree and saving `git diff` below the header. Remake a stale one the same way against the current code.
 
 ## issue-board in brief
 
