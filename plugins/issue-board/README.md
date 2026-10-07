@@ -386,7 +386,7 @@ told to deal with the sub-issues first.
 
 ## What Claude can do
 
-The board gives Claude eight tools:
+The board gives Claude nine tools:
 
 - `issues` reads: the board's list, one issue in full with its boxes,
   fields and latest ten comments, any issue by number even closed, a search
@@ -417,6 +417,8 @@ The board gives Claude eight tools:
 - `project_adopt` lets the board write to a project, or releases it, only
   when you ask. It always asks first; see
   [Letting the board write to a project](#letting-the-board-write-to-a-project).
+- `project_plan` proposes many changes at once as one plan; see
+  [Plans](#plans).
 
 Each tool that changes something goes through Claude Code's permission
 check before it touches GitHub, as any tool does. If you say no, or a rule
@@ -426,6 +428,37 @@ your issue, `start`, listing what an archive would take, and reading the
 status update. A rule that denies them still stands, and so does an
 organization's rule that requires asking. A transfer from a public repo to
 a private one, which GitHub won't undo, needs a second, confirmed call.
+
+### Plans
+
+Ask Claude to "prioritize my backlog" or "rank the Ready issues", and it can
+propose the whole change as one plan with `project_plan`, instead of one
+`issue_update` and one permission prompt per issue. Each change in a plan
+has a short reason. A plan can set Status, Priority and other project
+fields, add and remove labels and assignees, set the milestone and the epic,
+and move an issue in the project's order (`projectAfter`).
+
+The board checks the whole plan first: the issues are open on the board, the
+options, fields and milestones exist, and the board may write to the
+project. If anything is wrong, it refuses the plan and lists every problem
+at once, and nothing is shown or asked.
+
+A valid plan shows at once as a card at the top of `/issues`, and the band
+shows a `✦ PLAN` line with **Review**, which opens the pane:
+
+- The card has one row per change, grouped by issue, each with a box to
+  tick and Claude's reason. All rows start ticked.
+- **Apply** writes the ticked rows in order, then reads GitHub once. Rows
+  that went through leave the card, and so do unticked ones. A row that
+  failed stays, with why, so you can try it again or discard it.
+- **Discard** drops the plan. A new plan from Claude replaces the old one.
+
+Claude's call asks permission once, with the plan summed up by kind, such as
+`Status 3 · Priority 2 · order 4`. Saying yes applies the plan, so you can
+approve it from the phone app without the pane. Saying no changes nothing
+and leaves the plan on the card, to apply in part or discard. Every project
+write goes through the same write check as the other tools, so a project
+the board only reads refuses the plan.
 
 ## Commands
 

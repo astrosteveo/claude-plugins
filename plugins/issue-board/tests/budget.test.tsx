@@ -194,6 +194,13 @@ test('the budget: a refresh, a Start, an issue_update and an idle hour', async (
   expect(update.text).toMatch(/^- tool: REST 0, REST 304 0, GraphQL 1$/m)
   expect(update.text).toMatch(/^- tool results: \d+$/m)
 
+  // A plan of two changes, approved at its prompt: each change's own write, then one refresh for them both, not one each.
+  const plan = await measure(() =>
+    $.tool.call({ tool: 'mcp__issue-board__project_plan', issues: [{ number: 315, reason: 'Back to planned.', status: 'Backlog', priority: 'P1' }] }),
+  )
+  expect(calls(plan)).toEqual({ rest: 1, rest304: 1, graphql: 5 })
+  expect(plan.text).toMatch(/^- tool: REST 0, REST 304 0, GraphQL 3$/m)
+
   // An idle hour: a cheap check every five minutes, which answers 304 while nothing changed, and a full read every
   // fifteen. Nothing goes into Claude's context.
   const hour = await measure(() => clock.advance(60 * 60_000))
@@ -202,7 +209,7 @@ test('the budget: a refresh, a Start, an issue_update and an idle hour', async (
   expect(hour.context).toBe(0)
   expect(hour.text).toMatch(/^- poll: REST 0, REST 304 8, GraphQL 0$/m)
   expect(hour.text).toMatch(/^What the issue board cost since it loaded 1 h 0 min ago\.$/m)
-  expect(hour.text).toMatch(/^GraphQL points: 7, 7\.0 an hour\. 4,999 left until \d\d:\d\d\.$/m)
+  expect(hour.text).toMatch(/^GraphQL points: 8, 8\.0 an hour\. 4,999 left until \d\d:\d\d\.$/m)
 })
 
 test("the budget: setup's Apply", async ($, on) => {

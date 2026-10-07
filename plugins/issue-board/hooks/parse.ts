@@ -1802,6 +1802,7 @@ export const TOOLS: { name: string; what: string }[] = [
   { name: 'milestone', what: 'makes or changes a milestone' },
   { name: 'project_status', what: "reads or posts the project's status update" },
   { name: 'project_archive', what: 'archives Done items in the project' },
+  { name: 'project_plan', what: 'proposes many issue changes as one plan, which you approve once or apply in part from its card in the pane' },
   { name: 'project_adopt', what: 'lets the board write to a project, or releases it, when you ask, after a permission prompt' },
 ]
 
