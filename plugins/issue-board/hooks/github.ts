@@ -1,6 +1,6 @@
-import type { Ci, Comment, Issue, Project, ProjectField, ProjectView, PullRequest, StatusUpdate } from '../types'
+import type { Board, Ci, Comment, Issue, Milestone, Project, ProjectField, ProjectView, PullRequest, StatusUpdate } from '../types'
 import { BOX, checksOf } from './boxes'
-import { agoText } from './layout'
+import { agoText, weekly } from './layout'
 
 type RawLabel = { name: string; color?: string }
 type RawUser = { login: string }
@@ -345,3 +345,62 @@ export const prsFor = (issue: Issue, prs: PullRequest[]): PullRequest[] =>
 // The times under `field` in gh's JSON list, such as each issue's closedAt.
 export const timesOf = (json: string, field: string): string[] =>
   (JSON.parse(json) as Record<string, unknown>[]).flatMap(raw => (typeof raw[field] === 'string' ? [raw[field] as string] : []))
+
+// The gh call that lists the open pull requests, with every field the board shows of them.
+export const OPEN_PRS = [
+  'pr',
+  'list',
+  '--state',
+  'open',
+  '--limit',
+  '50',
+  '--json',
+  'number,title,url,author,headRefName,headRefOid,isDraft,statusCheckRollup,reviewDecision,additions,deletions,updatedAt,body,closingIssuesReferences,mergeStateStatus,reviewRequests',
+]
+
+// The last read, when its weekly counts are of this repo and younger than `maxAge`: a read keeps them rather than ask
+// again, as they change a little a day and reading them takes up to ten GraphQL searches. Null when they must be read.
+export const velocityKept = (before: Board | null, repo: string, now: number, maxAge: number): Board | null =>
+  before?.repo === repo && before.velocityAt !== undefined && now - before.velocityAt < maxAge ? before : null
+
+// What one full read gathered: the issues and the project over GraphQL, `issues` being those issues with each epic's
+// sub-issue order, the open pull requests and their open review threads, and the closed issues and merged pull requests
+// of the last weeks, which are null when `kept` holds the counts.
+export type FullRead = {
+  repo: string
+  graph: { issues: Issue[]; project: Project | null; types: string[]; labels?: string[] | undefined }
+  issues: Issue[]
+  prs: string
+  threads: Map<number, number>
+  closed: string | null
+  merged: string | null
+  milestones: Milestone[]
+  kept: Board | null
+  fetchedAt: number
+}
+
+// The board one full read makes.
+export const boardOf = ({ repo, graph, issues, prs, threads, closed, merged, milestones, kept, fetchedAt }: FullRead): Board => ({
+  repo,
+  issues,
+  prs: parsePrs(prs).map(pr => ({ ...pr, openThreads: threads.get(pr.number) ?? 0 })),
+  velocity:
+    kept && closed === null && merged === null
+      ? kept.velocity
+      : { closed: weekly(timesOf(closed ?? '[]', 'closedAt'), fetchedAt), merged: weekly(timesOf(merged ?? '[]', 'mergedAt'), fetchedAt) },
+  velocityAt: kept?.velocityAt ?? fetchedAt,
+  milestones,
+  issueTypes: graph.types,
+  ...(graph.labels ? { labels: graph.labels } : {}),
+  fetchedAt,
+  project: graph.project,
+})
+
+// GitHub refusing a read because the account's rate limit ran out.
+export const RATE_LIMITED = /rate limit/i
+
+// What the board says while the rate limit is out, until `until`: the error the pane shows, and the toast.
+export const rateLimitTexts = (until: number): { error: string; toast: string } => {
+  const at = new Date(until).toTimeString().slice(0, 5)
+  return { error: `GitHub's rate limit for this account ran out. The board reads again at ${at}.`, toast: `GitHub's rate limit ran out; the issue board waits until ${at}` }
+}

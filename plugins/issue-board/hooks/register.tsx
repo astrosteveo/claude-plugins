@@ -63,13 +63,19 @@ import {
   PRIORITIES,
   PROJECT_QUERY,
   UPDATE_FIELD,
-  areasOf,
+  NEEDS_PROJECT,
+  areaLabelArgs,
+  bugLabelArgs,
+  choicesAfterSetup,
+  inboxOf,
+  itemsIn,
+  markStep,
+  setupDone,
+  statusFieldOf,
   factsOf,
-  mergeStatuses,
   nextItemsOf,
   picksFor,
   projectOf,
-  rolesOf,
   stepsOf,
   suggestAreas,
   templatePrompt,
@@ -84,7 +90,10 @@ import {
   withSubIssuesBox,
 } from './boxes'
 import {
-  changesText,
+  changedText,
+  sameOwner,
+  settledOf,
+  transferRefusal,
   commandsOf,
   commentCommand,
   sameWorkOf,
@@ -108,6 +117,8 @@ import {
   liveEpicNotes,
 } from './epics'
 import { candidatesOf, planMoves, questionsOf } from './moves'
+import { assigneesOf, filedIssueOf, filedSaid, issueFieldsOf, milestoneNamed, parentAfter, projectStepOf, withFiled } from './filing'
+import type { Filed } from './filing'
 import type { Answer, Answers, Questions, Unmoved } from './moves'
 import {
   inboxTabOf,
@@ -124,14 +135,17 @@ import {
 } from './filters'
 import {
   THREADS_QUERY,
+  OPEN_PRS,
+  RATE_LIMITED,
+  boardOf,
+  rateLimitTexts,
+  velocityKept,
   commentsOf,
   graphqlData,
   nextPageOf,
   parseGraph,
   parseIssues,
-  parsePrs,
   threadsOf,
-  timesOf,
   TOOL_COMMENTS,
   commentsText,
   statusEnumOf,
@@ -145,7 +159,6 @@ import {
   since,
   sumProgress,
   summary,
-  weekly,
   roomAbove,
 } from './layout'
 import type { PaneElements } from './views/parts'
@@ -236,6 +249,8 @@ import {
   workerPrOf,
   workerPrompt,
 } from './workers'
+
+// ---- Atoms, and the constants the module shares ----
 
 const PANE = 'issue-board'
 // This plugin's name, as `next.origin` gives it for a `$` call of its own.
@@ -336,6 +351,15 @@ const mayAllow = (ceiling: 'allow' | 'ask' | 'deny' | undefined): boolean => cei
 // The pane's tabs as it offers them: the project's views with filters, then Inbox, All and Closed; or else the built-in
 // filters.
 const filtersFor = (project: Project | null | undefined): Tab[] => tabsOf(project)
+
+// How the pane opens: Esc steps back through it, a card first, then the pane (the ui.close hook).
+const OPEN = { id: PANE, title: 'Issues', focus: true, closeOnEscape: true } as const
+
+// What setting an issue's fields in the project needs of it: its number, its node, and its item there if it has one. An
+// issue on the board has them; one that isn't, such as one already closed, is read from GitHub.
+type Target = Pick<Issue, 'number' | 'id' | 'item'>
+
+// ---- gh and I/O: calls and what they cost, errors, access, the saved board ----
 
 // What the board has cost this session, for /issues stats. In memory only: a reload starts the counts over.
 const stats = newStats(Date.now())
@@ -531,151 +555,6 @@ const footerBranch = async ($: EngineInterface): Promise<string | null> => {
   return rows.find(row => row.key === PR_FOOTER)?.value === true ? here : null
 }
 
-// How many times Claude ran git or gh this session, and how many it had when the board last began reading GitHub: a
-// turn that ends with more reads it again.
-let touches = 0
-let readTouches = 0
-
-// The next step the prompt box suggests after Claude's last turn, if any. The engine's own guess gives way to it.
-let nextStep: string | null = null
-
-// Makes an issue the one Claude is on in this session: the system prompt names it, and the next prompts note what
-// changes on it from here.
-const track = async ($: EngineInterface, issue: Issue, started = false): Promise<void> => {
-  const sessionId = await $.session.id().catch(() => undefined)
-  const known = knownOf(issue, (await read($, board))?.prs ?? [])
-  await update($, working, () => ({ number: issue.number, title: issue.title, updatedAt: issue.updatedAt, ...(sessionId ? { sessionId } : {}), known, ...(started ? { started } : {}) }))
-  await save($)
-}
-
-// The branch the folder has checked out. Moving to a branch named for an issue open on the board, such as
-// `fix/315-glide`, makes that issue the one Claude is on, unless it already is in this session.
-const followBranch = async ($: EngineInterface, name: string | null): Promise<void> => {
-  const was = await read($, branch)
-  await update($, branch, () => name)
-  // Turned off, the branch still marks its pull request, but names no issue for Claude.
-  const number = name === was || !settings.followBranch ? null : issueOfBranch(name)
-  const issue = number === null ? undefined : (await read($, board))?.issues.find(one => one.number === number)
-  if (!issue) return
-  const doing = await read($, working)
-  if (doing?.number === issue.number && doing.sessionId !== undefined && doing.sessionId === (await $.session.id().catch(() => undefined))) return
-  await track($, issue)
-  $.ui.toast(`Working on #${issue.number} now: the branch ${name} is for it`)
-}
-
-// The next look at GitHub: soon while a pull request's CI runs, every five minutes otherwise (or as often as set), and
-// once the rate limit resets after it ran out. Each look sets the next one. Set to only when asked, there is none: the
-// board reads on /issues refresh, r, and after Claude's turns that ran git or gh.
-let timer: Timer | undefined
-const schedule = async ($: EngineInterface, now: Board | null): Promise<void> => {
-  timer?.cancel()
-  if (settings.refresh === null) return
-  const watching = now?.prs.some(pr => pr.ci === 'pending') ?? false
-  const clock = await nowOf($)
-  const wait = pausedUntil > clock ? pausedUntil - clock + 5_000 : watching ? WATCH_MS : settings.refresh * 60 * 1000
-  timer = $.clock.after(wait, () => void poll($))
-}
-
-// Until when GitHub's rate limit has run out for the account, if it has. Every session and agent shares the limit, so
-// the board reads nothing until then rather than spend what is left.
-let pausedUntil = 0
-const RATE_LIMITED = /rate limit/i
-
-// The ETag GitHub last answered each cheap check with, by path. A check sends it back, and an answer of 304, nothing
-// changed, doesn't count against the rate limit.
-const etags = new Map<string, string>()
-
-// What the cheap checks look at: the repo's issues and pull requests by their last change, which moves on a new one, an
-// edit, a comment, a label or a close, and the check runs of each pull request whose CI is running.
-const cheapChecksOf = (now: Board): string[] => [
-  `repos/${now.repo}/issues?state=all&sort=updated&direction=desc&per_page=10`,
-  ...now.prs.filter(pr => pr.ci === 'pending' && pr.sha).map(pr => `repos/${now.repo}/commits/${pr.sha}/check-runs?per_page=100`),
-]
-
-// Whether a REST read of `path` changed since the board last asked. True when it can't tell, so the board reads.
-const changed = async ($: EngineInterface, path: string): Promise<boolean> => {
-  const known = etags.get(path)
-  // Taken as the call goes out: the cause may be another by the time GitHub answers.
-  const cause = causeNow()
-  try {
-    const { stdout } = await $.process.run(['gh', 'api', '-i', ...(known ? ['-H', `If-None-Match: ${known}`] : []), path], { timeoutMs: 30_000 })
-    const status = /^HTTP\/[\d.]+ (\d{3})/m.exec(stdout)?.[1]
-    countCall(stats, cause, status === '304' ? 'rest304' : 'rest')
-    if (status === '304') return false
-    const tag = /^etag: *(.+)$/im.exec(stdout)?.[1]?.trim()
-    if (status === '200' && tag) etags.set(path, tag)
-    return true
-  } catch {
-    return true
-  }
-}
-
-// The timer's look at GitHub. A full read costs GraphQL points; the cheap checks cost none when nothing changed. So the
-// board reads in full when a check saw a change, or when its last full read is FULL_MS old. Another session's newer read
-// of the same repo is taken as it is.
-const poll = ($: EngineInterface): Promise<void> => within('poll', () => look($))
-
-const look = async ($: EngineInterface): Promise<void> => {
-  readTouches = touches
-  const now = await read($, board)
-  const clock = await nowOf($)
-  if (pausedUntil > clock) return schedule($, now)
-  if (!now || clock - now.fetchedAt >= FULL_MS) return refresh($)
-  const shared = await adopt($, now)
-  if (shared) return schedule($, shared)
-  const seen = await Promise.all(cheapChecksOf(now).map(path => changed($, path)))
-  if (seen.some(Boolean)) return refresh($)
-  schedule($, now)
-}
-
-// After a full read: the cheap checks learn GitHub's answer now, so the next look can tell whether it changed since.
-const prime = async ($: EngineInterface, now: Board): Promise<void> => {
-  await Promise.all(cheapChecksOf(now).map(path => changed($, path)))
-}
-
-// Another session's read of the same repo, saved since this one's: the board takes it rather than read GitHub again.
-// The saved copy has no bodies, so each issue keeps the body this board has for it while it is unchanged.
-const adopt = async ($: EngineInterface, now: Board): Promise<Board | null> => {
-  try {
-    const saved = ((await $.store.get(await keyOf($))) as Partial<Saved> | undefined)?.board
-    if (!saved || saved.repo !== now.repo || saved.fetchedAt <= now.fetchedAt) return null
-    const issues = saved.issues.map(issue => {
-      const mine = now.issues.find(one => one.number === issue.number)
-      return issue.body === '' && mine && mine.updatedAt === issue.updatedAt ? { ...issue, body: mine.body } : issue
-    })
-    const taken = { ...saved, issues }
-    await land($, now, taken, false)
-    return taken
-  } catch (cause) {
-    $.ui.log(`issue-board: couldn't read another session's board: ${messageOf(cause)}`, { to: 'debug' })
-    return null
-  }
-}
-
-// When the rate limit resets, as GraphQL itself says: it still answers this once the limit has run out. A minute from
-// now for a limit on how fast calls come, which resets sooner, or when GraphQL can't say.
-const resetOf = async ($: EngineInterface, message: string): Promise<number> => {
-  const soon = (await nowOf($)) + 60_000
-  if (/secondary/i.test(message)) return soon
-  try {
-    const data = graphqlData(await gh($, ['api', 'graphql', '-f', 'query={ rateLimit { resetAt } }'])) as { rateLimit?: { resetAt?: string } }
-    const at = Date.parse(data.rateLimit?.resetAt ?? '')
-    return Number.isNaN(at) ? soon : at
-  } catch {
-    return soon
-  }
-}
-
-// What one page of the issues query says about the rate limit: what it cost, and what is left.
-const costOf = (page: string): { cost: number; remaining: number; resetAt: string } | null => {
-  try {
-    const limit = (JSON.parse(page) as { data?: { rateLimit?: { cost: number; remaining: number; resetAt: string } } }).data?.rateLimit
-    return limit ?? null
-  } catch {
-    return null
-  }
-}
-
 // What the board keeps between sessions, one entry per repository: a cache of what it can read from GitHub again, and
 // nothing else. Every session on the repo rewrites this entry whole, so what the board may write to is a setting
 // (writeProjects), and the person's choices live under a key of their own (see Choices). `version` is SAVED_VERSION
@@ -690,6 +569,93 @@ type Saved = {
 }
 // Raise this when Saved or the Board it holds changes shape, so a new session reads GitHub rather than paint an old board.
 const SAVED_VERSION = 1
+
+let storeRoot: string | undefined
+const rootOf = async ($: EngineInterface): Promise<string> => {
+  if (storeRoot === undefined) {
+    const repo = await $.session.repo().catch(() => null)
+    storeRoot = repo?.root ?? (await $.session.root())
+  }
+  return storeRoot
+}
+const keyOf = async ($: EngineInterface): Promise<string> => `repo:${await rootOf($)}`
+
+// The one way the board sends GraphQL with variables: the query and its variables as JSON on stdin, which carries
+// lists and nulls as they are, and the answer's errors thrown. A read goes through gh(), which refuses a mutation; only
+// projectWrite passes `write`, once its check has let the write through.
+const postGraphql = async ($: EngineInterface, query: string, variables: Record<string, unknown>, write = false): Promise<Record<string, any>> => {
+  const args = ['api', 'graphql', '--input', '-']
+  const stdin = JSON.stringify({ query, variables })
+  return graphqlData(await (write ? runGh($, args, stdin) : gh($, args, stdin)))
+}
+
+// A GraphQL read sent as gh's `-f` fields, as the issues pages and the review threads are, answered as gh gave it once
+// its errors are checked.
+const getGraphql = async ($: EngineInterface, args: string[]): Promise<string> => {
+  const out = await gh($, args)
+  graphqlData(out)
+  return out
+}
+
+const save = async ($: EngineInterface): Promise<void> => {
+  try {
+    // Without the issues' bodies, which the next refresh brings back, to keep the store small.
+    const now = await read($, board)
+    const kept = now && { ...now, issues: now.issues.map(issue => ({ ...issue, body: '' })) }
+    const saved: Saved = {
+      version: SAVED_VERSION,
+      board: kept,
+      working: await read($, working),
+      dismissed: await read($, dismissed),
+      viewer: await read($, viewer),
+      sections: await read($, sections),
+    }
+    await $.store.set(await keyOf($), saved)
+  } catch (cause) {
+    $.ui.log(`issue-board: couldn't save the board: ${messageOf(cause)}`, { to: 'debug' })
+  }
+}
+
+// A new session paints the last board at once and still knows the issue Claude was on; a reload keeps its own. What a
+// refresh wrote meanwhile stays: it is newer than the saved copy.
+const restore = async ($: EngineInterface): Promise<void> => {
+  await loadAdoption($)
+  if ((await read($, board)) !== null) return
+  try {
+    const saved = (await $.store.get(await keyOf($))) as Partial<Saved> | undefined
+    if (!saved || saved.version !== SAVED_VERSION) return
+    if (saved.board) await update($, board, now => now ?? saved.board ?? null)
+    if (saved.working) await update($, working, now => now ?? saved.working ?? null)
+    if (saved.dismissed) await update($, dismissed, now => (now.length > 0 ? now : (saved.dismissed ?? [])))
+    if (saved.viewer) await update($, viewer, now => now ?? saved.viewer ?? null)
+    if (saved.sections) await update($, sections, now => (Object.keys(now).length > 0 ? now : (saved.sections ?? {})))
+  } catch (cause) {
+    $.ui.log(`issue-board: couldn't read the saved board: ${messageOf(cause)}`, { to: 'debug' })
+  }
+}
+
+// Check again: look, say what is left, and read GitHub once nothing is.
+const recheck = async ($: EngineInterface): Promise<void> => {
+  projectRefusal = undefined
+  const left = await checkAccess($)
+  $.ui.toast(left.length === 0 ? 'The issue board has what it needs.' : `Still missing: ${left.map(problem => problem.title).join(' · ')}`)
+  if (left.length === 0) void refresh($)
+}
+
+// Copies a problem's command, or the page its fix happens on, for the person to run or open.
+const copyFix = async ($: EngineInterface, problem: Problem, surface?: UiCopyArgs['surface']): Promise<void> => {
+  const text = problem.command ?? problem.url ?? problem.fix
+  const copied = await $.ui.copy({ text, ...(surface ? { surface } : {}) })
+  if (!copied.isCopied) $.ui.toast(`Couldn't copy it. ${problem.fix}`)
+  else $.ui.toast(problem.command ? `Copied \`${text}\`. Run it in a terminal, then press Check again.` : `Copied ${text}. Open it in the browser, then press Check again.`)
+}
+
+const dismissProblem = async ($: EngineInterface, problem: Problem): Promise<void> => {
+  await update($, dismissed, list => [...list.slice(-50), accessKey(problem)])
+  await save($)
+}
+
+// ---- Adoption and grants, and the person's other choices for the repo ----
 
 // The person's choices for the repo, kept apart from the shared entry, which is only a cache: `declined` the projects
 // whose prompt the person turned down, `statuses` the Status mapping setup, /issues statuses or Looks right saved, by
@@ -709,15 +675,6 @@ const WRITE_PROJECTS = 'issue-board.writeProjects'
 // The project last adopted in this module, so the board can name it before it reads it, as after setup made it.
 let lastAdopted: Adopted | null = null
 
-let storeRoot: string | undefined
-const rootOf = async ($: EngineInterface): Promise<string> => {
-  if (storeRoot === undefined) {
-    const repo = await $.session.repo().catch(() => null)
-    storeRoot = repo?.root ?? (await $.session.root())
-  }
-  return storeRoot
-}
-const keyOf = async ($: EngineInterface): Promise<string> => `repo:${await rootOf($)}`
 const choicesKeyOf = async ($: EngineInterface): Promise<string> => `choices:${await rootOf($)}`
 
 // The person's choices, read fresh. Empty when none are saved.
@@ -850,23 +807,6 @@ const projectWrite = async (
   const refusal = writeRefusal((await grantsNow($)).all, target)
   if (refusal) throw new Error(refusal)
   return postGraphql($, query, variables, true)
-}
-
-// The one way the board sends GraphQL with variables: the query and its variables as JSON on stdin, which carries
-// lists and nulls as they are, and the answer's errors thrown. A read goes through gh(), which refuses a mutation; only
-// projectWrite passes `write`, once its check has let the write through.
-const postGraphql = async ($: EngineInterface, query: string, variables: Record<string, unknown>, write = false): Promise<Record<string, any>> => {
-  const args = ['api', 'graphql', '--input', '-']
-  const stdin = JSON.stringify({ query, variables })
-  return graphqlData(await (write ? runGh($, args, stdin) : gh($, args, stdin)))
-}
-
-// A GraphQL read sent as gh's `-f` fields, as the issues pages and the review threads are, answered as gh gave it once
-// its errors are checked.
-const getGraphql = async ($: EngineInterface, args: string[]): Promise<string> => {
-  const out = await gh($, args)
-  graphqlData(out)
-  return out
 }
 
 // Whether the board may write to a project, for the work it does by itself, which skips a project it may not write
@@ -1064,40 +1004,158 @@ const planUnseen = (mode: string): string =>
   `The ${mode} permission mode settles prompts without showing them, and a plan needs the person to read it. ` +
   'The plan is on the card in /issues: ask the person to apply it there with Apply, or to switch to a mode that asks, and try again.'
 
-const save = async ($: EngineInterface): Promise<void> => {
+// `/issues statuses`: picking an option for a part.
+const pickStatus = ($: EngineInterface, role: Role, id: string | null): Promise<unknown> =>
+  update($, statusPicks, was => {
+    if (!was) return was
+    // One option plays one part: picking it for this role takes it from any other.
+    const picks: Roles = Object.fromEntries(Object.entries(was.picks).filter(([other, one]) => other !== role && one !== id))
+    return { ...was, picks: id === null ? picks : { ...picks, [role]: id } }
+  })
+
+// ---- Refresh and poll, with the movers ----
+
+// How many times Claude ran git or gh this session, and how many it had when the board last began reading GitHub: a
+// turn that ends with more reads it again.
+let touches = 0
+let readTouches = 0
+
+// The next step the prompt box suggests after Claude's last turn, if any. The engine's own guess gives way to it.
+let nextStep: string | null = null
+
+// Makes an issue the one Claude is on in this session: the system prompt names it, and the next prompts note what
+// changes on it from here.
+const track = async ($: EngineInterface, issue: Issue, started = false): Promise<void> => {
+  const sessionId = await $.session.id().catch(() => undefined)
+  const known = knownOf(issue, (await read($, board))?.prs ?? [])
+  await update($, working, () => ({ number: issue.number, title: issue.title, updatedAt: issue.updatedAt, ...(sessionId ? { sessionId } : {}), known, ...(started ? { started } : {}) }))
+  await save($)
+}
+
+// The branch the folder has checked out. Moving to a branch named for an issue open on the board, such as
+// `fix/315-glide`, makes that issue the one Claude is on, unless it already is in this session.
+const followBranch = async ($: EngineInterface, name: string | null): Promise<void> => {
+  const was = await read($, branch)
+  await update($, branch, () => name)
+  // Turned off, the branch still marks its pull request, but names no issue for Claude.
+  const number = name === was || !settings.followBranch ? null : issueOfBranch(name)
+  const issue = number === null ? undefined : (await read($, board))?.issues.find(one => one.number === number)
+  if (!issue) return
+  const doing = await read($, working)
+  if (doing?.number === issue.number && doing.sessionId !== undefined && doing.sessionId === (await $.session.id().catch(() => undefined))) return
+  await track($, issue)
+  $.ui.toast(`Working on #${issue.number} now: the branch ${name} is for it`)
+}
+
+// The next look at GitHub: soon while a pull request's CI runs, every five minutes otherwise (or as often as set), and
+// once the rate limit resets after it ran out. Each look sets the next one. Set to only when asked, there is none: the
+// board reads on /issues refresh, r, and after Claude's turns that ran git or gh.
+let timer: Timer | undefined
+const schedule = async ($: EngineInterface, now: Board | null): Promise<void> => {
+  timer?.cancel()
+  if (settings.refresh === null) return
+  const watching = now?.prs.some(pr => pr.ci === 'pending') ?? false
+  const clock = await nowOf($)
+  const wait = pausedUntil > clock ? pausedUntil - clock + 5_000 : watching ? WATCH_MS : settings.refresh * 60 * 1000
+  timer = $.clock.after(wait, () => void poll($))
+}
+
+// Until when GitHub's rate limit has run out for the account, if it has. Every session and agent shares the limit, so
+// the board reads nothing until then rather than spend what is left.
+let pausedUntil = 0
+
+// The ETag GitHub last answered each cheap check with, by path. A check sends it back, and an answer of 304, nothing
+// changed, doesn't count against the rate limit.
+const etags = new Map<string, string>()
+
+// What the cheap checks look at: the repo's issues and pull requests by their last change, which moves on a new one, an
+// edit, a comment, a label or a close, and the check runs of each pull request whose CI is running.
+const cheapChecksOf = (now: Board): string[] => [
+  `repos/${now.repo}/issues?state=all&sort=updated&direction=desc&per_page=10`,
+  ...now.prs.filter(pr => pr.ci === 'pending' && pr.sha).map(pr => `repos/${now.repo}/commits/${pr.sha}/check-runs?per_page=100`),
+]
+
+// Whether a REST read of `path` changed since the board last asked. True when it can't tell, so the board reads.
+const changed = async ($: EngineInterface, path: string): Promise<boolean> => {
+  const known = etags.get(path)
+  // Taken as the call goes out: the cause may be another by the time GitHub answers.
+  const cause = causeNow()
   try {
-    // Without the issues' bodies, which the next refresh brings back, to keep the store small.
-    const now = await read($, board)
-    const kept = now && { ...now, issues: now.issues.map(issue => ({ ...issue, body: '' })) }
-    const saved: Saved = {
-      version: SAVED_VERSION,
-      board: kept,
-      working: await read($, working),
-      dismissed: await read($, dismissed),
-      viewer: await read($, viewer),
-      sections: await read($, sections),
-    }
-    await $.store.set(await keyOf($), saved)
-  } catch (cause) {
-    $.ui.log(`issue-board: couldn't save the board: ${messageOf(cause)}`, { to: 'debug' })
+    const { stdout } = await $.process.run(['gh', 'api', '-i', ...(known ? ['-H', `If-None-Match: ${known}`] : []), path], { timeoutMs: 30_000 })
+    const status = /^HTTP\/[\d.]+ (\d{3})/m.exec(stdout)?.[1]
+    countCall(stats, cause, status === '304' ? 'rest304' : 'rest')
+    if (status === '304') return false
+    const tag = /^etag: *(.+)$/im.exec(stdout)?.[1]?.trim()
+    if (status === '200' && tag) etags.set(path, tag)
+    return true
+  } catch {
+    return true
   }
 }
 
-// A new session paints the last board at once and still knows the issue Claude was on; a reload keeps its own. What a
-// refresh wrote meanwhile stays: it is newer than the saved copy.
-const restore = async ($: EngineInterface): Promise<void> => {
-  await loadAdoption($)
-  if ((await read($, board)) !== null) return
+// The timer's look at GitHub. A full read costs GraphQL points; the cheap checks cost none when nothing changed. So the
+// board reads in full when a check saw a change, or when its last full read is FULL_MS old. Another session's newer read
+// of the same repo is taken as it is.
+const poll = ($: EngineInterface): Promise<void> => within('poll', () => look($))
+
+const look = async ($: EngineInterface): Promise<void> => {
+  readTouches = touches
+  const now = await read($, board)
+  const clock = await nowOf($)
+  if (pausedUntil > clock) return schedule($, now)
+  if (!now || clock - now.fetchedAt >= FULL_MS) return refresh($)
+  const shared = await adopt($, now)
+  if (shared) return schedule($, shared)
+  const seen = await Promise.all(cheapChecksOf(now).map(path => changed($, path)))
+  if (seen.some(Boolean)) return refresh($)
+  schedule($, now)
+}
+
+// After a full read: the cheap checks learn GitHub's answer now, so the next look can tell whether it changed since.
+const prime = async ($: EngineInterface, now: Board): Promise<void> => {
+  await Promise.all(cheapChecksOf(now).map(path => changed($, path)))
+}
+
+// Another session's read of the same repo, saved since this one's: the board takes it rather than read GitHub again.
+// The saved copy has no bodies, so each issue keeps the body this board has for it while it is unchanged.
+const adopt = async ($: EngineInterface, now: Board): Promise<Board | null> => {
   try {
-    const saved = (await $.store.get(await keyOf($))) as Partial<Saved> | undefined
-    if (!saved || saved.version !== SAVED_VERSION) return
-    if (saved.board) await update($, board, now => now ?? saved.board ?? null)
-    if (saved.working) await update($, working, now => now ?? saved.working ?? null)
-    if (saved.dismissed) await update($, dismissed, now => (now.length > 0 ? now : (saved.dismissed ?? [])))
-    if (saved.viewer) await update($, viewer, now => now ?? saved.viewer ?? null)
-    if (saved.sections) await update($, sections, now => (Object.keys(now).length > 0 ? now : (saved.sections ?? {})))
+    const saved = ((await $.store.get(await keyOf($))) as Partial<Saved> | undefined)?.board
+    if (!saved || saved.repo !== now.repo || saved.fetchedAt <= now.fetchedAt) return null
+    const issues = saved.issues.map(issue => {
+      const mine = now.issues.find(one => one.number === issue.number)
+      return issue.body === '' && mine && mine.updatedAt === issue.updatedAt ? { ...issue, body: mine.body } : issue
+    })
+    const taken = { ...saved, issues }
+    await land($, now, taken, false)
+    return taken
   } catch (cause) {
-    $.ui.log(`issue-board: couldn't read the saved board: ${messageOf(cause)}`, { to: 'debug' })
+    $.ui.log(`issue-board: couldn't read another session's board: ${messageOf(cause)}`, { to: 'debug' })
+    return null
+  }
+}
+
+// When the rate limit resets, as GraphQL itself says: it still answers this once the limit has run out. A minute from
+// now for a limit on how fast calls come, which resets sooner, or when GraphQL can't say.
+const resetOf = async ($: EngineInterface, message: string): Promise<number> => {
+  const soon = (await nowOf($)) + 60_000
+  if (/secondary/i.test(message)) return soon
+  try {
+    const data = graphqlData(await gh($, ['api', 'graphql', '-f', 'query={ rateLimit { resetAt } }'])) as { rateLimit?: { resetAt?: string } }
+    const at = Date.parse(data.rateLimit?.resetAt ?? '')
+    return Number.isNaN(at) ? soon : at
+  } catch {
+    return soon
+  }
+}
+
+// What one page of the issues query says about the rate limit: what it cost, and what is left.
+const costOf = (page: string): { cost: number; remaining: number; resetAt: string } | null => {
+  try {
+    const limit = (JSON.parse(page) as { data?: { rateLimit?: { cost: number; remaining: number; resetAt: string } } }).data?.rateLimit
+    return limit ?? null
+  } catch {
+    return null
   }
 }
 
@@ -1169,14 +1227,6 @@ let refreshing: Promise<void> | undefined
 let restarts = 0
 let restarted = false
 
-// The copies of issues and pull requests sent with a prompt in this session, by number, each with what it stood for
-// (copyKeyOf). Kept in memory, not in state or the store: a compaction or /clear empties it, as Claude no longer has
-// those copies, and a reload starting it over only means a copy goes once more.
-const sentCopies = new Map<number, string>()
-
-// How many `#123`s of one prompt the board looks at: past the copies it carries, the rest are named in one line.
-const MENTIONS_READ = 20
-
 // Reads GitHub into the board. A refresh asked for while one runs waits for that one. `seen`: the refresh follows
 // Claude's own gh write, so the issue it is on changed by its hand, not news.
 const refresh = ($: EngineInterface, seen = false): Promise<void> => {
@@ -1219,20 +1269,11 @@ const readGitHub = async ($: EngineInterface, seen: boolean): Promise<void> => {
     const repo = await repoNow($)
     const listIssues = (args: string[]) => (repo.hasIssuesEnabled ? gh($, ['issue', 'list', ...args]) : Promise.resolve('[]'))
     const [owner = '', name = ''] = repo.nameWithOwner.split('/')
-    // The weekly counts change a little a day, and reading them takes up to ten GraphQL searches: kept for an hour.
-    const kept = before?.repo === repo.nameWithOwner && before.velocityAt !== undefined && (await nowOf($)) - before.velocityAt < VELOCITY_MS ? before : null
+    // The weekly counts are kept for an hour.
+    const kept = velocityKept(before, repo.nameWithOwner, await nowOf($), VELOCITY_MS)
     const [graph, prs, threads, closed, merged, login, current, milestones] = await Promise.all([
       repo.hasIssuesEnabled ? fetchIssues($, repo.nameWithOwner) : Promise.resolve({ issues: [], project: null, types: [], labels: undefined }),
-      gh($, [
-        'pr',
-        'list',
-        '--state',
-        'open',
-        '--limit',
-        '50',
-        '--json',
-        'number,title,url,author,headRefName,headRefOid,isDraft,statusCheckRollup,reviewDecision,additions,deletions,updatedAt,body,closingIssuesReferences,mergeStateStatus,reviewRequests',
-      ]),
+      gh($, OPEN_PRS),
       // Review threads still open on each pull request; without them, the rows just don't count threads.
       getGraphql($, ['api', 'graphql', '-f', `owner=${owner}`, '-f', `name=${name}`, '-f', `query=${THREADS_QUERY}`]).then(threadsOf, () => new Map<number, number>()),
       kept ? null : listIssues(['--state', 'closed', '--search', `closed:>=${from}`, '--limit', '500', '--json', 'closedAt']),
@@ -1243,34 +1284,9 @@ const readGitHub = async ($: EngineInterface, seen: boolean): Promise<void> => {
       // The open milestones, over REST; the last read's stand when they can't be read.
       repoMilestones($, repo.nameWithOwner).catch(() => before?.milestones ?? []),
     ])
-    // Each open epic's sub-issues in GitHub's order, over REST; an epic whose order can't be read keeps the board's own.
-    const issues = await Promise.all(
-      graph.issues.map(async issue => {
-        if ((issue.subIssues?.total ?? 0) === 0) return issue
-        try {
-          const listed = JSON.parse(await gh($, ['api', `repos/${repo.nameWithOwner}/issues/${issue.number}/sub_issues?per_page=100`])) as { number: number }[]
-          return { ...issue, subOrder: listed.map(one => one.number) }
-        } catch {
-          return issue
-        }
-      }),
-    )
+    const issues = await withSubOrder($, repo.nameWithOwner, graph.issues)
     const fetchedAt = await nowOf($)
-    const next: Board = {
-      repo: repo.nameWithOwner,
-      issues,
-      prs: parsePrs(prs).map(pr => ({ ...pr, openThreads: threads.get(pr.number) ?? 0 })),
-      velocity:
-        kept && closed === null && merged === null
-          ? kept.velocity
-          : { closed: weekly(timesOf(closed ?? '[]', 'closedAt'), fetchedAt), merged: weekly(timesOf(merged ?? '[]', 'mergedAt'), fetchedAt) },
-      velocityAt: kept?.velocityAt ?? fetchedAt,
-      milestones,
-      issueTypes: graph.types,
-      ...(graph.labels ? { labels: graph.labels } : {}),
-      fetchedAt,
-      project: graph.project,
-    }
+    const next = boardOf({ repo: repo.nameWithOwner, graph, issues, prs, threads, closed, merged, milestones, kept, fetchedAt })
     after = next
     if (login !== known) await update($, viewer, () => login)
     await land($, before, next, seen)
@@ -1283,22 +1299,41 @@ const readGitHub = async ($: EngineInterface, seen: boolean): Promise<void> => {
     const calls = stats.calls['full read'] ?? spent.calls
     stats.lastRead = { at: fetchedAt, calls: minus(calls, spent.calls), points: stats.points - spent.points }
   } catch (cause) {
-    const message = messageOf(cause)
-    repoInfo = undefined
-    if (RATE_LIMITED.test(message)) {
-      const was = pausedUntil
-      const clock = await nowOf($)
-      pausedUntil = await resetOf($, message)
-      const at = new Date(pausedUntil).toTimeString().slice(0, 5)
-      await update($, error, () => `GitHub's rate limit for this account ran out. The board reads again at ${at}.`)
-      if (was <= clock) $.ui.toast(`GitHub's rate limit ran out; the issue board waits until ${at}`)
-    } else {
-      await update($, error, () => message)
-      void checkAccess($, message)
-    }
+    await readFailed($, messageOf(cause))
   } finally {
     await update($, loading, () => false)
     schedule($, after)
+  }
+}
+
+// Each open epic's sub-issues in GitHub's order, over REST; an epic whose order can't be read keeps the board's own.
+const withSubOrder = ($: EngineInterface, repo: string, issues: Issue[]): Promise<Issue[]> =>
+  Promise.all(
+    issues.map(async issue => {
+      if ((issue.subIssues?.total ?? 0) === 0) return issue
+      try {
+        const listed = JSON.parse(await gh($, ['api', `repos/${repo}/issues/${issue.number}/sub_issues?per_page=100`])) as { number: number }[]
+        return { ...issue, subOrder: listed.map(one => one.number) }
+      } catch {
+        return issue
+      }
+    }),
+  )
+
+// A full read that failed: a rate limit pauses the board until it resets, and anything else shows, and may be a
+// missing permission.
+const readFailed = async ($: EngineInterface, message: string): Promise<void> => {
+  repoInfo = undefined
+  if (RATE_LIMITED.test(message)) {
+    const was = pausedUntil
+    const clock = await nowOf($)
+    pausedUntil = await resetOf($, message)
+    const said = rateLimitTexts(pausedUntil)
+    await update($, error, () => said.error)
+    if (was <= clock) $.ui.toast(said.toast)
+  } else {
+    await update($, error, () => message)
+    void checkAccess($, message)
   }
 }
 
@@ -1456,6 +1491,88 @@ const applyMoves = async ($: EngineInterface, before: Board | null, next: Board)
   if (notes.length > 0) await update($, epicNotes, list => [...list.filter(one => !notes.some(note => note.key === one.key)), ...notes].slice(-20))
 }
 
+// Reads GitHub again straight after a change, waiting out a refresh already under way, which may have read GitHub
+// before the change. `seen`: the change was the person's or Claude's own, so the band doesn't call it news.
+const refreshAfter = async ($: EngineInterface): Promise<void> => {
+  await settle($)
+  await refresh($, true)
+}
+
+// Waits out a refresh under way, up to ten seconds.
+const settle = async ($: EngineInterface): Promise<void> => {
+  for (let tries = 0; tries < 50 && refreshing; tries += 1) await $.clock.sleep(200)
+}
+
+// A GitHub event for a subscribed pull request (CI finished, merged, reviewed, commented): the board reads GitHub at
+// once, when the event is about this repo, rather than at its next poll.
+const eventArrived = async ($: EngineInterface, data: Record<string, unknown>): Promise<void> => {
+  const repo = (await read($, board))?.repo
+  const named = eventRepoOf(data)
+  if (!repo || (named && named.toLowerCase() !== repo.toLowerCase())) return
+  await settle($)
+  await refresh($)
+}
+
+// The CI runs being watched, by id: one `gh run watch` each, for as long as the run goes. Unloading the module ends
+// them, and a new load starts with none.
+const watching = new Set<number>()
+
+// Looks for CI runs under way on the branch checked out, and watches each it isn't watching yet. Answers whether any is
+// under way.
+const watchRuns = async ($: EngineInterface): Promise<boolean> => {
+  const here = await read($, branch)
+  if (!here) return false
+  try {
+    const live = liveRunsOf(await gh($, ['run', 'list', '--branch', here, '--limit', '10', '--json', 'databaseId,status,workflowName']))
+    for (const run of live.slice(0, 3)) if (!watching.has(run.id)) void watchRun($, run, here)
+    return live.length > 0
+  } catch (cause) {
+    $.ui.log(`issue-board: couldn't list the CI runs on ${here}: ${messageOf(cause)}`, { to: 'debug' })
+    return false
+  }
+}
+
+// A push starts CI a few seconds later: the board looks a few times, until a run turns up.
+const lookForRuns = async ($: EngineInterface): Promise<void> => {
+  try {
+    for (let tries = 0; tries < 4; tries += 1) {
+      await $.clock.sleep(15_000)
+      if (await watchRuns($)) return
+    }
+  } catch {
+    // The module unloaded while it waited: the next load looks again when CI shows as running.
+  }
+}
+
+// Watches one run with `gh run watch`, which draws it again every 15 seconds until it ends: each drawing updates the
+// run's progress on the board. Its end reads GitHub again, so the pull request shows how it went. Each drawing costs
+// about three REST calls, from the same hourly limit as the cheap checks, so it doesn't draw more often.
+const watchRun = async ($: EngineInterface, run: { id: number; workflow: string }, runBranch: string): Promise<void> => {
+  watching.add(run.id)
+  const fresh: RunWatch = { id: run.id, workflow: run.workflow, branch: runBranch, done: 0, total: 0, failed: 0, running: null, step: null }
+  await update($, runs, list => [...list.filter(one => one.id !== run.id), fresh])
+  try {
+    let seen = ''
+    for await (const { text } of $.process.spawn({ argv: ['gh', 'run', 'watch', String(run.id), '--interval', '15'] })) {
+      // Each drawing opens with this line, and counts as the three REST calls it takes.
+      const drawings = text.match(/Refreshing run status/g)?.length ?? 0
+      for (let call = 0; call < drawings * 3; call++) countCall(stats, 'other', 'rest')
+      seen = (seen + text).slice(-20_000)
+      const progress = runProgressOf(seen)
+      if (progress) await update($, runs, list => list.map(one => (one.id === run.id ? { ...one, ...progress } : one)))
+    }
+  } catch (cause) {
+    $.ui.log(`issue-board: couldn't watch CI run ${run.id}: ${messageOf(cause)}`, { to: 'debug' })
+  } finally {
+    watching.delete(run.id)
+    await update($, runs, list => list.filter(one => one.id !== run.id))
+    await settle($)
+    await refresh($)
+  }
+}
+
+// ---- Project writes, and the other reads and writes of issues ----
+
 // Puts an issue read straight from GitHub on the board. The change is the person's or Claude's own, so the issue
 // Claude is on takes its new time and the band doesn't call it news.
 const take = async ($: EngineInterface, fresh: Partial<Issue> & Pick<Issue, 'number' | 'updatedAt'>): Promise<void> => {
@@ -1503,34 +1620,6 @@ const tick = ($: EngineInterface, number: number, boxes: number[], done: boolean
   ticking = run.catch(() => undefined)
   return run
 }
-
-// Check again: look, say what is left, and read GitHub once nothing is.
-const recheck = async ($: EngineInterface): Promise<void> => {
-  projectRefusal = undefined
-  const left = await checkAccess($)
-  $.ui.toast(left.length === 0 ? 'The issue board has what it needs.' : `Still missing: ${left.map(problem => problem.title).join(' · ')}`)
-  if (left.length === 0) void refresh($)
-}
-
-// Copies a problem's command, or the page its fix happens on, for the person to run or open.
-const copyFix = async ($: EngineInterface, problem: Problem, surface?: UiCopyArgs['surface']): Promise<void> => {
-  const text = problem.command ?? problem.url ?? problem.fix
-  const copied = await $.ui.copy({ text, ...(surface ? { surface } : {}) })
-  if (!copied.isCopied) $.ui.toast(`Couldn't copy it. ${problem.fix}`)
-  else $.ui.toast(problem.command ? `Copied \`${text}\`. Run it in a terminal, then press Check again.` : `Copied ${text}. Open it in the browser, then press Check again.`)
-}
-
-const dismissProblem = async ($: EngineInterface, problem: Problem): Promise<void> => {
-  await update($, dismissed, list => [...list.slice(-50), accessKey(problem)])
-  await save($)
-}
-
-// How the pane opens: Esc steps back through it, a card first, then the pane (the ui.close hook).
-const OPEN = { id: PANE, title: 'Issues', focus: true, closeOnEscape: true } as const
-
-// What setting an issue's fields in the project needs of it: its number, its node, and its item there if it has one. An
-// issue on the board has them; one that isn't, such as one already closed, is read from GitHub.
-type Target = Pick<Issue, 'number' | 'id' | 'item'>
 
 // Sets Status or Priority on an issue in the repo's project, adding the issue to the project first when it isn't in it.
 // An issue's item in the project, added to the project first when it has none.
@@ -1615,52 +1704,6 @@ const setField = async ($: EngineInterface, issue: Target, field: 'status' | 'pr
   return option.name
 }
 
-// Start, on GitHub too: the issue moves to In progress in the project and is assigned to the person, so the project
-// says who is on what. Then the issue is read again, so the band doesn't call these changes news. Its epic follows, by
-// its own setting.
-const claim = async ($: EngineInterface, issue: Issue): Promise<void> => {
-  // Turned off, Start leaves the issue's assignees and Status as they are.
-  if (settings.claimOnStart) await claimIssue($, issue)
-  await startEpic($, issue)
-}
-
-// A sub-issue started: its epic, still waiting in the Inbox, Backlog or Ready, moves to In progress with it, so the
-// project shows the epic under way. An epic further along stays where it is.
-const startEpic = async ($: EngineInterface, issue: Issue): Promise<void> => {
-  if (!settings.autoMove) return
-  const now = await read($, board)
-  const epic = now ? epicToStart(now.issues, issue, now.project) : undefined
-  const started = startedOf(now?.project)
-  if (!epic || !started || !now?.project || !(await mayWrite($, now.project))) return
-  try {
-    await setField($, epic, 'status', started.name)
-    moved.push(`#${epic.number} moved to ${started.name}: its sub-issue #${issue.number} was started.`)
-  } catch (cause) {
-    $.ui.toast(unmovedText(started.name, [{ number: epic.number, message: messageOf(cause) }]))
-  }
-}
-
-const claimIssue = async ($: EngineInterface, issue: Issue): Promise<void> => {
-  const failures: string[] = []
-  const project = (await read($, board))?.project
-  // The Status moves only in a project the person let the board write to; the issue is assigned either way.
-  const started = project && (await mayWrite($, project)) ? startedOf(project) : undefined
-  if (started && issue.status !== started.name) await setField($, issue, 'status', started.name).catch((cause: unknown) => void failures.push(messageOf(cause)))
-  const me = await read($, viewer)
-  if (!me || !issue.assignees.includes(me)) {
-    await gh($, ['issue', 'edit', String(issue.number), '--add-assignee', '@me']).catch((cause: unknown) => void failures.push(messageOf(cause)))
-  }
-  try {
-    const [fresh] = parseIssues(`[${await gh($, ['issue', 'view', String(issue.number), '--json', ISSUE_FIELDS])}]`)
-    if (fresh) await take($, fresh)
-  } catch (cause) {
-    failures.push(messageOf(cause))
-  }
-  if (failures.length === 0) return
-  $.ui.toast(`Started #${issue.number}, but couldn't update GitHub: ${failures[0]}`)
-  if (failures.some(failure => ACCESS_ERROR.test(failure))) void checkAccess($, failures.join('\n'))
-}
-
 // An issue's REST id, by number. An issue that doesn't exist fails by its number, so Claude reads which one it was.
 const restIssueId = async ($: EngineInterface, repo: string, number: number): Promise<string> => {
   try {
@@ -1698,17 +1741,6 @@ const moveInProject = async ($: EngineInterface, number: number, beside: number 
   await projectWrite($, project, MOVE_ITEM, { project: project.id, item: move.item, after: move.after?.item ?? null })
   await update($, board, was => was && { ...was, issues: placedAfter(was.issues, number, move.after?.number ?? null) })
   await save($)
-}
-
-// The repo an issue moves to, as `owner/name`: a bare name is the same owner's, and another owner's is refused, so an
-// issue doesn't leave the owner's hands by a slip.
-const sameOwner = (repo: string, target: string): string => {
-  const owner = repo.split('/')[0] ?? ''
-  const [first = '', second] = target.split('/')
-  const full = second === undefined ? `${owner}/${first}` : target
-  if (full.split('/')[0]?.toLowerCase() !== owner.toLowerCase()) throw new Error(`an issue moves only to another of ${owner}'s repos, not to ${target}`)
-  if (full.toLowerCase() === repo.toLowerCase()) throw new Error(`the issue is in ${repo} already`)
-  return full
 }
 
 // The repo's issue type a name stands for, ignoring case; or why it can't be one.
@@ -1991,17 +2023,87 @@ const readProject = async ($: EngineInterface, project: Project, status: string,
   }
 }
 
-// The issues closed lately, for the pane's Closed filter: read when the filter is chosen, over REST.
-const readRecent = async ($: EngineInterface): Promise<void> => {
-  const repo = (await read($, board))?.repo
-  if (!repo) return
+// A Status or Priority picked on a card.
+const pick = async ($: EngineInterface, issue: Issue, field: 'status' | 'priority', name: string): Promise<void> => {
   try {
-    const items = JSON.parse(await gh($, ['api', `repos/${repo}/issues?state=closed&sort=updated&direction=desc&per_page=30`])) as unknown[]
-    await update($, recent, () => ({ items: foundOf(items), at: Date.now() }))
+    await setField($, issue, field, name)
+    $.ui.toast(`#${issue.number} is ${name} now`)
   } catch (cause) {
-    await update($, recent, was => ({ items: was?.items ?? [], at: Date.now(), failed: messageOf(cause) }))
+    toastFailure($, `Couldn't change #${issue.number}`, cause)
   }
 }
+
+// The task Claude completed, its box ticked from the band.
+const tickTask = async ($: EngineInterface, task: BoxTask): Promise<void> => {
+  const issue = (await read($, board))?.issues.find(one => one.number === task.number)
+  const at = issue && boxOf(issue, task)
+  try {
+    if (!at) throw new Error(`#${task.number} has no box "${fit(task.text, 40)}" open on the board`)
+    await tick($, task.number, [at.box], true)
+    await update($, tasks, list => list.filter(one => one.id !== task.id))
+    $.ui.toast(`Ticked box ${at.box} on #${task.number}`)
+  } catch (cause) {
+    toastFailure($, `Couldn't tick the box on #${task.number}`, cause)
+  }
+}
+
+// An issue the board doesn't hold, such as one a merge just closed: its node and its item in the board's project, read
+// from GitHub. It has no item when it was never in the project; setting a field adds it.
+const offBoard = async ($: EngineInterface, number: number): Promise<Target> => {
+  const project = (await read($, board))?.project
+  if (!project) throw new Error("the board reads no project for this repo, so it can't set its fields")
+  const { id } = JSON.parse(await gh($, ['issue', 'view', String(number), '--json', 'id'])) as { id: string }
+  const found = (await postGraphql($, ISSUE_ITEMS, { issue: id })) as { node?: { projectItems?: { nodes?: { id: string; project: { id: string } }[] } } }
+  return { number, id, item: found.node?.projectItems?.nodes?.find(one => one.project.id === project.id)?.id ?? null }
+}
+
+// Makes a change to an issue, from its card or from Claude's issue_update tool: Status and Priority in the project,
+// then the gh edit, comment and close, then the board read again so it shows. Answers what it did. A plan makes many
+// changes and reads the board once after them all, so it passes `refresh` false.
+const applyChanges = async ($: EngineInterface, number: number, changes: IssueChanges, refresh$ = true): Promise<string> => {
+  const issue = (await read($, board))?.issues.find(one => one.number === number)
+  const fields = changes.fields && Object.keys(changes.fields).length > 0 ? changes.fields : null
+  // A closed issue is set through its item in the project all the same. Its Status or Priority may already be what was
+  // asked, as when the board moved it to Done as it closed: that is said, and nothing is written.
+  const target = issue ?? (changes.status || changes.priority || fields ? await offBoard($, number) : null)
+  const current = !issue && target?.item ? itemValuesOf(await postGraphql($, ITEM_VALUES, { item: target.item })) : {}
+  const settled = settledOf(number, changes, current)
+  if (target) for (const [field, value] of settled.set) await setField($, target, field, value)
+  if (fields && target) await setFields($, target, fields)
+  const repo = (await read($, board))?.repo
+  if (repo && (changes.title || changes.body !== undefined || changes.addBoxes?.length || changes.rewordBoxes?.length)) await rewrite($, repo, number, changes)
+  const made = repo && changes.addLabels?.length ? await ensureLabels($, repo, changes.addLabels) : []
+  if (repo && changes.transferTo) {
+    changes.transferTo = sameOwner(repo, changes.transferTo)
+    const [from = false, to = false] = await Promise.all([repo, changes.transferTo].map(async one => (await gh($, ['api', `repos/${one}`, '--jq', '.private'])).trim() === 'true'))
+    const refusal = transferRefusal(number, repo, changes.transferTo, { from, to }, Boolean(changes.confirmTransfer))
+    if (refusal) throw new Error(refusal)
+  }
+  for (const command of commandsOf(number, changes, repo)) await gh($, command.argv, command.stdin)
+  if (changes.transferTo) {
+    await update($, board, was => was && { ...was, issues: was.issues.filter(one => one.number !== number) })
+    await save($)
+  }
+  if (repo && changes.type !== undefined) await setType($, repo, number, changes.type)
+  if (repo && (changes.moveBefore || changes.moveAfter)) await reorder($, repo, number, (changes.moveBefore ?? changes.moveAfter) as number, Boolean(changes.moveBefore))
+  if (changes.projectAfter !== undefined) await moveInProject($, number, changes.projectAfter || null, false)
+  if (repo && changes.duplicateOf) await closeAsDuplicate($, repo, number, changes.duplicateOf)
+  if (repo && changes.addBlockedBy?.length) await block($, repo, number, changes.addBlockedBy, true)
+  if (repo && changes.removeBlockedBy?.length) await block($, repo, number, changes.removeBlockedBy, false)
+  if (refresh$) await refreshAfter($)
+  return changedText(number, changes, settled, made)
+}
+
+// A change made on a card: said in a toast, and an error that may be a missing permission checked.
+const change = async ($: EngineInterface, number: number, changes: IssueChanges): Promise<void> => {
+  try {
+    $.ui.toast(await applyChanges($, number, changes))
+  } catch (cause) {
+    toastFailure($, `Couldn't change #${number}`, cause)
+  }
+}
+
+// ---- Capture and filing ----
 
 // Files an issue for Claude's issue_create tool. REST does what it can, which spends nothing of the GraphQL limit the
 // board reads with: the issue with its labels, assignees and milestone in one call, then its place under an epic. Only
@@ -2029,40 +2131,37 @@ const fileOne = async ($: EngineInterface, spec: NewIssue, quiet = false): Promi
   if (!now) throw new Error(NOT_READ)
   const repo = now.repo
   const me = await read($, viewer)
-  let milestone: { number: number; title: string } | undefined
+  let milestone: Milestone | undefined
   if (spec.milestone) {
     // The board's own list first, as its last read had it; GitHub's when that lacks it, as for one made since.
-    const named = (list: readonly Milestone[]) => list.find(one => one.title.toLowerCase() === spec.milestone?.toLowerCase())
-    milestone = named(now.milestones ?? []) ?? named(await repoMilestones($, repo))
+    const name = spec.milestone
+    milestone = milestoneNamed(now.milestones ?? [], name) ?? milestoneNamed(await repoMilestones($, repo), name)
     if (!milestone) throw new Error(`the repo has no open milestone called ${spec.milestone}`)
   }
-  const assignees = (spec.assign ?? []).flatMap(login => (login === '@me' ? (me ? [me] : []) : [login]))
+  const assignees = assigneesOf(spec.assign, me)
   const type = spec.type ? await typeOf($, spec.type) : undefined
   const made = spec.labels?.length ? await ensureLabels($, repo, spec.labels) : []
-  const fields = { title: spec.title, body: spec.body, labels: spec.labels ?? [], assignees, ...(milestone ? { milestone: milestone.number } : {}), ...(type ? { type } : {}) }
-  const raw = JSON.parse(await gh($, ['api', '-X', 'POST', `repos/${repo}/issues`, '--input', '-'], JSON.stringify(fields))) as {
-    number: number
-    id: number
-    node_id: string
-    html_url: string
-    updated_at: string
-    labels: { name: string; color?: string }[]
-    assignees: { login: string }[]
-  }
-  const did = [`“${spec.title}”`]
+  const fields = issueFieldsOf(spec, assignees, milestone, type)
+  const raw = JSON.parse(await gh($, ['api', '-X', 'POST', `repos/${repo}/issues`, '--input', '-'], JSON.stringify(fields))) as Filed
+  const did = filedSaid(spec, raw, milestone, type, made)
   const failed: string[] = []
-  if (raw.labels.length > 0) did.push(`labelled ${raw.labels.map(label => label.name).join(', ')}`)
-  if (raw.assignees.length > 0) did.push(`assigned ${raw.assignees.map(user => user.login).join(', ')}`)
-  if (milestone) did.push(`on ${milestone.title}`)
-  if (type) did.push(`typed ${type}`)
-  if (made.length > 0) did.push(`with the new ${made.length === 1 ? 'label' : 'labels'} ${made.join(', ')}`)
+  const parent = await placeFiled($, now, spec, raw, did, failed)
+  const { item, set } = await addFiled($, now, spec, raw, did, failed)
+  const issue = filedIssueOf(spec, raw, { item, set, milestone, type, parent, did, held: now.issues })
+  await update($, board, was => was && withFiled(was, issue, parent))
+  await save($)
+  if (!quiet) $.ui.toast(`Filed #${raw.number}`)
+  return { number: raw.number, text: filedText(raw.number, did, failed) }
+}
 
+// A new issue's place among the others: under its epic and blocked by its blockers, each said in `did` or `failed`.
+// Answers the epic it went under, with its new count.
+const placeFiled = async ($: EngineInterface, now: Board, spec: NewIssue, raw: Filed, did: string[], failed: string[]): Promise<Issue['parent']> => {
   let parent: Issue['parent'] = null
   if (spec.parent) {
     try {
-      await gh($, ['api', '-X', 'POST', `repos/${repo}/issues/${spec.parent}/sub_issues`, '-F', `sub_issue_id=${raw.id}`])
-      const above = now.issues.find(one => one.number === spec.parent)
-      parent = { number: spec.parent, title: above?.title ?? '', total: (above?.subIssues?.total ?? 0) + 1, completed: above?.subIssues?.completed ?? 0 }
+      await gh($, ['api', '-X', 'POST', `repos/${now.repo}/issues/${spec.parent}/sub_issues`, '-F', `sub_issue_id=${raw.id}`])
+      parent = parentAfter(now.issues, spec.parent)
       did.push(`under #${spec.parent}`)
     } catch (cause) {
       failed.push(`put it under #${spec.parent} (${messageOf(cause)})`)
@@ -2072,27 +2171,29 @@ const fileOne = async ($: EngineInterface, spec: NewIssue, quiet = false): Promi
   if (spec.blockedBy?.length) {
     try {
       // The issue isn't on the board yet: the links show with it, below.
-      await block($, repo, raw.number, spec.blockedBy, true)
+      await block($, now.repo, raw.number, spec.blockedBy, true)
       did.push(`blocked by ${spec.blockedBy.map(one => `#${one}`).join(', ')}`)
     } catch (cause) {
       failed.push(`mark it blocked by ${spec.blockedBy.map(one => `#${one}`).join(', ')} (${messageOf(cause)})`)
     }
   }
+  return parent
+}
 
-  // Into the project, at the Status asked for, or the Inbox where the project has one, to be triaged.
+// A new issue into the board's project, as projectStepOf plans, each step said in `did` or `failed`. Answers its item
+// and the fields set.
+const addFiled = async ($: EngineInterface, now: Board, spec: NewIssue, raw: Filed, did: string[], failed: string[]): Promise<{ item: string | null; set: { status?: string; priority?: string } }> => {
   const project = now.project
   let item: string | null = null
   const set: { status?: string; priority?: string } = {}
-  // A project the person hasn't let the board write to gets nothing: the issue is filed, and Claude reads why.
-  const refusal = await boardRefusal($, now)
-  if (project && refusal) {
-    if (spec.status || spec.priority) failed.push(`set its Status or Priority: ${refusal}`)
-    else did.push(`not added to ${project.title}, which the board only reads`)
-  } else if (project) {
+  const step = projectStepOf(spec, project, await boardRefusal($, now))
+  if (!step) return { item, set }
+  if ('failed' in step) failed.push(step.failed)
+  else if ('did' in step) did.push(step.did)
+  else if (project) {
     try {
       item = await addItem($, project, raw.node_id)
-      for (const [field, wanted] of [['status', spec.status ?? roleOf(project, 'inbox')?.name], ['priority', spec.priority]] as const) {
-        if (!wanted) continue
+      for (const [field, wanted] of step.add) {
         try {
           set[field] = await setField($, { number: raw.number, id: raw.node_id, item }, field, wanted)
         } catch (cause) {
@@ -2103,45 +2204,8 @@ const fileOne = async ($: EngineInterface, spec: NewIssue, quiet = false): Promi
     } catch (cause) {
       failed.push(`add it to ${project.title} (${messageOf(cause)})`)
     }
-  } else if (spec.status || spec.priority) {
-    failed.push('set its Status or Priority: the board reads no project for this repo')
   }
-
-  const issue: Issue = {
-    number: raw.number,
-    title: spec.title,
-    url: raw.html_url,
-    labels: raw.labels.map(label => ({ name: label.name, color: label.color ?? '' })),
-    assignees: raw.assignees.map(user => user.login),
-    checks: checksOf(spec.body),
-    updatedAt: raw.updated_at,
-    body: spec.body,
-    id: raw.node_id,
-    item,
-    status: set.status ?? null,
-    priority: set.priority ?? null,
-    milestone: milestone?.title ?? null,
-    ...(type ? { type } : {}),
-    parent,
-    blockedBy: did.some(said => said.startsWith('blocked by')) ? (spec.blockedBy ?? []).filter(one => now.issues.some(issue => issue.number === one)) : [],
-  }
-  await update($, board, was => {
-    if (!was) return was
-    // The epic's count, on the epic and on each of its sub-issues, which carry it too.
-    const counted = (one: Issue): Issue =>
-      !parent
-        ? one
-        : one.number === parent.number
-          ? { ...one, subIssues: { total: parent.total, completed: parent.completed } }
-          : one.parent?.number === parent.number
-            ? { ...one, parent: { ...one.parent, total: parent.total, completed: parent.completed } }
-            : one
-    const issues = was.issues.map(counted)
-    return { ...was, issues: [issue, ...issues.filter(one => one.number !== issue.number)] }
-  })
-  await save($)
-  if (!quiet) $.ui.toast(`Filed #${raw.number}`)
-  return { number: raw.number, text: filedText(raw.number, did, failed) }
+  return { item, set }
 }
 
 // How far back a capture looks for the same work among closed issues.
@@ -2233,25 +2297,7 @@ const openInbox = async ($: EngineInterface): Promise<void> => {
   await $.ui.open(OPEN)
 }
 
-// Claude starting on an issue in the conversation, by the issue_update tool's `start`: as Start does, the issue becomes
-// the one this session is on, moves to In progress and is assigned to the person. A pull request's number starts the
-// issue it is for. An epic starts its next ready sub-issue, as the Start button does.
-const startHere = async ($: EngineInterface, number: number): Promise<string> => {
-  const now = await read($, board)
-  const pr = now?.prs.find(one => one.number === number)
-  const target = pr ? pr.issues.find(one => now?.issues.some(issue => issue.number === one)) : number
-  const asked = now?.issues.find(one => one.number === target)
-  if (!asked) throw new Error(pr ? `pull request #${number} names no issue open on the board` : `#${number} isn't open on the board`)
-  const issue = startTargetOf(now?.issues ?? [], asked, now?.project ?? null, await markersNow($, now))
-  if (!issue) throw new Error(noReadyText(asked.number))
-  const epic = issue.number !== asked.number ? `, the next ready sub-issue of epic #${asked.number}` : ''
-  await track($, issue, true)
-  await claim($, issue)
-  $.ui.toast(`Working on #${issue.number} now`)
-  const started = now?.project && (await mayWrite($, now.project)) ? startedOf(now.project) : undefined
-  const claimed = settings.claimOnStart ? (started ? `, ${started.name} and assigned` : ', assigned') : ''
-  return `Started #${issue.number}${pr ? `, the issue pull request #${number} is for` : ''}${epic}: it is the issue this session is on${claimed}.`
-}
+// ---- Setup ----
 
 // The repo's folders, for the area labels setup suggests: its top level, and the parts under plugins/, packages/ and
 // the like.
@@ -2320,9 +2366,8 @@ const applySetup = async ($: EngineInterface): Promise<void> => {
   const now = await read($, setup)
   if (now?.phase !== 'ready') return
   const { facts } = now
-  const mark = (id: SetupStep['id'], state: NonNullable<SetupStep['state']>, message?: string) =>
-    update($, setup, was => (was && 'steps' in was ? { ...was, steps: was.steps.map(step => (step.id === id ? { ...step, state, ...(message ? { message } : {}) } : step)) } : was))
-  const run = async (id: SetupStep['id'], work: () => Promise<unknown>): Promise<void> => {
+  const mark = (id: SetupStep['id'], state: NonNullable<SetupStep['state']>, message?: string) => update($, setup, was => markStep(was, id, state, message))
+  const run: SetupRun = async (id, work) => {
     if (!now.steps.some(step => step.id === id)) return
     await mark(id, 'running')
     try {
@@ -2332,7 +2377,6 @@ const applySetup = async ($: EngineInterface): Promise<void> => {
       await mark(id, 'failed', messageOf(cause))
     }
   }
-  const reread = async (id: string): Promise<SetupProject> => projectOf((await postGraphql($, PROJECT_QUERY, { id })).node)
   await update($, setup, was => (was?.phase === 'ready' ? { ...was, phase: 'applying' as const } : was))
 
   let project: SetupProject | null = facts.projects.find(one => one.id === now.chosen) ?? null
@@ -2355,121 +2399,167 @@ const applySetup = async ($: EngineInterface): Promise<void> => {
   await run('project', async () => {
     const title = facts.repo.name.split('/')[1] ?? facts.repo.name
     const made = await projectWrite($, 'new', CREATE_PROJECT, { owner: facts.repo.ownerId, title, repo: facts.repo.id })
-    project = await reread(made.createProjectV2.projectV2.id)
+    project = await rereadProject($, made.createProjectV2.projectV2.id)
     // The person asked setup to make it, so the board may write to it, which the steps after need.
     await adoptProject($, project, true)
     adopted = project
   })
   // Without a project, the steps that work in one can't run.
-  const needsProject = ['status', 'priority', 'items', 'inbox'] as const
   if (!project) {
-    for (const id of needsProject) if (now.steps.some(step => step.id === id)) await mark(id, 'skipped', 'There is no project to change.')
+    for (const id of NEEDS_PROJECT) if (now.steps.some(step => step.id === id)) await mark(id, 'skipped', 'There is no project to change.')
   } else {
-    let current: SetupProject = project
-    await run('status', async () => {
-      if (!current.status) throw new Error('the project has no Status field')
-      const { options } = mergeStatuses(current.status.options, now.roles)
-      await projectWrite($, current, UPDATE_FIELD, { field: current.status.id, options: options.map(one => ({ ...(one.id ? { id: one.id } : {}), name: one.name, color: one.color, description: one.description })) })
-      current = await reread(current.id)
-    })
-    // The roles are saved with the rest once Apply ends.
-    await run('roles', async () => undefined)
-    await run('priority', async () => {
-      await projectWrite($, current, CREATE_FIELD, { project: current.id, name: 'Priority', options: PRIORITIES })
-      current = await reread(current.id)
-    })
-    // Each open issue's item in the project, the ones already there and the ones added now.
-    const items = new Map(facts.issues.flatMap(issue => issue.items.filter(item => item.project === current.id).map(item => [issue.number, item] as const)))
-    await run('items', async () => {
-      for (const issue of facts.issues) {
-        if (items.has(issue.number)) continue
-        const added = await projectWrite($, current, ADD_ITEM, { project: current.id, content: issue.id })
-        items.set(issue.number, { project: current.id, item: added.addProjectV2ItemById.item.id, status: null })
-      }
-    })
-    await run('inbox', async () => {
-      const picked = now.roles.inbox
-      const inbox = picked === null ? undefined : current.status?.options.find(option => option.name.toLowerCase() === picked.toLowerCase())
-      if (!current.status || !inbox?.id) throw new Error(`the project has no ${picked ?? 'Inbox'} status`)
-      for (const { item, status } of items.values()) {
-        if (status) continue
-        await projectWrite($, current, SET_FIELD, { project: current.id, item, field: current.status.id, option: inbox.id })
-      }
-    })
-    project = current
+    project = await applyInProject($, now, project, run)
   }
-  await run('bug', () => gh($, ['label', 'create', 'bug', '-R', facts.repo.name, '--color', 'd73a4a', '--description', "Something isn't working"]))
+  await run('bug', () => gh($, bugLabelArgs(facts.repo.name)))
   await run('areas', async () => {
-    for (const area of areasOf(now.areas, facts.labels)) {
-      await gh($, ['label', 'create', `area:${area}`, '-R', facts.repo.name, '--color', '1d76db', '--description', `The ${area} part`])
+    for (const args of areaLabelArgs(facts.repo.name, now.areas, facts.labels)) await gh($, args)
+  })
+  // Set inside the steps' callbacks, which the compiler can't follow.
+  await endSetup($, now, project, adopted as { number: number; title: string } | null)
+}
+
+// One of Apply's steps: marked running, then done or failed, and skipped when the plan hasn't got it.
+type SetupRun = (id: SetupStep['id'], work: () => Promise<unknown>) => Promise<void>
+type SetupPlan = Extract<Setup, { facts: unknown }>
+
+// A project as setup reads it, read again after Apply changed it.
+const rereadProject = async ($: EngineInterface, id: string): Promise<SetupProject> => projectOf((await postGraphql($, PROJECT_QUERY, { id })).node)
+
+// Apply's steps in the project: its Status options, its Priority field, an item for each open issue, and the Inbox for
+// the items with no Status. Answers the project as it ends.
+const applyInProject = async ($: EngineInterface, now: SetupPlan, project: SetupProject, run: SetupRun): Promise<SetupProject> => {
+  let current: SetupProject = project
+  await run('status', async () => {
+    if (!current.status) throw new Error('the project has no Status field')
+    await projectWrite($, current, UPDATE_FIELD, { field: current.status.id, options: statusFieldOf(current.status.options, now.roles) })
+    current = await rereadProject($, current.id)
+  })
+  // The roles are saved with the rest once Apply ends.
+  await run('roles', async () => undefined)
+  await run('priority', async () => {
+    await projectWrite($, current, CREATE_FIELD, { project: current.id, name: 'Priority', options: PRIORITIES })
+    current = await rereadProject($, current.id)
+  })
+  // Each open issue's item in the project, the ones already there and the ones added now.
+  const items = itemsIn(now.facts, current.id)
+  await run('items', async () => {
+    for (const issue of now.facts.issues) {
+      if (items.has(issue.number)) continue
+      const added = await projectWrite($, current, ADD_ITEM, { project: current.id, content: issue.id })
+      items.set(issue.number, { project: current.id, item: added.addProjectV2ItemById.item.id, status: null })
     }
   })
+  await run('inbox', async () => {
+    const inbox = inboxOf(current, now.roles)
+    if (typeof inbox === 'string') throw new Error(inbox)
+    for (const { item, status } of items.values()) {
+      if (status) continue
+      await projectWrite($, current, SET_FIELD, { project: current.id, item, field: inbox.field, option: inbox.option })
+    }
+  })
+  return current
+}
 
-  // The board reads the project setup ended with from now on, and knows which Status means what.
-  const ended: SetupProject | null = project
-  if (ended) {
-    const status = ended.status
-    await changeChoices($, was => ({
-      ...was,
-      preferred: ended.id,
-      ...(status ? { statuses: { ...(was.statuses ?? {}), [ended.id]: rolesOf(status.options, now.roles) } } : {}),
-    }))
-  }
-  // The project Apply adopted, in the setting now that its steps are done.
-  // Set inside the steps' callbacks, which the compiler can't follow.
-  const wrote = adopted as { number: number; title: string } | null
-  if (wrote) {
+// Apply's end: the board reads the project setup ended with from now on, and knows which Status means what; the
+// project Apply adopted goes in the setting now that its steps are done; and the pane shows the project as it now is.
+const endSetup = async ($: EngineInterface, now: SetupPlan, ended: SetupProject | null, adopted: { number: number; title: string } | null): Promise<void> => {
+  if (ended) await changeChoices($, was => choicesAfterSetup(was, ended, now.roles))
+  if (adopted) {
     try {
       await writeSetting($, (await grantsNow($)).own)
     } catch (cause) {
-      $.ui.toast(`Couldn't save that the board may write to ${wrote.title}: ${messageOf(cause)}`)
+      $.ui.toast(`Couldn't save that the board may write to ${adopted.title}: ${messageOf(cause)}`)
     }
   }
-  // Done: the pane shows the project as it now is, a new one included, so its automations still off can be linked.
   const adoptedId = (await adoptedNow($))?.id ?? null
-  await update($, setup, was =>
-    was?.phase === 'applying'
-      ? {
-          ...was,
-          phase: 'done' as const,
-          ...(ended
-            ? {
-                chosen: ended.id,
-                facts: {
-                  ...was.facts,
-                  projects: [...was.facts.projects.filter(one => one.id !== ended.id), ended],
-                  adopted: adoptedId,
-                  ...(ended.status ? { saved: { project: ended.id, roles: rolesOf(ended.status.options, now.roles) } } : {}),
-                },
-              }
-            : {}),
-        }
-      : was,
-  )
+  await update($, setup, was => setupDone(was, ended, adoptedId, now.roles))
   projectRefusal = undefined
   void refresh($)
 }
 
-// A Status or Priority picked on a card.
-const pick = async ($: EngineInterface, issue: Issue, field: 'status' | 'priority', name: string): Promise<void> => {
+// `/issues setup`: the project picked, the area labels typed and the option picked for a part each work out the
+// changes again.
+const chooseProject = ($: EngineInterface, id: string | null): Promise<unknown> =>
+  update($, setup, was => {
+    if (was?.phase !== 'ready') return was
+    const roles = picksFor(was.facts, id)
+    return { ...was, chosen: id, roles, steps: stepsOf(was.facts, id, was.areas, roles) }
+  })
+const typeAreas = ($: EngineInterface, text: string): Promise<unknown> =>
+  update($, setup, was => (was?.phase === 'ready' ? { ...was, areas: text, steps: stepsOf(was.facts, was.chosen, text, was.roles) } : was))
+const pickRole = ($: EngineInterface, role: Role, name: string | null): Promise<unknown> =>
+  update($, setup, was => {
+    if (was?.phase !== 'ready') return was
+    const roles = { ...was.roles, [role]: name }
+    return { ...was, roles, steps: stepsOf(was.facts, was.chosen, was.areas, roles) }
+  })
+
+// ---- Workers, starting work, and what Claude hears of the issue it is on ----
+
+// Start, on GitHub too: the issue moves to In progress in the project and is assigned to the person, so the project
+// says who is on what. Then the issue is read again, so the band doesn't call these changes news. Its epic follows, by
+// its own setting.
+const claim = async ($: EngineInterface, issue: Issue): Promise<void> => {
+  // Turned off, Start leaves the issue's assignees and Status as they are.
+  if (settings.claimOnStart) await claimIssue($, issue)
+  await startEpic($, issue)
+}
+
+// A sub-issue started: its epic, still waiting in the Inbox, Backlog or Ready, moves to In progress with it, so the
+// project shows the epic under way. An epic further along stays where it is.
+const startEpic = async ($: EngineInterface, issue: Issue): Promise<void> => {
+  if (!settings.autoMove) return
+  const now = await read($, board)
+  const epic = now ? epicToStart(now.issues, issue, now.project) : undefined
+  const started = startedOf(now?.project)
+  if (!epic || !started || !now?.project || !(await mayWrite($, now.project))) return
   try {
-    await setField($, issue, field, name)
-    $.ui.toast(`#${issue.number} is ${name} now`)
+    await setField($, epic, 'status', started.name)
+    moved.push(`#${epic.number} moved to ${started.name}: its sub-issue #${issue.number} was started.`)
   } catch (cause) {
-    toastFailure($, `Couldn't change #${issue.number}`, cause)
+    $.ui.toast(unmovedText(started.name, [{ number: epic.number, message: messageOf(cause) }]))
   }
 }
 
-// Reads GitHub again straight after a change, waiting out a refresh already under way, which may have read GitHub
-// before the change. `seen`: the change was the person's or Claude's own, so the band doesn't call it news.
-const refreshAfter = async ($: EngineInterface): Promise<void> => {
-  await settle($)
-  await refresh($, true)
+const claimIssue = async ($: EngineInterface, issue: Issue): Promise<void> => {
+  const failures: string[] = []
+  const project = (await read($, board))?.project
+  // The Status moves only in a project the person let the board write to; the issue is assigned either way.
+  const started = project && (await mayWrite($, project)) ? startedOf(project) : undefined
+  if (started && issue.status !== started.name) await setField($, issue, 'status', started.name).catch((cause: unknown) => void failures.push(messageOf(cause)))
+  const me = await read($, viewer)
+  if (!me || !issue.assignees.includes(me)) {
+    await gh($, ['issue', 'edit', String(issue.number), '--add-assignee', '@me']).catch((cause: unknown) => void failures.push(messageOf(cause)))
+  }
+  try {
+    const [fresh] = parseIssues(`[${await gh($, ['issue', 'view', String(issue.number), '--json', ISSUE_FIELDS])}]`)
+    if (fresh) await take($, fresh)
+  } catch (cause) {
+    failures.push(messageOf(cause))
+  }
+  if (failures.length === 0) return
+  $.ui.toast(`Started #${issue.number}, but couldn't update GitHub: ${failures[0]}`)
+  if (failures.some(failure => ACCESS_ERROR.test(failure))) void checkAccess($, failures.join('\n'))
 }
 
-// Waits out a refresh under way, up to ten seconds.
-const settle = async ($: EngineInterface): Promise<void> => {
-  for (let tries = 0; tries < 50 && refreshing; tries += 1) await $.clock.sleep(200)
+// Claude starting on an issue in the conversation, by the issue_update tool's `start`: as Start does, the issue becomes
+// the one this session is on, moves to In progress and is assigned to the person. A pull request's number starts the
+// issue it is for. An epic starts its next ready sub-issue, as the Start button does.
+const startHere = async ($: EngineInterface, number: number): Promise<string> => {
+  const now = await read($, board)
+  const pr = now?.prs.find(one => one.number === number)
+  const target = pr ? pr.issues.find(one => now?.issues.some(issue => issue.number === one)) : number
+  const asked = now?.issues.find(one => one.number === target)
+  if (!asked) throw new Error(pr ? `pull request #${number} names no issue open on the board` : `#${number} isn't open on the board`)
+  const issue = startTargetOf(now?.issues ?? [], asked, now?.project ?? null, await markersNow($, now))
+  if (!issue) throw new Error(noReadyText(asked.number))
+  const epic = issue.number !== asked.number ? `, the next ready sub-issue of epic #${asked.number}` : ''
+  await track($, issue, true)
+  await claim($, issue)
+  $.ui.toast(`Working on #${issue.number} now`)
+  const started = now?.project && (await mayWrite($, now.project)) ? startedOf(now.project) : undefined
+  const claimed = settings.claimOnStart ? (started ? `, ${started.name} and assigned` : ', assigned') : ''
+  return `Started #${issue.number}${pr ? `, the issue pull request #${number} is for` : ''}${epic}: it is the issue this session is on${claimed}.`
 }
 
 // The issue Claude is on, when this session started it: the one the notes and the next step are about.
@@ -2562,74 +2652,6 @@ const afterTurn = async ($: EngineInterface): Promise<void> => {
   for (let tries = 0; step && nextStep === step && tries < 3; tries += 1) {
     if ((await $.prompt.suggest({ text: step }).catch(() => ({ isShown: false }))).isShown) break
     await $.clock.sleep(1000)
-  }
-}
-
-// A GitHub event for a subscribed pull request (CI finished, merged, reviewed, commented): the board reads GitHub at
-// once, when the event is about this repo, rather than at its next poll.
-const eventArrived = async ($: EngineInterface, data: Record<string, unknown>): Promise<void> => {
-  const repo = (await read($, board))?.repo
-  const named = eventRepoOf(data)
-  if (!repo || (named && named.toLowerCase() !== repo.toLowerCase())) return
-  await settle($)
-  await refresh($)
-}
-
-// The CI runs being watched, by id: one `gh run watch` each, for as long as the run goes. Unloading the module ends
-// them, and a new load starts with none.
-const watching = new Set<number>()
-
-// Looks for CI runs under way on the branch checked out, and watches each it isn't watching yet. Answers whether any is
-// under way.
-const watchRuns = async ($: EngineInterface): Promise<boolean> => {
-  const here = await read($, branch)
-  if (!here) return false
-  try {
-    const live = liveRunsOf(await gh($, ['run', 'list', '--branch', here, '--limit', '10', '--json', 'databaseId,status,workflowName']))
-    for (const run of live.slice(0, 3)) if (!watching.has(run.id)) void watchRun($, run, here)
-    return live.length > 0
-  } catch (cause) {
-    $.ui.log(`issue-board: couldn't list the CI runs on ${here}: ${messageOf(cause)}`, { to: 'debug' })
-    return false
-  }
-}
-
-// A push starts CI a few seconds later: the board looks a few times, until a run turns up.
-const lookForRuns = async ($: EngineInterface): Promise<void> => {
-  try {
-    for (let tries = 0; tries < 4; tries += 1) {
-      await $.clock.sleep(15_000)
-      if (await watchRuns($)) return
-    }
-  } catch {
-    // The module unloaded while it waited: the next load looks again when CI shows as running.
-  }
-}
-
-// Watches one run with `gh run watch`, which draws it again every 15 seconds until it ends: each drawing updates the
-// run's progress on the board. Its end reads GitHub again, so the pull request shows how it went. Each drawing costs
-// about three REST calls, from the same hourly limit as the cheap checks, so it doesn't draw more often.
-const watchRun = async ($: EngineInterface, run: { id: number; workflow: string }, runBranch: string): Promise<void> => {
-  watching.add(run.id)
-  const fresh: RunWatch = { id: run.id, workflow: run.workflow, branch: runBranch, done: 0, total: 0, failed: 0, running: null, step: null }
-  await update($, runs, list => [...list.filter(one => one.id !== run.id), fresh])
-  try {
-    let seen = ''
-    for await (const { text } of $.process.spawn({ argv: ['gh', 'run', 'watch', String(run.id), '--interval', '15'] })) {
-      // Each drawing opens with this line, and counts as the three REST calls it takes.
-      const drawings = text.match(/Refreshing run status/g)?.length ?? 0
-      for (let call = 0; call < drawings * 3; call++) countCall(stats, 'other', 'rest')
-      seen = (seen + text).slice(-20_000)
-      const progress = runProgressOf(seen)
-      if (progress) await update($, runs, list => list.map(one => (one.id === run.id ? { ...one, ...progress } : one)))
-    }
-  } catch (cause) {
-    $.ui.log(`issue-board: couldn't watch CI run ${run.id}: ${messageOf(cause)}`, { to: 'debug' })
-  } finally {
-    watching.delete(run.id)
-    await update($, runs, list => list.filter(one => one.id !== run.id))
-    await settle($)
-    await refresh($)
   }
 }
 
@@ -2791,90 +2813,47 @@ const handOff = async ($: EngineInterface, agentId: string, status: Ended, answe
   }
 }
 
-// The task Claude completed, its box ticked from the band.
-const tickTask = async ($: EngineInterface, task: BoxTask): Promise<void> => {
-  const issue = (await read($, board))?.issues.find(one => one.number === task.number)
-  const at = issue && boxOf(issue, task)
-  try {
-    if (!at) throw new Error(`#${task.number} has no box "${fit(task.text, 40)}" open on the board`)
-    await tick($, task.number, [at.box], true)
-    await update($, tasks, list => list.filter(one => one.id !== task.id))
-    $.ui.toast(`Ticked box ${at.box} on #${task.number}`)
-  } catch (cause) {
-    toastFailure($, `Couldn't tick the box on #${task.number}`, cause)
-  }
+// Start: the issue is the one Claude is on, and Claude gets it. Its button says so from the press on.
+const startFromPane = ($: EngineInterface, issue: Issue): Promise<void> =>
+  launch($, issue, 'start', async () => {
+    // A start message Edit first left in the prompt box is spent: sending it later doesn't start the issue again.
+    await update($, drafted, () => null)
+    await track($, issue, true)
+    const listed = await makeTasks($, issue)
+    // The board's own prompt.submit hook doesn't see a prompt the board submits, so this message goes without the
+    // issue's copy and lists the boxes itself.
+    await submit($, 'start prompts', { text: startPrompt(issue, listed > 0), asUser: true })
+    $.ui.toast(`Sent #${issue.number} to Claude`)
+    await claim($, issue)
+    return true
+  })
+
+// Edit first puts the start message in the prompt box. Sending the foreground message starts the issue, by the
+// prompt.submit hook; the background one asks Claude to dispatch the worker, and the agent.spawn hook claims it and
+// follows it.
+const draftStart = async ($: EngineInterface, target: Issue, background: boolean): Promise<void> => {
+  const filled = await $.prompt.fill({ text: background ? backgroundPrompt(target) : startPrompt(target, false, await copyGoes($, target)) })
+  if (!filled.isFilled) return
+  await update($, drafted, () => (background ? null : target.number))
 }
 
-// An issue the board doesn't hold, such as one a merge just closed: its node and its item in the board's project, read
-// from GitHub. It has no item when it was never in the project; setting a field adds it.
-const offBoard = async ($: EngineInterface, number: number): Promise<Target> => {
-  const project = (await read($, board))?.project
-  if (!project) throw new Error("the board reads no project for this repo, so it can't set its fields")
-  const { id } = JSON.parse(await gh($, ['issue', 'view', String(number), '--json', 'id'])) as { id: string }
-  const found = (await postGraphql($, ISSUE_ITEMS, { issue: id })) as { node?: { projectItems?: { nodes?: { id: string; project: { id: string } }[] } } }
-  return { number, id, item: found.node?.projectItems?.nodes?.find(one => one.project.id === project.id)?.id ?? null }
+// Stop tracking the issue this session is on: no row has the ▶ until Start or a branch names one again.
+const stopTracking = async ($: EngineInterface): Promise<void> => {
+  await update($, working, () => null)
+  await save($)
 }
 
-// Makes a change to an issue, from its card or from Claude's issue_update tool: Status and Priority in the project,
-// then the gh edit, comment and close, then the board read again so it shows. Answers what it did. A plan makes many
-// changes and reads the board once after them all, so it passes `refresh` false.
-const applyChanges = async ($: EngineInterface, number: number, changes: IssueChanges, refresh$ = true): Promise<string> => {
-  const issue = (await read($, board))?.issues.find(one => one.number === number)
-  const fields = changes.fields && Object.keys(changes.fields).length > 0 ? changes.fields : null
-  // A closed issue is set through its item in the project all the same. Its Status or Priority may already be what was
-  // asked, as when the board moved it to Done as it closed: that is said, and nothing is written.
-  const target = issue ?? (changes.status || changes.priority || fields ? await offBoard($, number) : null)
-  const current = !issue && target?.item ? itemValuesOf(await postGraphql($, ITEM_VALUES, { item: target.item })) : {}
-  const already: string[] = []
-  const skipped: ('status' | 'priority')[] = []
-  for (const field of ['status', 'priority'] as const) {
-    const value = changes[field]
-    if (!value || !target) continue
-    const name = field === 'status' ? 'Status' : 'Priority'
-    if (current[name] && current[name].toLowerCase() === value.toLowerCase()) {
-      already.push(`#${number}'s ${name} is already ${current[name]}.`)
-      skipped.push(field)
-      continue
-    }
-    await setField($, target, field, value)
-  }
-  if (fields && target) await setFields($, target, fields)
+// ---- Plan and triage, and the pane's other actions ----
+
+// The issues closed lately, for the pane's Closed filter: read when the filter is chosen, over REST.
+const readRecent = async ($: EngineInterface): Promise<void> => {
   const repo = (await read($, board))?.repo
-  if (repo && (changes.title || changes.body !== undefined || changes.addBoxes?.length || changes.rewordBoxes?.length)) await rewrite($, repo, number, changes)
-  const made = repo && changes.addLabels?.length ? await ensureLabels($, repo, changes.addLabels) : []
-  if (repo && changes.transferTo) {
-    changes.transferTo = sameOwner(repo, changes.transferTo)
-    // GitHub moves an issue from a public repo to a private one, but not back: that takes a second, confirmed call.
-    const [from, to] = await Promise.all([repo, changes.transferTo].map(async one => (await gh($, ['api', `repos/${one}`, '--jq', '.private'])).trim() === 'true'))
-    if (!from && to && !changes.confirmTransfer) {
-      throw new Error(`${changes.transferTo} is private and ${repo} is public, so GitHub won't move #${number} back once it's there. Call again with confirmTransfer: true to move it anyway`)
-    }
-  }
-  for (const command of commandsOf(number, changes, repo)) await gh($, command.argv, command.stdin)
-  if (changes.transferTo) {
-    await update($, board, was => was && { ...was, issues: was.issues.filter(one => one.number !== number) })
-    await save($)
-  }
-  if (repo && changes.type !== undefined) await setType($, repo, number, changes.type)
-  if (repo && (changes.moveBefore || changes.moveAfter)) await reorder($, repo, number, (changes.moveBefore ?? changes.moveAfter) as number, Boolean(changes.moveBefore))
-  if (changes.projectAfter !== undefined) await moveInProject($, number, changes.projectAfter || null, false)
-  if (repo && changes.duplicateOf) await closeAsDuplicate($, repo, number, changes.duplicateOf)
-  if (repo && changes.addBlockedBy?.length) await block($, repo, number, changes.addBlockedBy, true)
-  if (repo && changes.removeBlockedBy?.length) await block($, repo, number, changes.removeBlockedBy, false)
-  if (refresh$) await refreshAfter($)
-  const left = { ...changes }
-  for (const field of skipped) delete left[field]
-  const done = changesText(number, left)
-  const said = [...already, ...(already.length > 0 && done.startsWith('Nothing to change') ? [] : [done])].join(' ')
-  return `${said}${made.length > 0 ? ` Created the ${made.length === 1 ? 'label' : 'labels'} ${made.join(', ')}, new to the repo.` : ''}`
-}
-
-// A change made on a card: said in a toast, and an error that may be a missing permission checked.
-const change = async ($: EngineInterface, number: number, changes: IssueChanges): Promise<void> => {
+  if (!repo) return
   try {
-    $.ui.toast(await applyChanges($, number, changes))
+    const items = JSON.parse(await gh($, ['api', `repos/${repo}/issues?state=closed&sort=updated&direction=desc&per_page=30`])) as unknown[]
+    await update($, recent, () => ({ items: foundOf(items), at: Date.now() }))
   } catch (cause) {
-    toastFailure($, `Couldn't change #${number}`, cause)
+    await update($, recent, was => ({ items: was?.items ?? [], at: Date.now(), failed: messageOf(cause) }))
   }
 }
 
@@ -3146,6 +3125,9 @@ const acceptTriage = async ($: EngineInterface, issue: Issue, choice: { priority
   }
 }
 
+// What the pane's buttons do, from here on and in the sections above. The pane hook builds its handlers from these and
+// hands them to the views.
+
 // How many of an issue's comments a card shows: the latest.
 const SHOWN_COMMENTS = 3
 
@@ -3188,32 +3170,6 @@ const loadPalette = async($: EngineInterface): Promise<void> => {
   }
 }
 
-// What the pane's buttons do. The pane hook builds its handlers from these and hands them to the views.
-
-// Start: the issue is the one Claude is on, and Claude gets it. Its button says so from the press on.
-const startFromPane = ($: EngineInterface, issue: Issue): Promise<void> =>
-  launch($, issue, 'start', async () => {
-    // A start message Edit first left in the prompt box is spent: sending it later doesn't start the issue again.
-    await update($, drafted, () => null)
-    await track($, issue, true)
-    const listed = await makeTasks($, issue)
-    // The board's own prompt.submit hook doesn't see a prompt the board submits, so this message goes without the
-    // issue's copy and lists the boxes itself.
-    await submit($, 'start prompts', { text: startPrompt(issue, listed > 0), asUser: true })
-    $.ui.toast(`Sent #${issue.number} to Claude`)
-    await claim($, issue)
-    return true
-  })
-
-// Edit first puts the start message in the prompt box. Sending the foreground message starts the issue, by the
-// prompt.submit hook; the background one asks Claude to dispatch the worker, and the agent.spawn hook claims it and
-// follows it.
-const draftStart = async ($: EngineInterface, target: Issue, background: boolean): Promise<void> => {
-  const filled = await $.prompt.fill({ text: background ? backgroundPrompt(target) : startPrompt(target, false, await copyGoes($, target)) })
-  if (!filled.isFilled) return
-  await update($, drafted, () => (background ? null : target.number))
-}
-
 const flipBox = async ($: EngineInterface, issue: Issue, box: number, done: boolean): Promise<void> => {
   try {
     await tick($, issue.number, [box], done)
@@ -3252,12 +3208,6 @@ const toggleCard = async ($: EngineInterface, number: number, open: number | nul
   if (issue && (now?.project?.fields ?? []).some(field => !/^(status|priority)$/i.test(field.name))) await readValues($, issue)
 }
 
-// Stop tracking the issue this session is on: no row has the ▶ until Start or a branch names one again.
-const stopTracking = async ($: EngineInterface): Promise<void> => {
-  await update($, working, () => null)
-  await save($)
-}
-
 // Change opens the card's editor, and reads the repo's labels and milestones the first time.
 const openEditor = async ($: EngineInterface, number: number, changing: number | null, offered: { labels: string[]; milestones: string[] } | null): Promise<void> => {
   const opening = changing !== number
@@ -3277,31 +3227,15 @@ const closeFromCard = async ($: EngineInterface, n: number, open: number, armedC
   await change($, n, { close: reason })
 }
 
-// `/issues statuses`: picking an option for a part.
-const pickStatus = ($: EngineInterface, role: Role, id: string | null): Promise<unknown> =>
-  update($, statusPicks, was => {
-    if (!was) return was
-    // One option plays one part: picking it for this role takes it from any other.
-    const picks: Roles = Object.fromEntries(Object.entries(was.picks).filter(([other, one]) => other !== role && one !== id))
-    return { ...was, picks: id === null ? picks : { ...picks, [role]: id } }
-  })
+// ---- Tool registration, and what goes with each prompt ----
 
-// `/issues setup`: the project picked, the area labels typed and the option picked for a part each work out the
-// changes again.
-const chooseProject = ($: EngineInterface, id: string | null): Promise<unknown> =>
-  update($, setup, was => {
-    if (was?.phase !== 'ready') return was
-    const roles = picksFor(was.facts, id)
-    return { ...was, chosen: id, roles, steps: stepsOf(was.facts, id, was.areas, roles) }
-  })
-const typeAreas = ($: EngineInterface, text: string): Promise<unknown> =>
-  update($, setup, was => (was?.phase === 'ready' ? { ...was, areas: text, steps: stepsOf(was.facts, was.chosen, text, was.roles) } : was))
-const pickRole = ($: EngineInterface, role: Role, name: string | null): Promise<unknown> =>
-  update($, setup, was => {
-    if (was?.phase !== 'ready') return was
-    const roles = { ...was.roles, [role]: name }
-    return { ...was, roles, steps: stepsOf(was.facts, was.chosen, was.areas, roles) }
-  })
+// The copies of issues and pull requests sent with a prompt in this session, by number, each with what it stood for
+// (copyKeyOf). Kept in memory, not in state or the store: a compaction or /clear empties it, as Claude no longer has
+// those copies, and a reload starting it over only means a copy goes once more.
+const sentCopies = new Map<number, string>()
+
+// How many `#123`s of one prompt the board looks at: past the copies it carries, the rest are named in one line.
+const MENTIONS_READ = 20
 
 // The text of each section the board last added to the system prompt, by id. A section is counted as context when it
 // first goes in and each time its text changes, not on every request that carries it again.
@@ -3329,6 +3263,8 @@ const registerTool = ($: EngineInterface, tool: Parameters<EngineInterface['tool
   defineTool(stats, `mcp__issue-board__${tool.name}`, JSON.stringify(tool).length)
   return $.tool.register(tool)
 }
+
+// ---- register ----
 
 export const register: Register = (on, options) => {
   settings = settingsOf(options)
