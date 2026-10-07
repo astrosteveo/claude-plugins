@@ -134,6 +134,25 @@ export const threadsOf = (json: string): Map<number, number> => {
   }
 }
 
+// What a GraphQL answer holds. GitHub answers some failures with an `errors` list beside the data rather than with a
+// failed call, so the first error is thrown here, on every path, instead of being read as an empty answer.
+export const graphqlData = (out: string): Record<string, any> => {
+  const answer = JSON.parse(out) as { data?: Record<string, any> | null; errors?: { message?: string }[] } | null
+  if (answer?.errors?.length) throw new Error(answer.errors[0]?.message || 'GitHub answered with an error')
+  return answer?.data ?? {}
+}
+
+// The gh call that posts a comment on an issue, over REST, which spends nothing of the GraphQL limit. The body goes on
+// stdin as JSON, so any text arrives as written.
+export const commentCommand = (repo: string, number: number, body: string): { argv: string[]; stdin: string } => ({
+  argv: ['api', '-X', 'POST', `repos/${repo}/issues/${number}/comments`, '--input', '-'],
+  stdin: JSON.stringify({ body }),
+})
+
+// Why a box an issue hasn't got can't be ticked or reworded: how many it has, and the numbers asked for that it lacks.
+export const noBoxText = (number: number, count: number, missing: readonly number[]): string =>
+  `#${number} has ${count} ${count === 1 ? 'box' : 'boxes'}, so there is no box ${missing.join(', ')}`
+
 // Why a pull request can't merge as it stands, from GitHub's merge state: conflicts with its base, or behind it.
 export const mergeNoteOf = (pr: PullRequest): { text: string; color: ThemeKey } | null =>
   pr.mergeState === 'DIRTY' ? { text: '⚠ conflicts', color: 'error' } : pr.mergeState === 'BEHIND' ? { text: '↓ behind', color: 'warning' } : null
@@ -1602,8 +1621,9 @@ export type IssueChanges = {
 const listed = (values: string[] | undefined): string => (values ?? []).filter(Boolean).join(',')
 
 // The gh commands a change takes, in order: the edit, then the comment, then the close or reopen, so a comment made
-// with a close lands before it. Status and Priority are the project's, set apart from these.
-export const commandsOf = (number: number, changes: IssueChanges): { argv: string[]; stdin?: string }[] => {
+// with a close lands before it. Status and Priority are the project's, set apart from these. `repo` is where the
+// comment is posted.
+export const commandsOf = (number: number, changes: IssueChanges, repo = ''): { argv: string[]; stdin?: string }[] => {
   const id = String(number)
   const edit = [
     ...(listed(changes.addLabels) ? ['--add-label', listed(changes.addLabels)] : []),
@@ -1615,7 +1635,7 @@ export const commandsOf = (number: number, changes: IssueChanges): { argv: strin
   ]
   return [
     ...(edit.length > 0 ? [{ argv: ['issue', 'edit', id, ...edit] }] : []),
-    ...(changes.comment?.trim() ? [{ argv: ['issue', 'comment', id, '--body-file', '-'], stdin: changes.comment.trim() }] : []),
+    ...(changes.comment?.trim() ? [commentCommand(repo, number, changes.comment.trim())] : []),
     ...(changes.close ? [{ argv: ['issue', 'close', id, '--reason', changes.close] }] : []),
     ...(changes.reopen && !changes.close ? [{ argv: ['issue', 'reopen', id] }] : []),
     ...(changes.pin === true ? [{ argv: ['issue', 'pin', id] }] : changes.pin === false ? [{ argv: ['issue', 'unpin', id] }] : []),

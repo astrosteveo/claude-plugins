@@ -81,7 +81,7 @@ const github = (on: On) => {
       state.commentReads += 1
       return answer(COMMENTS)
     }
-    if (argv[1] === 'issue' && argv[2] === 'comment') state.writes.push({ argv: argv.slice(1), ...(e.init?.stdin !== undefined ? { stdin: e.init.stdin } : {}) })
+    if (argv[1] === 'api' && argv[3] === 'POST' && argv[4]?.endsWith('/comments')) state.writes.push({ argv: argv.slice(1), ...(e.init?.stdin !== undefined ? { stdin: e.init.stdin } : {}) })
     return answer(argv[1] === 'api' ? 'astrosteveo\n' : '[]')
   })
   on('session.id', async () => ({ value: 'session-1' }))
@@ -125,7 +125,7 @@ test('opening a card reads its latest comments; a reply posts and reads them aga
   const reads = gh.commentReads
   await ui.input({ key: 'reply-43', text: 'Yes, it does.', kind: 'change' })
   await ui.input({ key: 'reply-43', text: 'Yes, it does.', kind: 'submit' })
-  expect(gh.writes).toEqual([{ argv: ['issue', 'comment', '43', '--body-file', '-'], stdin: 'Yes, it does.' }])
+  expect(gh.writes).toEqual([{ argv: ['api', '-X', 'POST', 'repos/astrosteveo/claude-plugins/issues/43/comments', '--input', '-'], stdin: '{"body":"Yes, it does."}' }])
   expect(gh.commentReads).toBeGreaterThan(reads)
 
   await ui.press({ key: 'ask-43' })

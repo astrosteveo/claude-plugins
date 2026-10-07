@@ -21,7 +21,7 @@ import {
   writesGitHub,
 } from '../hooks/parse'
 import { isMutation } from '../hooks/project'
-import { PRIORITIES, STATUSES, asksProject, graphPage, isIssuesQuery, optionId, adoptedStore } from './graph'
+import { PRIORITIES, STATUSES, asksProject, graphPage, isIssuesQuery, optionId, adoptedStore, graphArgs, isItemWrite } from './graph'
 import type { RawView } from './graph'
 import { letThrough, permissions } from './engine'
 
@@ -181,7 +181,7 @@ const world = (on: On) => {
       if (linked) linked.workflows = { nodes: [{ name: 'Item closed', enabled: state.itemClosed }] }
       return answer(JSON.stringify(page))
     }
-    if (argv[1] === 'api' && argv[2] === 'graphql' && argv[3] === '--input') {
+    if (argv[1] === 'api' && argv[2] === 'graphql' && argv[3] === '--input' && !isItemWrite(argv, e.init?.stdin)) {
       const asked = JSON.parse(e.init?.stdin ?? '{}') as { query: string; variables: Record<string, unknown> }
       const item = String(asked.variables.item)
       if (asked.query.includes('projectItems')) {
@@ -211,7 +211,7 @@ const world = (on: On) => {
     }
     if (argv[1] === 'api' && argv[2] === 'graphql') {
       // A mutation: its `-f name=value` arguments, and the change it makes to the project.
-      const args = Object.fromEntries(argv.flatMap((arg, index) => (argv[index - 1] === '-f' ? [arg.split(/=(.*)/s).slice(0, 2) as [string, string]] : [])))
+      const args = graphArgs(argv, e.init?.stdin)
       if (args.query?.startsWith('{ rateLimit')) return answer(JSON.stringify({ data: { rateLimit: { resetAt: state.limited } } }))
       // The pull requests' review threads: a read, not a change.
       if (args.query?.includes('reviewThreads')) return answer(JSON.stringify({ data: { repository: { pullRequests: { nodes: [] } } } }))
@@ -261,6 +261,14 @@ const world = (on: On) => {
     }
     const one = /^repos\/[^/]+\/[^/]+\/issues\/(\d+)$/.exec(argv[2] ?? '')
     if (argv[1] === 'api' && one && argv.includes('.id')) return answer(`90${one[1]}\n`)
+    // #315's body over REST: read with when it last changed, and written with a PATCH, which answers the issue as it is.
+    if (argv[1] === 'api' && one?.[1] === '315' && argv.includes('{body, updated_at}')) return answer(JSON.stringify({ body: state.body, updated_at: '2026-10-04T09:00:00Z' }))
+    if (argv[1] === 'api' && argv[3] === 'PATCH' && argv[4]?.endsWith('/issues/315') && (e.init?.stdin ?? '').includes('"body"')) {
+      state.body = (JSON.parse(e.init?.stdin ?? '{}') as { body: string }).body
+      state.edits.push(state.body)
+      const now = issue(state.body, '2026-10-04T09:00:00Z')
+      return answer(JSON.stringify({ title: now.title, body: now.body, updated_at: now.updatedAt }))
+    }
     // An issue the board doesn't hold: #290 closed as completed; nothing else exists.
     if (argv[1] === 'api' && one) {
       if (one[1] !== '290') return { value: { exitCode: 1, stdout: '', stderr: 'gh: Not Found (HTTP 404)', isStdoutTruncated: false, isStderrTruncated: false } }
@@ -1114,7 +1122,7 @@ test('issue_create with only a title files it to the Inbox, and a step that fail
   gh.failLink = true
   const partly = await $.tool.call({ tool: 'mcp__issue-board__issue_create', title: 'Look into lag again', parent: 315, priority: 'P9' })
   expect(String(partly.result)).toBe(
-    "Filed #341: “Look into lag again”, in Void Sector, Inbox. The issue exists, but the board couldn't put it under #315 (gh: Sub issue may only have one parent (HTTP 422)); nor set its Priority: the project has no Priority called P9.",
+    "Filed #341: “Look into lag again”, in Void Sector, Inbox. The issue exists, but the board couldn't put it under #315 (gh: Sub issue may only have one parent (HTTP 422)); nor set its Priority (the project has no Priority called P9).",
   )
 
   // Without a title, or with a milestone the repo hasn't, nothing is filed.

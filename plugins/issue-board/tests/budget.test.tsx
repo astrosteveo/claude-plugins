@@ -64,15 +64,19 @@ const world = (on: On) => {
       const asked = JSON.parse(e.init?.stdin ?? '{}') as { query: string; variables: Record<string, unknown> }
       if (asked.query.includes('projectItems')) return answer(JSON.stringify({ data: { node: { projectItems: { nodes: [{ id: 'PVTI_315', project: { id: 'PVT_8' } }] } } } }))
       if (asked.query.includes('fieldValues')) return answer(JSON.stringify({ data: { node: { fieldValues: { nodes: [] } } } }))
+      if (asked.query.includes('addProjectV2ItemById')) return answer(JSON.stringify({ data: { addProjectV2ItemById: { item: { id: 'PVTI_340' } } } }))
+      if (asked.query.includes('updateProjectV2ItemFieldValue')) return answer(JSON.stringify({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: String(asked.variables.item) } } } }))
       return answer(JSON.stringify({ data: {} }))
     }
-    if (argv[1] === 'api' && argv[2] === 'graphql') {
-      if (argv.some(arg => arg.includes('reviewThreads'))) return answer(JSON.stringify({ data: { repository: { pullRequests: { nodes: [] } } } }))
-      if (argv.some(arg => arg.includes('addProjectV2ItemById'))) return answer(JSON.stringify({ data: { addProjectV2ItemById: { item: { id: 'PVTI_340' } } } }))
-      return answer(JSON.stringify({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: 'PVTI_315' } } } }))
-    }
+    if (argv[1] === 'api' && argv[2] === 'graphql' && argv.some(arg => arg.includes('reviewThreads'))) return answer(JSON.stringify({ data: { repository: { pullRequests: { nodes: [] } } } }))
     if (argv[1] === 'api' && argv[2]?.includes('/milestones')) return answer('[]')
     if (argv[1] === 'api' && argv[2]?.includes('/issues?state=closed')) return answer('[]')
+    // #315's body over REST, read and written as a tick does.
+    if (argv[1] === 'api' && argv.includes('{body, updated_at}')) return answer(JSON.stringify({ body: issue.body, updated_at: issue.updatedAt }))
+    if (argv[1] === 'api' && argv[2] === '-X' && argv[3] === 'PATCH') {
+      const body = (JSON.parse(e.init?.stdin ?? '{}') as { body?: string }).body ?? issue.body
+      return answer(JSON.stringify({ title: issue.title, body, updated_at: '2026-10-04T10:00:00Z' }))
+    }
     if (argv[1] === 'api' && argv[2] === '-X' && argv[3] === 'POST' && /\/issues$/.test(argv[4] ?? '')) {
       return answer(JSON.stringify({ number: 340, id: 9340, node_id: 'I_340', html_url: '', updated_at: '2026-10-04T10:00:00Z', labels: [], assignees: [] }))
     }
@@ -239,7 +243,7 @@ test('context added counts per prompt Claude received', async ($, on) => {
   expect((await spent($)).text).toMatch(/^Context added: [\d,]+ characters, [\d,]+ a prompt over 2 prompts$/m)
 })
 
-test('the budget: a refresh, the capture note, a Start, an issue_update, a capture and an idle hour', async ($, on) => {
+test('the budget: a refresh, the capture note, a Start, an issue_update, a capture, a plan, a tick, a comment and an idle hour', async ($, on) => {
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   const gh = world(on)
   await $.session.start({ cwd: REPO.root, surface: 'terminal', isInteractive: true })
@@ -309,6 +313,16 @@ test('the budget: a refresh, the capture note, a Start, an issue_update, a captu
   expect(calls(plan)).toEqual({ rest: 1, rest304: 1, graphql: 5 })
   expect(plan.text).toMatch(/^- tool: REST 2, REST 304 0, GraphQL 5$/m)
 
+  // A tick: the body read and written over REST, and nothing else. It spends no GraphQL, and no full read follows.
+  const ticked = await measure(() => $.tool.call({ tool: 'mcp__issue-board__tick', number: 315, boxes: [1] }))
+  expect(calls(ticked)).toEqual({ rest: 2, rest304: 0, graphql: 0 })
+  expect(ticked.ran.slice(0, 2)).toEqual(['api repos/astrosteveo/void-sector/issues/315 --jq {body, updated_at}', 'api -X PATCH repos/astrosteveo/void-sector/issues/315 --input -'])
+
+  // A comment from issue_update: one REST post, then the refresh that follows it.
+  const commented = await measure(() => $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 315, comment: 'Seen it.' }))
+  expect(calls(commented)).toEqual({ rest: 2, rest304: 1, graphql: 3 })
+  expect(commented.ran[0]).toBe('api -X POST repos/astrosteveo/void-sector/issues/315/comments --input -')
+
   // An idle hour: a cheap check every five minutes, which answers 304 while nothing changed, and a full read every
   // fifteen. Nothing goes into Claude's context.
   const hour = await measure(() => clock.advance(60 * 60_000))
@@ -317,7 +331,7 @@ test('the budget: a refresh, the capture note, a Start, an issue_update, a captu
   expect(hour.context).toBe(0)
   expect(hour.text).toMatch(/^- poll: REST 0, REST 304 8, GraphQL 0$/m)
   expect(hour.text).toMatch(/^What the issue board cost since it loaded 1 h 0 min ago\.$/m)
-  expect(hour.text).toMatch(/^GraphQL points: 8, 8\.0 an hour\. 4,999 left until \d\d:\d\d\.$/m)
+  expect(hour.text).toMatch(/^GraphQL points: 9, 9\.0 an hour\. 4,999 left until \d\d:\d\d\.$/m)
 })
 
 test("the budget: setup's Apply", async ($, on) => {

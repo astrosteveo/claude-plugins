@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentSpawnResult, Caught, EngineInterface, HookFailure, ModelForkResult, Register, RenderChildren, ThemeKey, Timer, ToolCallResult, UiCopyArgs } from 'claude-code'
 
-import type { Adopted, Adoption, Alert, Armed, Board, FieldValues, BoxTask, BuiltInFilter, Check, Comment, EpicNote, GroupBy, Issue, Known, LabelChange, Launch, ViewChange, Markers, Plan, PlanRow, Problem, Project, Role, Roles, StatusUpdate, PullRequest, RunWatch, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
+import type { Adopted, Adoption, Alert, Armed, Board, FieldValues, BoxTask, BuiltInFilter, Check, Comment, EpicNote, GroupBy, Issue, Known, LabelChange, Launch, ViewChange, Markers, Milestone, Plan, PlanRow, Problem, Project, Role, Roles, StatusUpdate, PullRequest, RunWatch, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
 import type { Ended, FilterSource, IssueChanges, NewIssue, PrRule, StartMode, Switches, Tab } from './parse'
 import { TOOL_SPECS, WORKER } from './tools'
 import type { Linked } from './project'
@@ -102,6 +102,9 @@ import {
   closeOutRisk,
   commentsOf,
   commandsOf,
+  commentCommand,
+  graphqlData,
+  noBoxText,
   copiesFor,
   copyKeyOf,
   captureSection,
@@ -520,6 +523,22 @@ const MISSING = /ENOENT|not found|no such file/i
 // A gh error that may come from a missing permission rather than from the request itself.
 const ACCESS_ERROR = /scope|credentials|not accessible|gh auth login|HTTP 40[13]|permission/i
 
+// What one of the board's write tools answers when its work fails: why, and when the error may come from a missing
+// permission, what the access check then finds missing.
+const deniedBy = async ($: EngineInterface, what: string, cause: unknown): Promise<{ deny: string }> => {
+  const message = messageOf(cause)
+  const problems = ACCESS_ERROR.test(message) ? await checkAccess($, message) : []
+  return { deny: `${what}: ${message}${problems.length > 0 ? `\n${problemsText(problems)}` : ''}` }
+}
+
+// What a press that failed shows: a toast saying why, and the access check run when the error may come from a missing
+// permission, so the pane says what to fix.
+const toastFailure = ($: EngineInterface, what: string, cause: unknown): void => {
+  const message = messageOf(cause)
+  $.ui.toast(`${what}: ${message}`)
+  if (ACCESS_ERROR.test(message)) void checkAccess($, message)
+}
+
 // Asks gh who it is signed in as and what it may do in this repository, and keeps what is missing. `message` is an
 // error gh just gave, which may name a permission the token lacks. One at a time, so a check asked for during another
 // runs after it with its own message.
@@ -721,8 +740,8 @@ const resetOf = async ($: EngineInterface, message: string): Promise<number> => 
   const soon = (await nowOf($)) + 60_000
   if (/secondary/i.test(message)) return soon
   try {
-    const answer = JSON.parse(await gh($, ['api', 'graphql', '-f', 'query={ rateLimit { resetAt } }'])) as { data?: { rateLimit?: { resetAt?: string } } }
-    const at = Date.parse(answer.data?.rateLimit?.resetAt ?? '')
+    const data = graphqlData(await gh($, ['api', 'graphql', '-f', 'query={ rateLimit { resetAt } }'])) as { rateLimit?: { resetAt?: string } }
+    const at = Date.parse(data.rateLimit?.resetAt ?? '')
     return Number.isNaN(at) ? soon : at
   } catch {
     return soon
@@ -894,28 +913,33 @@ const declineProject = async ($: EngineInterface, project: { id: string }): Prom
 }
 
 // The one way the board writes to a project. Every mutation, from Start, triage, the tools, the moves a read makes and
-// setup, comes here, and is refused unless its project is the one adopted for this repo. `fields` sends the variables
-// as gh's `-f` fields, the way the single-select writes always went; otherwise they go as JSON, which carries lists.
+// setup, comes here, and is refused unless its project is the one adopted for this repo.
 const projectWrite = async (
   $: EngineInterface,
   target: { number: number; title: string; url: string } | 'new',
   query: string,
   variables: Record<string, string | number | boolean | null | object>,
-  fields = false,
 ): Promise<Record<string, any>> => {
   const refusal = writeRefusal((await grantsNow($)).all, target)
   if (refusal) throw new Error(refusal)
-  if (fields) {
-    const out = await runGh($, ['api', 'graphql', '-f', `query=${query}`, ...Object.entries(variables).flatMap(([name, value]) => ['-f', `${name}=${String(value)}`])])
-    try {
-      return (JSON.parse(out) as { data?: Record<string, any> }).data ?? {}
-    } catch {
-      return {}
-    }
-  }
-  const answer = JSON.parse(await runGh($, ['api', 'graphql', '--input', '-'], JSON.stringify({ query, variables }))) as { data?: Record<string, any>; errors?: { message: string }[] }
-  if (answer.errors?.length) throw new Error(answer.errors[0]?.message ?? 'GitHub refused the change')
-  return answer.data ?? {}
+  return postGraphql($, query, variables, true)
+}
+
+// The one way the board sends GraphQL with variables: the query and its variables as JSON on stdin, which carries
+// lists and nulls as they are, and the answer's errors thrown. A read goes through gh(), which refuses a mutation; only
+// projectWrite passes `write`, once its check has let the write through.
+const postGraphql = async ($: EngineInterface, query: string, variables: Record<string, unknown>, write = false): Promise<Record<string, any>> => {
+  const args = ['api', 'graphql', '--input', '-']
+  const stdin = JSON.stringify({ query, variables })
+  return graphqlData(await (write ? runGh($, args, stdin) : gh($, args, stdin)))
+}
+
+// A GraphQL read sent as gh's `-f` fields, as the issues pages and the review threads are, answered as gh gave it once
+// its errors are checked.
+const getGraphql = async ($: EngineInterface, args: string[]): Promise<string> => {
+  const out = await gh($, args)
+  graphqlData(out)
+  return out
 }
 
 // Whether the board may write to a project, for the work it does by itself, which skips a project it may not write
@@ -1092,7 +1116,7 @@ const adoptPlan = async ($: EngineInterface, input: unknown): Promise<AdoptPlan>
   let linked: Linked[] = []
   if (number !== undefined && reads?.number !== number) {
     const [owner = '', name = ''] = now.repo.split('/')
-    linked = linkedOf(await graphql($, LINKED_QUERY, { owner, name }))
+    linked = linkedOf(await postGraphql($, LINKED_QUERY, { owner, name }))
   }
   const target = adoptTarget(reads, linked, number, now.repo)
   if (typeof target === 'string') return { refusal: target }
@@ -1169,7 +1193,7 @@ const fetchIssues = async ($: EngineInterface, nameWithOwner: string): Promise<{
     const pages: string[] = []
     let after: string | null = null
     do {
-      const page: string = await gh($, ['api', 'graphql', '-f', `owner=${owner}`, '-f', `name=${name}`, ...(after ? ['-f', `after=${after}`] : []), ...(withProject ? ['-f', `order=${orderFilter(owner, name)}`] : []), '-f', `query=${issuesQuery(withProject, fields)}`])
+      const page: string = await getGraphql($, ['api', 'graphql', '-f', `owner=${owner}`, '-f', `name=${name}`, ...(after ? ['-f', `after=${after}`] : []), ...(withProject ? ['-f', `order=${orderFilter(owner, name)}`] : []), '-f', `query=${issuesQuery(withProject, fields)}`])
       pages.push(page)
       after = nextPageOf(page)
     } while (after && pages.length < PAGES)
@@ -1283,16 +1307,14 @@ const readGitHub = async ($: EngineInterface, seen: boolean): Promise<void> => {
         'number,title,url,author,headRefName,headRefOid,isDraft,statusCheckRollup,reviewDecision,additions,deletions,updatedAt,body,closingIssuesReferences,mergeStateStatus,reviewRequests',
       ]),
       // Review threads still open on each pull request; without them, the rows just don't count threads.
-      gh($, ['api', 'graphql', '-f', `owner=${owner}`, '-f', `name=${name}`, '-f', `query=${THREADS_QUERY}`]).then(threadsOf, () => new Map<number, number>()),
+      getGraphql($, ['api', 'graphql', '-f', `owner=${owner}`, '-f', `name=${name}`, '-f', `query=${THREADS_QUERY}`]).then(threadsOf, () => new Map<number, number>()),
       kept ? null : listIssues(['--state', 'closed', '--search', `closed:>=${from}`, '--limit', '500', '--json', 'closedAt']),
       kept ? null : gh($, ['pr', 'list', '--state', 'merged', '--search', `merged:>=${from}`, '--limit', '500', '--json', 'mergedAt']),
       // Who Mine means: asked once, then kept.
       known ?? gh($, ['api', 'user', '--jq', '.login']).then(out => out.trim() || null, () => null),
       currentBranch($),
       // The open milestones, over REST; the last read's stand when they can't be read.
-      gh($, ['api', `repos/${repo.nameWithOwner}/milestones?state=open&per_page=50`])
-        .then(out => milestonesOf(JSON.parse(out) as unknown[]))
-        .catch(() => before?.milestones ?? []),
+      repoMilestones($, repo.nameWithOwner).catch(() => before?.milestones ?? []),
     ])
     // Each open epic's sub-issues in GitHub's order, over REST; an epic whose order can't be read keeps the board's own.
     const issues = await Promise.all(
@@ -1408,7 +1430,7 @@ const moveToVerification = async ($: EngineInterface, before: Board | null, next
     try {
       if (!merged.has(left.pr)) merged.set(left.pr, !/^(null)?$/.test((await gh($, ['api', `repos/${next.repo}/pulls/${left.pr}`, '--jq', '.merged_at'])).trim()))
       if (!merged.get(left.pr)) continue
-      await projectWrite($, project, SET_FIELD, { project: project.id, item: left.item, field: project.status.id, option: verify.id }, true)
+      await projectWrite($, project, SET_FIELD, { project: project.id, item: left.item, field: project.status.id, option: verify.id })
       await update($, board, was => was && { ...was, issues: was.issues.map(one => (one.number === left.number ? { ...one, status: verify.name } : one)) })
       moved.push(`#${left.number} moved to ${verify.name}: pull request #${left.pr}, which refers to it without closing it, merged.`)
       verified.push(left.number)
@@ -1436,7 +1458,7 @@ const moveToDone = async ($: EngineInterface, before: Board | null, next: Board)
     try {
       const how = JSON.parse(await gh($, ['api', `repos/${next.repo}/issues/${left.number}`, '--jq', '{state, state_reason}'])) as { state?: string; state_reason?: string | null }
       if (how.state !== 'closed' || how.state_reason !== 'completed') continue
-      await projectWrite($, project, SET_FIELD, { project: project.id, item: left.item, field: project.status.id, option: done.id }, true)
+      await projectWrite($, project, SET_FIELD, { project: project.id, item: left.item, field: project.status.id, option: done.id })
       done$.push(left.number)
       moved.push(`#${left.number} moved to ${done.name}: it closed as completed.`)
     } catch (cause) {
@@ -1468,13 +1490,14 @@ const advanceEpics = async ($: EngineInterface, before: Board | null, next: Boar
     const epic = next.issues.find(one => one.number === number)
     if (!epic) continue
     try {
-      // The body as GitHub has it now, so a box ticked meanwhile counts.
-      const raw = JSON.parse(await gh($, ['issue', 'view', String(number), '--json', 'body'])) as { body: string | null }
-      const box = subIssuesBoxOf(checksOf(raw.body))
-      if (box > 0 && !checksOf(raw.body)[box - 1]?.done) await tick($, number, [box], true)
-      const open = checksOf(raw.body).filter((check, index) => !check.done && index !== box - 1).length
+      // The body as GitHub has it now, so a box ticked meanwhile counts. The tick takes the same read.
+      const { body } = await readBody($, next.repo, number)
+      const checks = checksOf(body)
+      const box = subIssuesBoxOf(checks)
+      if (box > 0 && !checks[box - 1]?.done) await tick($, number, [box], true, body)
+      const open = checks.filter((check, index) => !check.done && index !== box - 1).length
       if (open === 0) {
-        await gh($, ['issue', 'close', String(number), '--reason', 'completed'])
+        for (const command of commandsOf(number, { close: 'completed' })) await gh($, command.argv, command.stdin)
         const done = project?.status ? roleOf(project, 'done') : undefined
         if (project?.status && done && epic.status !== done.name) await setField($, epic, 'status', done.name)
         moved.push(`#${number} closed as completed${done ? ` and moved to ${done.name}` : ''}: every sub-issue is closed and every box is ticked.`)
@@ -1500,26 +1523,43 @@ const advanceEpics = async ($: EngineInterface, before: Board | null, next: Boar
 
 // Puts an issue read straight from GitHub on the board. The change is the person's or Claude's own, so the issue
 // Claude is on takes its new time and the band doesn't call it news.
-const take = async ($: EngineInterface, fresh: Issue): Promise<void> => {
-  // `gh issue view` gives no project or sub-issue fields, so the board's own stay.
+const take = async ($: EngineInterface, fresh: Partial<Issue> & Pick<Issue, 'number' | 'updatedAt'>): Promise<void> => {
+  // Neither `gh issue view` nor a REST write gives project or sub-issue fields, so the board's own stay.
   await update($, board, now => now && { ...now, issues: now.issues.map(one => (one.number === fresh.number ? { ...one, ...fresh } : one)) })
   await update($, working, was => (was && was.number === fresh.number ? { ...was, updatedAt: fresh.updatedAt } : was))
   await save($)
 }
 
-// Ticks or unticks boxes in an issue's body, read fresh from GitHub so an edit made meanwhile isn't lost. One at a
-// time: two presses in a row would otherwise each write the body the other read. Answers what it did, and the boxes as
-// GitHub had them just before.
+// An issue's body as GitHub has it now, and when the issue last changed, over REST. Every change made to a body starts
+// from this read, so an edit made meanwhile isn't lost.
+const readBody = async ($: EngineInterface, repo: string, number: number): Promise<{ body: string; updatedAt: string }> => {
+  const raw = JSON.parse(await gh($, ['api', `repos/${repo}/issues/${number}`, '--jq', '{body, updated_at}'])) as { body: string | null; updated_at: string }
+  return { body: raw.body ?? '', updatedAt: raw.updated_at }
+}
+
+// Writes an issue's body, with its title when one is given, over REST, and puts what GitHub then has on the board.
+const writeBody = async ($: EngineInterface, repo: string, number: number, fields: { title?: string; body?: string }): Promise<void> => {
+  const raw = JSON.parse(await gh($, ['api', '-X', 'PATCH', `repos/${repo}/issues/${number}`, '--input', '-'], JSON.stringify(fields))) as {
+    title: string
+    body: string | null
+    updated_at: string
+  }
+  await take($, { number, title: raw.title, body: raw.body ?? '', checks: checksOf(raw.body), updatedAt: raw.updated_at })
+}
+
+// Ticks or unticks boxes in an issue's body, read fresh from GitHub so an edit made meanwhile isn't lost, unless the
+// caller has just read it and passes it as `known`. One at a time: two presses in a row would otherwise each write the
+// body the other read. Answers what it did, and the boxes as GitHub had them just before.
 let ticking: Promise<unknown> = Promise.resolve()
-const tick = ($: EngineInterface, number: number, boxes: number[], done: boolean): Promise<{ text: string; before: Check[] }> => {
+const tick = ($: EngineInterface, number: number, boxes: number[], done: boolean, known?: string): Promise<{ text: string; before: Check[] }> => {
   const run = ticking.then(async () => {
-    const raw = JSON.parse(await gh($, ['issue', 'view', String(number), '--json', 'body'])) as { body: string | null }
-    const before = checksOf(raw.body)
-    const edit = tickBody(raw.body ?? '', boxes, done)
-    if (edit.missing.length > 0) throw new Error(`#${number} has ${before.length} ${before.length === 1 ? 'box' : 'boxes'}, so there is no box ${edit.missing.join(', ')}`)
-    if (edit.changed.length > 0) await gh($, ['issue', 'edit', String(number), '--body-file', '-'], edit.body)
-    const [fresh] = parseIssues(`[${await gh($, ['issue', 'view', String(number), '--json', ISSUE_FIELDS])}]`)
-    if (fresh) await take($, fresh)
+    const repo = (await read($, board))?.repo
+    if (!repo) throw new Error(NOT_READ)
+    const body = known ?? (await readBody($, repo, number)).body
+    const before = checksOf(body)
+    const edit = tickBody(body, boxes, done)
+    if (edit.missing.length > 0) throw new Error(noBoxText(number, before.length, edit.missing))
+    if (edit.changed.length > 0) await writeBody($, repo, number, { body: edit.body })
     const step = progress(checksOf(edit.body))
     const tally = `#${number} has ${step.done}/${step.total} ticked.`
     if (edit.changed.length === 0) return { text: `Nothing changed: ${boxes.length === 1 ? 'that box was' : 'those boxes were'} already ${done ? 'ticked' : 'unticked'}. ${tally}`, before }
@@ -1571,13 +1611,13 @@ const itemFor = async ($: EngineInterface, issue: Target, project: Project): Pro
 // already, and GitHub then refuses the add: the item the project has is taken instead.
 const addItem = async ($: EngineInterface, project: Project, content: string): Promise<string> => {
   try {
-    const added = (await projectWrite($, project, ADD_ITEM, { project: project.id, content }, true)) as { addProjectV2ItemById?: { item?: { id?: string } | null } | null }
+    const added = (await projectWrite($, project, ADD_ITEM, { project: project.id, content })) as { addProjectV2ItemById?: { item?: { id?: string } | null } | null }
     const item = added.addProjectV2ItemById?.item?.id
     if (item) return item
   } catch (cause) {
     if (!/already exists/i.test(messageOf(cause))) throw cause
   }
-  const found = (await graphql($, ISSUE_ITEMS, { issue: content })) as { node?: { projectItems?: { nodes?: { id: string; project: { id: string } }[] } } }
+  const found = (await postGraphql($, ISSUE_ITEMS, { issue: content })) as { node?: { projectItems?: { nodes?: { id: string; project: { id: string } }[] } } }
   const item = found.node?.projectItems?.nodes?.find(one => one.project.id === project.id)?.id
   if (!item) throw new Error(`couldn't add it to ${project.title}`)
   return item
@@ -1588,7 +1628,7 @@ const addItem = async ($: EngineInterface, project: Project, content: string): P
 const readValues = async ($: EngineInterface, issue: Target): Promise<FieldValues> => {
   if (!issue.item) return {}
   try {
-    const read$ = itemValuesOf(await graphql($, ITEM_VALUES, { item: issue.item }))
+    const read$ = itemValuesOf(await postGraphql($, ITEM_VALUES, { item: issue.item }))
     await update($, values, was => ({ ...was, [issue.number]: read$ }))
     return read$
   } catch (cause) {
@@ -1626,16 +1666,18 @@ const setFields = async ($: EngineInterface, issue: Target, given: Record<string
   await readValues($, { ...issue, item })
 }
 
-const setField = async ($: EngineInterface, issue: Target, field: 'status' | 'priority', name: string): Promise<void> => {
+// Sets Status or Priority on an issue, by the option's name, and answers the option's name as the project spells it.
+const setField = async ($: EngineInterface, issue: Target, field: 'status' | 'priority', name: string): Promise<string> => {
   const project = (await read($, board))?.project
   const target = field === 'status' ? project?.status : project?.priority
   const option = optionOf(target, name)
   if (!project || !target || !option) throw new Error(`the project has no ${field === 'status' ? 'Status' : 'Priority'} called ${name}`)
   const item = await itemFor($, issue, project)
-  await projectWrite($, project, SET_FIELD, { project: project.id, item, field: target.id, option: option.id }, true)
+  await projectWrite($, project, SET_FIELD, { project: project.id, item, field: target.id, option: option.id })
   const placed = item
   await update($, board, now => now && { ...now, issues: now.issues.map(one => (one.number === issue.number ? { ...one, item: placed, [field]: option.name } : one)) })
   await save($)
+  return option.name
 }
 
 // Start, on GitHub too: the issue moves to In progress in the project and is assigned to the person, so the project
@@ -1751,24 +1793,39 @@ const setType = async ($: EngineInterface, repo: string, number: number, name: s
   await save($)
 }
 
+// Posts a comment on an issue: the one way the board comments, as a change's comment does too.
+const postComment = async ($: EngineInterface, repo: string, number: number, body: string): Promise<void> => {
+  const command = commentCommand(repo, number, body)
+  await gh($, command.argv, command.stdin)
+}
+
 // Closes an issue as a duplicate of another, over REST: a `Duplicate of #N` comment, which GitHub turns into the link
 // between them, then the close with GitHub's duplicate reason, or not planned where GitHub refuses it. The issue leaves
 // the board at once. The other issue must exist.
 const closeAsDuplicate = async ($: EngineInterface, repo: string, number: number, of: number): Promise<void> => {
   await restIssueId($, repo, of)
-  await gh($, ['api', '-X', 'POST', `repos/${repo}/issues/${number}/comments`, '-f', `body=Duplicate of #${of}`])
+  await postComment($, repo, number, `Duplicate of #${of}`)
   const close = (reason: string) => gh($, ['api', '-X', 'PATCH', `repos/${repo}/issues/${number}`, '-f', 'state=closed', '-f', `state_reason=${reason}`])
   await close('duplicate').catch(() => close('not_planned'))
   await update($, board, was => was && { ...was, issues: was.issues.filter(one => one.number !== number) })
   await save($)
 }
 
+// The repo's labels with their colors, over REST, which spends nothing of the GraphQL limit. Every label list the board
+// reads outside its main query comes from here, up to the same 100 that query reads.
+const repoLabels = async ($: EngineInterface, repo: string): Promise<{ name: string; color?: string }[]> =>
+  JSON.parse(await gh($, ['api', `repos/${repo}/labels?per_page=100`])) as { name: string; color?: string }[]
+
+// The repo's milestones, the open ones or all of them, over REST, up to 100: every milestone list the board reads.
+const repoMilestones = async ($: EngineInterface, repo: string, state: 'open' | 'all' = 'open'): Promise<Milestone[]> =>
+  milestonesOf(JSON.parse(await gh($, ['api', `repos/${repo}/milestones?state=${state}&per_page=100`])) as unknown[])
+
 // Makes the labels a change asks for that the repo hasn't got yet, over REST: an `area:` one takes the color the repo's
 // other areas have. Answers the names it made, so the answer says so; the card's label picker offers them from then.
 const ensureLabels = async ($: EngineInterface, repo: string, names: string[]): Promise<string[]> => {
   let existing: { name: string; color?: string }[]
   try {
-    existing = JSON.parse(await gh($, ['api', `repos/${repo}/labels?per_page=100`])) as { name: string; color?: string }[]
+    existing = await repoLabels($, repo)
   } catch (cause) {
     // Without the list, nothing is made: the change goes on, and GitHub names a label it hasn't got.
     $.ui.log(`issue-board: couldn't read the repo's labels: ${messageOf(cause)}`, { to: 'debug' })
@@ -1789,31 +1846,24 @@ const ensureLabels = async ($: EngineInterface, repo: string, names: string[]): 
 const rewrite = async ($: EngineInterface, repo: string, number: number, changes: IssueChanges): Promise<void> => {
   let body: string | undefined
   if (changes.body !== undefined || changes.addBoxes?.length || changes.rewordBoxes?.length) {
-    const fresh = JSON.parse(await gh($, ['api', `repos/${repo}/issues/${number}`, '--jq', '{body, updated_at}'])) as { body: string | null; updated_at: string }
-    body = fresh.body ?? ''
+    const fresh = await readBody($, repo, number)
+    body = fresh.body
     if (changes.body !== undefined) {
       const known = (await read($, board))?.issues.find(one => one.number === number)
       if (!known) throw new Error(`the board doesn't hold #${number}, so it can't tell whether its body changed meanwhile; add or reword its boxes instead`)
       // A board saved between sessions has no bodies: then the time of the last change tells.
-      const same = known.body ? known.body === body : known.updatedAt === fresh.updated_at
+      const same = known.body ? known.body === body : known.updatedAt === fresh.updatedAt
       if (!same) throw new Error(`#${number}'s body changed on GitHub since the board read it, so it wasn't overwritten. Read it again with the issues tool, then change it`)
       body = changes.body
     }
     if (changes.rewordBoxes?.length) {
       const reworded = rewordBoxes(body, changes.rewordBoxes)
-      if (reworded.missing.length > 0) throw new Error(`#${number} has ${checksOf(body).length} boxes, so there is no box ${reworded.missing.join(', ')}`)
+      if (reworded.missing.length > 0) throw new Error(noBoxText(number, checksOf(body).length, reworded.missing))
       body = reworded.body
     }
     if (changes.addBoxes?.length) body = addBoxes(body, changes.addBoxes)
   }
-  const fields = { ...(changes.title ? { title: changes.title } : {}), ...(body !== undefined ? { body } : {}) }
-  const raw = JSON.parse(await gh($, ['api', '-X', 'PATCH', `repos/${repo}/issues/${number}`, '--input', '-'], JSON.stringify(fields))) as {
-    title: string
-    body: string | null
-    updated_at: string
-  }
-  await update($, board, was => was && { ...was, issues: was.issues.map(one => (one.number === number ? { ...one, title: raw.title, body: raw.body ?? '', checks: checksOf(raw.body), updatedAt: raw.updated_at } : one)) })
-  await save($)
+  await writeBody($, repo, number, { ...(changes.title ? { title: changes.title } : {}), ...(body !== undefined ? { body } : {}) })
 }
 
 // Makes or takes away an issue's blocked-by links, over REST, which spends none of the GraphQL limit, and shows them on
@@ -1907,7 +1957,7 @@ const saveMilestone = async (
   ask: { title: string; newTitle?: string; due?: string; description?: string; close?: boolean; reopen?: boolean },
 ): Promise<string> => {
   if (ask.due && !/^\d{4}-\d{2}-\d{2}$/.test(ask.due)) throw new Error('give the due date as YYYY-MM-DD, or an empty string to clear it')
-  const all = JSON.parse(await gh($, ['api', `repos/${repo}/milestones?state=all&per_page=100`])) as { number: number; title: string }[]
+  const all = await repoMilestones($, repo, 'all')
   const found = all.find(one => one.title.toLowerCase() === ask.title.toLowerCase())
   const fields = {
     ...(ask.newTitle ? { title: ask.newTitle } : {}),
@@ -1932,7 +1982,7 @@ const saveMilestone = async (
     await gh($, ['api', '-X', 'PATCH', `repos/${repo}/milestones/${found.number}`, '--input', '-'], JSON.stringify(fields))
     text = `Changed the milestone ${found.title}: ${said.join(', ')}.`
   }
-  const open = milestonesOf(JSON.parse(await gh($, ['api', `repos/${repo}/milestones?state=open&per_page=50`])) as unknown[])
+  const open = await repoMilestones($, repo)
   await update($, board, was => was && { ...was, milestones: open })
   await update($, palette, was => was && { ...was, milestones: open.map(one => one.title) })
   await save($)
@@ -2046,8 +2096,9 @@ const fileOne = async ($: EngineInterface, spec: NewIssue, quiet = false): Promi
   const me = await read($, viewer)
   let milestone: { number: number; title: string } | undefined
   if (spec.milestone) {
-    const open = JSON.parse(await gh($, ['api', `repos/${repo}/milestones?state=open&per_page=100`])) as { number: number; title: string }[]
-    milestone = open.find(one => one.title.toLowerCase() === spec.milestone?.toLowerCase())
+    // The board's own list first, as its last read had it; GitHub's when that lacks it, as for one made since.
+    const named = (list: readonly Milestone[]) => list.find(one => one.title.toLowerCase() === spec.milestone?.toLowerCase())
+    milestone = named(now.milestones ?? []) ?? named(await repoMilestones($, repo))
     if (!milestone) throw new Error(`the repo has no open milestone called ${spec.milestone}`)
   }
   const assignees = (spec.assign ?? []).flatMap(login => (login === '@me' ? (me ? [me] : []) : [login]))
@@ -2107,18 +2158,10 @@ const fileOne = async ($: EngineInterface, spec: NewIssue, quiet = false): Promi
       item = await addItem($, project, raw.node_id)
       for (const [field, wanted] of [['status', spec.status ?? roleOf(project, 'inbox')?.name], ['priority', spec.priority]] as const) {
         if (!wanted) continue
-        const target = field === 'status' ? project.status : project.priority
-        const option = optionOf(target, wanted)
-        const name = field === 'status' ? 'Status' : 'Priority'
-        if (!target || !option) {
-          failed.push(`set its ${name}: the project has no ${name} called ${wanted}`)
-          continue
-        }
         try {
-          await projectWrite($, project, SET_FIELD, { project: project.id, item, field: target.id, option: option.id }, true)
-          set[field] = option.name
+          set[field] = await setField($, { number: raw.number, id: raw.node_id, item }, field, wanted)
         } catch (cause) {
-          failed.push(`set its ${name} (${messageOf(cause)})`)
+          failed.push(`set its ${field === 'status' ? 'Status' : 'Priority'} (${messageOf(cause)})`)
         }
       }
       did.push([`in ${project.title}`, set.status, set.priority].filter(Boolean).join(', '))
@@ -2200,7 +2243,7 @@ const capture = async ($: EngineInterface, spec: NewIssue): Promise<string> => {
   if (found) {
     const parts = (spec.subIssues ?? []).map(part => `- ${part.title}`).join('\n')
     const note = [`Captured again from a conversation: **${spec.title}**`, spec.body.trim(), parts].filter(Boolean).join('\n\n')
-    await gh($, ['api', '-X', 'POST', `repos/${now.repo}/issues/${found.number}/comments`, '--input', '-'], JSON.stringify({ body: note }))
+    await postComment($, now.repo, found.number, note)
     $.ui.toast(`Added to #${found.number} as a comment: it looks like the same work`)
     return `Not filed: #${found.number} “${found.title}”${found.closed ? ', closed lately,' : ''} looks like the same work, so this went there as a comment instead.`
   }
@@ -2275,13 +2318,6 @@ const startHere = async ($: EngineInterface, number: number): Promise<string> =>
   return `Started #${issue.number}${pr ? `, the issue pull request #${number} is for` : ''}${epic}: it is the issue this session is on${claimed}.`
 }
 
-// A GraphQL call with its variables as JSON, which `-f` can't carry for a list such as a field's options.
-const graphql = async ($: EngineInterface, query: string, variables: Record<string, unknown>): Promise<Record<string, any>> => {
-  const answer = JSON.parse(await gh($, ['api', 'graphql', '--input', '-'], JSON.stringify({ query, variables }))) as { data?: Record<string, any>; errors?: { message: string }[] }
-  if (answer.errors?.length) throw new Error(answer.errors[0]?.message ?? 'GitHub refused the change')
-  return answer.data ?? {}
-}
-
 // The repo's folders, for the area labels setup suggests: its top level, and the parts under plugins/, packages/ and
 // the like.
 const foldersOf = async ($: EngineInterface, root: string): Promise<{ top: string[]; nested: Record<string, string[]> }> => {
@@ -2310,11 +2346,11 @@ const readSetup = async ($: EngineInterface): Promise<void> => {
   try {
     const repoName = (await repoNow($)).nameWithOwner
     const [owner = '', name = ''] = repoName.split('/')
-    const facts = await graphql($, FACTS_QUERY, { owner, name })
+    const facts = await postGraphql($, FACTS_QUERY, { owner, name })
     const pages: string[] = []
     let after: string | null = null
     do {
-      const page: string = JSON.stringify({ data: await graphql($, ITEMS_QUERY, { owner, name, after }) })
+      const page: string = JSON.stringify({ data: await postGraphql($, ITEMS_QUERY, { owner, name, after }) })
       pages.push(page)
       after = nextItemsOf(page)
     } while (after && pages.length < PAGES)
@@ -2361,7 +2397,7 @@ const applySetup = async ($: EngineInterface): Promise<void> => {
       await mark(id, 'failed', messageOf(cause))
     }
   }
-  const reread = async (id: string): Promise<SetupProject> => projectOf((await graphql($, PROJECT_QUERY, { id })).node)
+  const reread = async (id: string): Promise<SetupProject> => projectOf((await postGraphql($, PROJECT_QUERY, { id })).node)
   await update($, setup, was => (was?.phase === 'ready' ? { ...was, phase: 'applying' as const } : was))
 
   let project: SetupProject | null = facts.projects.find(one => one.id === now.chosen) ?? null
@@ -2485,9 +2521,7 @@ const pick = async ($: EngineInterface, issue: Issue, field: 'status' | 'priorit
     await setField($, issue, field, name)
     $.ui.toast(`#${issue.number} is ${name} now`)
   } catch (cause) {
-    const message = messageOf(cause)
-    $.ui.toast(`Couldn't change #${issue.number}: ${message}`)
-    if (ACCESS_ERROR.test(message)) void checkAccess($, message)
+    toastFailure($, `Couldn't change #${issue.number}`, cause)
   }
 }
 
@@ -2832,9 +2866,7 @@ const tickTask = async ($: EngineInterface, task: BoxTask): Promise<void> => {
     await update($, tasks, list => list.filter(one => one.id !== task.id))
     $.ui.toast(`Ticked box ${at.box} on #${task.number}`)
   } catch (cause) {
-    const message = messageOf(cause)
-    $.ui.toast(`Couldn't tick the box on #${task.number}: ${message}`)
-    if (ACCESS_ERROR.test(message)) void checkAccess($, message)
+    toastFailure($, `Couldn't tick the box on #${task.number}`, cause)
   }
 }
 
@@ -2844,7 +2876,7 @@ const offBoard = async ($: EngineInterface, number: number): Promise<Target> => 
   const project = (await read($, board))?.project
   if (!project) throw new Error("the board reads no project for this repo, so it can't set its fields")
   const { id } = JSON.parse(await gh($, ['issue', 'view', String(number), '--json', 'id'])) as { id: string }
-  const found = (await graphql($, ISSUE_ITEMS, { issue: id })) as { node?: { projectItems?: { nodes?: { id: string; project: { id: string } }[] } } }
+  const found = (await postGraphql($, ISSUE_ITEMS, { issue: id })) as { node?: { projectItems?: { nodes?: { id: string; project: { id: string } }[] } } }
   return { number, id, item: found.node?.projectItems?.nodes?.find(one => one.project.id === project.id)?.id ?? null }
 }
 
@@ -2857,7 +2889,7 @@ const applyChanges = async ($: EngineInterface, number: number, changes: IssueCh
   // A closed issue is set through its item in the project all the same. Its Status or Priority may already be what was
   // asked, as when the board moved it to Done as it closed: that is said, and nothing is written.
   const target = issue ?? (changes.status || changes.priority || fields ? await offBoard($, number) : null)
-  const current = !issue && target?.item ? itemValuesOf(await graphql($, ITEM_VALUES, { item: target.item })) : {}
+  const current = !issue && target?.item ? itemValuesOf(await postGraphql($, ITEM_VALUES, { item: target.item })) : {}
   const already: string[] = []
   const skipped: ('status' | 'priority')[] = []
   for (const field of ['status', 'priority'] as const) {
@@ -2883,7 +2915,7 @@ const applyChanges = async ($: EngineInterface, number: number, changes: IssueCh
       throw new Error(`${changes.transferTo} is private and ${repo} is public, so GitHub won't move #${number} back once it's there. Call again with confirmTransfer: true to move it anyway`)
     }
   }
-  for (const command of commandsOf(number, changes)) await gh($, command.argv, command.stdin)
+  for (const command of commandsOf(number, changes, repo)) await gh($, command.argv, command.stdin)
   if (changes.transferTo) {
     await update($, board, was => was && { ...was, issues: was.issues.filter(one => one.number !== number) })
     await save($)
@@ -2907,9 +2939,7 @@ const change = async ($: EngineInterface, number: number, changes: IssueChanges)
   try {
     $.ui.toast(await applyChanges($, number, changes))
   } catch (cause) {
-    const message = messageOf(cause)
-    $.ui.toast(`Couldn't change #${number}: ${message}`)
-    if (ACCESS_ERROR.test(message)) void checkAccess($, message)
+    toastFailure($, `Couldn't change #${number}`, cause)
   }
 }
 
@@ -3002,7 +3032,7 @@ const applyView = async ($: EngineInterface, change: ViewChange): Promise<string
   const { view, to } = change
   let id: string | undefined
   if (view) {
-    const found = (await graphql($, VIEW_ID, { project: project.id, number: view.number })) as { node?: { view?: { id?: string } | null } | null }
+    const found = (await postGraphql($, VIEW_ID, { project: project.id, number: view.number })) as { node?: { view?: { id?: string } | null } | null }
     id = found.node?.view?.id
     if (!id) throw new Error(`${project.title} has no view ${view.name} any more`)
   }
@@ -3094,11 +3124,14 @@ const applyFromCard = async ($: EngineInterface, id: number): Promise<void> => {
 // How many Inbox issues one ask covers; more are asked about in turn.
 const TRIAGE_BATCH = 15
 
-// The repo's areas, the `area:` labels without the prefix; the ones on the board's issues when gh can't list labels.
+// The repo's areas, the `area:` labels without the prefix: from the labels the board's last read had, else as GitHub
+// lists them, else the ones on the board's issues.
 const repoAreas = async ($: EngineInterface, now: Board): Promise<string[]> => {
-  const names = await gh($, ['label', 'list', '-R', now.repo, '--limit', '200', '--json', 'name'])
-    .then(out => (JSON.parse(out) as { name: string }[]).map(one => one.name))
-    .catch(() => labelsOf(now.issues))
+  const names =
+    now.labels ??
+    (await repoLabels($, now.repo)
+      .then(list => list.map(one => one.name))
+      .catch(() => labelsOf(now.issues)))
   return names.filter(name => name.startsWith('area:')).map(name => name.slice('area:'.length)).sort()
 }
 
@@ -3177,9 +3210,7 @@ const acceptTriage = async ($: EngineInterface, issue: Issue, choice: { priority
     $.ui.toast(await applyChanges($, issue.number, { ...fields, ...labels }))
     await update($, triage, was => ({ ...was, picks: was.picks.filter(one => one.number !== issue.number) }))
   } catch (cause) {
-    const message = messageOf(cause)
-    $.ui.toast(`Couldn't triage #${issue.number}: ${message}`)
-    if (ACCESS_ERROR.test(message)) void checkAccess($, message)
+    toastFailure($, `Couldn't triage #${issue.number}`, cause)
   }
 }
 
@@ -3211,15 +3242,14 @@ const pickTab = async ($: EngineInterface, tab: Tab, project: Project | null): P
   else if (tab.id === 'closed') await readRecent($)
 }
 
-// What the card's editor offers: the repo's labels and open milestones, read when it opens.
+// What the card's editor offers: the repo's labels and open milestones, when it opens. The board's last read has both,
+// the labels unless the repo's project read failed; only then are the labels read from GitHub.
 const loadPalette = async($: EngineInterface): Promise<void> => {
   try {
-    const repo = (await read($, board))?.repo
-    if (!repo) return
-    const [labels, milestones] = await Promise.all([
-      gh($, ['label', 'list', '-R', repo, '--limit', '100', '--json', 'name']).then(out => (JSON.parse(out) as { name: string }[]).map(one => one.name).sort()),
-      gh($, ['api', `repos/${repo}/milestones?state=open&per_page=50`]).then(out => (JSON.parse(out) as { title: string }[]).map(one => one.title)),
-    ])
+    const now = await read($, board)
+    if (!now) return
+    const labels = [...(now.labels ?? (await repoLabels($, now.repo)).map(one => one.name))].sort()
+    const milestones = (now.milestones ?? []).map(one => one.title)
     await update($, palette, () => ({ labels, milestones }))
   } catch (cause) {
     $.ui.toast(`Couldn't read the repo's labels and milestones: ${messageOf(cause)}`)
@@ -3653,9 +3683,7 @@ export const register: Register = (on, options) => {
           if ((await read($, working))?.number === number) await absorb($, copy && { ...copy, checks: before })
           return { result: text }
         } catch (cause) {
-          const message = messageOf(cause)
-          const problems = ACCESS_ERROR.test(message) ? await checkAccess($, message) : []
-          return { deny: `Couldn't tick boxes on #${number}: ${message}${problems.length > 0 ? `\n${problemsText(problems)}` : ''}` }
+          return deniedBy($, `Couldn't tick boxes on #${number}`, cause)
         }
       })
     }),
@@ -3692,9 +3720,7 @@ export const register: Register = (on, options) => {
           }
           return { result: `${started ? `${started}\n${result}` : result}${skippedText}` }
         } catch (cause) {
-          const message = messageOf(cause)
-          const problems = ACCESS_ERROR.test(message) ? await checkAccess($, message) : []
-          return { deny: `Couldn't change #${number}: ${message}${problems.length > 0 ? `\n${problemsText(problems)}` : ''}` }
+          return deniedBy($, `Couldn't change #${number}`, cause)
         }
       })
     }),
@@ -3743,9 +3769,7 @@ export const register: Register = (on, options) => {
         try {
           return { result: await fileIssue($, spec) }
         } catch (cause) {
-          const message = messageOf(cause)
-          const problems = ACCESS_ERROR.test(message) ? await checkAccess($, message) : []
-          return { deny: `Couldn't file the issue: ${message}${problems.length > 0 ? `\n${problemsText(problems)}` : ''}` }
+          return deniedBy($, `Couldn't file the issue`, cause)
         }
       })
     }),
@@ -3761,9 +3785,7 @@ export const register: Register = (on, options) => {
         try {
           return { result: await capture($, spec) }
         } catch (cause) {
-          const message = messageOf(cause)
-          const problems = ACCESS_ERROR.test(message) ? await checkAccess($, message) : []
-          return { deny: `Couldn't capture it: ${message}${problems.length > 0 ? `\n${problemsText(problems)}` : ''}` }
+          return deniedBy($, `Couldn't capture it`, cause)
         }
       })
     }),
@@ -4063,10 +4085,8 @@ export const register: Register = (on, options) => {
       try {
         await tick($, issue.number, [box], done)
         $.ui.toast(`${done ? 'Ticked' : 'Unticked'} box ${box} on #${issue.number}`)
-      } catch (cause) {
-        const message = messageOf(cause)
-        $.ui.toast(`Couldn't change box ${box} on #${issue.number}: ${message}`)
-        if (ACCESS_ERROR.test(message)) void checkAccess($, message)
+          } catch (cause) {
+        toastFailure($, `Couldn't change box ${box} on #${issue.number}`, cause)
       }
     }
 
