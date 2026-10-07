@@ -354,14 +354,6 @@ export type MarkerPicks = { types: string[]; labels: string[]; later: boolean; p
 // by id. A role left out has none.
 export type StatusPicks = { project: { id: string; title: string }; options: { id: string; name: string }[]; picks: Roles }
 
-// What setup saves for a repo: the project the board reads, its fields, and which Status option means what.
-export type SavedSetup = {
-  project: { id: string; number: number; title: string }
-  status: { id: string; roles: Roles } | null
-  priority: { id: string } | null
-  at: number
-}
-
 declare module 'claude-code' {
   interface PluginState {
     'issue-board': {

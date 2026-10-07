@@ -136,11 +136,12 @@ test('setup on a fresh repo shows its plan, changes nothing until Apply, then ma
   expect((await ui.findAll({ type: 'Text' })).filter(text => text.text === '✓ ').length).toBe(8)
   expect(await ui.find({ key: 'setup-close' })).toMatchObject({ text: 'Close' })
 
-  // Saved for the repo: the project, its fields, and which Status means what.
-  const saved = kept.get('repo:/work/void-sector') as { setup?: { project: { id: string }; status: { roles: Record<string, string> }; priority: { id: string } } }
-  expect(saved.setup?.project.id).toBe('PVT_new')
-  expect(saved.setup?.priority.id).toBe('F_priority')
-  expect(saved.setup?.status.roles).toMatchObject({ inbox: 'n1', started: 'd1', done: 'd2' })
+  // Saved with the person's choices: the project the board reads, and which Status means what. The shared entry is
+  // only the cached board.
+  const choices = kept.get('choices:/work/void-sector') as { preferred?: string; statuses?: Record<string, Record<string, string>> }
+  expect(choices.preferred).toBe('PVT_new')
+  expect(choices.statuses?.PVT_new).toMatchObject({ inbox: 'n1', started: 'd1', done: 'd2' })
+  expect(Object.keys((kept.get('repo:/work/void-sector') as object | undefined) ?? {})).not.toContain('setup')
   // The board may write to the project it made: the setting names it.
   expect(set).toEqual([{ key: 'issue-board.writeProjects', value: 'astrosteveo/9' }])
 
@@ -179,9 +180,8 @@ test('with two projects linked, setup asks which, and Cancel changes nothing', a
   await ui.unmount()
 })
 
-test('setup says which project the board may write to; Release makes it read-only, and Apply adopts it again', async ($, on) => {
-  // Saved by an older board, before adopting: its setup names the project, which counts as adopted.
-  const kept = new Map<string, unknown>([['repo:/work/void-sector', { setup: { project: { id: 'PVT_8', number: 8, title: 'Void Sector' }, status: null, priority: null, at: 0 } }]])
+test('setup says which project the board may write to; Release makes it read-only, and Apply adopts it again', { options: { writeProjects: 'astrosteveo/8' } }, async ($, on) => {
+  const kept = new Map<string, unknown>()
   on('store.get', async (_$, e) => ({ value: kept.get(e.key) }))
   on('store.set', async (_$, e) => {
     kept.set(e.key, e.value)
@@ -196,8 +196,7 @@ test('setup says which project the board may write to; Release makes it read-onl
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   expect(await ui.find({ text: /^the board may write to Void Sector$/ })).toBeDefined()
   expect(await ui.find({ text: /^✓ Nothing to change/ })).toBeDefined()
-  // The saved setup's project moved into the setting, once.
-  expect(set).toEqual([{ key: 'issue-board.writeProjects', value: 'astrosteveo/8' }])
+  expect(set).toEqual([])
 
   await ui.press({ key: 'setup-release' })
   expect(set.at(-1)).toEqual({ key: 'issue-board.writeProjects', value: '' })
@@ -208,7 +207,7 @@ test('setup says which project the board may write to; Release makes it read-onl
   await ui.press({ key: 'setup-apply' })
   await clock.settle()
   expect(set.at(-1)).toEqual({ key: 'issue-board.writeProjects', value: 'astrosteveo/8' })
-  expect(set).toHaveLength(3)
+  expect(set).toHaveLength(2)
   expect(await ui.find({ text: /^the board may write to Void Sector$/ })).toBeDefined()
   // Adopting is the board's own note; GitHub isn't changed.
   expect(gh.writes).toEqual([])
@@ -365,8 +364,8 @@ test('setup on a project with its own names lets the person pick which is which,
   await clock.settle()
   // The project keeps its options; only the roles are saved.
   expect(gh.writes).toEqual([])
-  const saved = kept.get('repo:/work/void-sector') as { setup?: { project: { id: string }; status: { roles: Record<string, string> } } }
-  expect(saved.setup?.project.id).toBe('PVT_10')
-  expect(saved.setup?.status.roles).toEqual({ inbox: 'o0', started: 'o1', done: 'o2' })
+  const choices = kept.get('choices:/work/void-sector') as { preferred?: string; statuses?: Record<string, Record<string, string>> }
+  expect(choices.preferred).toBe('PVT_10')
+  expect(choices.statuses?.PVT_10).toEqual({ inbox: 'o0', started: 'o1', done: 'o2' })
   await ui.unmount()
 })

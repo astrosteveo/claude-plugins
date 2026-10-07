@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 
 import type { Project, Roles } from '../types'
-import { COMMON_NAMES, ROLE_ORDER, guessOf, guessText, roleOf, rolesByName, rolesFor, savedRolesOf } from '../hooks/project'
+import { COMMON_NAMES, ROLE_ORDER, guessOf, guessText, roleOf, rolesByName, rolesFor } from '../hooks/project'
 import { PROJECT, graphPage, isIssuesQuery } from './graph'
 
 const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 120, placement: 'dock', scroll: { offset: 0, bodyRows: 80 }, view: {} } } as const
@@ -21,9 +21,9 @@ const project = (names: string[], roles?: Roles, guessed = false): Project => {
 
 const raw = (number: number, title: string, status: string) => ({ number, title, url: '', labels: [], assignees: [], body: '', updatedAt: '2026-10-05T10:00:00Z', status })
 
-// GitHub with a project whose Status options are its own, every call kept, and a store that starts with `saved`.
-const world = (on: On, names: string[], saved?: Record<string, unknown>) => {
-  const kept = new Map<string, unknown>(saved ? [[KEY, saved]] : [])
+// GitHub with a project whose Status options are its own, every call kept, and a store whose choices start as `choices`.
+const world = (on: On, names: string[], choices?: Record<string, unknown>) => {
+  const kept = new Map<string, unknown>(choices ? [[CHOICES, choices]] : [])
   const state = { calls: [] as { argv: string[]; stdin: string }[], kept }
   on('store.get', async (_$, e) => ({ value: kept.get(e.key) }))
   on('store.set', async (_$, e) => {
@@ -84,17 +84,11 @@ test('every common name plays its part, whatever its case, and the board names a
   expect(rolesByName(options('Someday', 'Finished'))).toEqual({})
 })
 
-test('a saved mapping wins over the names, setup first, and only names found by a common name are a guess', () => {
+test('a saved mapping wins over the names, and only names found by a common name are a guess', () => {
   const status = { id: 'F', options: options('Todo', 'Ready', 'Shipped') }
   expect(rolesFor(status, undefined)).toEqual({ ready: 'S1', done: 'S2' })
   expect(rolesFor(status, { ready: 'S0' })).toEqual({ ready: 'S0' })
   expect(rolesFor(status, {})).toEqual({})
-
-  const setup = { project: { id: 'PVT_8' }, status: { roles: { ready: 'S1' } } }
-  expect(savedRolesOf({ setup, statuses: { PVT_8: { ready: 'S0' } } }, 'PVT_8')).toEqual({ ready: 'S1' })
-  expect(savedRolesOf({ setup: { ...setup, status: null }, statuses: { PVT_8: { ready: 'S0' } } }, 'PVT_8')).toEqual({ ready: 'S0' })
-  expect(savedRolesOf({ setup, statuses: { PVT_9: { done: 'S2' } } }, 'PVT_9')).toEqual({ done: 'S2' })
-  expect(savedRolesOf({}, 'PVT_8')).toBeUndefined()
 
   expect(guessText(guessOf(project(['Todo', 'Doing', 'Shipped'])))).toBe(GUESS)
   // The board's own names, whatever their case, aren't a guess; nor is a saved mapping.
@@ -112,9 +106,8 @@ test('a guessed mapping shows once in the band and in /issues check, and Looks r
 
   await band.press({ key: 'guess-yes' })
   expect(stored().statuses).toEqual({ PVT_8: { ready: 'S0', started: 'S1', done: 'S2' } })
-  // Saving the mapping isn't letting the board write to the project.
-  expect(stored().adopted).toBeUndefined()
-  expect(stored().setup).toBeUndefined()
+  // Saving the mapping isn't letting the board write to the project, nor choosing it.
+  expect(stored().preferred).toBeUndefined()
   expect(mutations()).toEqual([])
   expect(await band.find({ key: 'guess-yes' })).toBeUndefined()
   expect((await $.command.run({ ...RUN, args: 'check' })).text).not.toContain('guessed')
@@ -148,7 +141,6 @@ test('Change opens /issues statuses and the guess is not shown again; Save keeps
   await ui.press({ key: 'statuses-save' })
   expect(stored().statuses).toEqual({ PVT_8: { ready: 'S1', done: 'S2', verification: 'S3' } })
   expect(await ui.find({ key: 'statuses-card' })).toBeUndefined()
-  expect(stored().adopted).toBeUndefined()
   expect(mutations()).toEqual([])
 
   // A saved mapping wins over the names from then on.
@@ -160,9 +152,8 @@ test('Change opens /issues statuses and the guess is not shown again; Save keeps
   await ui.unmount()
 })
 
-test('/issues statuses saves into the roles of a setup saved for the project, which keeps it adopted as it was', async ($, on) => {
-  const setup = { project: { id: PROJECT.id, number: 8, title: PROJECT.title }, status: { id: 'F_status', roles: { ready: 'S0' } }, priority: null, at: 0 }
-  const { mutations, stored } = world(on, ['Todo', 'Doing', 'Shipped'], { adopted: null, setup })
+test('/issues statuses changes the mapping setup saved for the project, and keeps the other choices', async ($, on) => {
+  const { mutations, stored } = world(on, ['Todo', 'Doing', 'Shipped'], { preferred: PROJECT.id, statuses: { [PROJECT.id]: { ready: 'S0' }, PVT_9: { done: 'S1' } } })
   await $.command.run(RUN)
   // Setup saved a mapping, so nothing is a guess.
   const band = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...BAND })
@@ -172,9 +163,8 @@ test('/issues statuses saves into the roles of a setup saved for the project, wh
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   await ui.press({ key: 'statuses-done-S2' })
   await ui.press({ key: 'statuses-save' })
-  expect(stored().setup.status.roles).toEqual({ ready: 'S0', done: 'S2' })
-  expect(stored().statuses).toBeUndefined()
-  expect(stored().adopted).toBeNull()
+  expect(stored().statuses).toEqual({ [PROJECT.id]: { ready: 'S0', done: 'S2' }, PVT_9: { done: 'S1' } })
+  expect(stored().preferred).toBe(PROJECT.id)
   expect(mutations()).toEqual([])
   await ui.unmount()
 })

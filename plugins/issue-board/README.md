@@ -632,10 +632,6 @@ take it away: `/issues setup` says so where Release would be, and
 `project_adopt` refuses. To release it, edit the repo's file. Letting the
 board write only ever changes your own list, never the repo's.
 
-The list lives in Claude Code's settings, not in the board's store, which
-every session on the repo rewrites. So a session running an older board can't
-take it away.
-
 ### Without write access
 
 What still works:
@@ -848,7 +844,10 @@ session and agent on your account. If it runs out, the board says when it
 resets and waits.
 
 The board is saved for each repo, so a new session, or `/clear`, shows it at
-once and still knows the issue you were on.
+once and still knows the issue you were on. A board saved by a version whose
+saved shape differs isn't shown; the board reads GitHub instead. Your choices,
+such as which Status is which and the prompts you turned down, are kept apart
+from the saved board.
 
 ### What it costs
 

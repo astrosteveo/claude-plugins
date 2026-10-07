@@ -186,16 +186,6 @@ export const guessText = (guess: readonly { role: Role; name: string }[]): strin
 // What tells one guess from another, so a guess the person answered stays answered, and a new one asks again.
 export const guessKey = (project: { id: string }, guess: readonly { role: Role; name: string }[]): string => `${project.id}:${guess.map(one => `${one.role}=${one.name}`).join(',')}`
 
-// The mapping saved for a project: setup's when setup saved one for it, else the one /issues statuses or Looks right
-// saved. Undefined when neither did, and the names count.
-export const savedRolesOf = (
-  saved: { setup?: { project: { id: string }; status: { roles: Roles } | null }; statuses?: Record<string, Roles> } | null | undefined,
-  project: string,
-): Roles | undefined => {
-  if (saved?.setup?.status && saved.setup.project.id === project) return saved.setup.status.roles
-  return saved?.statuses?.[project]
-}
-
 // Whether a Status name is the option with a role.
 export const isRole = (project: Project | null | undefined, status: string | null | undefined, role: Role): boolean =>
   !!status && roleOf(project, role)?.name === status
@@ -271,23 +261,6 @@ export const grantsOf = (session: readonly string[], user: readonly string[], re
   const repoKeys = once(repo)
   const own = once([...user, ...session]).filter(key => !repoKeys.includes(key))
   return { own, repo: repoKeys, all: once([...own, ...repoKeys]) }
-}
-
-// The project an adoption an earlier board kept in the store stands for, as a key to add to writeProjects once. The
-// store kept the project's id, so the owner and number come from the projects the board has read (`known`). null:
-// there is nothing to move (a release, nothing saved, or none of the projects read is it). undefined: the board can't
-// tell until it has read a project. A repo saved before adopting existed, whose setup names a project, has that project
-// adopted: the person picked it in setup and pressed Apply.
-export const savedAdoptionOf = (
-  saved: { adopted?: { id: string } | null; setup?: { project: { id: string } } },
-  known: readonly { id: string; number: number; url: string }[],
-): string | null | undefined => {
-  if (saved.adopted === null) return null
-  const id = saved.adopted?.id ?? saved.setup?.project.id
-  if (id === undefined) return null
-  const found = known.find(one => one.id === id)
-  if (found) return projectKeyOf(found)
-  return known.length > 0 ? null : undefined
 }
 
 // How to let the board write to a project, for a refusal to say.

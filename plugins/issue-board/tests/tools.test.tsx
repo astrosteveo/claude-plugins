@@ -892,6 +892,7 @@ test('a project view that is the Inbox stands in for the Inbox tab: Open Inbox o
 
 test('a new session paints the saved board and keeps the issue Claude was on', async ($, on) => {
   const saved = {
+    version: 1,
     board: {
       repo: 'astrosteveo/void-sector',
       issues: parseIssues(JSON.stringify([issue(BODY)])),
@@ -1768,7 +1769,7 @@ test("Merge all's confirm goes when the pull requests it waited on have merged, 
 
 // What setup saved for the repo, with the roles given: which Status option, S0 to S5, is which.
 const savedRoles = (roles: Record<string, string>) => ({
-  [`repo:${REPO.root}`]: { setup: { project: { id: 'PVT_8', number: 8, title: 'Void Sector' }, status: { id: 'F_status', roles }, priority: { id: 'F_priority' }, at: 0 } },
+  [`choices:${REPO.root}`]: { preferred: 'PVT_8', statuses: { PVT_8: roles } },
 })
 
 test('a project with its own Status names goes by the roles setup saved: its Inbox, the one that folds, and where Start moves', async ($, on) => {
