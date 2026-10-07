@@ -1,8 +1,9 @@
 import type { On } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 
-import type { Issue, Project, ProjectView } from '../types'
-import { groupsOf, parseFilter, tabOf, tabsOf, viewFieldsOf, viewGroupingOf, viewMatchOf } from '../hooks/filters'
+import type { Board, Filter, Issue, Project, ProjectView } from '../types'
+import { DEFAULT_MARKERS } from '../hooks/markers'
+import { groupsOf, listOf, parseFilter, sortRows, tabOf, tabsOf, viewFieldsOf, viewGroupingOf, viewMatchOf } from '../hooks/filters'
 import { parseGraph } from '../hooks/github'
 import { issuesQuery } from '../hooks/project'
 import type { RawView, Views } from './graph'
@@ -179,6 +180,7 @@ test("a view's grouping and the fields its filter names are what the board reads
 test('the issues query reads the views, and the field values they need by name, and the answer reads back', () => {
   const query = issuesQuery(true, ['Area', 'Say "hi"'])
   expect(query).toContain('views(first: 20, orderBy: {field: POSITION, direction: ASC}) { nodes { name number layout filter groupByFields')
+  expect(query).toContain('sortByFields(first: 5) { nodes { direction field { ... on ProjectV2FieldCommon { name } } } }')
   expect(query).toContain('f0: fieldValueByName(name: "Area")')
   expect(query).toContain('f1: fieldValueByName(name: "Say \\"hi\\"")')
   expect(issuesQuery(false, ['Area'])).not.toMatch(/views|fieldValueByName/)
@@ -188,6 +190,7 @@ test('the issues query reads the views, and the field values they need by name, 
     views: [
       { name: 'Ready', number: 2, layout: 'TABLE_LAYOUT', filter: 'status:Ready', groupBy: 'Area' },
       { name: 'Board', number: 3, layout: 'BOARD_LAYOUT', filter: null, columns: 'Status' },
+      { name: 'Sorted', number: 4, layout: 'TABLE_LAYOUT', filter: 'is:open', sortBy: [{ field: 'Priority', direction: 'ASC' }, { field: 'Area', direction: 'DESC' }] },
     ],
     fields: [AREA],
   }
@@ -195,8 +198,70 @@ test('the issues query reads the views, and the field values they need by name, 
   expect(project?.views).toEqual([
     { name: 'Ready', number: 2, layout: 'table', filter: 'status:Ready', groupBy: 'Area' },
     { name: 'Board', number: 3, layout: 'board', filter: '', groupBy: 'Status' },
+    { name: 'Sorted', number: 4, layout: 'table', filter: 'is:open', groupBy: null, sortBy: [{ field: 'Priority', desc: false }, { field: 'Area', desc: true }] },
   ])
   expect(issues[0]?.fields).toEqual({ Area: 'UI' })
+})
+
+// A project with a field of each kind a view can sort by, and issues in the project's own order, 10 to 14.
+const SORTED: Project = {
+  ...PROJECT,
+  fields: [
+    ...(PROJECT.fields ?? []),
+    { id: 'F_due', name: 'Due', kind: 'date' },
+    {
+      id: 'F_sprint',
+      name: 'Sprint',
+      kind: 'iteration',
+      iterations: [
+        { id: 'I2', title: 'Sprint 2', start: '2026-10-15', days: 14 },
+        { id: 'I1', title: 'Sprint 1', start: '2026-10-01', days: 14 },
+      ],
+    },
+  ],
+}
+const IN_ORDER: Issue[] = [
+  issue(10, { title: 'Bravo', priority: 'P2', status: 'Ready', fields: { Area: 'UI', 'Story points': '8', Due: '2026-11-02', Sprint: 'Sprint 1' }, position: 0 }),
+  issue(11, { title: 'alpha', priority: 'P0', status: 'Ready', fields: { 'Story points': '13', Due: '2026-10-20', Sprint: 'Sprint 2' }, position: 1 }),
+  issue(12, { title: 'Charlie', status: 'Ready', fields: { Area: 'Engine', 'Story points': '2' }, position: 2 }),
+  issue(13, { title: 'Delta', priority: 'P0', status: 'Ready', fields: { Area: 'UI', Due: '2026-10-20', Sprint: 'Sprint 1' }, position: 3 }),
+  issue(14, { title: 'echo', priority: 'P2', status: 'Ready', fields: { Area: 'Engine', 'Story points': '8' }, position: 4 }),
+]
+const sorted = (...sortBy: [string, boolean?][]) => sortRows(IN_ORDER, sortBy.map(([field, desc]) => ({ field, desc: desc ?? false })), SORTED).map(one => one.number)
+
+test("a view's sort orders its rows by each field in its direction, ties in the project's order and the unset last", () => {
+  // A single-select sorts by the options' order, Priority among them; ties keep the project's order.
+  expect(sorted(['Priority'])).toEqual([11, 13, 10, 14, 12])
+  expect(sorted(['Area'])).toEqual([12, 14, 10, 13, 11])
+  // A number sorts as a number, so 13 comes after 8, and 2 before both.
+  expect(sorted(['Story points'])).toEqual([12, 10, 14, 11, 13])
+  // A date sorts by day, and an iteration by the day it starts, not its place in the list.
+  expect(sorted(['Due'])).toEqual([11, 13, 10, 12, 14])
+  expect(sorted(['Sprint'])).toEqual([10, 13, 11, 12, 14])
+  // Descending turns the values round, and the issues with none still go last.
+  expect(sorted(['Story points', true])).toEqual([11, 10, 14, 12, 13])
+  expect(sorted(['Priority', true])).toEqual([10, 14, 11, 13, 12])
+  expect(sorted(['Due', true])).toEqual([10, 11, 13, 12, 14])
+  // A second field settles the first one's ties.
+  expect(sorted(['Priority'], ['Story points', true])).toEqual([11, 13, 10, 14, 12])
+  expect(sorted(['Priority'], ['Title', true])).toEqual([13, 11, 14, 10, 12])
+  // Title sorts as text, in any case.
+  expect(sorted(['Title'])).toEqual([11, 10, 12, 13, 14])
+  // No sort, or a field the board can't read, keeps the project's order.
+  expect(sorted()).toEqual([10, 11, 12, 13, 14])
+  expect(sorted(['Linked pull requests'])).toEqual([10, 11, 12, 13, 14])
+})
+
+test("a view's tab lists each group's rows in the view's sort, and reads the fields it sorts by", () => {
+  const views = [view(1, 'By points', 'is:open', { sortBy: [{ field: 'Story points', desc: true }] }), view(2, 'Unsorted', 'is:open')]
+  const project = { ...SORTED, views, roles: {} }
+  expect(viewFieldsOf(project)).toEqual(['Story points'])
+  const board = { issues: IN_ORDER, project } as unknown as Board
+  const rows = (chosen: Filter) =>
+    listOf({ now: board, chosen, picked: null, typed: '', who: null, open: null, marks: DEFAULT_MARKERS, clock: 0 }).groups.map(group => group.issues.map(one => one.number))
+  expect(rows('view:1')).toEqual([[11, 10, 14, 12, 13]])
+  // A view with no sort keeps the project's own order, as before.
+  expect(rows('view:2')).toEqual([[10, 11, 12, 13, 14]])
 })
 
 const AREA = { id: 'F_area', name: 'Area', dataType: 'SINGLE_SELECT', options: [{ id: 'A0', name: 'Engine' }, { id: 'A1', name: 'UI' }] }
