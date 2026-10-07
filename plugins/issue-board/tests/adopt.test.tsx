@@ -13,7 +13,7 @@ const REPO = { root: '/work/void-sector', remote: null, internal: false, name: n
 const KEY = `repo:${REPO.root}`
 const CHOICES = `choices:${REPO.root}`
 // Every setting that has the board change the project by itself, on.
-const EVERYTHING = { options: { moveToDone: true, moveToVerification: true, advanceEpics: true, claimOnStart: true } }
+const EVERYTHING = { options: { autoMove: true, claimOnStart: true } }
 
 const raw = (number: number, title: string, more: Record<string, unknown> = {}) => ({
   number,

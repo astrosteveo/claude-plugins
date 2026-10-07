@@ -115,7 +115,13 @@ test('in background start mode, the system prompt tells Claude to orchestrate', 
   await ui.unmount()
 })
 
-test('with the working note and capture off, background start mode adds nothing to the system prompt', { options: { startMode: 'background', workingNote: false, capture: false } }, async ($, on) => {
+test('with the working note and capture off, background start mode still adds the orchestrator note', { options: { startMode: 'background', workingNote: false, capture: false } }, async ($, on) => {
+  const { ui } = await card($, on)
+  expect((await $.prompt.compose(COMPOSE)).sections.map(section => section.id)).toEqual(['intro', 'issue-board:orchestrator'])
+  await ui.unmount()
+})
+
+test('in main start mode, with the working note and capture off, the board adds nothing to the system prompt', { options: { workingNote: false, capture: false } }, async ($, on) => {
   const { ui } = await card($, on)
   expect((await $.prompt.compose(COMPOSE)).sections.map(section => section.id)).toEqual(['intro'])
   await ui.unmount()

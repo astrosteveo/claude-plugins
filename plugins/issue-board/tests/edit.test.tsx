@@ -290,7 +290,7 @@ test("issue_update links and unlinks blocked-by issues over REST, the row shows 
   expect((await $.tool.check({ tool: 'mcp__issue-board__issue_update', input: { number: 43, status: 'Done', addBlockedBy: [35] } })).decision).toBe('ask')
 })
 
-test('an issue that closes as completed moves to Done in the project; one closed as not planned stays', { options: { moveToDone: true } }, async ($, on) => {
+test('an issue that closes as completed moves to Done in the project; one closed as not planned stays', { options: { autoMove: true } }, async ($, on) => {
   adoptedStore(on)
   const gh = github(on)
   const toasts: string[] = []
@@ -311,7 +311,7 @@ test('an issue that closes as completed moves to Done in the project; one closed
   expect(toasts.filter(text => text.startsWith('Moved'))).toEqual(['Moved #43 to Done: it closed as completed.'])
 })
 
-test("a move the board makes on its own that GitHub refuses says so once, with where to look", { options: { moveToDone: true } }, async ($, on) => {
+test("a move the board makes on its own that GitHub refuses says so once, with where to look", { options: { autoMove: true } }, async ($, on) => {
   adoptedStore(on)
   const gh = github(on)
   const toasts: string[] = []
@@ -473,7 +473,7 @@ test("the card's editor renames an issue, adds a box, and hands a body edit to C
   await ui.unmount()
 })
 
-test('an issue a merged pull request refers to with Refs moves to Verification, and the next prompt says so', { options: { moveToVerification: true } }, async ($, on) => {
+test('an issue a merged pull request refers to with Refs moves to Verification, and the next prompt says so', { options: { autoMove: true } }, async ($, on) => {
   adoptedStore(on)
   const pr = (number: number, body: string) => ({
     number,

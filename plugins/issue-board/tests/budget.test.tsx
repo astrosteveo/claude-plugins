@@ -280,7 +280,8 @@ test('the budget: a refresh, the capture note, a Start, an issue_update, a captu
   await ui.unmount()
   expect(calls(start)).toEqual({ rest: 0, rest304: 0, graphql: 3 })
   expect(start.context).toBeGreaterThan(0)
-  expect(start.context).toBeLessThanOrEqual(600)
+  // The working note carries its pull request rule, on by default, in two sentences.
+  expect(start.context).toBeLessThanOrEqual(850)
   expect(start.text).toMatch(/^- working note: \d+$/m)
   expect(start.text).toMatch(/^- start prompts: \d+$/m)
   // Start's own writes, the Status move and the assignment, count as writes: no tool or setup made them.

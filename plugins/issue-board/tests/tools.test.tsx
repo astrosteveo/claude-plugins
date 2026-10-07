@@ -392,26 +392,21 @@ test('a draft reads back from JSON, keeping only labels the repository has', () 
   expect(parseDraft('{"body": "no title"}', ['bug'])).toBeNull()
 })
 
-test('the working note says Closes only when every box is ticked, always Closes, or nothing, as its PR rule says', () => {
+test('the working note says Closes only when every box is ticked, or nothing, as closesWhenTicked says', () => {
   const issue = { number: 315, title: 'Lay Kessik out', updatedAt: '' }
-  const ticked = workingSection(issue, 'closes-when-ticked')
+  const ticked = workingSection(issue, true)
   expect(ticked).toMatch(/^The person is working on GitHub issue #315: Lay Kessik out\./)
   expect(ticked).toMatch(/write `Closes #315` in its body only if every acceptance box of #315 is ticked by then\. Otherwise write `Refs #315`, so the issue stays open for what is left\./)
   expect(ticked).toMatch(/If the repository's contributing guidelines say otherwise, follow them\.$/)
 
-  const always = workingSection(issue, 'always-closes')
-  expect(always).toMatch(/When you open a pull request for #315, write `Closes #315` in its body\. If the repository's contributing guidelines say otherwise, follow them\.$/)
-  expect(always).not.toMatch(/Refs/)
-
-  const none = workingSection(issue, 'none')
+  const none = workingSection(issue, false)
   expect(none).toMatch(/^The person is working on GitHub issue #315: Lay Kessik out\./)
   expect(none).toMatch(/moving its Status needs no permission\.$/)
   expect(none).not.toMatch(/Closes|Refs|pull request/)
 
   // The background agent follows the same rule.
-  expect(workerPrompt('closes-when-ticked')).toMatch(/Write `Closes #<number>` in its body only if every acceptance box is ticked by then, and `Refs #<number>` otherwise\./)
-  expect(workerPrompt('always-closes')).toMatch(/open a pull request\. Write `Closes #<number>` in its body\.\n/)
-  expect(workerPrompt('none')).not.toMatch(/Closes|Refs/)
+  expect(workerPrompt(true)).toMatch(/Write `Closes #<number>` in its body only if every acceptance box is ticked by then, and `Refs #<number>` otherwise\./)
+  expect(workerPrompt(false)).not.toMatch(/Closes|Refs/)
 })
 
 test('the issues tool lists the board, and the tick tool ticks a box on GitHub', async ($, on) => {
@@ -1578,7 +1573,7 @@ test('/issues with an unknown subcommand says so and points to /issues help', as
   await clock.settle()
 })
 
-test("/issues check notes the project's Item closed workflow when it's on, as a limit that doesn't block", { options: { moveToDone: true } }, async ($, on) => {
+test("/issues check notes the project's Item closed workflow when it's on, as a limit that doesn't block", { options: { autoMove: true } }, async ($, on) => {
   adoptedStore(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   const gh = world(on)
@@ -1596,7 +1591,7 @@ test("/issues check notes the project's Item closed workflow when it's on, as a 
 })
 
 test("/issues check leaves the Item closed workflow alone while the board doesn't move closed issues to Done", async ($, on) => {
-  // moveToDone is off by default. Turning Item closed off then would leave Done empty, so check doesn't advise it.
+  // autoMove is off by default. Turning Item closed off then would leave Done empty, so check doesn't advise it.
   adoptedStore(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   const gh = world(on)
@@ -1817,8 +1812,9 @@ test("a role setup left unset turns its part off, even where an option has the b
   const said = String((await $.command.run({ ...REFRESH, args: 'check' })).text)
   expect(said).toContain('\nOff:\n')
   expect(said).toContain('- The Inbox filter, its triage, and new issues landing in the Inbox: Void Sector has no Status option as the Inbox; pick one in /issues statuses.')
-  // Verification is off by its setting too, which says why first.
-  expect(said).toContain('- Moving an issue a Refs merge touched to Verification: turned off in /config by Move to Verification on a Refs merge (moveToVerification).')
+  // The moves are off by their setting too, which is said once, for all three.
+  expect(said).toContain('- Moving issues on their own: closed ones to Done, ones a Refs merge touched to Verification, and epics with their sub-issues: turned off in /config by Move issues on their own (autoMove).')
+  expect(said).not.toContain('Moving an issue a Refs merge touched to Verification')
   expect(said).not.toContain('Moving closed issues to Done: Void Sector')
   expect(String((await $.command.run({ ...REFRESH, args: 'help' })).text)).toContain('- The Inbox filter, its triage, and new issues landing in the Inbox: Void Sector has no Status option as the Inbox')
   // The hint under the prompt doesn't call the board limited for it.
@@ -1842,22 +1838,7 @@ test('a board with no Done set archives one issue, but not by doneBefore', async
   expect(String(one.result)).toMatch(/^Archiving #290 takes 1 item/)
 })
 
-test('how many priorities count as Now is a setting', { options: { nowCount: 1 } }, async ($, on) => {
-  adoptedStore(on)
-  const gh = world(on)
-  gh.project = true
-  gh.planned[315] = { status: 'Ready', priority: 'P1' }
-  gh.planned[289] = { status: 'Ready', priority: 'P0' }
-  await $.command.run(REFRESH)
-  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
-  expect(await ui.find({ key: 'filter-active' })).toMatchObject({ text: 'Now 1' })
-  expect(await ui.find({ key: 'filter-future' })).toMatchObject({ text: 'Later 1' })
-  await ui.unmount()
-  expect(String((await $.tool.call({ tool: 'mcp__issue-board__issues', filter: 'active' })).result)).toMatch(/Issues \(now: P0, 1\):\n#289 /)
-  expect(String((await $.tool.call({ tool: 'mcp__issue-board__issues', filter: 'future' })).result)).toMatch(/Issues \(later: P1 and P2, 1\):\n#315 /)
-})
-
-test('a feature a setting turned off is said in /issues check and /issues help, and nowhere else', { options: { band: false, refresh: 'manual', hashSuggestions: false } }, async ($, on) => {
+test('a feature a setting turned off is said in /issues check and /issues help, and nowhere else', { options: { band: false, refresh: 'manual', followBranch: false } }, async ($, on) => {
   adoptedStore(on)
   const gh = world(on)
   gh.project = true
@@ -1870,16 +1851,17 @@ test('a feature a setting turned off is said in /issues check and /issues help, 
   const said = String((await $.command.run({ ...REFRESH, args: 'check' })).text)
   expect(said).toContain('- The band above the prompt: turned off in /config by Band above the prompt (band).')
   expect(said).toContain('- Reading GitHub by itself: turned off in /config by How often the board reads GitHub (refresh).')
-  expect(said).toContain('- Issues and pull requests offered after # in the prompt box: turned off in /config by Suggest issues after # (hashSuggestions).')
+  expect(said).toContain('- Following the branch to the issue Claude is on: turned off in /config by Follow the branch (followBranch).')
   // The project has every Status, so nothing is off for want of one.
   expect(said).not.toContain('has no Status option')
 
   const help = String((await $.command.run({ ...REFRESH, args: 'help' })).text)
   expect(help).toMatch(/- The band above the prompt shows what needs you: .*\(off\)$/m)
   expect(help).toMatch(/- The hint line sums up what is open\.$/m)
-  expect(help).toMatch(/- # in the prompt box offers the board's issues and pull requests\. \(off\)$/m)
-  expect(help).toContain('- Issues and pull requests offered after # in the prompt box: turned off in /config by Suggest issues after # (hashSuggestions).')
-  expect(help).toContain('\nOff:\n- Moving closed issues to Done: turned off in /config')
+  expect(help).toMatch(/- # in the prompt box offers the board's issues and pull requests\.$/m)
+  expect(help).toContain('- Following the branch to the issue Claude is on: turned off in /config by Follow the branch (followBranch).')
+  expect(help).toContain('\nOff:\n- Moving issues on their own: closed ones to Done, ones a Refs merge touched to Verification, and epics with their sub-issues: turned off in /config by Move issues on their own (autoMove).')
+  expect(help).not.toContain('- Moving closed issues to Done:')
   expect(toasts.filter(text => /off|setting/i.test(text))).toEqual([])
   // The check reads GitHub again once it finds nothing missing: wait for that read.
   await $.command.run(REFRESH)

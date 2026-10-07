@@ -217,7 +217,7 @@ export const automationsOff = (project: SetupProject | undefined): string[] =>
   project ? AUTOMATIONS.filter(name => project.workflows.some(one => one.name === name && !one.enabled)) : AUTOMATIONS
 
 // The workflows the project has on that the board wants off. Item closed is only worth turning off when the board moves
-// closed issues to Done itself: with `movesToDone` false (moveToDone off, or no Done picked), turning it off would leave
+// closed issues to Done itself: with `movesToDone` false (autoMove off, or no Done picked), turning it off would leave
 // closed issues out of Done. This is the rule `/issues check` uses; the write half of it holds once Apply adopts the
 // project.
 export const automationsOn = (project: SetupProject | undefined, movesToDone: boolean): string[] =>

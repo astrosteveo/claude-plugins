@@ -2,13 +2,11 @@
   "pluginConfigs": {
     "issue-board@astrosteveo-plugins": {
       "options": {
-        "moveToDone": true,
-        "moveToVerification": true,
-        "advanceEpics": true,
+        "autoMove": true,
         "writeProjects": "astrosteveo/9",
         "claimOnStart": true,
         "workingNote": true,
-        "prRule": "closes-when-ticked",
+        "closesWhenTicked": true,
         "issueCopies": true,
         "suggestNextStep": true,
         "followBranch": true
@@ -16,13 +14,11 @@
     },
     "issue-board": {
       "options": {
-        "moveToDone": true,
-        "moveToVerification": true,
-        "advanceEpics": true,
+        "autoMove": true,
         "writeProjects": "astrosteveo/9",
         "claimOnStart": true,
         "workingNote": true,
-        "prRule": "closes-when-ticked",
+        "closesWhenTicked": true,
         "issueCopies": true,
         "suggestNextStep": true,
         "followBranch": true

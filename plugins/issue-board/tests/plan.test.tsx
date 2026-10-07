@@ -719,7 +719,7 @@ test('applying a plan writes the views through the project write check, and the 
   await $.command.run(REFRESH)
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   const tabs = async () => (await ui.findAll({ type: 'Button' })).filter(one => String(one.key ?? '').startsWith('filter-')).map(one => `${one.key} ${one.text}`)
-  expect(await tabs()).toEqual(['filter-view:1 Bugs 0', 'filter-view:2 Old 0', 'filter-all All 3', 'filter-closed Closed'])
+  expect(await tabs()).toEqual(['filter-view:1 Bugs 0', 'filter-view:2 Old 0', 'filter-inbox Inbox 1', 'filter-all All 3', 'filter-closed Closed'])
 
   expect(await $.tool.check({ tool: TOOL, input: VIEW_PLAN })).toMatchObject({ reason: expect.stringMatching(/^Apply Claude's plan: 3 changes to 3 views\?\nviews 3\n/) })
   gh.engine.verdict = 'ask'
@@ -750,7 +750,7 @@ test('applying a plan writes the views through the project write check, and the 
   expect(gh.toasts.at(-1)).toBe('Applied the plan: 3 changes.')
   expect(await ui.find({ key: 'plan-card' })).toBeUndefined()
   // The new and changed views are tabs now, and the deleted one is gone.
-  expect(await tabs()).toEqual(['filter-view:1 Ready bugs 0', 'filter-view:4 Sprint 1', 'filter-all All 3', 'filter-closed Closed'])
+  expect(await tabs()).toEqual(['filter-view:1 Ready bugs 0', 'filter-view:4 Sprint 1', 'filter-inbox Inbox 1', 'filter-all All 3', 'filter-closed Closed'])
   await ui.unmount()
 })
 
