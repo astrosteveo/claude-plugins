@@ -1404,7 +1404,15 @@ test('/issues help names every filter, subcommand and tool the board has, and th
   await clock.settle()
 })
 
-test("/issues check notes the project's Item closed workflow when it's on, as a limit that doesn't block", async ($, on) => {
+test('/issues with an unknown subcommand says so and points to /issues help', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
+  world(on)
+  expect(String((await $.command.run({ ...REFRESH, args: 'refersh' })).text)).toBe('Unknown subcommand refersh; /issues help lists them.')
+  expect(String((await $.command.run({ ...REFRESH, args: '  sttus now ' })).text)).toBe('Unknown subcommand sttus; /issues help lists them.')
+  await clock.settle()
+})
+
+test("/issues check notes the project's Item closed workflow when it's on, as a limit that doesn't block", { options: { moveToDone: true } }, async ($, on) => {
   adoptedStore(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   const gh = world(on)
@@ -1416,6 +1424,18 @@ test("/issues check notes the project's Item closed workflow when it's on, as a 
   expect(said).toContain('the board moves issues closed as completed to Done by itself.')
 
   gh.itemClosed = false
+  await $.command.run(REFRESH)
+  expect(String((await $.command.run({ ...REFRESH, args: 'check' })).text)).not.toContain('Item closed')
+  await clock.settle()
+})
+
+test("/issues check leaves the Item closed workflow alone while the board doesn't move closed issues to Done", async ($, on) => {
+  // moveToDone is off by default. Turning Item closed off then would leave Done empty, so check doesn't advise it.
+  adoptedStore(on)
+  const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
+  const gh = world(on)
+  gh.project = true
+  gh.itemClosed = true
   await $.command.run(REFRESH)
   expect(String((await $.command.run({ ...REFRESH, args: 'check' })).text)).not.toContain('Item closed')
   await clock.settle()

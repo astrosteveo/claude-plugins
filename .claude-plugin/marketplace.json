@@ -11,7 +11,7 @@
       "name": "issue-board",
       "source": "./plugins/issue-board",
       "description": "The repository's open GitHub issues and pull requests in a pane and under the prompt, with acceptance progress and CI, and a button that hands an issue to Claude.",
-      "version": "0.69.4",
+      "version": "0.69.5",
       "author": {
         "name": "astrosteveo"
       },
@@ -29,7 +29,7 @@
       "name": "ask",
       "source": "./plugins/ask",
       "description": "Ask Claude a side question in a pane, and get Claude's own pick, remembered answers and a decision log when Claude asks you.",
-      "version": "0.3.1",
+      "version": "0.3.2",
       "author": {
         "name": "astrosteveo"
       },

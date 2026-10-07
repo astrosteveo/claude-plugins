@@ -417,8 +417,10 @@ nothing on GitHub. A saved choice always wins over the names.
 
 For Done to mean shipped, turn off the project's own **Item closed**
 workflow, which marks every closed issue Done. Keep the **Auto-add**
-workflows on. `/issues setup` advises both, and `/issues check` notes Item
-closed while it's on.
+workflows on. `/issues setup` advises both. `/issues check` notes Item
+closed while it's on, when **Move closed issues to Done** is on and the board
+may write to the project. Without those, turning it off would leave Done
+empty.
 
 Claude closing an epic with open sub-issues through `gh issue close` asks you
 first, whatever your rules allow. A background agent is refused instead, and
@@ -707,7 +709,7 @@ On screen, and how often it reads GitHub:
 
 | What | Setting | Default |
 |---|---|---|
-| The band above the prompt raises what needs you: CI, news on your issue, boxes to tick, captures to the Inbox. | Band above the prompt (`band`) | on |
+| The band above the prompt raises what needs you: setup problems, CI, news on your issue, boxes to tick, plans to approve, epic notes, a project to adopt, guesses to confirm, captures to the Inbox. | Band above the prompt (`band`) | on |
 | The line under the prompt ends with the board in a few words. A problem the check found shows either way. | Summary under the prompt (`hintSummary`) | on |
 | The board looks at GitHub every 5, 15 or 60 minutes, or `manual`: only on `/issues refresh`, `r`, and after Claude's turns that ran git or gh. While a pull request's CI runs it still looks every 30 seconds, unless set to `manual`. | How often the board reads GitHub (`refresh`) | `5` |
 
