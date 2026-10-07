@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { AgentSpawnResult, ButtonProps, Caught, ElementTable, EngineInterface, HookFailure, ModelForkResult, Register, RenderChildren, ThemeKey, Timer, ToolCallResult, UiCopyArgs } from 'claude-code'
+import type { AgentSpawnResult, Caught, EngineInterface, HookFailure, ModelForkResult, Register, RenderChildren, ThemeKey, Timer, ToolCallResult, UiCopyArgs } from 'claude-code'
 
 import type { Adopted, Adoption, Alert, Armed, Board, FieldValues, BoxTask, BuiltInFilter, Check, Comment, EpicNote, GroupBy, Issue, Known, LabelChange, Launch, ViewChange, Markers, Milestone, Plan, PlanRow, Problem, Project, Role, Roles, StatusUpdate, PullRequest, RunWatch, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
 import type { IssueChanges, NewIssue } from './changes'
@@ -145,7 +145,6 @@ import {
   parseGraph,
   parseIssues,
   parsePrs,
-  prsFor,
   threadsOf,
   timesOf,
   TOOL_COMMENTS,
@@ -158,32 +157,26 @@ import {
   WEEKS,
   ago,
   agoText,
-  bar,
   cells,
-  chipsOf,
-  ciBadge,
   fit,
   hex,
-  pad,
-  peekPlace,
-  mergeNoteOf,
   named,
   progress,
-  reviewBadge,
   since,
   spark,
-  prRowRoom,
-  rowRoom,
   sumProgress,
   summary,
-  tone,
   weekly,
   wrappedLines,
-  ciGlyph,
   prCountsText,
   filterKeys,
   hintFit,
 } from './layout'
+import { partsOf } from './views/parts'
+import { issueRow as issueRowView } from './views/issue-row'
+import type { IssueRowHandlers } from './views/issue-row'
+import { prRow as prRowView } from './views/pr-row'
+import type { PrRowHandlers } from './views/pr-row'
 import {
   absorbed,
   alertsOf,
@@ -249,14 +242,12 @@ import {
 import {
   ACTIVE,
   backgroundPrompt,
-  closeOutRisk,
   endedLine,
   handoffPrompt,
   issueOfBranch,
   startedByClaude,
   workerBadge,
   workerOnLine,
-  workerOfPr,
   workerIssueOf,
   workerPrOf,
   workerPrompt,
@@ -3244,26 +3235,6 @@ const registerTool = ($: EngineInterface, tool: Parameters<EngineInterface['tool
   return $.tool.register(tool)
 }
 
-// The small pieces the pane's and the band's rows are built from, made with the surface's own elements.
-const partsOf = ({ Box, Text, Button, Link }: Pick<ElementTable, 'Box' | 'Text' | 'Button' | 'Link'>) => ({
-  // A link in a row stays on one line: squeezed, it ends in an ellipsis rather than breaking down the pane a letter a
-  // line. A click still opens the whole address.
-  link: (href: string, label = '↗ GitHub') => (
-    <Text wrap="truncate-end">
-      <Link href={href} label={label} />
-    </Text>
-  ),
-  // A part of a one-line row that keeps its width: a number, a badge, a count or a button. A row short of room
-  // squeezes only the part left to shrink, which cuts its text, rather than breaking `#252` into `#25` over `2`.
-  keep: (part: RenderChildren) => <Box flexShrink={0}>{part}</Box>,
-  // One option of a set, the chosen one drawn as the primary and the others dim. `extra` carries a tab's hotkey.
-  choice: (key: string, label: string, chosen: boolean, onPress: ButtonProps['onPress'], extra: Pick<ButtonProps, 'hotkey'> = {}) => (
-    <Button key={key} {...extra} variant={chosen ? 'primary' : undefined} dimColor={!chosen} onPress={onPress}>
-      {label}
-    </Button>
-  ),
-})
-
 export const register: Register = (on, options) => {
   settings = settingsOf(options)
   on('session.start', async ($, e, next) => {
@@ -3998,7 +3969,7 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const elements = $.ui.resolve(e)
     const { Box, Text, Button, Link } = elements
-    const { link, keep, choice } = partsOf(elements)
+    const { link, keep, choice, meter } = partsOf(elements)
     const problems = (await read($, access))?.problems ?? []
     const width = Math.max(40, e.props.bodyColumns)
     const roomy = width >= 72
@@ -4092,18 +4063,6 @@ export const register: Register = (on, options) => {
       if (issue && (project?.fields ?? []).some(field => !/^(status|priority)$/i.test(field.name))) await readValues($, issue)
     }
     const togglePr = (number: number) => () => void update($, openPr, was => (was === number ? null : number))
-
-    const meter = (done: number, total: number, cells: number) => {
-      const [filled, empty] = bar({ done, total }, cells)
-      return (
-        <Text>
-          <Text color={tone({ done, total })}>{filled}</Text>
-          <Text color="inactive" dimColor>
-            {empty}
-          </Text>
-        </Text>
-      )
-    }
 
     // The header's right: when the board last synced, and Refresh. It keeps its width; the repo's name is cut instead.
     const sync = (
@@ -4658,115 +4617,14 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
-    // A pull request on one row: CI, number, a ⚙ while a background agent owns its branch, title, the issue it is for,
-    // a review mark, why it can't merge yet and whether it is this branch's, then its diff counts and Finish & merge. Every part but the title keeps its width,
-    // and the title is cut to what is left; a narrow pane drops parts in prRowRoom's order rather than wrap the row.
-    // The title opens its details beneath: branch, author, age, review, failing checks and its link.
-    const prRow = (pr: PullRequest) => {
-      const badge = ciBadge[pr.ci]
-      const review = reviewBadge(pr)
-      const isOpen = shownPr === pr.number
-      const mine = here !== null && pr.branch === here
-      // The counts stay on one line, `+12 −3`, never one above the other.
-      const size = `+${pr.additions} −${pr.deletions}`
-      // The issue it closes or refers to, on the row: the first it names.
-      const forIssue = (pr.issues ?? [])[0]
-      const forText = forIssue ? `→ #${forIssue}` : ''
-      // Why it can't merge yet: conflicts or behind its base, review threads still open, and who is asked to review.
-      const merge = mergeNoteOf(pr)
-      const threads = pr.openThreads ?? 0
-      const threadText = threads > 0 ? `${threads} open ${threads === 1 ? 'thread' : 'threads'}` : ''
-      const askedText = (pr.reviewers ?? []).length > 0 ? `asks ${(pr.reviewers ?? []).slice(0, 2).join(', ')}${(pr.reviewers ?? []).length > 2 ? ` +${(pr.reviewers ?? []).length - 2}` : ''}` : ''
-      // A background agent that may still push to its branch, and why Finish & merge asks first: that agent, or CI
-      // that hasn't passed.
-      const owner = workerOfPr(pr, working$)
-      const risk = closeOutRisk(pr, owner)
-      const asking = risk !== null && armedPr === pr.number
-      const gapped = (text: string) => (text ? cells(text) + 1 : 0)
-      const fits = prRowRoom(width, cells(badge.text) + 1 + cells(`#${pr.number}`) + 1 + (mine ? 2 : 0) + (owner ? 2 : 0), {
-        asked: gapped(askedText),
-        threads: gapped(threadText),
-        size: roomy ? gapped(size) : 0,
-        issue: gapped(forText),
-        merge: gapped(merge?.text ?? ''),
-        review: review ? 2 : 0,
-      })
-      const { shown } = fits
-      return (
-        <Box key={`pr-row-${pr.number}`} flexDirection="column">
-          <Box flexDirection="row" justifyContent="space-between" gap={1}>
-            <Box flexDirection="row" gap={1} flexShrink={1}>
-              {keep(
-                <Text color={badge.color} inverse bold>
-                  {badge.text}
-                </Text>,
-              )}
-              {keep(<Text color="suggestion" bold>{`#${pr.number}`}</Text>)}
-              {owner && keep(<Text color={workerBadge(owner.status).color}>⚙</Text>)}
-              <Button key={`pr-${pr.number}`} plain hover={{ bold: true }} onPress={togglePr(pr.number)}>
-                {fit(pr.title, fits.title)}
-              </Button>
-              {shown.issue && keep(<Text color="claude">{forText}</Text>)}
-              {shown.review && review && keep(<Text color={review.color}>{pr.isDraft ? '◌' : review.text.slice(0, 1)}</Text>)}
-              {shown.merge && merge && keep(<Text color={merge.color}>{merge.text}</Text>)}
-              {shown.threads && keep(<Text color="warning">{threadText}</Text>)}
-              {shown.asked && keep(<Text dimColor>{askedText}</Text>)}
-              {mine &&
-                keep(
-                  <Text color="claude" bold>
-                    ◆
-                  </Text>,
-                )}
-            </Box>
-            <Box flexDirection="row" gap={1} flexShrink={0}>
-              {shown.size && (
-                <Text>
-                  <Text color="success">{`+${pr.additions}`}</Text>
-                  <Text color="error">{` −${pr.deletions}`}</Text>
-                </Text>
-              )}
-              <Button key={`close-out-${pr.number}`} dimColor hover={{ dimColor: false, color: 'suggestion' }} onPress={() => void (risk ? update($, armed, (): Armed => ({ kind: 'pr', number: pr.number })) : closeOut(pr))}>
-                {fits.finish}
-              </Button>
-            </Box>
-          </Box>
-          {asking && (
-            <Box key={`close-out-ask-${pr.number}`} flexDirection="row" flexWrap="wrap" gap={1} paddingLeft={cells(badge.text) + 1}>
-              <Text color="warning" wrap="wrap">{`Close out PR #${pr.number} anyway? ${risk}`}</Text>
-              <Button key={`close-out-yes-${pr.number}`} variant="primary" onPress={() => void closeOut(pr)}>
-                Close out anyway
-              </Button>
-              <Button key={`close-out-no-${pr.number}`} dimColor onPress={() => void disarm($, 'pr')}>
-                Cancel
-              </Button>
-            </Box>
-          )}
-          {isOpen && (
-            <Box key={`pr-detail-${pr.number}`} flexDirection="row" flexWrap="wrap" gap={1} paddingLeft={[...badge.text].length + 1} marginBottom={1}>
-              <Text dimColor>{`⎇ ${fit(pr.branch, Math.max(10, Math.floor(width / 3)))}`}</Text>
-              {pr.author && <Text dimColor>{`· @${pr.author}`}</Text>}
-              {pr.updatedAt && <Text dimColor>{`· ${ago(pr.updatedAt, clock)}`}</Text>}
-              {review && <Text color={review.color}>{`· ${review.text}`}</Text>}
-              {pr.ci === 'fail' && (pr.failing ?? []).length > 0 && <Text color="error">{`· ${fit(pr.failing.join(', '), 30)}`}</Text>}
-              {(pr.issues ?? []).length > 0 && <Text dimColor>{`· for ${pr.issues.map(number => `#${number}`).join(', ')}`}</Text>}
-              {owner && <Text color={workerBadge(owner.status).color}>{`· ${workerOnLine(owner.status, ago(owner.startedAt, clock), owner.number)}`}</Text>}
-              {mine && (
-                <Text color="claude" bold>
-                  · ◆ this branch
-                </Text>
-              )}
-              {link(pageOf(now.repo, 'pull', pr))}
-            </Box>
-          )}
-        </Box>
-      )
+    // The pull request rows, drawn by views/pr-row.tsx with these handlers.
+    const prHandlers: PrRowHandlers = {
+      toggle: togglePr,
+      arm: pr => void update($, armed, (): Armed => ({ kind: 'pr', number: pr.number })),
+      closeOut: pr => void closeOut(pr),
+      cancel: () => void disarm($, 'pr'),
     }
-
-    // A priority as a short tag, the most pressing in the loudest color.
-    const priorityColor = (priority: string): ThemeKey => {
-      const rank = project?.priority?.options.findIndex(option => option.name === priority) ?? -1
-      return rank === 0 ? 'error' : rank === 1 ? 'warning' : 'inactive'
-    }
+    const prRow = (pr: PullRequest) => prRowView(elements, { pr, width, roomy, repo: now.repo, here, shownPr, armedPr, workers: working$, clock }, prHandlers)
 
     // Stop tracking the issue this session is on: no row has the ▶ until Start or a branch names one again.
     const stopTracking = async () => {
@@ -4774,85 +4632,10 @@ export const register: Register = (on, options) => {
       await save($)
     }
 
-    // One issue on one line: a mark, its priority, number and title at the left, which opens it; at the right its agent,
-    // what blocks it, its pull request with CI, chips, a short progress bar with the count, and its age. The mark is ▶
-    // on the issue this session is on and ▲ on a bug.
-    const issueRow = (issue: Issue) => {
-      const isOpen = open === issue.number
-      const step = progress(issue.checks)
-      const bug = isBug(issue, marks)
-      const chipList = roomy ? chipsOf(issue, marks).slice(0, 2) : []
-      const age = ago(issue.updatedAt, clock)
-      const count = `${step.done}/${step.total}`.padEnd(5)
-      const linked = prsFor(issue, now.prs)[0]
-      const pr = linked ? `⇄ #${linked.number} ${ciGlyph(linked.ci)}` : ''
-      const tag = project && issue.priority ? `${fit(issue.priority, 3)} ` : ''
-      // The open issue it waits on, if any: the first, and how many more.
-      const blockers = issue.blockedBy ?? []
-      const blocked = blockers.length > 0 ? `⛔ #${blockers[0]}${blockers.length > 1 ? ` +${blockers.length - 1}` : ''}` : ''
-      // The background agent on it, if Start in background set one going.
-      const worker = working$.find(one => one.number === issue.number)
-      const badge = worker && workerBadge(worker.status)
-      // The issue this session is on, unless a background agent is at work on it: then the row shows the agent instead.
-      // Its ✕ at the row's end stops tracking it.
-      const onIt = doing?.number === issue.number && !(worker && ACTIVE.includes(worker.status))
-      // Each right-hand part with the cell of gap before it. A narrow pane drops the chips, then the bar, then the age.
-      const fits = rowRoom(width, 2 + (onIt && bug ? 2 : 0) + tag.length + String(issue.number).length + 2, {
-        chips: chipList.reduce((sum, chip) => sum + cells(chip.name) + 3, 0),
-        bar: step.total > 0 ? 3 + 1 + 5 + 1 : 0,
-        age: age ? 3 + 1 : 0,
-        rest: (pr ? cells(pr) + 1 : 0) + (blocked ? cells(blocked) + 1 : 0) + (badge ? cells(badge.text) + 1 : 0) + (onIt ? 2 : 0),
-      })
-      const chips = fits.chips ? chipList : []
-      return (
-        <Box key={`row-${issue.number}`} flexDirection="row" justifyContent="space-between">
-          {!isOpen && peek(issue)}
-          {/* The marks, priority and number keep their width; were the row ever short of room, the title gives way. */}
-          <Box flexDirection="row" flexShrink={1}>
-            <Box flexDirection="row" flexShrink={0}>
-              {onIt ? (
-                <Text color="claude" bold>
-                  {'▶ '}
-                </Text>
-              ) : (
-                <Text color="error">{bug ? '▲ ' : '  '}</Text>
-              )}
-              {onIt && bug && <Text color="error">▲ </Text>}
-              {tag && <Text color={priorityColor(issue.priority ?? '')}>{tag}</Text>}
-              <Text color={isOpen || onIt ? 'claude' : undefined} dimColor={!isOpen && !onIt} hover={{ dimColor: false, color: 'claude' }}>
-                {`#${issue.number} `}
-              </Text>
-            </Box>
-            <Button key={`issue-${issue.number}`} plain hover={{ bold: true }} onPress={toggle(issue.number)}>
-              {fit(issue.title, fits.title)}
-            </Button>
-          </Box>
-          <Box flexDirection="row" gap={1} flexShrink={0}>
-            {badge && <Text color={badge.color}>{badge.text}</Text>}
-            {blocked && <Text color="warning">{blocked}</Text>}
-            {linked && <Text color={ciBadge[linked.ci].color}>{pr}</Text>}
-            {chips.map(chip => (
-              <Text>
-                <Text color={hex(chip)}>●</Text>
-                <Text dimColor>{` ${chip.name}`}</Text>
-              </Text>
-            ))}
-            {fits.bar && (
-              <Text key={`progress-${issue.number}`}>
-                {meter(step.done, step.total, 3)}
-                <Text color={tone(step)}>{` ${count}`}</Text>
-              </Text>
-            )}
-            {fits.age && <Text dimColor>{age.padStart(3)}</Text>}
-            {onIt && (
-              <Button key={`stop-${issue.number}`} dimColor onPress={() => void stopTracking()}>
-                ✕
-              </Button>
-            )}
-          </Box>
-        </Box>
-      )
-    }
+    // The issue rows, drawn by views/issue-row.tsx with its peek above it.
+    const issueHandlers: IssueRowHandlers = { toggle, stop: () => void stopTracking() }
+    const issueRow = (issue: Issue) =>
+      issueRowView(elements, { issue, width, roomy, open, marks, project, prs: now.prs, workers: working$, doing, clock, room: roomOf(issue.number) }, issueHandlers)
 
     // The Inbox shows each issue with what Claude suggests for it: a row of Priority buttons and one of areas, the picked
     // one highlighted, Claude's reason, and Accept, which moves it on to the Status Claude suggests, or the other.
@@ -4906,15 +4689,9 @@ export const register: Register = (on, options) => {
       )
     }
 
-    // What hovering a row shows above it: the title, how far along, and the boxes still open.
-    // Every line is padded to the card's width, its margins spaces rather than paddingX, so it covers the rows it is
-    // painted over: the surface paints a floating box's text and border but leaves its padding showing what is beneath.
-    // It sits at the pane's right, leaving the rows above their mark, number and the start of their title, so the
-    // pointer moving up the list reaches the row above rather than the card. A pane without that room shows none.
     // A card above a row too near the pane's top would be pushed down over the row, so each row knows the lines free
     // above it in the window. They are at least these: each line of the board above the list, each heading and row one
     // line, an open card none. Counting short leaves a card smaller than its room, never bigger.
-    const PEEK_CLEAR = 28
     const groups = triaging ? [] : groupsOf(shown, grouping, project, viewField, marks)
     const listed$ = triaging
       ? shown.map(issue => issue.number)
@@ -4944,46 +4721,6 @@ export const register: Register = (on, options) => {
       (triaging ? 1 + (triaged.failed ? 1 : 0) : 0)
     const { offset } = e.props.scroll
     const roomOf = (number: number) => Math.max(0, above$ + listed$.indexOf(number) - offset)
-    const peek = (issue: Issue) => {
-      const step = progress(issue.checks)
-      const cardWidth = Math.min(56, width - PEEK_CLEAR)
-      if (cardWidth < 30) return null
-      const inner = cardWidth - 4
-      const todo = issue.checks.filter(check => !check.done)
-      const place = peekPlace(roomOf(issue.number), todo.length)
-      if (!place) return null
-      const listed = todo.slice(0, place.listed)
-      const lines: { text: string; color?: ThemeKey; dim?: boolean; bold?: boolean }[] = [
-        { text: fit(issue.title, inner), bold: true },
-        step.total === 0
-          ? { text: 'No acceptance boxes.', dim: true }
-          : { text: `${step.done}/${step.total} ticked · ${todo.length} to go`, color: tone(step) },
-        ...listed.map(check => ({ text: fit(`☐ ${check.text}`, inner) })),
-        ...(place.more ? [{ text: `+${todo.length - listed.length} more`, dim: true }] : []),
-        ...(place.hint ? [{ text: '⏎ open · ▶ Start inside', dim: true }] : []),
-      ]
-      return (
-        <Box
-          position="absolute"
-          top={-(lines.length + 2)}
-          left={width - cardWidth}
-          width={cardWidth}
-          display="none"
-          hover={{ display: 'flex' }}
-          flexDirection="column"
-          borderStyle="round"
-          borderColor="claude"
-        >
-          {lines.map(line => (
-            // Padded in cells, and cut rather than wrapped should a character still be measured wrong: a wrapped line
-            // would leave the rows beneath showing through and make the card a line taller than its place above the row.
-            <Text color={line.color} dimColor={line.dim} bold={line.bold} wrap="truncate-end">
-              {` ${pad(fit(line.text, inner), inner)} `}
-            </Text>
-          ))}
-        </Box>
-      )
-    }
 
     // A project field on a card: its options as buttons, the one set drawn as the primary. Buttons rather than a
     // Select, which the terminal opens by keyboard alone: a click on its options does nothing.
