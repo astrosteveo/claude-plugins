@@ -1,14 +1,55 @@
-import { atom, read, update } from 'claude-code'
-import type { EngineInterface, ModelForkResult, Register } from 'claude-code'
+import { atom, memberOf, read, update } from 'claude-code'
+import type { Caught, EngineInterface, HookFailure, ModelForkResult, Register, RenderSurface } from 'claude-code'
 
-import type { Ask } from '../types'
+import type { Advice, Ask, Decision, Offer, Question, Take } from '../types'
 import type { Exchange } from './parse'
 import { SUGGEST, earlier, fit, framed, pendingLine, split } from './parse'
+import {
+  ROWS_AROUND_DIALOG,
+  agreed,
+  agreement,
+  agreementLines,
+  answerOf,
+  clip,
+  decisionsOf,
+  decorate,
+  keyOf,
+  logMarkdown,
+  matches,
+  meter,
+  parseTakes,
+  rememberedOf,
+  sureColor,
+  sureness,
+  takeLines,
+  takePrompt,
+  when,
+  withDecisions,
+  withRemembered,
+  withoutRemembered,
+  withoutRoot,
+} from './decide'
 
 const PANE = 'ask'
 const KEEP = 30
 const asks = atom({ plugin: 'ask', key: 'asks' } as const, [])
 const draft = atom({ plugin: 'ask', key: 'draft' } as const, '')
+
+const DECISIONS = 'decisions'
+const advice = atom({ plugin: 'ask', key: 'advice' } as const, null)
+const offer = atom({ plugin: 'ask', key: 'offer' } as const, null)
+const log = atom({ plugin: 'ask', key: 'log' } as const, [])
+const remembered = atom({ plugin: 'ask', key: 'remembered' } as const, [])
+const search = atom({ plugin: 'ask', key: 'search' } as const, '')
+
+const failureOf = (error: HookFailure): string => (error.kind === 'timeout' ? 'ran out of time' : (error.message ?? 'threw'))
+
+// A fault in this mod never stands between Claude and the person: the
+// question goes to the engine's own dialog, as if the mod weren't there.
+const fallBack = <E, R>($: EngineInterface, e: E, next: ((e: E) => R) & Caught, site: string): R => {
+  $.ui.log(`ask: ${site} failed and was left to the default: ${failureOf(next.error)}`, { to: 'debug' })
+  return next(e)
+}
 
 function why(reply: ModelForkResult): string {
   if (reply.isAnswered) return ''
@@ -100,6 +141,86 @@ async function use($: EngineInterface, prompt: string) {
   $.ui.toast(filled.isFilled ? 'The prompt is in the box. Esc to get back to it.' : 'The prompt box could not take it right now.')
 }
 
+function shortWhy(reply: ModelForkResult): string {
+  if (reply.isAnswered) return ''
+  switch (reply.reason) {
+    case 'api-error':
+      return `the API answered ${reply.status}`
+    case 'empty-reply':
+      return 'no text came back'
+    case 'aborted':
+      return 'stopped'
+    default:
+      return 'no answer'
+  }
+}
+
+// Asks a fork of the session which option it would pick. The fork reads the
+// conversation from the prompt cache, so it knows why the question came up.
+async function think($: EngineInterface, id: string, questions: readonly Question[]) {
+  const slot = memberOf(advice, { requestId: id })
+  await update($, slot, () => ({ status: 'thinking' }))
+  let next: Advice
+  try {
+    const prompt = takePrompt(questions)
+    let reply: ModelForkResult = await $.model.fork({ prompt })
+    if (!reply.isAnswered && reply.reason === 'nothing-to-fork') reply = await $.model.complete({ model: 'sonnet', prompt })
+    if (!reply.isAnswered) next = { status: 'failed', error: shortWhy(reply) }
+    else {
+      const takes = parseTakes(reply.text, questions)
+      next = takes.some(Boolean) ? { status: 'ready', takes } : { status: 'failed', error: 'the reply could not be read' }
+    }
+  } catch (error) {
+    next = { status: 'failed', error: error instanceof Error ? error.message : String(error) }
+  }
+  // Answered already: the slot was cleared, so leave it empty.
+  if ((await read($, slot)) === null) return
+  await update($, slot, () => next)
+}
+
+// The store is shared by every session. Each write reads what is stored now,
+// changes only the entries it touches, and writes that back, so another
+// session's answers since this one loaded are kept.
+async function changeLog($: EngineInterface, change: (stored: unknown) => Decision[]) {
+  const merged = change(await $.store.get('log'))
+  await $.store.set('log', merged)
+  await update($, log, () => merged)
+}
+
+async function changeRemembered($: EngineInterface, change: (stored: unknown) => ReturnType<typeof rememberedOf>) {
+  const merged = change(await $.store.get('remembered'))
+  await $.store.set('remembered', merged)
+  await update($, remembered, () => merged)
+  return merged
+}
+
+async function save($: EngineInterface, entries: readonly Decision[]) {
+  if (entries.length === 0) return
+  await changeLog($, stored => withDecisions(stored, entries))
+}
+
+async function remember($: EngineInterface, held: Offer) {
+  const at = await $.clock.now()
+  await changeRemembered($, stored => withRemembered(stored, held, at))
+  await update($, offer, () => null)
+  $.ui.toast(held.items.length === 1 ? 'Remembered. Claude gets that answer next time without asking.' : `Remembered ${held.items.length} answers.`)
+}
+
+async function loadDecisions($: EngineInterface) {
+  const [savedLog, savedRemembered] = await Promise.all([$.store.get('log'), $.store.get('remembered')])
+  await update($, log, () => decisionsOf(savedLog))
+  await update($, remembered, () => rememberedOf(savedRemembered))
+}
+
+// The project's log as markdown, on the clipboard. Nothing is written into
+// the project: the log lives in the plugin's store alone.
+async function copyLog($: EngineInterface, surface: RenderSurface) {
+  const root = await $.session.root()
+  const mine = decisionsOf(await $.store.get('log')).filter(d => d.root === root)
+  const copied = await $.ui.copy({ text: logMarkdown(mine), surface })
+  $.ui.toast(copied.isCopied ? `Copied ${mine.length} decisions as Markdown` : `Could not copy: ${copied.reason}`)
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -113,7 +234,229 @@ export const register: Register = on => {
     )
     $.ui.status(undefined)
 
+    await $.command.register({ name: 'decisions', description: 'Show the decision log and the answers Claude reuses' })
+    await loadDecisions($)
+
     return next(e)
+  })
+
+  // Another session may have answered since this one loaded, so the pane
+  // starts from what is stored.
+  on('command.run', { command: 'decisions' }, async $ => {
+    await loadDecisions($)
+    await $.ui.open({ id: DECISIONS, title: 'Decisions', focus: true, closeOnEscape: true })
+    return {}
+  })
+
+  // The offer to remember is about the last answer; a new prompt moves on.
+  on('prompt.submit', async ($, e, next) => {
+    if ((await read($, offer)) !== null) await update($, offer, () => null)
+    return next(e)
+  }).catch(($, e, next) => fallBack($, e, next, 'prompt.submit'))
+
+  // A hook's own time is capped at 10 s, so this hook never waits for the
+  // person itself: the engine's dialog does, inside next(e).
+  on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
+    const root = await $.session.root()
+    const questions = e.questions as Question[]
+    // Read from the store, so an answer remembered in another session counts.
+    const known = rememberedOf(await $.store.get('remembered'))
+    const now = await $.clock.now()
+
+    // Questions answered before, and marked to remember, aren't asked again.
+    const given: Record<string, string> = {}
+    for (const q of questions) {
+      const hit = known.find(one => one.key === keyOf(root, q))
+      if (hit) given[q.question] = hit.answer
+    }
+    const asked = questions.filter(q => given[q.question] === undefined)
+    const fromMemory: Decision[] = questions.flatMap(q => {
+      const answer = given[q.question]
+      return answer === undefined ? [] : [{ root, header: q.header, question: q.question, answer, source: 'remembered' as const, at: now }]
+    })
+    if (fromMemory.length > 0) {
+      await save($, fromMemory)
+      $.ui.toast(fromMemory.length === 1 ? `Answered from memory: ${fromMemory[0]?.answer}` : `Answered ${fromMemory.length} questions from memory`)
+    }
+    if (asked.length === 0) return { result: { questions, answers: given } as never }
+
+    const id = e.tool_use_id
+    void think($, id, asked)
+    const ran = await next(asked.length === questions.length ? e : { ...e, questions: asked })
+
+    const slot = memberOf(advice, { requestId: id })
+    const held = await read($, slot)
+    await update($, slot, () => null)
+    if (ran.deny !== undefined || ran.isError) return ran
+
+    const result = ran.result as { answers?: Record<string, string> }
+    const takes = held?.status === 'ready' ? held.takes : []
+    const entries: Decision[] = []
+    const items: Offer['items'] = []
+    asked.forEach((q, i) => {
+      const answer = answerOf(result.answers, q)
+      if (answer === undefined) return
+      const take: Take | null = takes[i] ?? null
+      entries.push({ root, header: q.header, question: q.question, answer, pick: take?.pick, confidence: take?.confidence, source: 'you', at: now })
+      items.push({ key: keyOf(root, q), question: q.question, answer })
+    })
+    await save($, entries)
+    if (items.length > 0) await update($, offer, () => ({ root, items }))
+
+    if (fromMemory.length === 0) return ran
+    return { result: { ...(ran.result as object), questions, answers: { ...given, ...result.answers } } as never }
+  }).catch(($, e, next) => fallBack($, e, next, 'tool.call on AskUserQuestion'))
+
+  // The engine's dialog, with Claude's take above it and in the option
+  // descriptions. The dialog itself, its keys and its answer, stay the
+  // engine's: the tree holds exactly one engine node. Around the dialog a Box
+  // can't take a width and the tree gets at most 12 rows, which takeLines
+  // budgets for.
+  on('ui.render', { component: 'AskUserQuestion' }, async ($, e, next) => {
+    const held = await read($, memberOf(advice, e))
+    const questions = e.props.questions as Question[]
+    const takes = held?.status === 'ready' ? held.takes : []
+    const dialog = await next(takes.length > 0 ? { ...e, props: { ...e.props, questions: decorate(questions, takes) } } : e)
+    if (held === null) return dialog
+
+    const { Box, Text } = $.ui.resolve(e)
+    // The border and the title take three of the rows.
+    const lines = held.status === 'ready' ? takeLines(questions, takes, ROWS_AROUND_DIALOG - 3) : []
+    return (
+      <Box flexDirection="column">
+        <Box key="take" flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1}>
+          <Text bold color="claude">
+            ✦ Claude's take
+          </Text>
+          {held.status === 'thinking' && <Text dimColor>Working out my pick…</Text>}
+          {held.status === 'failed' && <Text dimColor>{clip(`No take this time (${held.error}).`, 70)}</Text>}
+          {lines.map((line, i) =>
+            line.kind === 'pick' ? (
+              <Text key={`line-${i}`}>
+                {line.header !== '' && <Text inverse> {line.header} </Text>}
+                {line.header !== '' && '  '}
+                I'd pick <Text bold>{line.pick}</Text>
+                {'  '}
+                <Text color={sureColor(line.confidence)}>
+                  {meter(line.confidence)} {line.confidence}%
+                </Text>
+                <Text dimColor> {sureness(line.confidence)}</Text>
+              </Text>
+            ) : (
+              <Text key={`line-${i}`} dimColor>
+                {line.text}
+              </Text>
+            ),
+          )}
+        </Box>
+        {dialog}
+      </Box>
+    )
+  })
+
+  // After an answer: offer to give the same answer next time without asking.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const held = await read($, offer)
+    if (held === null || e.props.hasSurvey) return next(e)
+    const { Box, Button, Text } = $.ui.resolve(e)
+    const [first] = held.items
+    const what = held.items.length === 1 && first ? `"${first.question}" → ${first.answer}` : `your ${held.items.length} answers`
+    return (
+      <Box gap={1} flexWrap="wrap">
+        <Text color="claude">✦</Text>
+        <Text>Remember {what} for next time?</Text>
+        <Button key="remember" label="Remember" hotkey="r" variant="primary" onPress={() => void remember($, held)} />
+        <Button key="dismiss" label="Not now" hotkey="n" role="dismiss" onPress={() => void update($, offer, () => null)} />
+      </Box>
+    )
+  })
+
+  on('ui.render', { component: 'Pane', requestId: DECISIONS }, async ($, e) => {
+    const ui = $.ui.resolve(e)
+    const { Box, Button, Text } = ui
+    const root = await $.session.root()
+    const query = await read($, search)
+    const allKept = (await read($, remembered)).filter(one => one.root === root)
+    const all = (await read($, log)).filter(d => d.root === root).sort((a, b) => b.at - a.at)
+    const kept = allKept.filter(one => matches(query, one.question, one.answer))
+    const mine = all.filter(d => matches(query, d.header, d.question, d.answer, d.pick))
+    // The stats are over the whole log, whatever the search shows.
+    const stats = agreementLines(agreement(all))
+    const width = Math.max(20, e.props.bodyColumns)
+    const rule = <Text dimColor>{'─'.repeat(width)}</Text>
+
+    return (
+      <Box flexDirection="column">
+        {'Input' in ui && (
+          <ui.Input
+            key="search"
+            label="Search "
+            placeholder="Filter by question or answer…"
+            submitLabel="filter"
+            value={query}
+            autoFocus
+            onInput={value => void update($, search, () => value)}
+            onSubmit={value => void update($, search, () => value)}
+          />
+        )}
+        <Text bold color="claude">
+          ✦ Answers Claude reuses
+        </Text>
+        <Text dimColor>Asked again, these are answered for you. Forget one to be asked again.</Text>
+        {allKept.length === 0 && <Text dimColor>None yet. Press Remember on the band after you answer.</Text>}
+        {allKept.length > 0 && kept.length === 0 && <Text dimColor>None match the search.</Text>}
+        {kept.map(one => (
+          <Box key={`kept-${one.key}`} gap={1}>
+            <Button
+              key={`forget-${one.at}-${one.question}`}
+              label="Forget"
+              dimColor
+              onPress={() => void changeRemembered($, stored => withoutRemembered(stored, one.key))}
+            />
+            <Text wrap="truncate-end">
+              {one.question} <Text color="success">→ {one.answer}</Text>
+            </Text>
+          </Box>
+        ))}
+        <Box marginTop={1}>{rule}</Box>
+        <Text bold color="claude">
+          ✦ Decision log
+        </Text>
+        <Text dimColor>
+          {all.length} answered in this project
+          {query.trim() !== '' && ` · ${mine.length} match the search`}
+        </Text>
+        {stats.map((line, i) => (
+          <Text key={`stats-${i}`} dimColor>
+            {line}
+          </Text>
+        ))}
+        {all.length === 0 && <Text dimColor>Nothing yet. Answers to Claude's questions show here.</Text>}
+        {mine.slice(0, 50).map((d, i) => (
+          <Box key={`d-${d.at}-${i}`} flexDirection="column" marginTop={1}>
+            <Text>
+              <Text dimColor>{when(d.at)}</Text> <Text inverse> {d.header} </Text> {d.question}
+            </Text>
+            <Text>
+              {'  '}→ <Text bold>{d.answer}</Text>
+              {d.source === 'remembered' && <Text dimColor> (remembered)</Text>}
+              {agreed(d) === true && <Text color="success"> ✓ Claude agreed ({d.confidence}%)</Text>}
+              {agreed(d) === false && (
+                <Text dimColor>
+                  {' '}
+                  · Claude would have picked {d.pick} ({d.confidence}%)
+                </Text>
+              )}
+            </Text>
+          </Box>
+        ))}
+        <Box marginTop={1}>{rule}</Box>
+        <Box key="decision-controls" gap={1} flexWrap="wrap">
+          <Button key="copy" label="Copy as Markdown" onPress={press => void copyLog($, press.surface)} />
+          {all.length > 0 && <Button key="clear" label="Clear log" dimColor onPress={() => void changeLog($, stored => withoutRoot(stored, root))} />}
+        </Box>
+      </Box>
+    )
   })
 
   on('command.run', { command: 'ask' }, async ($, e) => {
