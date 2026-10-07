@@ -264,7 +264,8 @@ alert off until it happens again.
 
 Each open pull request is a row: its CI (`✓ PASS`, `✗ FAIL`, `◷ CI`), title,
 the issue it is for (`→ #38`), its review, and `◆` on the branch you have
-checked out. It says why it can't merge yet: `⚠ conflicts`, `↓ behind`,
+checked out. A `⚙` after its number means a background agent is still on
+the issue it is for, and may push to its branch. It says why it can't merge yet: `⚠ conflicts`, `↓ behind`,
 open review threads, and who is asked to review. At the right are its diff
 counts (`+120 −40`) and **Finish & merge**. Press the title for its details.
 
@@ -276,7 +277,9 @@ diff counts, the linked issue, the merge note and the review mark. Last,
 their badge, number and buttons keep their width, and the text is cut.
 
 - **Finish & merge** sends Claude to see it through: fix CI, answer review,
-  and merge, without bypassing branch protection or force-pushing.
+  and merge, without bypassing branch protection or force-pushing. While a
+  background agent owns the branch, or CI is still running or failing, it
+  asks first and says why. **Close out anyway** sends it, **Cancel** doesn't.
 - **⇶ Merge all** (`m`) does the same for every open pull request, oldest
   first, after asking: `y` to send, `n` to cancel.
 

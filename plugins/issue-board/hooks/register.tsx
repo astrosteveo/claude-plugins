@@ -80,6 +80,7 @@ import {
   templatePrompt,
 } from './setup'
 import {
+  ACTIVE,
   PR_RULES,
   START_MODES,
   THREADS_QUERY,
@@ -101,6 +102,7 @@ import {
   ciBadge,
   closeOutAllPrompt,
   closeOutPrompt,
+  closeOutRisk,
   commentsOf,
   commandsOf,
   copiesFor,
@@ -169,6 +171,7 @@ import {
   wrappedLines,
   workerBadge,
   workerOnLine,
+  workerOfPr,
   workerIssueOf,
   workerPrOf,
   workerPrompt,
@@ -376,6 +379,7 @@ const expanded = atom({ plugin: 'issue-board', key: 'expanded' } as const, [])
 const working = atom({ plugin: 'issue-board', key: 'working' } as const, null)
 const dismissed = atom({ plugin: 'issue-board', key: 'dismissed' } as const, [])
 const confirming = atom({ plugin: 'issue-board', key: 'confirming' } as const, false)
+const confirmingPr = atom({ plugin: 'issue-board', key: 'confirmingPr' } as const, null)
 const query = atom({ plugin: 'issue-board', key: 'query' } as const, '')
 const viewer = atom({ plugin: 'issue-board', key: 'viewer' } as const, null)
 const branch = atom({ plugin: 'issue-board', key: 'branch' } as const, null)
@@ -2772,9 +2776,6 @@ const watchRun = async ($: EngineInterface, run: { id: number; workflow: string 
   }
 }
 
-// Where a background agent's loop may still move on from.
-const ACTIVE: readonly Worker['status'][] = ['pending', 'running', 'waiting', 'idle']
-
 // While a background agent works, the board asks where each stands every 10 seconds, and stops once none works. An
 // agent the list shows ended may still answer; when no answer has come 10 seconds later, the board says how it ended
 // without one.
@@ -4353,6 +4354,7 @@ export const register: Register = (on, options) => {
     const chosen = await read($, filter)
     const open = await read($, expanded)
     const arming = await read($, confirming)
+    const armedPr = await read($, confirmingPr)
     const who = await read($, viewer)
     const typed = await read($, query)
     const here = await read($, branch)
@@ -4422,6 +4424,7 @@ export const register: Register = (on, options) => {
     }
 
     const closeOut = async (pr: PullRequest) => {
+      await update($, confirmingPr, () => null)
       await submit($, 'other prompts', { text: closeOutPrompt(pr), asUser: true })
       $.ui.toast(`Sent PR #${pr.number} to Claude to finish and merge`)
     }
@@ -5235,8 +5238,8 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
-    // A pull request on one row: CI, number, title, the issue it is for, a review mark, why it can't merge yet and
-    // whether it is this branch's, then its diff counts and Finish & merge. Every part but the title keeps its width,
+    // A pull request on one row: CI, number, a ⚙ while a background agent owns its branch, title, the issue it is for,
+    // a review mark, why it can't merge yet and whether it is this branch's, then its diff counts and Finish & merge. Every part but the title keeps its width,
     // and the title is cut to what is left; a narrow pane drops parts in prRowRoom's order rather than wrap the row.
     // The title opens its details beneath: branch, author, age, review, failing checks and its link.
     const prRow = (pr: PullRequest) => {
@@ -5254,8 +5257,13 @@ export const register: Register = (on, options) => {
       const threads = pr.openThreads ?? 0
       const threadText = threads > 0 ? `${threads} open ${threads === 1 ? 'thread' : 'threads'}` : ''
       const askedText = (pr.reviewers ?? []).length > 0 ? `asks ${(pr.reviewers ?? []).slice(0, 2).join(', ')}${(pr.reviewers ?? []).length > 2 ? ` +${(pr.reviewers ?? []).length - 2}` : ''}` : ''
+      // A background agent that may still push to its branch, and why Finish & merge asks first: that agent, or CI
+      // that hasn't passed.
+      const owner = workerOfPr(pr, working$)
+      const risk = closeOutRisk(pr, owner)
+      const asking = risk !== null && armedPr === pr.number
       const gapped = (text: string) => (text ? cells(text) + 1 : 0)
-      const fits = prRowRoom(width, cells(badge.text) + 1 + cells(`#${pr.number}`) + 1 + (mine ? 2 : 0), {
+      const fits = prRowRoom(width, cells(badge.text) + 1 + cells(`#${pr.number}`) + 1 + (mine ? 2 : 0) + (owner ? 2 : 0), {
         asked: gapped(askedText),
         threads: gapped(threadText),
         size: roomy ? gapped(size) : 0,
@@ -5274,6 +5282,7 @@ export const register: Register = (on, options) => {
                 </Text>,
               )}
               {keep(<Text color="suggestion" bold>{`#${pr.number}`}</Text>)}
+              {owner && keep(<Text color={workerBadge(owner.status).color}>⚙</Text>)}
               <Button key={`pr-${pr.number}`} plain hover={{ bold: true }} onPress={togglePr(pr.number)}>
                 {fit(pr.title, fits.title)}
               </Button>
@@ -5296,11 +5305,22 @@ export const register: Register = (on, options) => {
                   <Text color="error">{` −${pr.deletions}`}</Text>
                 </Text>
               )}
-              <Button key={`close-out-${pr.number}`} dimColor hover={{ dimColor: false, color: 'suggestion' }} onPress={() => void closeOut(pr)}>
+              <Button key={`close-out-${pr.number}`} dimColor hover={{ dimColor: false, color: 'suggestion' }} onPress={() => void (risk ? update($, confirmingPr, () => pr.number) : closeOut(pr))}>
                 {fits.finish}
               </Button>
             </Box>
           </Box>
+          {asking && (
+            <Box key={`close-out-ask-${pr.number}`} flexDirection="row" flexWrap="wrap" gap={1} paddingLeft={cells(badge.text) + 1}>
+              <Text color="warning" wrap="wrap">{`Close out PR #${pr.number} anyway? ${risk}`}</Text>
+              <Button key={`close-out-yes-${pr.number}`} variant="primary" onPress={() => void closeOut(pr)}>
+                Close out anyway
+              </Button>
+              <Button key={`close-out-no-${pr.number}`} dimColor onPress={() => void update($, confirmingPr, () => null)}>
+                Cancel
+              </Button>
+            </Box>
+          )}
           {isOpen && (
             <Box key={`pr-detail-${pr.number}`} flexDirection="row" flexWrap="wrap" gap={1} paddingLeft={[...badge.text].length + 1} marginBottom={1}>
               <Text dimColor>{`⎇ ${fit(pr.branch, Math.max(10, Math.floor(width / 3)))}`}</Text>
@@ -5309,6 +5329,7 @@ export const register: Register = (on, options) => {
               {review && <Text color={review.color}>{`· ${review.text}`}</Text>}
               {pr.ci === 'fail' && (pr.failing ?? []).length > 0 && <Text color="error">{`· ${fit(pr.failing.join(', '), 30)}`}</Text>}
               {(pr.issues ?? []).length > 0 && <Text dimColor>{`· for ${pr.issues.map(number => `#${number}`).join(', ')}`}</Text>}
+              {owner && <Text color={workerBadge(owner.status).color}>{`· ${workerOnLine(owner.status, ago(new Date(owner.startedAt).toISOString(), clock), owner.number)}`}</Text>}
               {mine && (
                 <Text color="claude" bold>
                   · ◆ this branch
