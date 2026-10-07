@@ -70,6 +70,10 @@ While the timeout is on, the take box adds "If you're away for 5m, I'll go
 with X." If Claude has no pick (still thinking, or it failed), the timeout
 works as it would without the plugin.
 
+The timeout never runs while Remote Control is connected, because you could
+still answer from another device. Then there is no countdown and no away pick.
+To try it, use a session without Remote Control.
+
 ### Remembered answers
 
 After you answer, the band above the prompt offers **Remember** or **Not
