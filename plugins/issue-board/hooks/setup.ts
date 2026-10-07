@@ -224,9 +224,12 @@ export const stepsOf = (facts: SetupFacts, chosen: string | null, typed: string,
 export const automationsOff = (project: SetupProject | undefined): string[] =>
   project ? AUTOMATIONS.filter(name => project.workflows.some(one => one.name === name && !one.enabled)) : AUTOMATIONS
 
-// The workflows the project has on that the board wants off.
-export const automationsOn = (project: SetupProject | undefined): string[] =>
-  project ? UNWANTED.filter(name => project.workflows.some(one => one.name === name && one.enabled)) : []
+// The workflows the project has on that the board wants off. Item closed is only worth turning off when the board moves
+// closed issues to Done itself: with `movesToDone` false (moveToDone off, or no Done picked), turning it off would leave
+// closed issues out of Done. This is the rule `/issues check` uses; the write half of it holds once Apply adopts the
+// project.
+export const automationsOn = (project: SetupProject | undefined, movesToDone: boolean): string[] =>
+  project && movesToDone ? UNWANTED.filter(name => project.workflows.some(one => one.name === name && one.enabled)) : []
 
 // Whether the project still has GitHub's own Todo, which its "Item added to project" automation sets on new issues
 // unless told otherwise, and it isn't the Inbox. The API can't read or change what the automation sets, so setup asks

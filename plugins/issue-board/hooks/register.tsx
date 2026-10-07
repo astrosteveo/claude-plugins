@@ -4745,7 +4745,7 @@ export const register: Register = (on, options) => {
         return { ...was, roles, steps: stepsOf(was.facts, was.chosen, was.areas, roles) }
       })
     const manual = facts ? automationsOff(chosenProject) : []
-    const unwanted = facts ? automationsOn(chosenProject) : []
+    const unwanted = facts && planned && 'roles' in planned ? automationsOn(chosenProject, settings.moveToDone && planned.roles.done !== null) : []
     const setupPlan = planned && (
       <Box key="setup-plan" flexDirection="column" borderStyle="round" borderColor="suggestion" paddingX={1} marginTop={1}>
         <Text color="suggestion" bold>

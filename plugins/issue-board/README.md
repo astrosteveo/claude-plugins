@@ -416,9 +416,10 @@ nothing on GitHub. A saved choice always wins over the names.
   says so once.
 
 For Done to mean shipped, turn off the project's own **Item closed**
-workflow, which marks every closed issue Done. Keep the **Auto-add**
-workflows on. `/issues setup` advises both, and `/issues check` notes Item
-closed while it's on.
+workflow, which marks every closed issue Done. Do this only with **Move
+closed issues to Done** on: otherwise Item closed is what puts closed issues
+in Done. Keep the **Auto-add** workflows on. `/issues setup` advises both,
+and lists Item closed only when the board moves closed issues to Done.
 
 Claude closing an epic with open sub-issues through `gh issue close` asks you
 first, whatever your rules allow. A background agent is refused instead, and
@@ -569,7 +570,7 @@ the card for you to apply.
   filter or triage; with no Done, closed issues aren't moved.
 - GitHub's API can't change a project's workflows, so setup lists those to
   change by hand, with a link: the Auto-add workflows on, **Item closed**
-  off, and **Item added to project** set to Inbox rather than GitHub's Todo,
+  off when the board moves closed issues to Done, and **Item added to project** set to Inbox rather than GitHub's Todo,
   so new issues land in the Inbox.
 - `/issues stats` says what the board has cost; see
   [What it costs](#what-it-costs).
