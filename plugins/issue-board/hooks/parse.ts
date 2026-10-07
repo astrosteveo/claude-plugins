@@ -1736,6 +1736,7 @@ export const SUBCOMMANDS: { name: string; what: string }[] = [
   { name: 'setup', what: 'links or makes a project with Status and Priority, and says what it would change first' },
   { name: 'statuses', what: "picks which of the project's Status options plays each part, saved here and not on GitHub" },
   { name: 'check', what: 'says what the board is missing, such as a gh permission, and how to fix it' },
+  { name: 'stats', what: "counts the board's GitHub calls, the GraphQL points they spent, and the text it added to Claude's context" },
   { name: 'help', what: 'this list' },
 ]
 

@@ -421,6 +421,8 @@ a private one, which GitHub won't undo, needs a second, confirmed call.
   change by hand, with a link: the Auto-add workflows on, **Item closed**
   off, and **Item added to project** set to Inbox rather than GitHub's Todo,
   so new issues land in the Inbox.
+- `/issues stats` says what the board has cost; see
+  [What it costs](#what-it-costs).
 - `/issues check` checks what the board needs; see [Permissions](#permissions).
   It also lists each feature that is off, and why: the setting that turned it
   off, or the Status the project has no option for. `/issues help` lists
@@ -586,6 +588,40 @@ says when it resets and waits.
 
 The board is saved for each repo, so a new session, or `/clear`, shows it at
 once and still knows the issue you were on.
+
+### What it costs
+
+`/issues stats` says what the board has spent since it loaded, per hour, and
+for its last full read:
+
+- **GitHub calls**, as REST, REST answered 304 (nothing changed, so free
+  against the rate limit), and GraphQL. `gh issue`, `gh pr` and
+  `gh repo view` count as GraphQL, since that is what gh uses for them. Each
+  `gh` command counts as one call, save `gh run watch`, which counts three
+  REST calls for each time it draws the run. Each call has a cause: a poll's cheap
+  check, a full read, a write, one of Claude's tools, setup, or other.
+- **GraphQL points**, added up from the issues query's own rate limit
+  answer, with what is left and when it resets.
+- **Context**: the characters the board adds to Claude's context, by
+  source. The tool definitions count once, when they are registered. The
+  working and orchestrator notes count when they first go into the system
+  prompt and when they change. Issue copies, moved lines, news, the prompts
+  the board sends, and its tools' answers count each time.
+
+The counts stay in memory. A reload starts them over.
+
+The tests hold the board to a budget, so a change that adds calls fails CI:
+
+| What | REST | REST 304 | GraphQL |
+| --- | --- | --- | --- |
+| A refresh | 1 | 1 | 3 |
+| Start | 0 | 0 | 3 |
+| `issue_update` setting a Priority, with the refresh after it | 1 | 1 | 4 |
+| Setup's Apply on a fresh repo, with the refresh after it | 7 | 0 | 16 |
+| An idle hour, at the 5-minute setting | 4 | 12 | 14 |
+
+Start adds at most 600 characters to Claude's context: the start message and
+the working note.
 
 ## Permissions
 

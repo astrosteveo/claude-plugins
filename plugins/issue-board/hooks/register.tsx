@@ -5,6 +5,8 @@ import type { Adopted, Adoption, Alert, Board, BoxTask, BuiltInFilter, Check, Co
 import type { Ended, FilterSource, IssueChanges, NewIssue, PrRule, StartMode, Switches, Tab } from './parse'
 import type { Linked } from './project'
 import { authOf, problemsOf, problemsText, repoOf } from './access'
+import type { Cause, ContextSource, Tally } from './stats'
+import { countCall, countContext, countPoints, kindOf, minus, newStats, statsText } from './stats'
 import {
   ADD_ITEM,
   ARCHIVE_ITEM,
@@ -426,7 +428,38 @@ const GROUPINGS: { id: GroupBy; label: string }[] = [
   { id: 'area', label: 'Area' },
 ]
 
+// What the board has cost this session, for /issues stats. In memory only: a reload starts the counts over.
+const stats = newStats(Date.now())
+
+// Why the board is calling GitHub right now: the newest of the causes under way, or other. A cause is set around a poll,
+// a full read, setup and the board's tools, not passed down to each call. Work that overlaps may take the other's
+// cause, which is close enough for a count.
+const causes: { cause: Cause }[] = []
+const causeNow = (): Cause => causes.at(-1)?.cause ?? 'other'
+const within = async <T,>(cause: Cause, work: () => Promise<T>): Promise<T> => {
+  const token = { cause }
+  causes.push(token)
+  try {
+    return await work()
+  } finally {
+    causes.splice(causes.indexOf(token), 1)
+  }
+}
+
+// The cause a call counts under: one that changes GitHub is a write, unless a tool or setup made it.
+const causeOf = (args: readonly string[], stdin?: string): Cause => {
+  const now = causeNow()
+  return now !== 'tool' && now !== 'setup' && (isMutation(args, stdin) || writesGitHub(['gh', ...args].join(' '))) ? 'write' : now
+}
+
+// Counts one gh call as it goes out.
+const countGh = (args: readonly string[], stdin?: string): void => countCall(stats, causeOf(args, stdin), kindOf(args))
+
+// Counts text the board adds to Claude's context.
+const countText = (source: ContextSource, text: string): void => countContext(stats, source, text.length)
+
 const runGh = async ($: EngineInterface, args: string[], stdin?: string, timeoutMs = 60_000): Promise<string> => {
+  countGh(args, stdin)
   const { exitCode, stdout, stderr } = await $.process.run(['gh', ...args], { timeoutMs, ...(stdin === undefined ? {} : { stdin }) })
   if (exitCode !== 0) throw new Error(stderr.trim().split('\n')[0] || `gh ${args[0]} exited ${exitCode}`)
   return stdout
@@ -473,6 +506,21 @@ const askThenAct = async <E, R>(e: E, next: (e: E) => Promise<ToolCallResult>, a
   return approvedOf(asked) ? act() : asked
 }
 
+// One of the board's tools at work: its gh calls count under tool, and its answer as context Claude reads.
+const asTool = async <R,>(work: () => Promise<R>): Promise<R> => {
+  const answer = await within('tool', work)
+  countText('tool results', answerText(answer))
+  return answer
+}
+
+// The text Claude reads of a tool's answer: what it says, or why it was refused.
+const answerText = (answer: unknown): string => {
+  const { result, deny } = (answer ?? {}) as { result?: unknown; deny?: unknown }
+  if (typeof deny === 'string') return deny
+  if (typeof result === 'string') return result
+  return result === undefined ? '' : JSON.stringify(result)
+}
+
 // What project_adopt's permission check answers when it fails. Falling back to the verdict beneath could let an allow
 // rule adopt a project without a prompt, so it refuses, and says why.
 const adoptCheckFailed = ($: EngineInterface, next: Caught) => {
@@ -492,11 +540,14 @@ let checking: Promise<unknown> = Promise.resolve()
 const checkAccess = ($: EngineInterface, message?: string): Promise<Problem[]> => {
   const run = checking.then(async () => {
     let installed = true
-    const ask = (args: string[]) =>
-      $.process.run(['gh', ...args], { timeoutMs: 30_000 }).catch((cause: unknown) => {
+    // The check runs after whatever asked for it, so it takes no cause from what else is under way.
+    const ask = (args: string[]) => {
+      countCall(stats, 'other', kindOf(args))
+      return $.process.run(['gh', ...args], { timeoutMs: 30_000 }).catch((cause: unknown) => {
         if (MISSING.test(messageOf(cause))) installed = false
         return null
       })
+    }
     const [status, view] = await Promise.all([
       ask(['auth', 'status', '--active', '--json', 'hosts']),
       ask(['repo', 'view', '--json', 'nameWithOwner,hasIssuesEnabled,viewerPermission,isArchived,visibility']),
@@ -607,9 +658,12 @@ const cheapChecksOf = (now: Board): string[] => [
 // Whether a REST read of `path` changed since the board last asked. True when it can't tell, so the board reads.
 const changed = async ($: EngineInterface, path: string): Promise<boolean> => {
   const known = etags.get(path)
+  // Taken as the call goes out: the cause may be another by the time GitHub answers.
+  const cause = causeNow()
   try {
     const { stdout } = await $.process.run(['gh', 'api', '-i', ...(known ? ['-H', `If-None-Match: ${known}`] : []), path], { timeoutMs: 30_000 })
     const status = /^HTTP\/[\d.]+ (\d{3})/m.exec(stdout)?.[1]
+    countCall(stats, cause, status === '304' ? 'rest304' : 'rest')
     if (status === '304') return false
     const tag = /^etag: *(.+)$/im.exec(stdout)?.[1]?.trim()
     if (status === '200' && tag) etags.set(path, tag)
@@ -622,7 +676,9 @@ const changed = async ($: EngineInterface, path: string): Promise<boolean> => {
 // The timer's look at GitHub. A full read costs GraphQL points; the cheap checks cost none when nothing changed. So the
 // board reads in full when a check saw a change, or when its last full read is FULL_MS old. Another session's newer read
 // of the same repo is taken as it is.
-const poll = async ($: EngineInterface): Promise<void> => {
+const poll = ($: EngineInterface): Promise<void> => within('poll', () => look($))
+
+const look = async ($: EngineInterface): Promise<void> => {
   readTouches = touches
   const now = await read($, board)
   const clock = await nowOf($)
@@ -1120,6 +1176,7 @@ const fetchIssues = async ($: EngineInterface, nameWithOwner: string): Promise<{
       after = nextPageOf(page)
     } while (after && pages.length < PAGES)
     const limits = pages.map(costOf).filter(limit => limit !== null)
+    for (const limit of limits) countPoints(stats, limit)
     const last = limits.at(-1)
     if (last) {
       const cost = limits.reduce((sum, limit) => sum + limit.cost, 0)
@@ -1176,7 +1233,7 @@ const MENTIONS_READ = 20
 const refresh = ($: EngineInterface, seen = false): Promise<void> => {
   if (refreshing) return refreshing
   const began = restarts
-  const run = readGitHub($, seen).finally(() => {
+  const run = within('full read', () => readGitHub($, seen)).finally(() => {
     refreshing = undefined
   })
   refreshing = run
@@ -1200,6 +1257,8 @@ const readGitHub = async ($: EngineInterface, seen: boolean): Promise<void> => {
   if (pausedUntil > (await nowOf($))) return
   await update($, loading, () => true)
   readTouches = touches
+  // What the board had spent when the read began, so the stats can say what this read cost.
+  const spent = { calls: { ...(stats.calls['full read'] ?? { rest: 0, rest304: 0, graphql: 0 }) } as Tally, points: stats.points }
   const before = await read($, board)
   let after = before
   try {
@@ -1272,6 +1331,8 @@ const readGitHub = async ($: EngineInterface, seen: boolean): Promise<void> => {
     // GitHub answers again: look again too, so a problem fixed since the last check goes.
     if (((await read($, access))?.problems.length ?? 0) > 0) void checkAccess($)
     void prime($, next)
+    const calls = stats.calls['full read'] ?? spent.calls
+    stats.lastRead = { at: fetchedAt, calls: minus(calls, spent.calls), points: stats.points - spent.points }
   } catch (cause) {
     const message = messageOf(cause)
     repoInfo = undefined
@@ -2589,6 +2650,9 @@ const watchRun = async ($: EngineInterface, run: { id: number; workflow: string 
   try {
     let seen = ''
     for await (const { text } of $.process.spawn({ argv: ['gh', 'run', 'watch', String(run.id), '--interval', '15'] })) {
+      // Each drawing opens with this line, and counts as the three REST calls it takes.
+      const drawings = text.match(/Refreshing run status/g)?.length ?? 0
+      for (let call = 0; call < drawings * 3; call++) countCall(stats, 'other', 'rest')
       seen = (seen + text).slice(-20_000)
       const progress = runProgressOf(seen)
       if (progress) await update($, runs, list => list.map(one => (one.id === run.id ? { ...one, ...progress } : one)))
@@ -2757,7 +2821,7 @@ const handOff = async ($: EngineInterface, agentId: string, status: Ended, answe
   $.ui.log(endedLine(issue, status, said, pr))
   if (worker.byClaude) return
   try {
-    const sent = await $.prompt.submit({ text: handoffPrompt(issue, status, said, pr, settings.startMode) })
+    const sent = await submit($, 'hand-offs', { text: handoffPrompt(issue, status, said, pr, settings.startMode) })
     if (sent.drop !== undefined) throw new Error(sent.drop)
   } catch (cause) {
     $.ui.log(`issue-board: couldn't tell Claude the background agent on #${worker.number} ended: ${messageOf(cause)}`, { to: 'debug' })
@@ -2974,9 +3038,33 @@ const loadPalette = async($: EngineInterface): Promise<void> => {
   }
 }
 
+// The text of each section the board last added to the system prompt, by id. A section is counted as context when it
+// first goes in and each time its text changes, not on every request that carries it again.
+const composedSections = new Map<string, string>()
+const countSection = (id: string, text: string, source: ContextSource): void => {
+  if (composedSections.get(id) === text) return
+  composedSections.set(id, text)
+  countText(source, text)
+}
+
+// Sends Claude a prompt of the board's. What reaches Claude counts as context.
+const submit = async ($: EngineInterface, source: ContextSource, args: Parameters<EngineInterface['prompt']['submit']>[0]) => {
+  const sent = await $.prompt.submit(args)
+  if (sent.drop === undefined) countText(source, args.text)
+  return sent
+}
+
+// Registers one of the board's tools. Its name, description and schema go to Claude with every request, and count
+// once, as the tool is registered.
+const registerTool = ($: EngineInterface, tool: Parameters<EngineInterface['tool']['register']>[0]) => {
+  countText('tool definitions', JSON.stringify(tool))
+  return $.tool.register(tool)
+}
+
 export const register: Register = (on, options) => {
   settings = settingsOf(options)
   on('session.start', async ($, e, next) => {
+    stats.startedAt = await nowOf($)
     await $.command.register({
       name: 'issues',
       description: 'Show open issues and pull requests in a pane',
@@ -2984,7 +3072,7 @@ export const register: Register = (on, options) => {
     })
     // Each tool's text is sent with every request, so it says only what Claude needs to choose and call the tool.
     // Claude Code's own permission prompt covers asking, and the working and orchestrator notes cover the workflow.
-    await $.tool.register({
+    await registerTool($, {
       name: 'issues',
       description:
         "Lists this repo's open issues and pull requests from the issue board's copy, one line each. " +
@@ -3013,7 +3101,7 @@ export const register: Register = (on, options) => {
         },
       },
     })
-    await $.tool.register({
+    await registerTool($, {
       name: 'tick',
       description:
         "Ticks `- [ ]` boxes in an issue's body once their work is done and checked. Boxes count from 1 in body order, as the issues tool shows them with `number`.",
@@ -3027,7 +3115,7 @@ export const register: Register = (on, options) => {
         required: ['number', 'boxes'],
       },
     })
-    await $.tool.register({
+    await registerTool($, {
       name: 'issue_update',
       description:
         'Changes an issue and the issue board at once. Give only what changes. ' +
@@ -3079,7 +3167,7 @@ export const register: Register = (on, options) => {
         required: ['number'],
       },
     })
-    await $.tool.register({
+    await registerTool($, {
       name: 'milestone',
       description: "Makes a milestone by title if the repo hasn't got it, or else changes it. The issues tool lists them with `milestones`.",
       inputSchema: {
@@ -3095,7 +3183,7 @@ export const register: Register = (on, options) => {
         required: ['title'],
       },
     })
-    await $.tool.register({
+    await registerTool($, {
       name: 'project_status',
       description: "Reads the latest status update of the repo's GitHub Project, or with status posts one.",
       inputSchema: {
@@ -3108,7 +3196,7 @@ export const register: Register = (on, options) => {
         },
       },
     })
-    await $.tool.register({
+    await registerTool($, {
       name: 'project_archive',
       description:
         "Archives items in the repo's GitHub Project, leaving the issues as they are: one issue's item, or every Done item closed before a date. " +
@@ -3122,7 +3210,7 @@ export const register: Register = (on, options) => {
         },
       },
     })
-    await $.tool.register({
+    await registerTool($, {
       name: 'project_adopt',
       description:
         'Lets the issue board write to a GitHub Project of this repo, which it otherwise only reads; release: true stops it. ' +
@@ -3135,7 +3223,7 @@ export const register: Register = (on, options) => {
         },
       },
     })
-    await $.tool.register({
+    await registerTool($, {
       name: 'issue_create',
       description:
         "Files an issue and puts it on the issue board. Without a status it goes to the project's Inbox. " +
@@ -3175,11 +3263,14 @@ export const register: Register = (on, options) => {
         required: ['title'],
       },
     })
-    // The agent Start in background runs: in its own worktree, in the background.
+    // The agent Start in background runs: in its own worktree, in the background. Claude reads its description among the
+    // agent types.
+    const workerDescription = "Works one GitHub issue of this repository end to end in its own git worktree, for the issue board's Start in background."
+    countText('tool definitions', workerDescription)
     await $.agent
       .register({
         name: 'worker',
-        description: "Works one GitHub issue of this repository end to end in its own git worktree, for the issue board's Start in background.",
+        description: workerDescription,
         prompt: workerPrompt(settings.prRule),
         isolation: 'worktree',
         background: true,
@@ -3235,7 +3326,7 @@ export const register: Register = (on, options) => {
     }
     if (e.args.trim() === 'setup') {
       await $.ui.open(OPEN)
-      void readSetup($)
+      void within('setup', () => readSetup($))
       return { text: 'Reading the repo and its project. What setup would change shows at the top of the issues pane, and nothing changes until you press Apply.' }
     }
     if (e.args.trim() === 'statuses') {
@@ -3246,6 +3337,7 @@ export const register: Register = (on, options) => {
       }
       return { text: `Which Status is which for ${project.title} shows at the top of the issues pane. Save keeps it here, and nothing changes on GitHub.` }
     }
+    if (e.args.trim() === 'stats') return { text: statsText(stats, await nowOf($)) }
     if (e.args.trim() === 'help') {
       const project = (await read($, board))?.project
       const tabs = filtersFor(project)
@@ -3376,34 +3468,38 @@ export const register: Register = (on, options) => {
     nextStep = null
     // The session started over and no SessionStart hook has run since: the first prompt fills the board again.
     if (restarted) void begin($)
-    const added: string[] = []
+    // Each line the board adds, with where it came from for /issues stats.
+    const lines: [ContextSource, string][] = []
+    const add = (source: ContextSource, ...texts: string[]) => lines.push(...texts.map((text): [ContextSource, string] => [source, text]))
     let copied: [number, string][] = []
     // The person sends the start message Edit first filled: while it still names the issue, Start's steps run.
     const starting = await draftedStart($, e)
-    if (starting?.listed) added.push(`Each open acceptance box of #${starting.issue.number} is a task in your task list too: mark it completed when it is done.`)
+    if (starting?.listed) add('task note', `Each open acceptance box of #${starting.issue.number} is a task in your task list too: mark it completed when it is done.`)
     try {
       // What the board moved on its own since the last prompt.
       if (moved.length > 0 && e.origin.kind !== 'task-notification') {
-        added.push(...moved)
+        add('moved lines', ...moved)
         moved = []
       }
       const now = await read($, board)
       if (now) {
         const note = await newsFor($, now)
-        if (note) added.push(note)
+        if (note) add('news', note)
         // A background task's notice quotes its command, which may name an issue nobody asked about.
         if (e.origin.kind !== 'task-notification' && settings.issueCopies) {
           const copies = copiesFor(now, mentionsOf(e.text, MENTIONS_READ), sentCopies, Date.now())
-          added.push(...copies.context)
+          add('issue copies', ...copies.context)
           copied = copies.keys
         }
       }
     } catch (cause) {
       $.ui.log(`issue-board: couldn't add the board to the prompt: ${messageOf(cause)}`, { to: 'debug' })
     }
+    const added = lines.map(([, text]) => text)
     const entered = await next(added.length > 0 ? { ...e, context: [...(e.context ?? []), ...added] } : e)
-    // A dropped prompt never reached Claude, so its copies count as unsent.
+    // A dropped prompt never reached Claude, so its copies count as unsent, and nothing it carried counts as context.
     if (entered.drop === undefined) for (const [number, key] of copied) sentCopies.set(number, key)
+    if (entered.drop === undefined) for (const [source, text] of lines) countText(source, text)
     if (starting && entered.drop === undefined) {
       $.ui.toast(`Sent #${starting.issue.number} to Claude`)
       await claim($, starting.issue)
@@ -3461,169 +3557,179 @@ export const register: Register = (on, options) => {
   // The engine's guess at the next prompt gives way to the board's next step for the issue Claude is on.
   on('prompt.suggest', async ($, e, next) => (e.origin.kind === 'suggestion' && nextStep ? next({ ...e, text: nextStep }) : next(e)))
 
-  on('tool.call', { tool: ISSUES_TOOL }, async ($, e) => {
-    const input = e as unknown as {
-      number?: number
-      filter?: BuiltInFilter
-      area?: string
-      query?: string
-      state?: string
-      search?: string
-      label?: string
-      assignee?: string
-      milestone?: string
-      milestones?: boolean
-      status?: string
-      since?: string
-    }
-    if (input.status?.trim()) {
+  on('tool.call', { tool: ISSUES_TOOL }, async ($, e) =>
+    asTool(async () => {
+      const input = e as unknown as {
+        number?: number
+        filter?: BuiltInFilter
+        area?: string
+        query?: string
+        state?: string
+        search?: string
+        label?: string
+        assignee?: string
+        milestone?: string
+        milestones?: boolean
+        status?: string
+        since?: string
+      }
+      if (input.status?.trim()) {
+        const now = await read($, board)
+        if (!now?.project) return { result: "The board reads no project for this repo, so it can't list issues by Status." }
+        return { result: await readProject($, now.project, input.status.trim(), input.since?.trim()) }
+      }
+      if (input.milestones) {
+        const listed = (await read($, board))?.milestones ?? []
+        const today = new Date(await nowOf($)).toISOString().slice(0, 10)
+        return { result: listed.length > 0 ? listed.map(one => milestoneLine(one, today)).join('\n') : 'The repo has no open milestones.' }
+      }
+      // Closed issues, and words searched in every issue, are GitHub's search to answer: the board holds open issues only.
+      if (input.number === undefined && (input.state === 'closed' || input.state === 'all' || input.search?.trim())) {
+        const repo = (await read($, board))?.repo ?? repoInfo?.nameWithOwner
+        if (!repo) return { deny: "The issue board hasn't read GitHub yet; refresh it and try again." }
+        return { result: await searchIssues($, repo, input) }
+      }
+      if ((await read($, board)) === null) await refresh($)
       const now = await read($, board)
-      if (!now?.project) return { result: "The board reads no project for this repo, so it can't list issues by Status." }
-      return { result: await readProject($, now.project, input.status.trim(), input.since?.trim()) }
-    }
-    if (input.milestones) {
-      const listed = (await read($, board))?.milestones ?? []
-      const today = new Date(await nowOf($)).toISOString().slice(0, 10)
-      return { result: listed.length > 0 ? listed.map(one => milestoneLine(one, today)).join('\n') : 'The repo has no open milestones.' }
-    }
-    // Closed issues, and words searched in every issue, are GitHub's search to answer: the board holds open issues only.
-    if (input.number === undefined && (input.state === 'closed' || input.state === 'all' || input.search?.trim())) {
-      const repo = (await read($, board))?.repo ?? repoInfo?.nameWithOwner
-      if (!repo) return { deny: "The issue board hasn't read GitHub yet; refresh it and try again." }
-      return { result: await searchIssues($, repo, input) }
-    }
-    if ((await read($, board)) === null) await refresh($)
-    const now = await read($, board)
-    if (!now) {
-      const failure = (await read($, error)) ?? 'unknown error'
-      const problems = await checkAccess($, failure)
-      return { deny: `The issue board couldn't read GitHub: ${failure}${problems.length > 0 ? `\n${problemsText(problems)}` : ''}` }
-    }
-
-    if (typeof input.number === 'number') {
-      const issue = now.issues.find(one => one.number === input.number)
-      if (issue) {
-        const set = Object.entries(await readValues($, issue)).filter(([name]) => !/^(status|priority)$/i.test(name))
-        const fields = set.length > 0 ? `\nFields: ${set.map(([name, value]) => `${name} ${value}`).join(', ')}` : ''
-        return { result: `${issueText(issue)}${fields}\n${await latestComments($, now.repo, issue.number, issue.comments)}` }
+      if (!now) {
+        const failure = (await read($, error)) ?? 'unknown error'
+        const problems = await checkAccess($, failure)
+        return { deny: `The issue board couldn't read GitHub: ${failure}${problems.length > 0 ? `\n${problemsText(problems)}` : ''}` }
       }
-      const pr = now.prs.find(one => one.number === input.number)
-      if (pr) return { result: `${prText(pr)}\nRead it in full with \`gh pr view ${pr.number}\`.` }
-      return { result: await readClosed($, now.repo, input.number) }
-    }
-    const chosen = input.filter ?? 'all'
-    const who = await read($, viewer)
-    const area = input.area?.replace(/^area:/, '')
-    const project = now.project ?? null
-    const kept = groupsOf(
-      now.issues.filter(
-        issue =>
-          matches(chosen, issue, who, project) &&
-          (!area || areaOf(issue) === area) &&
-          (!input.query || searched(input.query, issue)) &&
-          (!input.label || issue.labels.some(label => label.name.toLowerCase() === input.label?.toLowerCase())) &&
-          (!input.assignee || issue.assignees.includes(input.assignee.replace(/^@/, ''))) &&
-          (!input.milestone || issue.milestone?.toLowerCase() === input.milestone.toLowerCase()),
-      ),
-      project ? 'status' : 'area',
-      project,
-    ).flatMap(group => group.issues)
-    const label =
-      project && (chosen === 'active' || chosen === 'future')
-        ? `${chosen === 'active' ? 'now' : 'later'}: ${nowNames(project)[chosen === 'active' ? 'now' : 'later'].join(' and ') || 'none'}`
-        : chosen === 'inbox'
-          ? `inbox: Status ${roleOf(project, 'inbox')?.name ?? 'Inbox'} or none`
-          : chosen
-    return { result: boardText(now, kept, label, Date.now()) }
-  }).catch(($, _e, next) => toolFailed($, next, 'issues'))
 
-  on('tool.call', { tool: TICK_TOOL }, async ($, e, next) => {
-    const input = e as unknown as { number?: unknown; boxes?: unknown; done?: unknown }
-    const { number, boxes } = input
-    if (typeof number !== 'number' || !Array.isArray(boxes) || boxes.length === 0 || !boxes.every(box => Number.isInteger(box))) {
-      return { deny: 'Give the issue number and the boxes to tick, counted from 1.' }
-    }
-    return askThenAct(e, next, async () => {
-      try {
-        const copy = await copyOf($)
-        const { text, before } = await tick($, number, boxes as number[], input.done !== false)
-        // Only the boxes Claude changed: the body was read fresh, so what others changed meanwhile stays news.
-        if ((await read($, working))?.number === number) await absorb($, copy && { ...copy, checks: before })
-        return { result: text }
-      } catch (cause) {
-        const message = messageOf(cause)
-        const problems = ACCESS_ERROR.test(message) ? await checkAccess($, message) : []
-        return { deny: `Couldn't tick boxes on #${number}: ${message}${problems.length > 0 ? `\n${problemsText(problems)}` : ''}` }
-      }
-    })
-  }).catch(($, _e, next) => toolFailed($, next, 'tick'))
-
-  on('tool.call', { tool: UPDATE_TOOL }, async ($, e, next) => {
-    const changes = changesOf(e)
-    if (!changes) return { deny: 'Give the issue number, and what to change on it.' }
-    // A lock the board doesn't know is refused, not dropped without a word.
-    if ((e as { lock?: unknown }).lock !== undefined && changes.lock === undefined) {
-      return { deny: 'lock takes true, false, or one of GitHub\'s reasons: off_topic, resolved, spam, too_heated.' }
-    }
-    const { number, ...rest } = changes
-    const starting = (e as { start?: unknown }).start === true
-    return askThenAct(e, next, async () => {
-      try {
-        const started = starting ? await startHere($, number) : null
-        if (started && Object.keys(rest).length === 0) return { result: started }
-        const copy = (await read($, working))?.number === number ? await copyOf($) : null
-        const result = await applyChanges($, number, rest)
-        // What the tool changed that Claude is told of: a comment, and closing or reopening.
-        if (copy) {
-          const closed = rest.close ? true : rest.reopen ? false : copy.closed
-          await absorb($, copy, { ...copy, comments: copy.comments === null ? null : copy.comments + (rest.comment ? 1 : 0), closed })
+      if (typeof input.number === 'number') {
+        const issue = now.issues.find(one => one.number === input.number)
+        if (issue) {
+          const set = Object.entries(await readValues($, issue)).filter(([name]) => !/^(status|priority)$/i.test(name))
+          const fields = set.length > 0 ? `\nFields: ${set.map(([name, value]) => `${name} ${value}`).join(', ')}` : ''
+          return { result: `${issueText(issue)}${fields}\n${await latestComments($, now.repo, issue.number, issue.comments)}` }
         }
-        return { result: started ? `${started}\n${result}` : result }
-      } catch (cause) {
-        const message = messageOf(cause)
-        const problems = ACCESS_ERROR.test(message) ? await checkAccess($, message) : []
-        return { deny: `Couldn't change #${number}: ${message}${problems.length > 0 ? `\n${problemsText(problems)}` : ''}` }
+        const pr = now.prs.find(one => one.number === input.number)
+        if (pr) return { result: `${prText(pr)}\nRead it in full with \`gh pr view ${pr.number}\`.` }
+        return { result: await readClosed($, now.repo, input.number) }
       }
-    })
-  }).catch(($, _e, next) => toolFailed($, next, 'issue_update'))
+      const chosen = input.filter ?? 'all'
+      const who = await read($, viewer)
+      const area = input.area?.replace(/^area:/, '')
+      const project = now.project ?? null
+      const kept = groupsOf(
+        now.issues.filter(
+          issue =>
+            matches(chosen, issue, who, project) &&
+            (!area || areaOf(issue) === area) &&
+            (!input.query || searched(input.query, issue)) &&
+            (!input.label || issue.labels.some(label => label.name.toLowerCase() === input.label?.toLowerCase())) &&
+            (!input.assignee || issue.assignees.includes(input.assignee.replace(/^@/, ''))) &&
+            (!input.milestone || issue.milestone?.toLowerCase() === input.milestone.toLowerCase()),
+        ),
+        project ? 'status' : 'area',
+        project,
+      ).flatMap(group => group.issues)
+      const label =
+        project && (chosen === 'active' || chosen === 'future')
+          ? `${chosen === 'active' ? 'now' : 'later'}: ${nowNames(project)[chosen === 'active' ? 'now' : 'later'].join(' and ') || 'none'}`
+          : chosen === 'inbox'
+            ? `inbox: Status ${roleOf(project, 'inbox')?.name ?? 'Inbox'} or none`
+            : chosen
+      return { result: boardText(now, kept, label, Date.now()) }
+    }),
+  ).catch(($, _e, next) => toolFailed($, next, 'issues'))
+
+  on('tool.call', { tool: TICK_TOOL }, async ($, e, next) =>
+    asTool(async () => {
+      const input = e as unknown as { number?: unknown; boxes?: unknown; done?: unknown }
+      const { number, boxes } = input
+      if (typeof number !== 'number' || !Array.isArray(boxes) || boxes.length === 0 || !boxes.every(box => Number.isInteger(box))) {
+        return { deny: 'Give the issue number and the boxes to tick, counted from 1.' }
+      }
+      return askThenAct(e, next, async () => {
+        try {
+          const copy = await copyOf($)
+          const { text, before } = await tick($, number, boxes as number[], input.done !== false)
+          // Only the boxes Claude changed: the body was read fresh, so what others changed meanwhile stays news.
+          if ((await read($, working))?.number === number) await absorb($, copy && { ...copy, checks: before })
+          return { result: text }
+        } catch (cause) {
+          const message = messageOf(cause)
+          const problems = ACCESS_ERROR.test(message) ? await checkAccess($, message) : []
+          return { deny: `Couldn't tick boxes on #${number}: ${message}${problems.length > 0 ? `\n${problemsText(problems)}` : ''}` }
+        }
+      })
+    }),
+  ).catch(($, _e, next) => toolFailed($, next, 'tick'))
+
+  on('tool.call', { tool: UPDATE_TOOL }, async ($, e, next) =>
+    asTool(async () => {
+      const changes = changesOf(e)
+      if (!changes) return { deny: 'Give the issue number, and what to change on it.' }
+      // A lock the board doesn't know is refused, not dropped without a word.
+      if ((e as { lock?: unknown }).lock !== undefined && changes.lock === undefined) {
+        return { deny: 'lock takes true, false, or one of GitHub\'s reasons: off_topic, resolved, spam, too_heated.' }
+      }
+      const { number, ...rest } = changes
+      const starting = (e as { start?: unknown }).start === true
+      return askThenAct(e, next, async () => {
+        try {
+          const started = starting ? await startHere($, number) : null
+          if (started && Object.keys(rest).length === 0) return { result: started }
+          const copy = (await read($, working))?.number === number ? await copyOf($) : null
+          const result = await applyChanges($, number, rest)
+          // What the tool changed that Claude is told of: a comment, and closing or reopening.
+          if (copy) {
+            const closed = rest.close ? true : rest.reopen ? false : copy.closed
+            await absorb($, copy, { ...copy, comments: copy.comments === null ? null : copy.comments + (rest.comment ? 1 : 0), closed })
+          }
+          return { result: started ? `${started}\n${result}` : result }
+        } catch (cause) {
+          const message = messageOf(cause)
+          const problems = ACCESS_ERROR.test(message) ? await checkAccess($, message) : []
+          return { deny: `Couldn't change #${number}: ${message}${problems.length > 0 ? `\n${problemsText(problems)}` : ''}` }
+        }
+      })
+    }),
+  ).catch(($, _e, next) => toolFailed($, next, 'issue_update'))
 
   // Claude filing an issue. Claude Code asks first, as for any tool that changes something.
-  on('tool.call', { tool: CREATE_TOOL }, async ($, e, next) => {
-    const spec = newIssueOf(e)
-    if (typeof spec === 'string') return { deny: spec }
-    return askThenAct(e, next, async () => {
-      try {
-        return { result: await fileIssue($, spec) }
-      } catch (cause) {
-        const message = messageOf(cause)
-        const problems = ACCESS_ERROR.test(message) ? await checkAccess($, message) : []
-        return { deny: `Couldn't file the issue: ${message}${problems.length > 0 ? `\n${problemsText(problems)}` : ''}` }
-      }
-    })
-  }).catch(($, _e, next) => toolFailed($, next, 'issue_create'))
+  on('tool.call', { tool: CREATE_TOOL }, async ($, e, next) =>
+    asTool(async () => {
+      const spec = newIssueOf(e)
+      if (typeof spec === 'string') return { deny: spec }
+      return askThenAct(e, next, async () => {
+        try {
+          return { result: await fileIssue($, spec) }
+        } catch (cause) {
+          const message = messageOf(cause)
+          const problems = ACCESS_ERROR.test(message) ? await checkAccess($, message) : []
+          return { deny: `Couldn't file the issue: ${message}${problems.length > 0 ? `\n${problemsText(problems)}` : ''}` }
+        }
+      })
+    }),
+  ).catch(($, _e, next) => toolFailed($, next, 'issue_create'))
 
   // Claude reading or posting the project's status update. Reading answers at once; posting asks, then acts.
-  on('tool.call', { tool: STATUS_TOOL }, async ($, e, next) => {
-    const ask = e as unknown as { status?: unknown; note?: unknown; start?: unknown; target?: unknown }
-    const project = (await read($, board))?.project
-    if (!project) return { deny: 'The board reads no project for this repo.' }
-    if (typeof ask.status !== 'string' || !ask.status.trim()) {
-      const latest = project.update
-      return { result: latest ? `${project.title}: ${updateLine(latest, await nowOf($))}${latest.body.includes('\n') ? `\n${latest.body}` : ''}` : `${project.title} has no status update yet.` }
-    }
-    const text = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : undefined)
-    const status = ask.status
-    return askThenAct(e, next, async () => {
-      try {
-        const note = text(ask.note)
-        const start = text(ask.start)
-        const target = text(ask.target)
-        return { result: await postStatus($, project, { status, ...(note ? { note } : {}), ...(start ? { start } : {}), ...(target ? { target } : {}) }) }
-      } catch (cause) {
-        return { deny: `Couldn't post the status update: ${messageOf(cause)}` }
+  on('tool.call', { tool: STATUS_TOOL }, async ($, e, next) =>
+    asTool(async () => {
+      const ask = e as unknown as { status?: unknown; note?: unknown; start?: unknown; target?: unknown }
+      const project = (await read($, board))?.project
+      if (!project) return { deny: 'The board reads no project for this repo.' }
+      if (typeof ask.status !== 'string' || !ask.status.trim()) {
+        const latest = project.update
+        return { result: latest ? `${project.title}: ${updateLine(latest, await nowOf($))}${latest.body.includes('\n') ? `\n${latest.body}` : ''}` : `${project.title} has no status update yet.` }
       }
-    })
-  }).catch(($, _e, next) => toolFailed($, next, 'project_status'))
+      const text = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : undefined)
+      const status = ask.status
+      return askThenAct(e, next, async () => {
+        try {
+          const note = text(ask.note)
+          const start = text(ask.start)
+          const target = text(ask.target)
+          return { result: await postStatus($, project, { status, ...(note ? { note } : {}), ...(start ? { start } : {}), ...(target ? { target } : {}) }) }
+        } catch (cause) {
+          return { deny: `Couldn't post the status update: ${messageOf(cause)}` }
+        }
+      })
+    }),
+  ).catch(($, _e, next) => toolFailed($, next, 'project_status'))
 
   // Reading the status update changes nothing, so it needs no permission prompt; posting one asks.
   on('tool.check', { tool: STATUS_TOOL }, async ($, e, next) => {
@@ -3634,26 +3740,28 @@ export const register: Register = (on, options) => {
 
   // Claude archiving project items: the first call lists them and answers at once; the second, with confirm, asks and
   // then archives them.
-  on('tool.call', { tool: ARCHIVE_TOOL }, async ($, e, next) => {
-    const ask = e as unknown as { number?: unknown; doneBefore?: unknown; confirm?: unknown }
-    const project = (await read($, board))?.project
-    if (!project) return { deny: "The board reads no project for this repo, so there's nothing to archive." }
-    const confirm = ask.confirm === true
-    const archive = async () => {
-      try {
-        return {
-          result: await archiveItems($, project, {
-            ...(typeof ask.number === 'number' ? { number: ask.number } : {}),
-            ...(typeof ask.doneBefore === 'string' && ask.doneBefore.trim() ? { doneBefore: ask.doneBefore.trim() } : {}),
-            confirm,
-          }),
+  on('tool.call', { tool: ARCHIVE_TOOL }, async ($, e, next) =>
+    asTool(async () => {
+      const ask = e as unknown as { number?: unknown; doneBefore?: unknown; confirm?: unknown }
+      const project = (await read($, board))?.project
+      if (!project) return { deny: "The board reads no project for this repo, so there's nothing to archive." }
+      const confirm = ask.confirm === true
+      const archive = async () => {
+        try {
+          return {
+            result: await archiveItems($, project, {
+              ...(typeof ask.number === 'number' ? { number: ask.number } : {}),
+              ...(typeof ask.doneBefore === 'string' && ask.doneBefore.trim() ? { doneBefore: ask.doneBefore.trim() } : {}),
+              confirm,
+            }),
+          }
+        } catch (cause) {
+          return { deny: `Couldn't archive: ${messageOf(cause)}` }
         }
-      } catch (cause) {
-        return { deny: `Couldn't archive: ${messageOf(cause)}` }
       }
-    }
-    return confirm ? askThenAct(e, next, archive) : archive()
-  }).catch(($, _e, next) => toolFailed($, next, 'project_archive'))
+      return confirm ? askThenAct(e, next, archive) : archive()
+    }),
+  ).catch(($, _e, next) => toolFailed($, next, 'project_archive'))
 
   // Listing what an archive would take changes nothing, so it needs no permission prompt; the archive itself asks. A rule
   // that denies still stands, as does an organization's ceiling.
@@ -3664,22 +3772,24 @@ export const register: Register = (on, options) => {
 
   // Claude letting the board write to a project, or releasing it, when the person asked. It asks, then acts, so the
   // check below and its prompt run first, and a no changes nothing.
-  on('tool.call', { tool: ADOPT_TOOL }, async ($, e, next) => {
-    const plan = await adoptPlan($, e)
-    if ('refusal' in plan) return { deny: plan.refusal }
-    return askThenAct(e, next, async () => {
-      try {
-        if ('release' in plan) {
-          await releaseNow($, plan.release)
-          return { result: `Released ${plan.release.title}: the board only reads it now.` }
+  on('tool.call', { tool: ADOPT_TOOL }, async ($, e, next) =>
+    asTool(async () => {
+      const plan = await adoptPlan($, e)
+      if ('refusal' in plan) return { deny: plan.refusal }
+      return askThenAct(e, next, async () => {
+        try {
+          if ('release' in plan) {
+            await releaseNow($, plan.release)
+            return { result: `Released ${plan.release.title}: the board only reads it now.` }
+          }
+          await adoptProject($, plan.adopt)
+          return { result: `The board may write to ${plan.adopt.title} now. Release it with project_adopt and release: true, or in /issues setup.` }
+        } catch (cause) {
+          return { deny: `Couldn't save that: ${messageOf(cause)}` }
         }
-        await adoptProject($, plan.adopt)
-        return { result: `The board may write to ${plan.adopt.title} now. Release it with project_adopt and release: true, or in /issues setup.` }
-      } catch (cause) {
-        return { deny: `Couldn't save that: ${messageOf(cause)}` }
-      }
-    })
-  }).catch(($, _e, next) => toolFailed($, next, 'project_adopt'))
+      })
+    }),
+  ).catch(($, _e, next) => toolFailed($, next, 'project_adopt'))
 
   // Adopting or releasing a project always asks the person, whatever their rules allow, with the pane's warning in the
   // prompt: a hook's ask outranks an allow rule. A rule that denies still stands. Where nobody would see the prompt, it
@@ -3704,31 +3814,33 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => fallBack($, e, next, 'classic.UserPromptSubmit'))
 
   // Claude making or changing a milestone. Claude Code asks first, as for any tool that changes something.
-  on('tool.call', { tool: MILESTONE_TOOL }, async ($, e, next) => {
-    const ask = e as unknown as { title?: unknown; newTitle?: unknown; due?: unknown; description?: unknown; close?: unknown; reopen?: unknown }
-    const text = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : undefined)
-    const title = text(ask.title)
-    if (!title) return { deny: 'Give the milestone a title.' }
-    const repo = (await read($, board))?.repo
-    if (!repo) return { deny: "The issue board hasn't read GitHub yet; refresh it and try again." }
-    return askThenAct(e, next, async () => {
-      try {
-        const newTitle = text(ask.newTitle)
-        return {
-          result: await saveMilestone($, repo, {
-            title,
-            ...(newTitle ? { newTitle } : {}),
-            ...(typeof ask.due === 'string' ? { due: ask.due.trim() } : {}),
-            ...(typeof ask.description === 'string' ? { description: ask.description } : {}),
-            ...(ask.close === true ? { close: true } : {}),
-            ...(ask.reopen === true ? { reopen: true } : {}),
-          }),
+  on('tool.call', { tool: MILESTONE_TOOL }, async ($, e, next) =>
+    asTool(async () => {
+      const ask = e as unknown as { title?: unknown; newTitle?: unknown; due?: unknown; description?: unknown; close?: unknown; reopen?: unknown }
+      const text = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : undefined)
+      const title = text(ask.title)
+      if (!title) return { deny: 'Give the milestone a title.' }
+      const repo = (await read($, board))?.repo
+      if (!repo) return { deny: "The issue board hasn't read GitHub yet; refresh it and try again." }
+      return askThenAct(e, next, async () => {
+        try {
+          const newTitle = text(ask.newTitle)
+          return {
+            result: await saveMilestone($, repo, {
+              title,
+              ...(newTitle ? { newTitle } : {}),
+              ...(typeof ask.due === 'string' ? { due: ask.due.trim() } : {}),
+              ...(typeof ask.description === 'string' ? { description: ask.description } : {}),
+              ...(ask.close === true ? { close: true } : {}),
+              ...(ask.reopen === true ? { reopen: true } : {}),
+            }),
+          }
+        } catch (cause) {
+          return { deny: `Couldn't change the milestone: ${messageOf(cause)}` }
         }
-      } catch (cause) {
-        return { deny: `Couldn't change the milestone: ${messageOf(cause)}` }
-      }
-    })
-  }).catch(($, _e, next) => toolFailed($, next, 'milestone'))
+      })
+    }),
+  ).catch(($, _e, next) => toolFailed($, next, 'milestone'))
 
   // Moving the Status of the issue the person started is part of working on it, so it doesn't ask, and nor does starting
   // on an issue. Any other change
@@ -3791,6 +3903,8 @@ export const register: Register = (on, options) => {
     const mine = !!now?.sessionId && now.sessionId === (await $.session.id().catch(() => undefined))
     const doing = now && mine ? [{ id: 'issue-board:working', text: workingSection(now, settings.prRule), scope: 'session' as const }] : []
     if (orchestrating.length === 0 && doing.length === 0) return composed
+    for (const section of orchestrating) countSection(section.id, section.text, 'orchestrator note')
+    for (const section of doing) countSection(section.id, section.text, 'working note')
 
     return { sections: [...composed.sections, ...orchestrating, ...doing] }
   })
@@ -3855,7 +3969,7 @@ export const register: Register = (on, options) => {
         const listed = await makeTasks($, issue)
         // The board's own prompt.submit hook doesn't see a prompt the board submits, so this message goes without the
         // issue's copy and lists the boxes itself.
-        await $.prompt.submit({ text: startPrompt(issue, listed > 0), asUser: true })
+        await submit($, 'start prompts', { text: startPrompt(issue, listed > 0), asUser: true })
         $.ui.toast(`Sent #${issue.number} to Claude`)
         await claim($, issue)
         return true
@@ -3873,7 +3987,7 @@ export const register: Register = (on, options) => {
     }
 
     const closeOut = async (pr: PullRequest) => {
-      await $.prompt.submit({ text: closeOutPrompt(pr), asUser: true })
+      await submit($, 'other prompts', { text: closeOutPrompt(pr), asUser: true })
       $.ui.toast(`Sent PR #${pr.number} to Claude to finish and merge`)
     }
 
@@ -3885,7 +3999,7 @@ export const register: Register = (on, options) => {
         $.ui.toast('No pull requests are open now, so there is nothing to merge.')
         return
       }
-      await $.prompt.submit({ text: closeOutAllPrompt(prs), asUser: true })
+      await submit($, 'other prompts', { text: closeOutAllPrompt(prs), asUser: true })
       $.ui.toast(`Sent ${prs.length} ${prs.length === 1 ? 'PR' : 'PRs'} to Claude to finish and merge`)
     }
     const arm = (to: boolean) => () => void update($, confirming, () => to)
@@ -4194,7 +4308,7 @@ export const register: Register = (on, options) => {
                 <Button
                   key="setup-template"
                   dimColor
-                  onPress={() => void $.prompt.submit({ text: templatePrompt(facts.repo.name), asUser: true }).then(() => $.ui.toast('Asked Claude for an issue template, as a pull request to review'))}
+                  onPress={() => void submit($, 'other prompts', { text: templatePrompt(facts.repo.name), asUser: true }).then(() => $.ui.toast('Asked Claude for an issue template, as a pull request to review'))}
                 >
                   Have Claude add one
                 </Button>
@@ -4202,7 +4316,7 @@ export const register: Register = (on, options) => {
             )}
             <Box flexDirection="row" gap={1} marginTop={1}>
               {planned.phase === 'ready' && planned.steps.length > 0 && (
-                <Button key="setup-apply" variant="primary" onPress={() => void applySetup($)}>
+                <Button key="setup-apply" variant="primary" onPress={() => void within('setup', () => applySetup($))}>
                   Apply
                 </Button>
               )}
@@ -5149,7 +5263,7 @@ export const register: Register = (on, options) => {
               />
             )}
             {last && (
-              <Button key={`ask-${n}`} dimColor onPress={() => void $.prompt.submit({ text: answerPrompt(issue, last), asUser: true }).then(() => $.ui.toast(`Asked Claude to answer @${last.author} on #${n}`))}>
+              <Button key={`ask-${n}`} dimColor onPress={() => void submit($, 'other prompts', { text: answerPrompt(issue, last), asUser: true }).then(() => $.ui.toast(`Asked Claude to answer @${last.author} on #${n}`))}>
                 Ask Claude to answer
               </Button>
             )}
@@ -5634,7 +5748,7 @@ export const register: Register = (on, options) => {
       await save($)
     }
     // A button that hands Claude a pull request: into the prompt box while Claude is busy, sent otherwise.
-    const hand = (text: string) => (e.props.isWorking ? $.prompt.fill({ text }) : $.prompt.submit({ text, asUser: true }))
+    const hand = (text: string) => (e.props.isWorking ? $.prompt.fill({ text }) : submit($, 'other prompts', { text, asUser: true }))
 
     const line = (alert: Alert) => {
       switch (alert.kind) {
