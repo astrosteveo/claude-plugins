@@ -613,10 +613,11 @@ What stays the same without an adopted project:
   project has them.
 - Changes to issues themselves: Start still tracks the issue and assigns it
   to you, boxes still tick, an epic still closes when its last sub-issue
-  does, and issue_create still files the issue.
+  does, issue_create still files the issue, and triage's Accept still
+  changes the `area:` label.
 - What doesn't happen: Start, triage's Accept and the moves a read makes
   leave the project's Status and Priority alone, and new issues aren't added
-  as items. A tool asked to change the project, such as issue_update with a
+  as items. Accept says it skipped them, and the issue stays in the Inbox. A tool asked to change the project, such as issue_update with a
   Status or project_status posting an update, is refused, and the refusal
   says why and how to adopt the project. `/issues check` and `/issues help`
   list it under Off.
@@ -658,6 +659,7 @@ In Claude's prompts and the prompt box:
 | While Claude is on an issue you started, a note in the system prompt names it and says how to tick its boxes. In `background` start mode it also tells Claude to work as an orchestrator. | Working note in the system prompt (`workingNote`) | on |
 | The note tells Claude how to name the issue in a pull request: `closes-when-ticked` (`Closes #N` only when every box is ticked, `Refs #N` otherwise), `always-closes`, or `none`. Start in background follows it too. | Working note's pull request rule (`prRule`) | `none` |
 | A prompt that names `#123` carries the board's copy of it, unseen. | Copies of issues a prompt names (`issueCopies`) | on |
+| Typing `#` in the prompt box offers the board's open issues and pull requests, by number or title. | Suggest issues after # (`hashSuggestions`) | on |
 | After Claude's turn, the prompt box suggests the board's next step in place of Claude Code's own. | Suggest the next step (`suggestNextStep`) | off |
 | Checking out a branch named for an issue makes it the one Claude is on. | Follow the branch (`followBranch`) | off |
 
