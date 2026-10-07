@@ -4,16 +4,16 @@ import { expect, mock, test } from 'claude-code/testing'
 import { parseIssues } from '../hooks/parse'
 import { PLAN_LIMIT, alreadyTrue, cardParts, changeText, issueOf, kindsText, planAsk, planOf, rowText, rowsOf, sizeText, viewDoneText, viewNoteOf } from '../hooks/plan'
 import type { PlanChange, Project } from '../types'
-import { PRIORITIES, STATUSES, graphPage, isIssuesQuery, optionId, graphArgs, isItemWrite } from './graph'
-import { adoptedStore } from './github'
-import type { RawView } from './graph'
 import { permissions } from './engine'
+import { adoptedStore, fail, fakeGitHub, json, ok, session } from './github'
+import type { Route } from './github'
+import { PRIORITIES, STATUSES, graphArgs, graphPage, isIssuesQuery, isItemWrite, optionId } from './graph'
+import type { RawView } from './graph'
+import { REFRESH, REPO, band, engineBand, pane } from './ui'
 
 const TOOL = 'mcp__issue-board__project_plan'
-const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 120, placement: 'dock', scroll: { offset: 0, bodyRows: 80 }, view: {} } } as const
-const BAND = { component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120, scroll: { offset: 0, bodyRows: 10 }, view: {} } } as const
-const REFRESH = { command: 'issues', args: 'refresh', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
-const REPO = { root: '/work/void-sector', remote: null, internal: false, name: null }
+const PANE = pane(120, 80)
+const BAND = band(120)
 
 const raw = (number: number, title: string, labels: string[] = []) => ({
   number,
@@ -57,19 +57,15 @@ const world = (on: On, adopted = true) => {
     uses: { wontfix: { open: 3, closed: 2 } } as Record<string, { open: number; closed: number }>,
     failSearch: false,
   }
-  on('process.run', async (_$, e) => {
-    const argv = [...e.argv]
-    const answer = (stdout: string, exitCode = 0, stderr = '') => ({ value: { exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false } })
-    if (argv[0] === 'git') return answer('main\n')
-    if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true }))
+  const route: Route = ({ argv, stdin }) => {
     if (isIssuesQuery(argv)) {
       state.reads += 1
-      return answer(graphPage(state.issues.map(one => ({ ...one, ...state.planned[one.number] })), argv, true, [], { views: state.views }, state.labels))
+      return ok(graphPage(state.issues.map(one => ({ ...one, ...state.planned[one.number] })), argv, true, [], { views: state.views }, state.labels))
     }
-    if (argv[1] === 'api' && argv[2] === 'graphql' && argv.includes('--input') && !isItemWrite(argv, e.init?.stdin)) {
-      const asked = JSON.parse(e.init?.stdin ?? '{}') as { query: string; variables: Record<string, unknown> }
+    if (argv[1] === 'api' && argv[2] === 'graphql' && argv.includes('--input') && !isItemWrite(argv, stdin)) {
+      const asked = JSON.parse(stdin ?? '{}') as { query: string; variables: Record<string, unknown> }
       const view = viewWrite(state, asked)
-      if (view) return answer(JSON.stringify(view))
+      if (view) return json(view)
       if (asked.query.includes('updateProjectV2ItemPosition')) {
         state.writes.push(`move ${String(asked.variables.item)} after ${String(asked.variables.after)}`)
         // The project's order as GitHub keeps it, so the next read has the move.
@@ -80,23 +76,23 @@ const world = (on: On, adopted = true) => {
         state.issues = state.issues.map(one => ({ ...one, position: order.indexOf(one.number) }))
       }
       else if (/^\s*mutation\b/.test(asked.query)) state.writes.push(`${String(asked.variables.item)} ${String(asked.variables.field)} ${JSON.stringify(asked.variables.value)}`)
-      if (asked.query.includes('fieldValues')) return answer(JSON.stringify({ data: { node: { fieldValues: { nodes: [] } } } }))
-      return answer(JSON.stringify({ data: {} }))
+      if (asked.query.includes('fieldValues')) return json({ data: { node: { fieldValues: { nodes: [] } } } })
+      return json({ data: {} })
     }
     if (argv[1] === 'api' && argv[2] === 'graphql') {
-      const args = graphArgs(argv, e.init?.stdin)
-      if (args.query?.includes('reviewThreads')) return answer(JSON.stringify({ data: { repository: { pullRequests: { nodes: [] } } } }))
+      const args = graphArgs(argv, stdin)
+      if (args.query?.includes('reviewThreads')) return undefined
       const number = Number(args.item?.slice('PVTI_'.length))
       const name = [...STATUSES, ...PRIORITIES].find(one => optionId(one) === args.option) ?? ''
       state.writes.push(`#${number} ${args.field === 'F_status' ? 'Status' : 'Priority'} ${name}`)
       state.planned[number] = { ...state.planned[number], ...(args.field === 'F_status' ? { status: name } : { priority: name }) }
-      return answer(JSON.stringify({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: args.item } } } }))
+      return json({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: args.item } } } })
     }
     if (argv[1] === 'api' && argv.includes('search/issues')) {
-      if (state.failSearch) return answer('', 1, 'API rate limit exceeded')
+      if (state.failSearch) return fail('API rate limit exceeded')
       const q = argv[argv.indexOf('-f') + 1] ?? ''
       const label = /label:"(.*)"/.exec(q)?.[1] ?? ''
-      return answer(`${state.uses[label]?.[q.includes('state:open') ? 'open' : 'closed'] ?? 0}\n`)
+      return ok(`${state.uses[label]?.[q.includes('state:open') ? 'open' : 'closed'] ?? 0}\n`)
     }
     if (argv[1] === 'api' && argv[2] === '-X' && /\/labels(\/|$)/.test(argv[4] ?? '')) {
       const name = decodeURIComponent(argv[4]?.split('/labels/')[1] ?? '')
@@ -109,28 +105,22 @@ const world = (on: On, adopted = true) => {
         state.labels = state.labels.map(one => (one === name ? renamed : one))
         state.issues = state.issues.map(one => ({ ...one, labels: one.labels.map(label => (label.name === name ? { ...label, name: renamed } : label)) }))
       }
-      return answer('{}')
+      return ok('{}')
     }
-    if (argv[1] === 'api' && argv[2]?.includes('/milestones')) return answer(JSON.stringify([{ number: 3, title: 'Launch', state: 'open', due_on: null, open_issues: 0, closed_issues: 0 }]))
-    if (argv[1] === 'api' && argv[2]?.endsWith('/labels?per_page=100')) return answer(JSON.stringify([{ name: 'bug' }, { name: 'area:ui' }]))
-    if (argv[1] === 'api') return answer('astrosteveo\n')
+    if (argv[1] === 'api' && argv[2]?.includes('/milestones')) return json([{ number: 3, title: 'Launch', state: 'open', due_on: null, open_issues: 0, closed_issues: 0 }])
+    if (argv[1] === 'api' && argv[2]?.endsWith('/labels?per_page=100')) return json([{ name: 'bug' }, { name: 'area:ui' }])
     if (argv[1] === 'issue' && argv[2] === 'edit') {
-      if (Number(argv[3]) === state.failEdit) return answer('', 1, "could not add label: 'wontfix' not found")
+      if (Number(argv[3]) === state.failEdit) return fail("could not add label: 'wontfix' not found")
       state.writes.push(argv.slice(1).join(' '))
-      return answer('')
+      return ok('')
     }
-    return answer('[]')
-  })
+    return undefined
+  }
+  fakeGitHub(on, { routes: [route] })
   const engine = permissions(on)
   // The engine's own band, beneath the board's.
-  on('ui.render', { component: 'AbovePrompt' }, async ($$, e) => {
-    const { Box } = $$.ui.resolve(e)
-    return <Box key="engine" />
-  })
-  on('session.id', async () => ({ value: 'session-1' }))
-  on('session.repo', async () => ({ value: REPO }))
-  on('session.root', async () => ({ value: REPO.root }))
-  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  engineBand(on)
+  session(on)
   on('ui.log', async () => ({ value: undefined }))
   on('ui.toast', async (_$, e) => {
     state.toasts.push(e.text)
