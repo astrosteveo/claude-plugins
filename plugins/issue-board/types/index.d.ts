@@ -32,6 +32,9 @@ export type Issue = {
   type?: string | null
   // An epic's sub-issues in GitHub's order, by number; absent on one that isn't an epic, or on an older board.
   subOrder?: number[]
+  // The item's values in the project fields the project's views filter or group by, beyond Status and Priority, by
+  // field name. Absent when no view needs any.
+  fields?: Record<string, string>
 }
 
 // A single-select field of a project, such as Status, with its options in the project's order.
@@ -68,7 +71,13 @@ export type Project = {
   guessed?: boolean
   // How many of the first Priority options count as Now; absent for the first two.
   nowCount?: number
+  // The project's table and board views in GitHub's order; absent on an older board.
+  views?: ProjectView[]
 }
+
+// A view of the project as GitHub keeps it: its name, its number in the project's URL, its layout, its filter as typed
+// on GitHub (empty for none), and the field it groups by (a board's columns), or null.
+export type ProjectView = { name: string; number: number; layout: 'table' | 'board' | 'roadmap'; filter: string; groupBy: string | null }
 
 // A project status update: how it stands (On track, At risk, Off track, Complete, Inactive), the note, when it was
 // posted, and the dates it gives.
@@ -186,10 +195,14 @@ export type Alert =
 // was raised, in milliseconds.
 export type EpicNote = { key: string; kind: 'verify' | 'reopened' | 'orphaned'; epic: number; number?: number; title: string; text: string; at: number }
 
+// A pane tab: one of the built-in filters, or a project view by its number.
+export type BuiltInFilter = 'active' | 'future' | 'bugs' | 'mine' | 'all' | 'inbox' | 'closed'
+
 // `active` and `future` read Priority when there is a project (Now and Later), and the `future` label when not. `inbox`
 // is the project's issues with Status Inbox or none, to triage; without a project it holds nothing. `closed` lists the
-// issues closed lately, which the board's copy doesn't hold: they are read when the filter is chosen.
-export type Filter = 'active' | 'future' | 'bugs' | 'mine' | 'all' | 'inbox' | 'closed'
+// issues closed lately, which the board's copy doesn't hold: they are read when the filter is chosen. `view:<n>` is the
+// project's view with that number.
+export type Filter = BuiltInFilter | `view:${number}`
 
 // A milestone: release scope. `due` is a date, `YYYY-MM-DD`, or null; `open` and `closed` count its issues.
 export type Milestone = { number: number; title: string; due: string | null; description: string; open: number; closed: number }
@@ -212,7 +225,8 @@ export type Triage = {
 }
 
 // How the pane groups the issues: by the project's Status, by the epic they are sub-issues of, or by `area:` label.
-export type GroupBy = 'status' | 'epic' | 'area'
+// `view` is the field the tab's project view groups by, when that isn't Status.
+export type GroupBy = 'status' | 'epic' | 'area' | 'view'
 
 // Something the board needs that is missing, and how to fix it. `blocks`: the board can't read GitHub until it's fixed.
 // `command` is what Copy fix copies, and `url` the page the fix happens on.

@@ -1,5 +1,5 @@
 import type { ModelTextBlock, ThemeKey } from 'claude-code'
-import type { Alert, Board, BoxTask, Check, Ci, Comment, Draft, EpicNote, Field, Filter, Found, GroupBy, Issue, Known, Label, Milestone, ProjectField, StatusUpdate, Project, PullRequest, Role, RunWatch, Suggestion, Worker, Working } from '../types'
+import type { Alert, Board, BoxTask, BuiltInFilter, Check, Ci, Comment, Draft, EpicNote, Field, Filter, Found, GroupBy, Issue, Known, Label, Milestone, ProjectField, ProjectView, StatusUpdate, Project, PullRequest, Role, RunWatch, Suggestion, Worker, Working } from '../types'
 import { ROLE_NAMES, isLater, isNow, isRole, nowCountOf, priorityRank, roleOf } from './project'
 
 type RawLabel = { name: string; color?: string }
@@ -205,7 +205,7 @@ export const hex = (label: Label): string | undefined => (/^[0-9a-f]{6}$/i.test(
 
 // Whether the issue belongs under the filter; `viewer` is the login Mine means. With a project, Active is Now (P0 and
 // P1) and Future is Later (P2); without one they read the `future` label.
-export const matches = (filter: Filter, issue: Issue, viewer: string | null = null, project: Project | null = null): boolean => {
+export const matches = (filter: BuiltInFilter, issue: Issue, viewer: string | null = null, project: Project | null = null): boolean => {
   switch (filter) {
     case 'active':
       return project ? isNow(project, issue) : !isFuture(issue)
@@ -424,7 +424,8 @@ export type Group = { key: string; title: string; issues: Issue[]; folded: boole
 
 // The issues in groups: by the project's Status in the project's order, by the epic they are sub-issues of, or by
 // `area:` label. Issues that don't fit a group come last, under No status, No epic or other.
-export const groupsOf = (issues: Issue[], by: GroupBy, project: Project | null = null): Group[] => {
+export const groupsOf = (issues: Issue[], by: GroupBy, project: Project | null = null, field: string | null = null): Group[] => {
+  if (by === 'view' && field) return groupsByField(issues, field, project)
   if (by === 'status' && project) {
     const named = (project.status?.options ?? []).map(option => ({
       key: `status:${option.name}`,
@@ -460,6 +461,255 @@ export const groupsOf = (issues: Issue[], by: GroupBy, project: Project | null =
   return byArea(issues).map(([area, list]) => ({ key: `area:${area}`, title: area, issues: project ? sortIssues(list, project) : list, folded: false }))
 }
 
+// The issues grouped by a field a project view groups by, such as Area or Sprint: the field's options in the project's
+// order, then any other value an issue has, then the issues with none.
+const groupsByField = (issues: Issue[], name: string, project: Project | null): Group[] => {
+  const options = projectFieldOf(name, project)?.options?.map(option => option.name) ?? []
+  const valueOf = (issue: Issue) => fieldValuesOf(issue, name, project)[0] ?? ''
+  const others = [...new Set(issues.map(valueOf).filter(value => value !== '' && !options.some(option => same(option, value))))].sort()
+  const named = [...options, ...others].map(value => ({
+    key: `field:${name}:${value}`,
+    title: value,
+    issues: sortIssues(
+      issues.filter(issue => same(valueOf(issue), value)),
+      project,
+    ),
+    folded: false,
+  }))
+  const rest = sortIssues(
+    issues.filter(issue => valueOf(issue) === ''),
+    project,
+  )
+  return [...named, { key: `field:${name}:none`, title: `No ${name}`, issues: rest, folded: false }].filter(group => group.issues.length > 0)
+}
+
+const same = (a: string, b: string): boolean => a.trim().toLowerCase() === b.trim().toLowerCase()
+
+// A field named the way a filter writes it: any case, and a hyphen for a space, so `story-points` is Story Points.
+const sameField = (written: string, name: string): boolean => same(written.replace(/-/g, ' '), name.replace(/-/g, ' '))
+
+// The issue's own qualifiers, which a filter writes by these names, and the values each gives.
+const ISSUE_VALUES: Record<string, (issue: Issue) => string[]> = {
+  status: issue => (issue.status ? [issue.status] : []),
+  priority: issue => (issue.priority ? [issue.priority] : []),
+  label: issue => issue.labels.map(label => label.name),
+  assignee: issue => issue.assignees,
+  milestone: issue => (issue.milestone ? [issue.milestone] : []),
+  type: issue => (issue.type ? [issue.type] : []),
+}
+const ISSUE_ALIASES: Record<string, string> = { labels: 'label', assignees: 'assignee', 'issue type': 'type', 'issue-type': 'type' }
+const issueKeyOf = (written: string): string | undefined => {
+  const key = written.trim().toLowerCase()
+  return ISSUE_VALUES[key] ? key : ISSUE_ALIASES[key]
+}
+
+// The project field a filter or grouping names, beyond the issue's own qualifiers.
+const projectFieldOf = (written: string, project: Project | null | undefined): ProjectField | undefined =>
+  (project?.fields ?? []).find(field => sameField(written, field.name))
+
+// The values an issue has in a field, by the name a view uses: the issue's own (Status, Labels, Milestone…), or a
+// project field the board read for the views. Unknown or unset, none.
+export const fieldValuesOf = (issue: Issue, name: string, project: Project | null | undefined): string[] => {
+  const own = issueKeyOf(name)
+  if (own) return ISSUE_VALUES[own]?.(issue) ?? []
+  const field = projectFieldOf(name, project)
+  const value = field ? issue.fields?.[field.name] : undefined
+  return value ? [value] : []
+}
+
+// One term of a project view's filter: `label:bug,docs` is the key `label` and two values, `-status:Done` a negated
+// term, and a plain word has no key. `raw` is the term as written, for the note about a term the board can't apply.
+export type FilterTerm = { key: string | null; values: string[]; negate: boolean; raw: string }
+
+// Splits on `at` (a space, or a comma) wherever it is outside double quotes.
+const splitOutside = (text: string, at: RegExp): string[] => {
+  const parts: string[] = []
+  let current = ''
+  let quoted = false
+  for (const char of text) {
+    if (char === '"') quoted = !quoted
+    if (!quoted && at.test(char)) {
+      parts.push(current)
+      current = ''
+      continue
+    }
+    current += char
+  }
+  parts.push(current)
+  return parts.filter(part => part.trim() !== '')
+}
+const unquoted = (text: string): string => text.replace(/"/g, '').trim()
+
+// A view's filter as GitHub writes it, term by term. A quoted value or key may hold spaces, and a comma list means any.
+export const parseFilter = (text: string): FilterTerm[] =>
+  splitOutside(text.trim(), /\s/).map(raw => {
+    const negate = raw.length > 1 && raw.startsWith('-')
+    const body = negate ? raw.slice(1) : raw
+    let colon = -1
+    let quoted = false
+    for (let index = 0; index < body.length; index += 1) {
+      if (body[index] === '"') quoted = !quoted
+      else if (body[index] === ':' && !quoted) {
+        colon = index
+        break
+      }
+    }
+    if (colon <= 0) return { key: null, values: [unquoted(body)], negate, raw }
+    return {
+      key: unquoted(body.slice(0, colon)).toLowerCase(),
+      values: splitOutside(body.slice(colon + 1), /,/)
+        .map(unquoted)
+        .filter(Boolean),
+      negate,
+      raw,
+    }
+  })
+
+// A value the board compares as text. Ranges, comparisons, wildcards and `@` dates or iterations need more than the
+// board knows, so a term holding one is named as one it can't apply. `@me` is the person, for assignee.
+const plainValue = (value: string, key: string | undefined): boolean =>
+  value.startsWith('@') ? value.toLowerCase() === '@me' && key === 'assignee' : !/^[<>]|\.\.|\*/.test(value)
+
+// A test of one issue against a filter, with the login `@me` means.
+type IssueTest = (issue: Issue, viewer: string | null) => boolean
+
+// The board holds open issues only, so `is:open` and `is:issue` keep each of them, `is:closed` and `is:pr` none.
+const IS_KINDS: Record<string, boolean> = { open: true, closed: false, issue: true, pr: false }
+
+// The test for one term, or null for a term the board can't apply.
+const termTest = (term: FilterTerm, project: Project | null | undefined): IssueTest | null => {
+  if (term.key === null) {
+    const word = term.values[0] ?? ''
+    if (word === '') return null
+    const number = /^#?(\d+)$/.exec(word)?.[1]
+    return issue => (number !== undefined && String(issue.number) === number) || issue.title.toLowerCase().includes(word.toLowerCase())
+  }
+  if (term.values.length === 0) return null
+  if (term.key === 'is') {
+    if (!term.values.every(value => value.toLowerCase() in IS_KINDS)) return null
+    const kept = term.values.some(value => IS_KINDS[value.toLowerCase()])
+    return () => kept
+  }
+  if (term.key === 'no' || term.key === 'has') {
+    if (!term.values.every(name => issueKeyOf(name) !== undefined || projectFieldOf(name, project) !== undefined)) return null
+    const empty = term.key === 'no'
+    return issue => term.values.some(name => (fieldValuesOf(issue, name, project).length === 0) === empty)
+  }
+  const key = term.key
+  const own = issueKeyOf(key)
+  if (!own && !projectFieldOf(key, project)) return null
+  if (!term.values.every(value => plainValue(value, own))) return null
+  return (issue, viewer) => {
+    const has = fieldValuesOf(issue, key, project)
+    return term.values.some(value => {
+      const wanted = value.toLowerCase() === '@me' ? viewer : value
+      return wanted !== null && has.some(one => same(one, wanted))
+    })
+  }
+}
+
+// What a view's filter keeps, as a test on one issue, with the terms the board can't apply. Those are left out of the
+// test, so the tab shows every issue the rest of the filter keeps: more than GitHub would, never fewer.
+export type ViewMatch = { test: IssueTest; unknown: string[] }
+
+export const viewMatchOf = (filter: string, project: Project | null | undefined): ViewMatch => {
+  const tests: IssueTest[] = []
+  const unknown: string[] = []
+  for (const term of parseFilter(filter)) {
+    const test = termTest(term, project)
+    if (!test) unknown.push(term.raw)
+    else tests.push(term.negate ? (issue, viewer) => !test(issue, viewer) : test)
+  }
+  return { test: (issue, viewer) => tests.every(test => test(issue, viewer)), unknown }
+}
+
+// The project fields the views filter or group by, beyond the issue's own qualifiers, Status and Priority, which the
+// board reads anyway: the extra values the issues query asks each item for.
+export const viewFieldsOf = (project: Project | null | undefined): string[] => {
+  const names = new Set<string>()
+  const add = (written: string) => {
+    const field = issueKeyOf(written) ? undefined : projectFieldOf(written, project)
+    if (field) names.add(field.name)
+  }
+  for (const view of viewTabsOf(project)) {
+    for (const term of parseFilter(view.filter)) {
+      if (term.key === 'no' || term.key === 'has') term.values.forEach(add)
+      else if (term.key && term.key !== 'is') add(term.key)
+    }
+    if (view.groupBy) add(view.groupBy)
+  }
+  return [...names].sort()
+}
+
+// The built-in filters; with a project, the first two read Priority and say so.
+export const BUILT_IN_FILTERS: { id: BuiltInFilter; label: string; planned: string; hotkey: string }[] = [
+  { id: 'active', label: 'Active', planned: 'Now', hotkey: '1' },
+  { id: 'future', label: 'Future', planned: 'Later', hotkey: '2' },
+  { id: 'bugs', label: 'Bugs', planned: 'Bugs', hotkey: '3' },
+  { id: 'mine', label: 'Mine', planned: 'Mine', hotkey: '4' },
+  { id: 'all', label: 'All', planned: 'All', hotkey: '5' },
+  { id: 'inbox', label: 'Inbox', planned: 'Inbox', hotkey: '6' },
+  { id: 'closed', label: 'Closed', planned: 'Closed', hotkey: '7' },
+]
+
+// Where the pane's tabs come from: the project's views, or the board's own filters.
+export type FilterSource = 'views' | 'board'
+
+// A tab of the pane: a built-in filter, or a project view.
+export type Tab = { id: Filter; name: string; hotkey: string; view?: ProjectView }
+
+// How many views become tabs at most, so they, All and Closed fit on the keys 1 to 9.
+export const VIEW_TABS = 7
+
+// The views that become tabs: the table and board views with a filter, in GitHub's order. A view with no filter shows
+// every issue, which All already does, so it is left out. So is a roadmap, which lays issues out by date.
+export const viewTabsOf = (project: Project | null | undefined): ProjectView[] =>
+  (project?.views ?? []).filter(view => view.layout !== 'roadmap' && view.filter.trim() !== '').slice(0, VIEW_TABS)
+
+// The pane's tabs, on the keys 1 to 9 in order. With views that have filters: those views, then All and Closed.
+// Without any, or with the board's own filters chosen: the built-in ones, Inbox only with a project that has one.
+export const tabsOf = (project: Project | null | undefined, source: FilterSource = 'views'): Tab[] => {
+  const views = source === 'views' ? viewTabsOf(project) : []
+  if (views.length === 0) {
+    return BUILT_IN_FILTERS.filter(one => one.id !== 'inbox' || roleOf(project, 'inbox') !== undefined).map(one => ({
+      id: one.id,
+      name: project ? one.planned : one.label,
+      hotkey: one.hotkey,
+    }))
+  }
+  return [
+    ...views.map((view, index): Tab => ({ id: `view:${view.number}`, name: view.name, hotkey: String(index + 1), view })),
+    { id: 'all', name: 'All', hotkey: String(views.length + 1) },
+    { id: 'closed', name: 'Closed', hotkey: String(views.length + 2) },
+  ]
+}
+
+// The tab a chosen filter is: the one it names, or else the first tab. A built-in filter chosen before the project's
+// views became the tabs, or a view since removed, lands there.
+export const tabOf = (tabs: Tab[], chosen: Filter): Tab => tabs.find(tab => tab.id === chosen) ?? tabs[0] ?? { id: 'all', name: 'All', hotkey: '5' }
+
+// Whether an issue belongs under a tab: its view's filter, or its built-in filter. Made once a tab, then used per issue.
+export const tabTest = (tab: Tab, project: Project | null | undefined): IssueTest => {
+  if (tab.view) return viewMatchOf(tab.view.filter, project).test
+  const id = tab.id as BuiltInFilter
+  return (issue, viewer) => matches(id, issue, viewer, project ?? null)
+}
+
+// How a view's tab groups its issues: by Status or by epic as the pane does, by another field the board read, or not
+// at all (null) for a field it can't group by, such as Labels, of which an issue may have several.
+export const viewGroupingOf = (view: ProjectView | undefined, project: Project | null | undefined): { by: GroupBy; field: string } | null => {
+  const name = view?.groupBy
+  if (!name) return null
+  if (same(name, 'Status')) return project?.status ? { by: 'status', field: name } : null
+  if (same(name, 'Parent issue')) return { by: 'epic', field: name }
+  const own = issueKeyOf(name)
+  if (own === 'label' || own === 'assignee') return null
+  return own || projectFieldOf(name, project) ? { by: 'view', field: name } : null
+}
+
+// A view's page on GitHub.
+export const viewUrl = (project: { url: string }, view: { number: number }): string => `${project.url}/views/${view.number}`
+
 type RawNodes<T> = { nodes?: (T | null)[] | null } | null | undefined
 type RawField = { id?: string; name?: string; dataType?: string; options?: { id: string; name: string }[]; configuration?: { iterations?: { id: string; title: string }[] } | null }
 
@@ -482,9 +732,28 @@ type RawProject = {
   fields?: RawNodes<RawField>
   statusUpdates?: RawNodes<RawUpdate>
   workflows?: RawNodes<{ name: string; enabled: boolean }>
+  views?: RawNodes<RawView>
 }
+type RawGroup = RawNodes<{ name?: string }>
+type RawView = { name: string; number: number; layout?: string; filter?: string | null; groupByFields?: RawGroup; verticalGroupByFields?: RawGroup }
 type RawValue = { name?: string } | null | undefined
-type RawItem = { id: string; project?: { id: string } | null; status?: RawValue; priority?: RawValue }
+type RawAny = { name?: string; title?: string; text?: string; number?: number | null; date?: string } | null | undefined
+type RawItem = { id: string; project?: { id: string } | null; status?: RawValue; priority?: RawValue; [alias: `f${number}`]: RawAny }
+
+const LAYOUTS: Record<string, ProjectView['layout']> = { TABLE_LAYOUT: 'table', BOARD_LAYOUT: 'board', ROADMAP_LAYOUT: 'roadmap' }
+
+// A project's views as the board keeps them. A table groups rows by its group-by field; a board's columns are its
+// vertical group-by field.
+const viewsOf = (project: RawProject): ProjectView[] =>
+  nodesOf(project.views).map(view => {
+    const layout = LAYOUTS[view.layout ?? ''] ?? 'table'
+    const group = nodesOf(view.groupByFields)[0]?.name ?? (layout === 'board' ? nodesOf(view.verticalGroupByFields)[0]?.name : undefined)
+    return { name: view.name, number: view.number, layout, filter: (view.filter ?? '').trim(), groupBy: group ?? null }
+  })
+
+// A field value as text, whatever the field's kind.
+const anyValueOf = (raw: RawAny): string | undefined =>
+  raw ? (raw.name ?? raw.title ?? raw.text ?? (typeof raw.number === 'number' ? String(raw.number) : undefined) ?? raw.date) : undefined
 type RawGraphIssue = {
   id: string
   number: number
@@ -534,8 +803,9 @@ export const nextPageOf = (json: string): string | null => {
 }
 
 // The issues of every page, and the repo's project, read from the first page: the one `/issues setup` saved when it's
-// still linked and open, else the first open one linked to the repo.
-export const parseGraph = (pages: string[], preferred?: string): { issues: Issue[]; project: Project | null; types: string[] } => {
+// still linked and open, else the first open one linked to the repo. `fields` are the extra field values the query
+// asked each item for, in its order.
+export const parseGraph = (pages: string[], preferred?: string, fields: readonly string[] = []): { issues: Issue[]; project: Project | null; types: string[] } => {
   const parsed = pages.map(page => JSON.parse(page) as RawPage)
   const open = nodesOf(parsed[0]?.data?.repository?.projectsV2).filter(one => !one.closed)
   const linked = open.find(one => one.id === preferred) ?? open[0]
@@ -550,6 +820,7 @@ export const parseGraph = (pages: string[], preferred?: string): { issues: Issue
         fields: fieldsOf(linked),
         update: updateOf(nodesOf(linked.statusUpdates).at(-1)),
         closesToDone: nodesOf(linked.workflows).some(one => one.name === 'Item closed' && one.enabled),
+        views: viewsOf(linked),
       }
     : null
   const issues = parsed.flatMap(page => (page.data?.repository?.issues?.nodes ?? []).filter((one): one is RawGraphIssue => one !== null))
@@ -559,6 +830,12 @@ export const parseGraph = (pages: string[], preferred?: string): { issues: Issue
     issues: issues.map(raw => {
       const item = project ? nodesOf(raw.projectItems).find(one => one.project?.id === project.id) : undefined
       const parent = raw.parent
+      const values = item
+        ? fields.flatMap((name, index) => {
+            const value = anyValueOf(item[`f${index}`])
+            return value === undefined ? [] : [[name, value] as const]
+          })
+        : []
       return {
         number: raw.number,
         title: raw.title,
@@ -579,6 +856,7 @@ export const parseGraph = (pages: string[], preferred?: string): { issues: Issue
         prs: nodesOf(raw.closedByPullRequestsReferences).map(one => one.number),
         ...(typeof raw.comments?.totalCount === 'number' ? { comments: raw.comments.totalCount } : {}),
         ...(raw.issueType ? { type: raw.issueType.name } : {}),
+        ...(values.length > 0 ? { fields: Object.fromEntries(values) } : {}),
       }
     }),
   }
@@ -1474,12 +1752,12 @@ export const TOOLS: { name: string; what: string }[] = [
 ]
 
 // /issues help: the pane and its keys, the card, the band and hint, the subcommands, and Claude's tools.
-export const helpText = (filters: { hotkey: string; name: string }[], off: { feature: string; why: string }[] = []): string =>
+export const helpText = (filters: { hotkey: string; name: string }[], off: { feature: string; why: string }[] = [], views = false): string =>
   [
     'The issue board',
     '',
     'The pane (/issues)',
-    `- Filters: ${filters.map(one => `${one.hotkey} ${one.name}`).join(', ')}. Type in the search field to narrow the list.`,
+    `- Filters${views ? ", from the project's views" : ''}: ${filters.map(one => `${one.hotkey} ${one.name}`).join(', ')}. Type in the search field to narrow the list.`,
     '- Group by Status, Epic or Area with the buttons after the search.',
     '- r refreshes. m merges every open pull request, after asking. Hover a row to preview its boxes.',
     '- Enter, or a click, opens an issue.',
