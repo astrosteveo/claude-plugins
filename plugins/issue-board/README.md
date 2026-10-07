@@ -51,7 +51,10 @@ shows 8 rows at most, and reads no more of GitHub than the board already has.
   P0 and P1, unless set otherwise), `2` Later (the rest), `3` Bugs, `4` Mine, `5` All, `6` Inbox (with a project that has one) and `7`
   Closed. Closed lists the issues closed lately, each with how it closed,
   read from GitHub when you choose it. Without a project, `1` and `2` read
-  Active and Future, from the `future` label. When the project has views
+  Active and Future, from the repo's later label. Bugs, the `▲` badge and
+  the bug count go by the repo's bug label or issue type: see
+  [Which labels are Bugs and Later](#which-labels-are-bugs-and-later).
+  When the project has views
   with filters, those views are the tabs instead: see
   [The project's views as tabs](#the-projects-views-as-tabs).
 
@@ -336,6 +339,30 @@ doesn't need the board to be let write to the project. A saved mapping, from
 here or from setup, always wins over the names. Adding a missing option stays
 in `/issues setup`.
 
+### Which labels are Bugs and Later
+
+The board reads the repo's labels and issue types to find what marks a bug,
+and, without a project, which label means Later. It tries these names, in
+this order, in any case:
+
+| Part | Names |
+| --- | --- |
+| Bugs | GitHub's Bug issue type, when open issues use it; then the labels `bug`, `type:bug`, `kind:bug`, `bug report`, `defect`; then the Bug type when the repo offers it |
+| Later (without a project) | `future`, `later`, `someday`, `icebox` |
+
+With a project, Later goes by Priority, so no label is needed for it. A repo
+with none of the names keeps `bug` and `future`.
+
+When the board finds something other than `bug` or `future`, the band shows
+the guess once, such as `Bugs: the label defect · Later: the label someday`.
+`/issues check` shows it too, until you answer. **Looks right** saves it, and
+**Change** opens `/issues labels`.
+
+`/issues labels` shows **Which labels Bugs and Later go by** at the top of the
+pane, with the repo's issue types and labels (not the `area:` ones) to pick
+from. **Save** keeps the choice in Claude Code for this repo and changes
+nothing on GitHub. A saved choice always wins over the names.
+
 - With its setting on, an issue that closes as **completed** moves to Done
   at the board's next read, wherever it closed. One closed as not planned or as a duplicate
   stays where it was, so Done means shipped.
@@ -408,12 +435,15 @@ a private one, which GitHub won't undo, needs a second, confirmed call.
 - `/issues new <what>` and `/issues new epic <what>` draft issues.
 - `/issues statuses` picks which Status option plays each part; see
   [Which Status is which](#which-status-is-which).
+- `/issues labels` picks the label or issue type Bugs goes by, and the label
+  Later goes by without a project; see
+  [Which labels are Bugs and Later](#which-labels-are-bugs-and-later).
 - `/issues setup` prepares the repo and its project. It lists what it
   would change at the top of the pane, and nothing changes until
   **Apply**: it turns issues on, uses the linked project or creates one,
   adds the board's Status options (Inbox, Backlog, Ready, In progress,
   Verification, Done) and a Priority field (P0, P1, P2), creates `bug` and
-  `area:` labels, and puts open issues in the project at Inbox. It never
+  `area:` labels (no `bug` where the repo has one of the bug labels above), and puts open issues in the project at Inbox. It never
   deletes or renames anything.
 - Under **Which Status is which**, setup asks which of the project's own
   options plays each part: Inbox, Ready, Backlog (the one that folds), In
