@@ -420,6 +420,9 @@ becomes **Merge**.
 - **⇶ Merge all** (`m`) does the same for every open pull request, oldest
   first, after asking: `y` to send, `n` to cancel.
 
+One question waits at a time. Asking one, such as Merge all's, drops any
+other that was waiting, such as a pull request's or an epic's Close.
+
 While CI runs on your branch, a `◷` row shows its progress, such as
 `validate › Install Claude Code`, until it ends.
 
