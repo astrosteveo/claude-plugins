@@ -212,6 +212,7 @@ import {
   startPrompt,
   triagePrompt,
   workingSection,
+  prKeyword,
   orchestratorSection,
   toolListOf,
   openedText,
@@ -2843,6 +2844,16 @@ const stopTracking = async ($: EngineInterface): Promise<void> => {
   await save($)
 }
 
+// The keyword a pull request written now gives the issue this session is on, `Closes #N` or `Refs #N`, from its boxes
+// as the board holds them. The tick tool writes what it ticked back to the board, so this asks GitHub nothing: the
+// engine may compose the text often.
+const prKeywordNow = async ($: EngineInterface): Promise<string> => {
+  const now = await read($, working)
+  const mine = !!now?.sessionId && now.sessionId === (await $.session.id().catch(() => undefined))
+  const issue = mine ? (await read($, board))?.issues.find(one => one.number === now.number) : undefined
+  return prKeyword(issue ?? null, await read($, workers), settings.closesWhenTicked)
+}
+
 // ---- Plan and triage, and the pane's other actions ----
 
 // The issues closed lately, for the pane's Closed filter: read when the filter is chosen, over REST.
@@ -3988,7 +3999,7 @@ export const register: Register = (on, options) => {
     const orchestrating = settings.startMode === 'background' ? [{ id: 'issue-board:orchestrator', text: orchestratorSection(), scope: 'session' as const }] : []
     const now = settings.workingNote ? await read($, working) : null
     const mine = !!now?.sessionId && now.sessionId === (await $.session.id().catch(() => undefined))
-    const doing = now && mine ? [{ id: 'issue-board:working', text: workingSection(now, settings.closesWhenTicked), scope: 'session' as const }] : []
+    const doing = now && mine ? [{ id: 'issue-board:working', text: workingSection(now), scope: 'session' as const }] : []
     if (capturing.length === 0 && orchestrating.length === 0 && doing.length === 0) return composed
     for (const section of capturing) countSection(section.id, section.text, 'capture note')
     for (const section of orchestrating) countSection(section.id, section.text, 'orchestrator note')
@@ -3996,6 +4007,16 @@ export const register: Register = (on, options) => {
 
     return { sections: [...composed.sections, ...capturing, ...orchestrating, ...doing] }
   })
+
+  // The text Claude Code has Claude write into a pull request gains a line for the issue this session is on: `Closes #N`
+  // once every box is ticked, `Refs #N` before. It is decided as the text is composed, from the boxes as they stand,
+  // rather than left to Claude to work out from a rule in the system prompt.
+  on('attribution.text', { kind: 'pr' }, async ($, e, next) => {
+    const composed = await next(e)
+    const keyword = await prKeywordNow($)
+    if (!keyword) return composed
+    return { text: composed.text.trim() ? `${composed.text.trimEnd()}\n${keyword}` : keyword }
+  }).catch(($, e, next) => fallBack($, e, next, 'attribution.text for pr'))
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const elements = $.ui.resolve(e)

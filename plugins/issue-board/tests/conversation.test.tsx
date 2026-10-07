@@ -25,6 +25,9 @@ const pr = (ci: 'pass' | 'pending' | 'fail', sha = 'abc123') => ({
   body: 'Refs #315.',
 })
 
+// The text Claude Code itself has Claude write at the foot of a pull request.
+const FOOTER = 'Generated with Claude Code'
+
 const PANE = pane(100, 40)
 const BAND = band(100)
 const TURN = { answer: 'Done.', durationMs: 1000, isAborted: false, turnId: 'turn-1', reason: 'answer' } as const
@@ -66,6 +69,7 @@ const world = (on: On) => {
     return { isShown: true }
   })
   on('prompt.compose', async () => ({ sections: [{ id: 'intro', text: 'You are Claude Code.', scope: 'shared' as const }] }))
+  on('attribution.text', async (_$, e) => ({ text: e.text }))
   on('turn.complete', async (_$, e) => ({ text: e.answer }))
   on('tool.call', { tool: 'TaskCreate' }, async (_$, e) => {
     state.tasks.push({ subject: e.subject, description: e.description })
@@ -335,6 +339,8 @@ test("with the PR rule and following the branch off, the note has no PR rule, th
   const note = (await $.prompt.compose(COMPOSE)).sections.at(-1)?.text
   expect(note).toMatch(/^The person is working on GitHub issue #315: Lay Kessik out for play\./)
   expect(note).not.toMatch(/Closes|Refs/)
+  // Every box is ticked, but with the rule off the pull request text is Claude Code's own.
+  expect((await $.attribution.text({ kind: 'pr', text: FOOTER })).text).toBe(FOOTER)
 
   // Every box is ticked, but the box gets no step of the board's, and the engine's own guess stands.
   await $.turn.complete(TURN)
@@ -349,16 +355,32 @@ test("with the PR rule and following the branch off, the note has no PR rule, th
   expect((await $.prompt.compose(COMPOSE)).sections.at(-1)?.text).toBe(note)
 })
 
-test('by default the note says Closes only when every box is ticked', async ($, on) => {
+test('by default the pull request text says Refs while a box is open and Closes once every box is ticked, and the note stays the same', async ($, on) => {
   mock.store(on)
   world(on)
   await $.command.run(REFRESH)
+  // Before Start, no issue is this session's, and the text is Claude Code's own.
+  expect((await $.attribution.text({ kind: 'pr', text: FOOTER })).text).toBe(FOOTER)
   const pane = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   await pane.press({ key: 'filter-all' })
   await pane.press({ key: 'issue-315' })
   await pane.press({ key: 'start-315' })
   await pane.unmount()
-  expect((await $.prompt.compose(COMPOSE)).sections.at(-1)?.text).toMatch(/write `Closes #315` in its body only if every acceptance box of #315 is ticked by then\. Otherwise write `Refs #315`/)
+  const note = (await $.prompt.compose(COMPOSE)).sections.at(-1)?.text
+  expect(note).toMatch(/^The person is working on GitHub issue #315/)
+  expect(note).not.toMatch(/Closes|Refs|pull request/)
+
+  // Two of three boxes are open.
+  expect((await $.attribution.text({ kind: 'pr', text: FOOTER })).text).toBe(`${FOOTER}\nRefs #315`)
+  // A commit's text is left alone.
+  expect((await $.attribution.text({ kind: 'commit', text: 'Co-Authored-By: Claude' })).text).toBe('Co-Authored-By: Claude')
+
+  // Claude ticks the last two, and the next pull request closes the issue. The system prompt's section is unchanged.
+  await $.tool.call({ tool: 'mcp__issue-board__tick', number: 315, boxes: [2, 3] })
+  expect((await $.attribution.text({ kind: 'pr', text: FOOTER })).text).toBe(`${FOOTER}\nCloses #315`)
+  // With no footer of Claude Code's, the line is the whole text.
+  expect((await $.attribution.text({ kind: 'pr', text: '' })).text).toBe('Closes #315')
+  expect((await $.prompt.compose(COMPOSE)).sections.at(-1)?.text).toBe(note)
 })
 
 test('with the working note, capture and issue copies turned off, the system prompt and a prompt naming #315 carry nothing of the board', { options: { workingNote: false, capture: false, issueCopies: false } }, async ($, on) => {

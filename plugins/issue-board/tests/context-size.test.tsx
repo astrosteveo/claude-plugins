@@ -65,7 +65,7 @@ test("the worker prompt defers to the repo's guidelines in one sentence and keep
 })
 
 test("the working, orchestrator and capture notes don't repeat each other or the tools' own text", () => {
-  const working = workingSection({ number: 315, title: 'Lay Kessik out', updatedAt: '' }, false)
+  const working = workingSection({ number: 315, title: 'Lay Kessik out', updatedAt: '' })
   const orchestrator = orchestratorSection()
   // The issues tool says how it numbers boxes, and only the orchestrator note says how to dispatch a worker.
   expect(working).not.toContain('mcp__issue-board__issues')
