@@ -106,6 +106,7 @@ export const graphPage = (issues: Raw[], argv: readonly string[] = [], project =
 
 // The board writes only to a project the person let it write to. A test that has it write to the fake project uses
 // this store in place of `mock.store`: every repo's entry holds the adoption, unless the entry makes a choice of its own.
+// The choices key is kept as set, so the board moves the repo entry's adoption across the first time it looks.
 // A test's fake world and the test itself may both ask for it; the second call adds its entries to the first's store.
 export const ADOPTED = { id: PROJECT.id, title: PROJECT.title, owner: 'astrosteveo' }
 const stores = new WeakMap<On, Map<string, unknown>>()
@@ -119,6 +120,7 @@ export const adoptedStore = (on: On, entries: Readonly<Record<string, unknown>> 
   stores.set(on, kept)
   on('store.get', async (_$, e) => {
     const value = kept.get(e.key)
+    if (e.key.startsWith('choices:')) return { value }
     return { value: { adopted: ADOPTED, ...(value && typeof value === 'object' ? value : {}) } }
   })
   on('store.set', async (_$, e) => {

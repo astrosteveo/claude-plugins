@@ -10,6 +10,7 @@ const BAND = { component: 'AbovePrompt', props: { hasSurvey: false, isWorking: f
 const REFRESH = { command: 'issues', args: 'refresh', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
 const REPO = { root: '/work/void-sector', remote: null, internal: false, name: null }
 const KEY = `repo:${REPO.root}`
+const CHOICES = `choices:${REPO.root}`
 // Every setting that has the board change the project by itself, on.
 const EVERYTHING = { options: { moveToDone: true, moveToVerification: true, advanceEpics: true, claimOnStart: true } }
 
@@ -191,7 +192,7 @@ test('the pane and the band ask once before writing, naming the project, its own
   expect(mutations()).toEqual([])
 
   await ui.press({ key: 'adopt-yes' })
-  expect((kept.get(KEY) as { adopted?: unknown }).adopted).toEqual(ADOPTED)
+  expect((kept.get(CHOICES) as { adopted?: unknown }).adopted).toEqual(ADOPTED)
   expect(await ui.find({ key: 'adopt-card' })).toBeUndefined()
 
   // Writes go through now, to the adopted project.
@@ -216,8 +217,8 @@ test('Keep read-only puts the prompt away for good and writes nothing', async ($
   await $.command.run(REFRESH)
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   await ui.press({ key: 'adopt-no' })
-  expect(kept.get(KEY)).toMatchObject({ declined: ['PVT_8'] })
-  expect((kept.get(KEY) as { adopted?: unknown }).adopted).toBeUndefined()
+  expect(kept.get(CHOICES)).toMatchObject({ declined: ['PVT_8'] })
+  expect((kept.get(CHOICES) as { adopted?: unknown }).adopted).toBeUndefined()
   expect(await ui.find({ key: 'adopt-card' })).toBeUndefined()
   await $.command.run(REFRESH)
   const band = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...BAND })
@@ -245,6 +246,87 @@ test('a released project stays read-only even with a saved setup that names it',
   const update = await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, priority: 'P0' })
   expect(update.deny).toMatch(/only reads Void Sector/)
   expect(mutations()).toEqual([])
+})
+
+// A store that keeps what it is given, as one machine's store would for every session on it.
+const memory = (on: On, entries: Record<string, unknown> = {}): Map<string, unknown> => {
+  const kept = new Map<string, unknown>(Object.entries(entries))
+  on('store.get', async (_$, e) => ({ value: kept.get(e.key) }))
+  on('store.set', async (_$, e) => {
+    kept.set(e.key, e.value)
+    return { value: undefined }
+  })
+  return kept
+}
+
+// What a board from before 0.57.0 saves in another session: the whole shared entry, with none of the person's choices.
+const olderSave = (kept: Map<string, unknown>) => {
+  const { adopted: _a, declined: _d, statuses: _s, guessSeen: _g, ...rest } = (kept.get(KEY) ?? {}) as Record<string, unknown>
+  kept.set(KEY, { board: null, working: null, dismissed: [], viewer: null, ...rest })
+}
+
+const CHOSEN = { adopted: ADOPTED, declined: ['PVT_9'], statuses: { PVT_8: { ready: 'S0', done: 'S2' } }, guessSeen: ['PVT_8:ready=S0'] }
+
+test("an older board's save of the shared entry leaves the adoption, declines, Status mappings and seen guesses alone", async ($, on) => {
+  const kept = memory(on, { [CHOICES]: CHOSEN })
+  const { mutations } = world(on)
+  await $.command.run(REFRESH)
+  olderSave(kept)
+  await $.command.run(REFRESH)
+  // This board's own save, after the read, leaves the choices out of the shared entry.
+  expect((kept.get(KEY) as { board: unknown }).board).not.toBeNull()
+  expect(Object.keys(kept.get(KEY) as object)).not.toContain('adopted')
+  olderSave(kept)
+  expect(kept.get(CHOICES)).toEqual(CHOSEN)
+  // The board still writes, and doesn't ask again.
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  expect(await ui.find({ key: 'adopt-card' })).toBeUndefined()
+  await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, priority: 'P0' })
+  expect(mutations()).toHaveLength(1)
+  await ui.unmount()
+})
+
+test('choices an earlier board saved in the shared entry move to their own key once, and stay there', async ($, on) => {
+  const kept = memory(on, { [KEY]: { board: null, working: null, dismissed: [], viewer: null, ...CHOSEN } })
+  const { mutations } = world(on)
+  await $.command.run(REFRESH)
+  expect(kept.get(CHOICES)).toEqual(CHOSEN)
+  // From then on the shared entry's copies count for nothing: an older board dropping them, or a stale release left
+  // there, changes nothing.
+  olderSave(kept)
+  kept.set(KEY, { ...(kept.get(KEY) as object), adopted: null })
+  await $.command.run(REFRESH)
+  expect(kept.get(CHOICES)).toEqual(CHOSEN)
+  await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, priority: 'P0' })
+  expect(mutations()).toHaveLength(1)
+})
+
+test('a saved setup naming the project still counts as adopted after the move, with nothing to move', async ($, on) => {
+  const setup = { project: { id: PROJECT.id, number: 8, title: PROJECT.title }, status: null, priority: null, at: 0 }
+  const kept = memory(on, { [KEY]: { setup } })
+  const { mutations } = world(on)
+  await $.command.run(REFRESH)
+  olderSave(kept)
+  await $.command.run(REFRESH)
+  expect(kept.get(CHOICES)).toBeUndefined()
+  await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, priority: 'P0' })
+  expect(mutations()).toHaveLength(1)
+})
+
+test('two sessions changing different choices keep both', async ($, on) => {
+  const kept = memory(on)
+  world(on)
+  await $.command.run(REFRESH)
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  // Another session turns down another project's prompt after this one last read the store.
+  kept.set(CHOICES, { ...((kept.get(CHOICES) as object | undefined) ?? {}), declined: ['PVT_9'] })
+  await ui.press({ key: 'adopt-yes' })
+  expect(kept.get(CHOICES)).toEqual({ adopted: ADOPTED, declined: ['PVT_9'] })
+  // And the other way: another session saves a Status mapping, then this one releases.
+  kept.set(CHOICES, { ...(kept.get(CHOICES) as object), statuses: { PVT_9: { ready: 'S1' } } })
+  await $.tool.call({ tool: 'mcp__issue-board__project_adopt', release: true })
+  expect(kept.get(CHOICES)).toEqual({ adopted: null, declined: ['PVT_9'], statuses: { PVT_9: { ready: 'S1' } } })
+  await ui.unmount()
 })
 
 test('the write check refuses any project but the adopted one, and says why and how to adopt', () => {

@@ -304,14 +304,14 @@ test('setup says which project the board may write to; Release makes it read-onl
   expect(await ui.find({ text: /^✓ Nothing to change/ })).toBeDefined()
 
   await ui.press({ key: 'setup-release' })
-  expect((kept.get('repo:/work/void-sector') as { adopted?: unknown }).adopted).toBeNull()
+  expect((kept.get('choices:/work/void-sector') as { adopted?: unknown }).adopted).toBeNull()
   expect(await ui.find({ text: /^none: the board only reads Void Sector until Apply$/ })).toBeDefined()
   expect(await ui.find({ text: /^Let the board write to Void Sector$/ })).toBeDefined()
   expect(await ui.find({ key: 'setup-release' })).toBeUndefined()
 
   await ui.press({ key: 'setup-apply' })
   await clock.settle()
-  expect((kept.get('repo:/work/void-sector') as { adopted?: unknown }).adopted).toEqual({ id: 'PVT_8', title: 'Void Sector', owner: 'astrosteveo' })
+  expect((kept.get('choices:/work/void-sector') as { adopted?: unknown }).adopted).toEqual({ id: 'PVT_8', title: 'Void Sector', owner: 'astrosteveo' })
   expect(await ui.find({ text: /^the board may write to Void Sector$/ })).toBeDefined()
   // Adopting is the board's own note; GitHub isn't changed.
   expect(gh.writes).toEqual([])

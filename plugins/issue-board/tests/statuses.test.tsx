@@ -10,6 +10,7 @@ const BAND = { component: 'AbovePrompt', props: { hasSurvey: false, isWorking: f
 const RUN = { command: 'issues', args: 'refresh', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
 const REPO = { root: '/work/void-sector', remote: null, internal: false, name: null }
 const KEY = `repo:${REPO.root}`
+const CHOICES = `choices:${REPO.root}`
 const GUESS = 'Status: Todo is Ready, Doing is In progress, Shipped is Done'
 
 const options = (...names: string[]) => names.map((name, index) => ({ id: `S${index}`, name }))
@@ -54,7 +55,8 @@ const world = (on: On, names: string[], saved?: Record<string, unknown>) => {
   on('ui.toast', async () => ({ value: undefined }))
   on('ui.log', async () => ({ value: undefined }))
   const mutations = () => state.calls.filter(call => call.argv.includes('graphql') && /\bmutation\b/.test(`${call.argv.join(' ')} ${call.stdin}`))
-  const stored = () => (kept.get(KEY) ?? {}) as Record<string, any>
+  // The shared entry with the person's choices, which live under a key of their own, over it.
+  const stored = () => ({ ...(kept.get(KEY) ?? {}), ...(kept.get(CHOICES) ?? {}) }) as Record<string, any>
   return { state, mutations, stored }
 }
 

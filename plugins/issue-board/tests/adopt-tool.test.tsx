@@ -8,6 +8,7 @@ import { ADOPTED, PROJECT, graphPage, isIssuesQuery } from './graph'
 const REFRESH = { command: 'issues', args: 'refresh', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
 const REPO = { root: '/work/void-sector', remote: null, internal: false, name: null }
 const KEY = `repo:${REPO.root}`
+const CHOICES = `choices:${REPO.root}`
 const TOOL = 'mcp__issue-board__project_adopt'
 const ROADMAP = { id: 'PVT_9', number: 9, title: 'Roadmap', url: 'https://github.com/orgs/acme/projects/9', closed: false }
 const OLD = { id: 'PVT_7', number: 7, title: 'Old plans', url: 'https://github.com/users/astrosteveo/projects/7', closed: true }
@@ -73,7 +74,7 @@ const world = (on: On, saved: Record<string, unknown> = {}) => {
   on('ui.log', async () => ({ value: undefined }))
   on('tool.call', { tool: TOOL }, async () => state.answer)
   on('tool.call', { tool: 'mcp__issue-board__issue_update' }, async (_$, e) => approved(e.tool))
-  const adopted = () => (state.kept.get(KEY) as { adopted?: unknown } | undefined)?.adopted
+  const adopted = () => (state.kept.get(CHOICES) as { adopted?: unknown } | undefined)?.adopted
   return { state, adopted }
 }
 
@@ -104,7 +105,7 @@ test('a no to the prompt changes nothing and passes the refusal back', async ($,
   expect(adopted()).toBeUndefined()
 
   // The same for a release.
-  state.kept.set(KEY, { adopted: ADOPTED })
+  state.kept.set(CHOICES, { adopted: ADOPTED })
   await $.tool.call({ tool: TOOL, release: true })
   expect(adopted()).toEqual(ADOPTED)
 })

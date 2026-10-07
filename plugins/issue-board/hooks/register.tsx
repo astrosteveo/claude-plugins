@@ -682,10 +682,9 @@ const costOf = (page: string): { cost: number; remaining: number; resetAt: strin
   }
 }
 
-// What the board keeps between sessions, one entry per repository; `setup` is what `/issues setup` last saved, `adopted`
-// the project the board may write to (null once released; absent before adopting existed), and `declined` the projects
-// whose prompt the person turned down. `statuses` is the Status mapping /issues statuses or Looks right saved, by project
-// id, and `guessSeen` the guessed mappings the person answered.
+// What the board keeps between sessions, one entry per repository; `setup` is what `/issues setup` last saved. Every
+// session on the repo, of any version, rewrites this entry whole, so the person's choices live under a key of their own
+// (see Choices). An entry from before that may still hold them; the board moves them across once and then ignores them.
 type Saved = {
   board: Board | null
   working: Working | null
@@ -699,19 +698,60 @@ type Saved = {
   guessSeen?: string[]
 }
 
-let storeKey: string | undefined
-const keyOf = async ($: EngineInterface): Promise<string> => {
-  if (storeKey === undefined) {
-    const repo = await $.session.repo().catch(() => null)
-    storeKey = `repo:${repo?.root ?? (await $.session.root())}`
-  }
-  return storeKey
+// The person's choices for the repo, kept apart from the shared entry so a board from before they existed can't erase
+// them when it saves: `adopted` the project the board may write to (null once released; absent before adopting
+// existed), `declined` the projects whose prompt the person turned down, `statuses` the Status mapping /issues statuses
+// or Looks right saved, by project id, and `guessSeen` the guessed mappings the person answered.
+type Choices = Pick<Saved, 'adopted' | 'declined' | 'statuses' | 'guessSeen'>
+const CHOICES = ['adopted', 'declined', 'statuses', 'guessSeen'] as const
+
+// The choice fields an entry holds, and only those.
+const choicesIn = (saved: Partial<Saved>): Choices => {
+  const found: Record<string, unknown> = {}
+  for (const name of CHOICES) if (saved[name] !== undefined) found[name] = saved[name]
+  return found as Choices
 }
 
-// What the board saved for this repo, as a whole; empty when nothing is, or the store can't be read.
+let storeRoot: string | undefined
+const rootOf = async ($: EngineInterface): Promise<string> => {
+  if (storeRoot === undefined) {
+    const repo = await $.session.repo().catch(() => null)
+    storeRoot = repo?.root ?? (await $.session.root())
+  }
+  return storeRoot
+}
+const keyOf = async ($: EngineInterface): Promise<string> => `repo:${await rootOf($)}`
+const choicesKeyOf = async ($: EngineInterface): Promise<string> => `choices:${await rootOf($)}`
+
+// The shared entry as it is in the store; empty when nothing is.
+const sharedOf = async ($: EngineInterface): Promise<Partial<Saved>> => ((await $.store.get(await keyOf($))) as Partial<Saved> | undefined) ?? {}
+
+// The person's choices, read fresh. The first time a board of this version finds none, it moves across the ones an
+// earlier board left in the shared entry. Once the choices key holds anything, the shared entry's copies are ignored,
+// so an older board's save, which drops them, changes nothing.
+const choicesOf = async ($: EngineInterface, shared: Partial<Saved>): Promise<Choices> => {
+  const key = await choicesKeyOf($)
+  const kept = (await $.store.get(key)) as Choices | null | undefined
+  if (kept !== undefined && kept !== null) return kept
+  const found = choicesIn(shared)
+  if (Object.keys(found).length > 0) {
+    try {
+      await $.store.set(key, found)
+    } catch (cause) {
+      $.ui.log(`issue-board: couldn't move the saved choices to their own key: ${messageOf(cause)}`, { to: 'debug' })
+    }
+  }
+  return found
+}
+
+// What the board saved for this repo, as a whole: the shared entry, with the person's choices from their own key in
+// place of any copies in it. Empty when nothing is, or the store can't be read.
 const savedAll = async ($: EngineInterface): Promise<Partial<Saved>> => {
   try {
-    return ((await $.store.get(await keyOf($))) as Partial<Saved> | undefined) ?? {}
+    const shared = await sharedOf($)
+    const rest: Partial<Saved> = { ...shared }
+    for (const name of CHOICES) delete rest[name]
+    return { ...rest, ...(await choicesOf($, shared)) }
   } catch {
     return {}
   }
@@ -731,28 +771,29 @@ const loadAdoption = async ($: EngineInterface): Promise<void> => {
   if ((await read($, guessSeen)).join() !== seen.join()) await update($, guessSeen, () => seen)
 }
 
-// Changes what the store holds for the repo beside the board: adopting, releasing, turning a prompt down.
-const changeSaved = async ($: EngineInterface, change: (was: Partial<Saved>) => Partial<Saved>): Promise<void> => {
-  const key = await keyOf($)
-  await $.store.set(key, change(await savedAll($)))
+// Changes the person's choices: adopting, releasing, turning a prompt down, a Status mapping, an answered guess. It reads
+// the choices key just before writing it, so a change another session made meanwhile to a different field stays.
+const changeChoices = async ($: EngineInterface, change: (was: Choices) => Choices): Promise<void> => {
+  const was = await choicesOf($, await sharedOf($))
+  await $.store.set(await choicesKeyOf($), change(was))
   await loadAdoption($)
 }
 
 // The person let the board write to a project, through its prompt or Apply in setup.
 const adoptProject = async ($: EngineInterface, project: { id: string; title: string; url: string }): Promise<void> => {
   const adopted: Adopted = { id: project.id, title: project.title, owner: ownerOf(project.url) }
-  await changeSaved($, was => ({ ...was, adopted, declined: (was.declined ?? []).filter(id => id !== project.id) }))
+  await changeChoices($, was => ({ ...was, adopted, declined: (was.declined ?? []).filter(id => id !== project.id) }))
 }
 
 // `/issues setup`'s Release: the board only reads the project again. Kept as null, so a saved setup that names the
 // project doesn't count as adopting it.
 const releaseProject = async ($: EngineInterface): Promise<void> => {
-  await changeSaved($, was => ({ ...was, adopted: null }))
+  await changeChoices($, was => ({ ...was, adopted: null }))
 }
 
 // Keep read-only on the prompt: it isn't asked again for that project. Setup can still adopt it.
 const declineProject = async ($: EngineInterface, project: { id: string }): Promise<void> => {
-  await changeSaved($, was => ({ ...was, declined: [...(was.declined ?? []).filter(id => id !== project.id), project.id].slice(-20) }))
+  await changeChoices($, was => ({ ...was, declined: [...(was.declined ?? []).filter(id => id !== project.id), project.id].slice(-20) }))
 }
 
 // The one way the board writes to a project. Every mutation, from Start, triage, the tools, the moves a read makes and
@@ -814,18 +855,20 @@ const declineFromPrompt = async ($: EngineInterface, project: Project): Promise<
 // leaves what counts as adopted as it was; otherwise it goes with the other projects' mappings. The board goes by it at
 // once.
 const saveRoles = async ($: EngineInterface, project: { id: string }, roles: Roles): Promise<void> => {
-  await changeSaved($, was =>
-    was.setup?.status && was.setup.project.id === project.id
-      ? { ...was, setup: { ...was.setup, status: { ...was.setup.status, roles } } }
-      : { ...was, statuses: { ...(was.statuses ?? {}), [project.id]: roles } },
-  )
+  const shared = await sharedOf($)
+  if (shared.setup?.status && shared.setup.project.id === project.id) {
+    await $.store.set(await keyOf($), { ...shared, setup: { ...shared.setup, status: { ...shared.setup.status, roles } } })
+    await loadAdoption($)
+  } else {
+    await changeChoices($, was => ({ ...was, statuses: { ...(was.statuses ?? {}), [project.id]: roles } }))
+  }
   await update($, board, now => (now?.project?.id === project.id ? { ...now, project: { ...now.project, roles: rolesFor(now.project.status, roles), guessed: false } } : now))
 }
 
 // A guessed mapping the person answered: the band doesn't show it again, in this session or another.
 const seeGuess = async ($: EngineInterface, key: string): Promise<void> => {
   try {
-    await changeSaved($, was => ({ ...was, guessSeen: [...(was.guessSeen ?? []).filter(one => one !== key), key].slice(-20) }))
+    await changeChoices($, was => ({ ...was, guessSeen: [...(was.guessSeen ?? []).filter(one => one !== key), key].slice(-20) }))
   } catch (cause) {
     $.ui.toast(`Couldn't save that: ${messageOf(cause)}`)
   }
@@ -924,7 +967,7 @@ const save = async ($: EngineInterface): Promise<void> => {
     // Without the issues' bodies, which the next refresh brings back, to keep the store small.
     const now = await read($, board)
     const kept = now && { ...now, issues: now.issues.map(issue => ({ ...issue, body: '' })) }
-    const before = await savedAll($)
+    const before = await sharedOf($)
     const saved: Saved = {
       board: kept,
       working: await read($, working),
@@ -932,10 +975,9 @@ const save = async ($: EngineInterface): Promise<void> => {
       viewer: await read($, viewer),
       sections: await read($, sections),
       ...(before.setup ? { setup: before.setup } : {}),
-      ...(before.adopted !== undefined ? { adopted: before.adopted } : {}),
-      ...(before.declined ? { declined: before.declined } : {}),
-      ...(before.statuses ? { statuses: before.statuses } : {}),
-      ...(before.guessSeen ? { guessSeen: before.guessSeen } : {}),
+      // Choices an earlier board left here stay as they were, for a board of that version still running on the repo.
+      // This board keeps its own under the choices key.
+      ...choicesIn(before),
     }
     await $.store.set(await keyOf($), saved)
   } catch (cause) {
