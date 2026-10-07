@@ -202,7 +202,7 @@ test('context added counts per prompt Claude received', async ($, on) => {
   expect((await spent($)).text).toMatch(/^Context added: [\d,]+ characters, [\d,]+ a prompt over 2 prompts$/m)
 })
 
-test('the budget: a refresh, the capture note, a Start, an issue_update, a capture, a plan, a tick, a comment and an idle hour', async ($, on) => {
+test('the budget: a refresh, the capture note, a Start, an issue_update, a capture, a plan, a tick, a comment, Finish & merge, Merge all and an idle hour', async ($, on) => {
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   const gh = world(on)
   await $.session.start({ cwd: REPO.root, surface: 'terminal', isInteractive: true })
@@ -282,6 +282,16 @@ test('the budget: a refresh, the capture note, a Start, an issue_update, a captu
   const commented = await measure(() => $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 315, comment: 'Seen it.' }))
   expect(calls(commented)).toEqual({ rest: 2, rest304: 1, graphql: 3 })
   expect(commented.ran[0]).toBe('api -X POST repos/astrosteveo/void-sector/issues/315/comments --input -')
+
+  // Finish & merge: one REST read of the pull request's files before it goes to Claude, and Merge all one for each.
+  const merging = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  const finish = await measure(() => merging.press({ key: 'close-out-335' }))
+  expect(calls(finish)).toEqual({ rest: 1, rest304: 0, graphql: 0 })
+  expect(finish.ran[0]).toMatch(/^api repos\/astrosteveo\/void-sector\/pulls\/335\/files\?per_page=100 --jq /)
+  const mergeAll = await measure(() => merging.press({ key: 'close-out-all' }))
+  expect(calls(mergeAll)).toEqual({ rest: 1, rest304: 0, graphql: 0 })
+  await merging.press({ key: 'close-out-all-no' })
+  await merging.unmount()
 
   // An idle hour: a cheap check every five minutes, which answers 304 while nothing changed, and a full read every
   // fifteen. Nothing goes into Claude's context.

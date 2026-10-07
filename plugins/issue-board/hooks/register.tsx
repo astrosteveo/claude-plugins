@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentSpawnResult, Caught, EngineInterface, HookFailure, ModelForkResult, Register, Timer, ToolCallResult, UiCopyArgs } from 'claude-code'
 
-import type { Adopted, Adoption, Armed, Board, FieldValues, BoxTask, BuiltInFilter, Check, Comment, EpicNote, Issue, Known, LabelChange, Launch, ViewChange, Markers, Milestone, Plan, PlanRow, Problem, Project, Role, Roles, StatusUpdate, PullRequest, RunWatch, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
+import type { Adopted, Adoption, Armed, Board, FieldValues, Flagged, BoxTask, BuiltInFilter, Check, Comment, EpicNote, Issue, Known, LabelChange, Launch, ViewChange, Markers, Milestone, Plan, PlanRow, Problem, Project, Role, Roles, StatusUpdate, PullRequest, RunWatch, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
 import type { IssueChanges, NewIssue } from './changes'
 import type { Tab } from './filters'
 import type { Ended } from './workers'
@@ -243,14 +243,18 @@ import {
 import {
   ACTIVE,
   backgroundPrompt,
+  closeOutRisk,
   endedLine,
   handoffPrompt,
   issueOfBranch,
   startedByClaude,
   workerIssueOf,
+  workerOfPr,
   workerPrOf,
   workerPrompt,
 } from './workers'
+import { FILES_PAGE, PATCHED, fileFlags, flaggedLines } from './merging'
+import type { ChangedFile } from './merging'
 
 // ---- Atoms, and the constants the module shares ----
 
@@ -3191,22 +3195,76 @@ const flipBox = async ($: EngineInterface, issue: Issue, box: number, done: bool
   }
 }
 
-const closeOutPr = async ($: EngineInterface, pr: PullRequest): Promise<void> => {
+// Whether the checkout is a plugin marketplace laid out as this repo is: a .claude-plugin/marketplace.json at its root
+// that lists each plugin under plugins/. Asked of git, so it costs no GitHub call.
+const isMarketplace = async ($: EngineInterface): Promise<boolean> => {
+  try {
+    const { exitCode, stdout } = await $.process.run(['git', 'ls-files', '--', '.claude-plugin/marketplace.json'])
+    return exitCode === 0 && stdout.trim() === '.claude-plugin/marketplace.json'
+  } catch {
+    return false
+  }
+}
+
+// What one pull request's changed files flag, from one REST call for the first page of them. jq keeps only the diffs
+// of the files the version check reads. A read that fails is flagged too, so the person decides without the check.
+const flagsOf = async ($: EngineInterface, repo: string, number: number, marketplace: boolean): Promise<string[]> => {
+  try {
+    const shape = `[.[] | {path: .filename, status, patch: (if (.filename | test("${PATCHED}")) then .patch else null end)}]`
+    const files = JSON.parse(await gh($, ['api', `repos/${repo}/pulls/${number}/files?per_page=${FILES_PAGE}`, '--jq', shape])) as ChangedFile[]
+    return fileFlags(files, { marketplace })
+  } catch (cause) {
+    return [`has files the board couldn't read: ${messageOf(cause)}`]
+  }
+}
+
+// Finish & merge, on a pull request's row or the band. It reads the pull request's files first, and asks before it
+// goes when they flag something, a background agent is still on its branch, or its CI hasn't passed. The ask is the
+// row's, so from the band the pane opens on it. A pull request with nothing to ask about goes straight to `go`.
+const finishPr = async ($: EngineInterface, pr: PullRequest, go: () => unknown, fromBand = false): Promise<void> => {
+  const repo = (await read($, board))?.repo
+  const risk = closeOutRisk(pr, workerOfPr(pr, await read($, workers)))
+  const found = repo ? await flagsOf($, repo, pr.number, await isMarketplace($)) : []
+  if (!risk && found.length === 0) {
+    await go()
+    return
+  }
+  await update($, armed, (): Armed => ({ kind: 'pr', number: pr.number, found }))
+  if (!fromBand) return
+  await update($, sections, was => ({ ...was, prs: true }))
+  await $.ui.open(OPEN)
+  $.ui.toast(`PR #${pr.number} needs a look before it merges`)
+}
+
+const closeOutPr = async ($: EngineInterface, pr: PullRequest, found: string[] = []): Promise<void> => {
   await disarm($, 'pr')
-  await submit($, 'other prompts', { text: closeOutPrompt(pr), asUser: true })
+  await submit($, 'other prompts', { text: closeOutPrompt(pr, found), asUser: true })
   $.ui.toast(`Sent PR #${pr.number} to Claude to finish and merge`)
 }
 
-// Merge all merges every open pull request, so it asks once more before it goes.
-const closeOutAll = async ($: EngineInterface, prs: PullRequest[]): Promise<void> => {
+// Merge all's confirm. It reads every open pull request's files, one call each, while the confirm says it is checking,
+// then names each pull request that flagged something, so the one yes covers what the person saw.
+const armMergeAll = async ($: EngineInterface, prs: PullRequest[]): Promise<void> => {
+  await update($, armed, (): Armed => ({ kind: 'merge-all', flagged: null }))
+  const repo = (await read($, board))?.repo
+  const marketplace = await isMarketplace($)
+  const flagged = await Promise.all(prs.map(async pr => ({ number: pr.number, found: repo ? await flagsOf($, repo, pr.number, marketplace) : [] })))
+  // Cancelled, or another confirm armed, while the files were read: that one stays.
+  await update($, armed, (was): Armed => (was?.kind === 'merge-all' ? { kind: 'merge-all', flagged } : was))
+}
+
+// Merge all merges every open pull request it checked, so it asks once more before it goes.
+const closeOutAll = async ($: EngineInterface, prs: PullRequest[], flagged: Flagged[]): Promise<void> => {
   await disarm($, 'merge-all')
-  // The pull requests it was asked for may have merged while it waited on its confirm.
-  if (prs.length === 0) {
+  // The pull requests it was asked for may have merged while it waited on its confirm, and one opened since wasn't
+  // checked, so it isn't sent.
+  const checked = prs.filter(pr => flagged.some(one => one.number === pr.number))
+  if (checked.length === 0) {
     $.ui.toast('No pull requests are open now, so there is nothing to merge.')
     return
   }
-  await submit($, 'other prompts', { text: closeOutAllPrompt(prs), asUser: true })
-  $.ui.toast(`Sent ${prs.length} ${prs.length === 1 ? 'PR' : 'PRs'} to Claude to finish and merge`)
+  await submit($, 'other prompts', { text: closeOutAllPrompt(checked, flagged), asUser: true })
+  $.ui.toast(`Sent ${checked.length} ${checked.length === 1 ? 'PR' : 'PRs'} to Claude to finish and merge`)
 }
 
 // One card at a time, so its letter keys always work; an opened card is scrolled into view.
@@ -4034,6 +4092,9 @@ export const register: Register = (on, options) => {
     const armedNow = await read($, armed)
     const arming = armedNow?.kind === 'merge-all'
     const armedPr = armedNow?.kind === 'pr' ? armedNow.number : null
+    const armedFound = armedNow?.kind === 'pr' ? (armedNow.found ?? []) : []
+    // What Merge all's check flagged, or null while it reads the files.
+    const flagged = armedNow?.kind === 'merge-all' ? (armedNow.flagged ?? null) : null
     const who = await read($, viewer)
     const typed = await read($, query)
     const here = await read($, branch)
@@ -4131,18 +4192,18 @@ export const register: Register = (on, options) => {
     // A card above a row too near the pane's top would be pushed down over the row, so each row knows the lines free
     // above it in the window, as roomAbove counts them.
     const roomOf = roomAbove({
-      now, width, tabs: tabs.map(tabLabel), groupings: groupings.map(one => one.label), trends: Boolean(trends), failure, sectionOpen, arming, runs: watched.length,
+      now, width, tabs: tabs.map(tabLabel), groupings: groupings.map(one => one.label), trends: Boolean(trends), failure, sectionOpen, arming, armingLines: flaggedLines(flagged ?? []).length, runs: watched.length,
       unknownTerms: unknownTerms.length, triaging, triageFailed: Boolean(triaged.failed), shown, groups, opened, offset: e.props.scroll.offset,
     })
 
     // The rows and the open card, drawn by views/pr-row.tsx, views/issue-row.tsx and views/card.tsx with these handlers.
     const prHandlers: PrRowHandlers = {
       toggle: number => () => void update($, openPr, was => (was === number ? null : number)),
-      arm: pr => void update($, armed, (): Armed => ({ kind: 'pr', number: pr.number })),
-      closeOut: pr => void closeOutPr($, pr),
+      finish: pr => finishPr($, pr, () => closeOutPr($, pr)),
+      closeOut: pr => void closeOutPr($, pr, armedPr === pr.number ? armedFound : []),
       cancel: () => void disarm($, 'pr'),
     }
-    const prRow = (pr: PullRequest) => prRowView(els, { pr, width, roomy, repo: now.repo, here, shownPr, armedPr, workers: working$, clock }, prHandlers)
+    const prRow = (pr: PullRequest) => prRowView(els, { pr, width, roomy, repo: now.repo, here, shownPr, armedPr, armedFound, workers: working$, clock }, prHandlers)
     const issueHandlers: IssueRowHandlers = { toggle, stop: () => void stopTracking($) }
     const issueRow = (issue: Issue) =>
       issueRowView(els, { issue, width, roomy, open, marks, project, prs: now.prs, workers: working$, doing, clock, room: roomOf(issue.number) }, issueHandlers)
@@ -4172,7 +4233,7 @@ export const register: Register = (on, options) => {
       ask: (issue, last) => submit($, 'other prompts', { text: answerPrompt(issue, last), asUser: true }).then(() => $.ui.toast(`Asked Claude to answer @${last.author} on #${issue.number}`)),
     }
     const issueCard = (issue: Issue, hotkeys: boolean) => issueCardView(els, { ...cardData, issue, hotkeys }, cardHandlers)
-    const prsHandlers = { fold, closeOutAll: (prs: PullRequest[]) => closeOutAll($, prs), arm: (to: boolean) => () => void (to ? update($, armed, (): Armed => ({ kind: 'merge-all' })) : disarm($, 'merge-all')) }
+    const prsHandlers = { fold, closeOutAll: (prs: PullRequest[]) => closeOutAll($, prs, flagged ?? []), arm: (to: boolean) => () => (to ? armMergeAll($, now.prs) : disarm($, 'merge-all')) }
     const rows = { issueRow, issueCard }
     const planHandlers: PlanHandlers = {
       pickRow: id => () => void update($, proposal, was => was && { ...was, rows: was.rows.map(row => (row.id === id ? { ...row, picked: !row.picked } : row)) }),
@@ -4207,7 +4268,7 @@ export const register: Register = (on, options) => {
         {failure && <Text color="error">{`✗ Last refresh failed: ${failure}`}</Text>}
 
         {prsHeading(els, { prs: now.prs, open: sectionOpen('prs'), arming }, prsHandlers)}
-        {confirm && mergeConfirm(els, { prs: now.prs }, prsHandlers)}
+        {confirm && mergeConfirm(els, { prs: now.prs, flagged }, prsHandlers)}
         {sectionOpen('prs') && now.prs.map(prRow)}
         {watched.map(run => runRow(els, { run, width }))}
 
@@ -4291,6 +4352,11 @@ export const register: Register = (on, options) => {
       },
       // A button that hands Claude a pull request: into the prompt box while Claude is busy, sent otherwise.
       hand: text => (e.props.isWorking ? $.prompt.fill({ text }) : submit($, 'other prompts', { text, asUser: true })),
+      // Finish & merge on a pull request whose CI passed: its files checked first, as on the pane's row.
+      finish: pr => {
+        const text = closeOutPrompt(pr)
+        return finishPr($, pr, () => (e.props.isWorking ? $.prompt.fill({ text }) : submit($, 'other prompts', { text, asUser: true })), true)
+      },
       tickTask: task => tickTask($, task),
       skipTask: task => update($, tasks, list => list.filter(one => one.id !== task.id)),
       dismissNote: note => update($, epicNotes, list => list.filter(one => one.key !== note.key)),

@@ -28,7 +28,7 @@ test('the close-out prompts name each pull request and ask for a guarded merge',
   const draft = parsed.find(one => one.isDraft)!
   const ready = parsed.find(one => !one.isDraft)!
   expect(closeOutPrompt(ready)).toMatch(/^Close out PR #335: Glide in to a planet \(branch `fix\/planet-glide`\)\./)
-  expect(closeOutPrompt(ready)).toMatch(/don't bypass branch protection or force-push/)
+  expect(closeOutPrompt(ready)).toMatch(/Don't bypass branch protection or force-push/)
   expect(closeOutPrompt(ready)).not.toMatch(/draft/)
   expect(closeOutPrompt(draft)).toMatch(/It is a draft: finish it and mark it ready first\./)
 

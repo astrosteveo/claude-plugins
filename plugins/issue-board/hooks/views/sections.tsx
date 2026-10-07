@@ -1,8 +1,9 @@
 import type { ThemeKey } from 'claude-code'
 
-import type { Milestone, Project, PullRequest, RunWatch } from '../../types'
+import type { Flagged, Milestone, Project, PullRequest, RunWatch } from '../../types'
 import { updateLine } from '../github'
 import { fit, prCountsText } from '../layout'
+import { flaggedLines } from '../merging'
 import { milestoneDue } from '../rest'
 import type { Elements } from './parts'
 import { partsOf } from './parts'
@@ -76,18 +77,35 @@ export const prsHeading = (elements: Elements, { prs, open, arming }: { prs: Pul
   )
 }
 
-// Merge all's confirm.
-export const mergeConfirm = ({ Box, Text, Button }: Elements, { prs }: { prs: PullRequest[] }, handlers: PrsHandlers) => (
-  <Box flexDirection="row" gap={1} flexWrap="wrap">
-    <Text color="warning">{`Finish and merge all ${prs.length} open ${prs.length === 1 ? 'PR' : 'PRs'}?`}</Text>
-    <Button key="close-out-all-yes" variant="primary" hotkey="y" onPress={() => void handlers.closeOutAll(prs)}>
-      Yes, merge them
-    </Button>
-    <Button key="close-out-all-no" dimColor hotkey="n" onPress={handlers.arm(false)}>
-      Cancel
-    </Button>
-  </Box>
-)
+// Merge all's confirm. While the board reads the pull requests' files it says so and offers only Cancel; then it asks,
+// with a line under the question for each pull request whose files flagged something.
+export const mergeConfirm = ({ Box, Text, Button }: Elements, { prs, flagged }: { prs: PullRequest[]; flagged: Flagged[] | null }, handlers: PrsHandlers) => {
+  const lines = flaggedLines(flagged ?? [])
+  const plural = prs.length === 1 ? 'PR' : 'PRs'
+  return (
+    <Box flexDirection="column">
+      <Box flexDirection="row" gap={1} flexWrap="wrap">
+        {flagged === null && <Text dimColor>{`Checking the files of ${prs.length} open ${plural}…`}</Text>}
+        {flagged !== null && (
+          <Text color="warning">{`Finish and merge all ${prs.length} open ${plural}?${lines.length > 0 ? ` ${lines.length} ${lines.length === 1 ? 'needs' : 'need'} a look:` : ''}`}</Text>
+        )}
+        {flagged !== null && (
+          <Button key="close-out-all-yes" variant="primary" hotkey="y" onPress={() => void handlers.closeOutAll(prs)}>
+            {lines.length > 0 ? 'Yes, merge them anyway' : 'Yes, merge them'}
+          </Button>
+        )}
+        <Button key="close-out-all-no" dimColor hotkey="n" onPress={handlers.arm(false)}>
+          Cancel
+        </Button>
+      </Box>
+      {lines.map(line => (
+        <Text key={`close-out-all-flag-${line.split(' ')[0]}`} color="warning" wrap="wrap">
+          {`  ${line}`}
+        </Text>
+      ))}
+    </Box>
+  )
+}
 
 // A CI run being watched on the checked-out branch: its workflow, how many jobs are done, and the step under way.
 export const runRow = (elements: Elements, { run, width }: { run: RunWatch; width: number }) => {

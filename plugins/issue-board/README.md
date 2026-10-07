@@ -436,12 +436,33 @@ linked issue, the merge note and the review mark. Last, **Finish & merge**
 becomes **Merge**.
 
 - **Finish & merge** sends Claude to see it through: fix CI, answer review,
-  and merge, without bypassing branch protection or force-pushing. While a
-  background agent owns the branch, or CI is still running or failing, it
-  asks first and says why. **Close out anyway** sends it, and **Cancel**
-  doesn't.
+  and merge once every check has passed, not just the required ones, without
+  bypassing branch protection or force-pushing. First the board reads the
+  pull request's changed files, one GitHub call. It asks first, and says why,
+  while a background agent owns the branch, while CI is still running or
+  failing, or when the files flag something (see below). **Close out
+  anyway** sends it, with what was flagged, and **Cancel** doesn't.
 - **⇶ Merge all** (`m`) does the same for every open pull request, oldest
-  first, after asking: `y` to send, `n` to cancel.
+  first, after asking: `y` to send, `n` to cancel. It reads each pull
+  request's files first, one call each, and asks once, with a line for each
+  pull request that flagged something.
+
+The files that make it ask:
+
+- CI workflows (`.github/workflows/`), Claude Code settings
+  (`.claude/settings*.json`) and lockfiles (`package-lock.json`, `yarn.lock`,
+  `Cargo.lock`, `go.sum` and the like);
+- deleted files;
+- files that look like secrets: `.env` (not `.env.example`), `*.pem`, `*.key`
+  and SSH keys;
+- in a plugin marketplace laid out like this repo (a
+  `.claude-plugin/marketplace.json` in the checkout), a plugin under
+  `plugins/<name>/` changed without a new version in both its `plugin.json`
+  and its entry in `marketplace.json`;
+- 100 files or more, since only the first 100 are read.
+
+**Finish & merge** in the band checks the same way. When something is
+flagged, it opens the pane on the pull request's question instead.
 
 One question waits at a time. Asking one, such as Merge all's, drops any
 other that was waiting, such as a pull request's or an epic's Close.

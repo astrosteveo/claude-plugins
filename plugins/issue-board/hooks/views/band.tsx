@@ -1,13 +1,13 @@
 import type { ButtonProps, RenderChildren, ThemeKey } from 'claude-code'
 
-import type { Alert, BoxTask, EpicNote, Markers, Plan, Problem, Project, Role } from '../../types'
+import type { Alert, BoxTask, EpicNote, Markers, Plan, Problem, Project, PullRequest, Role } from '../../types'
 import { accessKey } from '../access'
 import { inboxTabOf, tabsOf } from '../filters'
 import { agoText, cells, fit } from '../layout'
 import { markerKey, markerText } from '../markers'
 import { kindsText, sizeText } from '../plan'
 import { adoptText, guessKey, guessText } from '../project'
-import { closeOutPrompt, fixPrompt } from '../prompts'
+import { fixPrompt } from '../prompts'
 import { pageOf } from '../rest'
 import type { Elements } from './parts'
 import { partsOf } from './parts'
@@ -44,6 +44,8 @@ export type BandHandlers = {
   dismiss: (alert: Alert) => Promise<unknown>
   // Hands Claude a prompt: into the prompt box while Claude is busy, sent otherwise.
   hand: (text: string) => unknown
+  // Finish & merge: checks the pull request's files, then hands it to Claude or asks on the pane first.
+  finish: (pr: PullRequest) => unknown
   tickTask: (task: BoxTask) => unknown
   skipTask: (task: BoxTask) => unknown
   dismissNote: (note: EpicNote) => unknown
@@ -131,7 +133,7 @@ export const band = (elements: Elements, data: BandData, handlers: BandHandlers)
           number: { value: pr.number, color: 'suggestion' },
           text: [<Text>{fit(pr.title, Math.max(12, width - 57))}</Text>, <Text dimColor>{` passed on ${fit(pr.branch, 20)}`}</Text>],
           actions: [
-            <Button key={`merge-${pr.number}`} variant="primary" onPress={() => void hand(closeOutPrompt(pr))}>
+            <Button key={`merge-${pr.number}`} variant="primary" onPress={() => void handlers.finish(pr)}>
               Finish & merge
             </Button>,
             link(pageOf(repo, 'pull', pr)),

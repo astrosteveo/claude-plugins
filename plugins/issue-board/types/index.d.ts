@@ -217,10 +217,15 @@ export type FieldValues = Record<string, string>
 // `parent` and `duplicate` for the editor's own fields, and `<issue>-<field id>` for a project field typed in.
 export type TypedText = Record<string, string>
 
-// The confirm waiting on a second press, if any. `merge-all` is Merge all; `pr` is a pull request's Finish & merge,
-// pressed while a worker owns its branch or its CI hasn't passed; `close` is Close on an epic with open sub-issues.
-// There is one at a time, so arming one cancels any other.
-export type Armed = { kind: 'merge-all' } | { kind: 'pr' | 'close'; number: number } | null
+// A pull request and what the board flagged in its changed files before a merge, one line for each kind (CI
+// workflows, settings, lockfiles, deletions, secrets, a plugin without its version bumped). Empty when nothing was.
+export type Flagged = { number: number; found: string[] }
+
+// The confirm waiting on a second press, if any. `merge-all` is Merge all, with what each pull request's files
+// flagged, or null while the board still reads them; `pr` is a pull request's Finish & merge, pressed while a worker
+// owns its branch, its CI hasn't passed or its files flagged something (`found`); `close` is Close on an epic with open
+// sub-issues. There is one at a time, so arming one cancels any other.
+export type Armed = { kind: 'merge-all'; flagged?: Flagged[] | null } | { kind: 'pr'; number: number; found?: string[] } | { kind: 'close'; number: number } | null
 
 // An issue as GitHub's search or REST answers it, open or closed, for what the board's copy of open issues can't show.
 export type Found = { number: number; title: string; url: string; state: 'open' | 'closed'; reason: string | null; closedAt: string | null; labels: string[] }
