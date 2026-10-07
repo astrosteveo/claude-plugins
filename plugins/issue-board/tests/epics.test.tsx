@@ -5,6 +5,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Board, EpicNote } from '../types'
 import { draftPrompt, liveEpicNotes, nextOf, parseDraft, parseGraph, sortIssues } from '../hooks/parse'
 import { STATUSES, graphPage, isIssuesQuery, adoptedStore } from './graph'
+import { letThrough } from './engine'
 
 const PANE = { component: 'Pane', requestId: 'issue-board', props: { title: 'Issues', isFocused: true, bodyColumns: 110, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } } as const
 const RUN = { origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 }, command: 'issues' } as const
@@ -66,6 +67,7 @@ const github = (on: On, issues: Raw[] = ISSUES) => {
     return answer(argv[1] === 'api' ? 'astrosteveo\n' : '[]')
   })
   on('session.id', async () => ({ value: 'session-1' }))
+  letThrough(on)
   on('ui.open', async () => ({ value: { isPlaced: true as const } }))
   return state
 }
@@ -322,6 +324,7 @@ const lifecycle = (on: On, open: Raw[]) => {
     return answer('[]')
   })
   on('session.id', async () => ({ value: 'session-1' }))
+  letThrough(on)
   on('ui.open', async () => ({ value: { isPlaced: true as const } }))
   on('ui.toast', async () => ({ value: undefined }))
   // What the engine draws in the band when no plugin has anything to say.

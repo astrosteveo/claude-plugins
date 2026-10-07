@@ -4,6 +4,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Board, Issue } from '../types'
 import { addBoxes, changesText, commandsOf, leftForDone, leftForVerification, movedText, rewordBoxes, statusOnly, unmovedText } from '../hooks/parse'
 import { asksProject, graphPage, isIssuesQuery, optionId, adoptedStore } from './graph'
+import { letThrough } from './engine'
 
 type Raw = Parameters<typeof graphPage>[0][number]
 
@@ -174,6 +175,7 @@ const github = (on: On, prs: unknown[] = [], extra: Raw[] = []) => {
     return answer(argv[1] === 'api' ? 'astrosteveo\n' : '[]')
   })
   on('session.id', async () => ({ value: 'session-1' }))
+  letThrough(on)
   on('ui.open', async () => ({ value: { isPlaced: true as const } }))
   return state
 }

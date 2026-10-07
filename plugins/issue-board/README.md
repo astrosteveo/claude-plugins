@@ -340,12 +340,14 @@ The board gives Claude eight tools:
   when you ask. It always asks first; see
   [Letting the board write to a project](#letting-the-board-write-to-a-project).
 
-Claude Code asks before any tool that changes something, as it does for any
-tool, except where the change is part of work you started: moving the
-Status of your issue, `start`, listing what an archive would take, and
-reading the status update. An organization's rule that requires asking
-still stands. A transfer from a public repo to a private one, which GitHub
-won't undo, needs a second, confirmed call.
+Each tool that changes something goes through Claude Code's permission
+check before it touches GitHub, as any tool does. If you say no, or a rule
+denies it, nothing changes. Some calls don't ask, because they are part of
+work you started or change nothing: ticking boxes, moving the Status of
+your issue, `start`, listing what an archive would take, and reading the
+status update. A rule that denies them still stands, and so does an
+organization's rule that requires asking. A transfer from a public repo to
+a private one, which GitHub won't undo, needs a second, confirmed call.
 
 ## Commands
 
@@ -469,9 +471,10 @@ Two more have no setting:
 
 - The next prompt notes what changed on GitHub to the issue Claude is on.
   Press `✕` on its row to stop tracking it.
-- Claude Code doesn't ask before the board's reads, moving the Status of the
-  issue you started, or listing what an archive would take. Every other
-  change the board's tools make asks, as any tool does. See
+- Claude Code doesn't ask before the board's reads, ticking boxes, moving the
+  Status of the issue you started, or listing what an archive would take.
+  Every other change the board's tools make asks first, as any tool does,
+  and a no changes nothing. See
   [What Claude can do](#what-claude-can-do).
 
 One more setting changes no behavior, only the filters: **Priorities that

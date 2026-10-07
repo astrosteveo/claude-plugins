@@ -2,6 +2,7 @@ import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { adoptReason, adoptTarget, approvedOf, linkedOf, releaseReason } from '../hooks/project'
+import { approved, refused } from './engine'
 import { ADOPTED, PROJECT, graphPage, isIssuesQuery } from './graph'
 
 const REFRESH = { command: 'issues', args: 'refresh', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
@@ -12,8 +13,8 @@ const ROADMAP = { id: 'PVT_9', number: 9, title: 'Roadmap', url: 'https://github
 const OLD = { id: 'PVT_7', number: 7, title: 'Old plans', url: 'https://github.com/users/astrosteveo/projects/7', closed: true }
 // What the engine answers beneath a plugin's tool once the permission check let the call through, and once the person
 // said no. The test's own tool.call hook stands for the engine there.
-const APPROVED = { result: 'Error: issue-board registered the tool project_adopt but no tool.call hook answered this call', text: 'issue-board registered the tool project_adopt but no tool.call hook answered this call', isError: true as const }
-const REFUSED = { result: 'Error: Permission to use mcp__issue-board__project_adopt was denied', text: 'Permission to use mcp__issue-board__project_adopt was denied', isError: true as const }
+const APPROVED = approved(TOOL)
+const REFUSED = refused(TOOL)
 const WARNING = [
   'Let the board write to Void Sector, owned by astrosteveo?',
   'Until you say yes, the board only reads it.',
@@ -71,6 +72,7 @@ const world = (on: On, saved: Record<string, unknown> = {}) => {
   on('ui.toast', async () => ({ value: undefined }))
   on('ui.log', async () => ({ value: undefined }))
   on('tool.call', { tool: TOOL }, async () => state.answer)
+  on('tool.call', { tool: 'mcp__issue-board__issue_update' }, async (_$, e) => approved(e.tool))
   const adopted = () => (state.kept.get(KEY) as { adopted?: unknown } | undefined)?.adopted
   return { state, adopted }
 }

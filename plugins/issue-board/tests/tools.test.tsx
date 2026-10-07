@@ -15,8 +15,11 @@ import {
   workerPrompt,
   workingSection,
   projectPathOf,
+  writesGitHub,
 } from '../hooks/parse'
+import { isMutation } from '../hooks/project'
 import { PRIORITIES, STATUSES, asksProject, graphPage, isIssuesQuery, optionId, adoptedStore } from './graph'
+import { letThrough, permissions } from './engine'
 
 const BODY = '## Acceptance\r\n\r\n- [x] Layout in place\r\n- [ ] Old saves load\r\n- [ ] Goldens regenerated\r\n'
 
@@ -142,9 +145,12 @@ const world = (on: On) => {
     archived: [] as string[],
     statusPosts: [] as Record<string, unknown>[],
     patches: [] as string[],
+    // Every gh call that writes to GitHub.
+    writes: [] as string[],
   }
   on('process.run', async (_$, e) => {
     const argv = e.argv
+    if (argv[0] === 'gh' && (writesGitHub(argv.join(' ')) || isMutation(argv, e.init?.stdin))) state.writes.push(argv.join(' '))
     const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
     if (argv[0] === 'git') return answer(`${state.branch}\n`)
     if (argv[1] === 'api' && argv[2] === '-i') {
@@ -321,10 +327,12 @@ const world = (on: On) => {
     return answer(JSON.stringify(argv[1] === 'issue' ? [issue(state.body), other] : state.prs))
   })
   on('session.id', async () => ({ value: 'session-1' }))
+  // The engine beneath the board's write tools: its permission check, and the person at its prompt.
+  const engine = permissions(on)
   on('session.repo', async () => ({ value: REPO }))
   on('session.root', async () => ({ value: REPO.root }))
   on('ui.open', async () => ({ value: { isPlaced: true as const } }))
-  return state
+  return Object.assign(state, { engine })
 }
 
 test('boxes tick in place, CRLF bodies included, and say which were missing', () => {
@@ -579,6 +587,7 @@ test('a new session paints the saved board and keeps the issue Claude was on', a
   }
   adoptedStore(on, { [`repo:${REPO.root}`]: saved })
   on('session.id', async () => ({ value: 'session-2' }))
+  letThrough(on)
   on('session.repo', async () => ({ value: REPO }))
   // GitHub can't be reached yet: what shows is what was saved.
   on('process.run', async () => ({ value: { exitCode: 1, stdout: '', stderr: 'offline', isStdoutTruncated: false, isStderrTruncated: false } }))
@@ -1132,6 +1141,76 @@ test("project_status reads the project's latest update without asking, posts one
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   expect(await ui.find({ text: /At risk · Docking slipped\./ })).toBeDefined()
   await ui.unmount()
+})
+
+test('each write tool asks before it changes anything: a no or a rule that denies writes nothing, a yes writes', async ($, on) => {
+  const gh = world(on)
+  gh.project = true
+  await $.command.run(REFRESH)
+  // The test asks tool.check first, as the engine does beneath the tool, and the engine answers by that verdict.
+  const call = async (name: string, input: Record<string, unknown>) => {
+    const tool = `mcp__issue-board__${name}` as const
+    gh.engine.verdict = (await $.tool.check({ tool, input })).decision
+    return { verdict: gh.engine.verdict, answer: await $.tool.call({ tool, ...input }) }
+  }
+  const writes: [string, Record<string, unknown>][] = [
+    ['issue_create', { title: 'Dock at a station' }],
+    ['issue_update', { number: 289, priority: 'P0' }],
+    ['milestone', { title: 'Beta' }],
+    ['project_status', { status: 'At risk', note: 'Docking slipped.' }],
+    ['project_archive', { number: 290, confirm: true }],
+  ]
+  for (const [name, input] of writes) {
+    gh.writes = []
+    gh.engine.beneath = 'deny'
+    const denied = await call(name, input)
+    expect(denied.verdict).toBe('deny')
+    expect(gh.writes).toEqual([])
+
+    gh.engine.beneath = 'ask'
+    gh.engine.answer = 'no'
+    gh.engine.asked = []
+    const no = await call(name, input)
+    expect(gh.engine.asked).toEqual([`mcp__issue-board__${name}`])
+    expect(no.answer).toMatchObject({ isError: true, text: `Permission to use mcp__issue-board__${name} was denied` })
+    expect(gh.writes).toEqual([])
+
+    gh.engine.answer = 'yes'
+    const yes = await call(name, input)
+    expect(yes.answer.deny).toBeUndefined()
+    expect(yes.answer.isError).toBeUndefined()
+    expect(gh.writes.length).toBeGreaterThan(0)
+  }
+
+  // What the board's tool.check lets through needs no prompt: ticking a box, starting on an issue, and moving the
+  // Status of the issue this session is on. A rule that denies still stands.
+  gh.engine.answer = 'no'
+  gh.engine.asked = []
+  const unasked: [string, Record<string, unknown>][] = [
+    ['tick', { number: 315, boxes: [2] }],
+    ['issue_update', { number: 289, start: true }],
+    ['issue_update', { number: 289, status: 'Verification' }],
+  ]
+  for (const [name, input] of unasked) {
+    gh.writes = []
+    gh.engine.beneath = 'deny'
+    expect((await call(name, input)).verdict).toBe('deny')
+    expect(gh.writes).toEqual([])
+    gh.engine.beneath = 'ask'
+    const ran = await call(name, input)
+    expect(ran.verdict).toBe('allow')
+    expect(ran.answer.deny).toBeUndefined()
+    expect(gh.writes.length).toBeGreaterThan(0)
+  }
+  expect(gh.engine.asked).toEqual([])
+
+  // Reads neither ask nor write.
+  gh.writes = []
+  expect(String((await $.tool.call({ tool: 'mcp__issue-board__issues' })).result)).toMatch(/#315/)
+  expect(String((await call('project_status', {})).answer.result)).toMatch(/^Void Sector/)
+  expect(String((await call('project_archive', { doneBefore: '2026-10-01' })).answer.result)).toMatch(/Call again with confirm: true to archive\.$/)
+  expect(gh.engine.asked).toEqual([])
+  expect(gh.writes).toEqual([])
 })
 
 test('a field the project gained since the last read is read before setting it, rather than refused', async ($, on) => {
