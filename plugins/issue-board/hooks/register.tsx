@@ -87,7 +87,6 @@ import {
   tickBody,
   addBoxes,
   rewordBoxes,
-  subIssuesBoxOf,
   withSubIssuesBox,
 } from './boxes'
 import {
@@ -111,12 +110,12 @@ import {
   unmovedText,
 } from './changes'
 import {
-  leftForDone,
-  leftForVerification,
   epicChanges,
   epicToStart,
   liveEpicNotes,
 } from './epics'
+import { candidatesOf, planMoves, questionsOf } from './moves'
+import type { Answer, Answers, Questions, Unmoved } from './moves'
 import {
   areaOf,
   inboxTabOf,
@@ -1355,118 +1354,126 @@ const land = async ($: EngineInterface, before: Board | null, next: Board, seen:
   // The Inbox shows only while it is a tab, which it isn't once the project's views are the tabs.
   const inboxShown = tabOf(filtersFor(next.project), await read($, filter)).id === 'inbox'
   if (inboxShown && !(await read($, triage)).failed) void suggestInbox($)
-  void moveToDone($, before, next)
-  void moveToVerification($, before, next)
-  // Epic lines that no longer hold on this read go before advanceEpics raises new ones.
+  // Epic lines that no longer hold on this read go before its moves raise new ones.
   const clock = await nowOf($)
   await update($, epicNotes, list => liveEpicNotes(list, next, clock))
-  void advanceEpics($, before, next)
+  // The read's Status moves run as one sequence, after the last read's, and the read doesn't wait on them.
+  void moveOnRead($, before, next).catch(cause => $.ui.log(`issue-board: the moves after a read failed: ${messageOf(cause)}`, { to: 'debug' }))
 }
 
 // What the board moved on its own since the last prompt, which the next prompt notes for Claude.
 let moved: string[] = []
 
-// An issue a merged pull request refers to with `Refs #N`, not `Closes`, moves to Verification: merging didn't complete
-// its acceptance, so it waits on a check or sign-off. REST says whether the pull request merged; only the move spends
-// GraphQL. An issue already at Verification or Done, or a project without Verification, is left alone.
-const moveToVerification = async ($: EngineInterface, before: Board | null, next: Board): Promise<void> => {
-  const project = next.project
-  const verify = roleOf(project, 'verification')
-  if (!settings.autoMove || !project?.status || !verify || !(await mayWrite($, project))) return
-  const merged = new Map<number, boolean>()
-  const verified: number[] = []
-  const failed: { number: number; message: string }[] = []
-  for (const left of leftForVerification(before, next)) {
-    try {
-      if (!merged.has(left.pr)) merged.set(left.pr, !/^(null)?$/.test((await gh($, ['api', `repos/${next.repo}/pulls/${left.pr}`, '--jq', '.merged_at'])).trim()))
-      if (!merged.get(left.pr)) continue
-      await projectWrite($, project, SET_FIELD, { project: project.id, item: left.item, field: project.status.id, option: verify.id })
-      await update($, board, was => was && { ...was, issues: was.issues.map(one => (one.number === left.number ? { ...one, status: verify.name } : one)) })
-      moved.push(`#${left.number} moved to ${verify.name}: pull request #${left.pr}, which refers to it without closing it, merged.`)
-      verified.push(left.number)
-    } catch (cause) {
-      failed.push({ number: left.number, message: messageOf(cause) })
-    }
-  }
-  if (verified.length > 0) {
-    $.ui.toast(movedText(verify.name, verified, 'a pull request that refers to it merged without closing it', 'pull requests that refer to them merged without closing them'))
-  }
-  if (failed.length > 0) $.ui.toast(unmovedText(verify.name, failed))
+// The Status moves the board makes on its own after a read, planned by planMoves in moves.ts and applied here. Asking
+// GitHub comes first, then the plan, then the writes, one at a time, so two rules never write the same issue's Status.
+// The moves of one read wait for the last read's to finish. Turned off, the board neither moves issues nor asks GitHub
+// anything for it.
+let moving: Promise<unknown> = Promise.resolve()
+const moveOnRead = ($: EngineInterface, before: Board | null, next: Board): Promise<void> => {
+  const run = moving.then(() => applyMoves($, before, next))
+  moving = run.catch(() => undefined)
+  return run
 }
 
-// An issue that closed as completed since the last read moves to Done in the project, wherever it was closed: by a
-// merge, by Claude, or on GitHub. One closed as not planned stays where it was. REST says how it closed; only the move
-// spends GraphQL.
-const moveToDone = async ($: EngineInterface, before: Board | null, next: Board): Promise<void> => {
-  const project = next.project
-  const done = roleOf(project, 'done')
-  // Turned off, the board neither moves closed issues nor asks GitHub how they closed.
-  if (!settings.autoMove || !project?.status || !done || !(await mayWrite($, project))) return
-  const done$: number[] = []
-  const failed: { number: number; message: string }[] = []
-  for (const left of leftForDone(before, next)) {
+// What the planner needs from GitHub, asked over REST: whether each pull request merged, how each issue that left the
+// board closed, and each finished epic's body. Only the moves spend GraphQL.
+const askForMoves = async ($: EngineInterface, repo: string, questions: Questions): Promise<Answers> => {
+  const answers: Answers = { merged: {}, closed: {}, bodies: {} }
+  const ask = async <T,>(get: () => Promise<T>): Promise<Answer<T>> => {
     try {
-      const how = JSON.parse(await gh($, ['api', `repos/${next.repo}/issues/${left.number}`, '--jq', '{state, state_reason}'])) as { state?: string; state_reason?: string | null }
-      if (how.state !== 'closed' || how.state_reason !== 'completed') continue
-      await projectWrite($, project, SET_FIELD, { project: project.id, item: left.item, field: project.status.id, option: done.id })
-      done$.push(left.number)
-      moved.push(`#${left.number} moved to ${done.name}: it closed as completed.`)
+      return { value: await get() }
     } catch (cause) {
-      failed.push({ number: left.number, message: messageOf(cause) })
+      return { error: messageOf(cause) }
     }
   }
-  // The person sees what the board did on its own, once a read, and what it couldn't.
-  if (done$.length > 0) $.ui.toast(movedText(done.name, done$, 'it closed as completed', 'they closed as completed'))
-  if (failed.length > 0) $.ui.toast(unmovedText(done.name, failed))
+  for (const number of questions.closed) {
+    answers.closed[number] = await ask(async () => {
+      const how = JSON.parse(await gh($, ['api', `repos/${repo}/issues/${number}`, '--jq', '{state, state_reason}'])) as { state?: string; state_reason?: string | null }
+      return how.state === 'closed' ? (how.state_reason ?? null) : null
+    })
+  }
+  for (const pr of questions.prs) {
+    answers.merged[pr] = await ask(async () => !/^(null)?$/.test((await gh($, ['api', `repos/${repo}/pulls/${pr}`, '--jq', '.merged_at'])).trim()))
+  }
+  // The body as GitHub has it now, so a box ticked meanwhile counts. The tick takes the same read.
+  for (const number of questions.bodies) answers.bodies[number] = await ask(async () => (await readBody($, repo, number)).body)
+  return answers
 }
 
-// An epic follows its sub-issues. When a read sees an epic's last open sub-issue close, its "Every sub-issue is closed"
-// box is ticked. With every box then ticked, it closes as completed and moves to Done here, since it leaves the board
-// now and moveToDone would never see it go. With other boxes open, it moves to Verification, where a person checks what
-// is left, and the band and the next prompt say why. A sub-issue open again under an epic is only noted: reopening an
-// epic or moving it back is a person's call.
-const advanceEpics = async ($: EngineInterface, before: Board | null, next: Board): Promise<void> => {
+// Applies one read's plan in order. An issue that closed as completed moves to Done, wherever it was closed; one closed
+// as not planned stays. An issue a merged pull request refers to with `Refs #N`, not `Closes`, moves to Verification:
+// merging didn't complete its acceptance. An epic follows its sub-issues: when its last open sub-issue closes, its
+// "Every sub-issue is closed" box is ticked, and with every box then ticked it closes as completed and moves to Done
+// here, since it leaves the board now and no later read would see it go. With other boxes open, it moves to
+// Verification, where a person checks what is left, and the band and the next prompt say why. A sub-issue open again
+// under an epic is only noted: reopening an epic or moving it back is a person's call.
+const applyMoves = async ($: EngineInterface, before: Board | null, next: Board): Promise<void> => {
   if (!settings.autoMove) return
-  const { finished, reopened, orphaned } = epicChanges(before, next)
+  const { reopened, orphaned } = epicChanges(before, next)
   const titleOf = (number: number) => next.issues.find(one => one.number === number)?.title ?? next.issues.find(one => one.parent?.number === number)?.parent?.title ?? ''
   const at = await nowOf($)
   const notes: EpicNote[] = [
     ...reopened.map(one => ({ key: `epic-reopened-${one.epic}-${one.number}`, kind: 'reopened' as const, epic: one.epic, number: one.number, title: titleOf(one.epic), text: `#${one.number} reopened under it`, at })),
     ...orphaned.map(one => ({ key: `epic-orphaned-${one.epic}-${one.number}`, kind: 'orphaned' as const, epic: one.epic, number: one.number, title: titleOf(one.epic), text: `#${one.number} is open under it, and it is closed`, at })),
   ]
-  // Closing and ticking are the issue's own; the Status moves wait until the person lets the board write to the project.
-  const project = next.project && (await mayWrite($, next.project)) ? next.project : null
-  for (const number of finished) {
-    const epic = next.issues.find(one => one.number === number)
-    if (!epic) continue
+  // Closing and ticking an epic are the issue's own; the Status moves wait until the person lets the board write to the
+  // project.
+  const project = next.project
+  const write = !!project?.status && (await mayWrite($, project))
+  const candidates = candidatesOf(before, next, write)
+  const plan = planMoves(before, next, write, candidates.length > 0 ? await askForMoves($, next.repo, questionsOf(candidates)) : { merged: {}, closed: {}, bodies: {} })
+  const done: number[] = []
+  const verified: number[] = []
+  const failed: Unmoved[] = [...plan.failed]
+  for (const move of plan.moves) {
     try {
-      // The body as GitHub has it now, so a box ticked meanwhile counts. The tick takes the same read.
-      const { body } = await readBody($, next.repo, number)
-      const checks = checksOf(body)
-      const box = subIssuesBoxOf(checks)
-      if (box > 0 && !checks[box - 1]?.done) await tick($, number, [box], true, body)
-      const open = checks.filter((check, index) => !check.done && index !== box - 1).length
-      if (open === 0) {
-        for (const command of commandsOf(number, { close: 'completed' })) await gh($, command.argv, command.stdin)
-        const done = project?.status ? roleOf(project, 'done') : undefined
-        if (project?.status && done && epic.status !== done.name) await setField($, epic, 'status', done.name)
-        moved.push(`#${number} closed as completed${done ? ` and moved to ${done.name}` : ''}: every sub-issue is closed and every box is ticked.`)
-        await update($, board, was => was && { ...was, issues: was.issues.filter(one => one.number !== number) })
-        await save($)
-        $.ui.toast(`Closed epic #${number}: every sub-issue is closed and every box is ticked.`)
+      if (move.rule === 'epic') {
+        const epic = next.issues.find(one => one.number === move.number)
+        if (!epic) continue
+        if (move.tick > 0) await tick($, move.number, [move.tick], true, move.body)
+        if (move.close) {
+          for (const command of commandsOf(move.number, { close: 'completed' })) await gh($, command.argv, command.stdin)
+          if (move.to) await setField($, epic, 'status', move.to)
+          moved.push(`#${move.number} closed as completed${move.done ? ` and moved to ${move.done}` : ''}: every sub-issue is closed and every box is ticked.`)
+          await update($, board, was => was && { ...was, issues: was.issues.filter(one => one.number !== move.number) })
+          await save($)
+          $.ui.toast(`Closed epic #${move.number}: every sub-issue is closed and every box is ticked.`)
+          continue
+        }
+        const left = move.open === 1 ? '1 box is still open' : `${move.open} boxes are still open`
+        if (move.to) await setField($, epic, 'status', move.to)
+        moved.push(`#${move.number} ${move.to ? `moved to ${move.to}` : 'stays open'}: every sub-issue is closed, but ${left}.`)
+        notes.push({ key: `epic-verify-${move.number}`, kind: 'verify', epic: move.number, title: move.title, text: `every sub-issue is closed, but ${left}`, at })
         continue
       }
-      const verify = roleOf(project, 'verification')
-      const left = open === 1 ? '1 box is still open' : `${open} boxes are still open`
-      const further = !!epic.status && [verify?.name, roleOf(project, 'done')?.name].includes(epic.status)
-      const moving = !!project?.status && !!verify && !further
-      if (moving && verify) await setField($, epic, 'status', verify.name)
-      moved.push(`#${number} ${moving && verify ? `moved to ${verify.name}` : 'stays open'}: every sub-issue is closed, but ${left}.`)
-      notes.push({ key: `epic-verify-${number}`, kind: 'verify', epic: number, title: epic.title, text: `every sub-issue is closed, but ${left}`, at })
+      const option = project?.status && optionOf(project.status, move.to)
+      if (!project?.status || !option) continue
+      await projectWrite($, project, SET_FIELD, { project: project.id, item: move.item, field: project.status.id, option: option.id })
+      if (move.rule === 'closed') {
+        done.push(move.number)
+        moved.push(`#${move.number} moved to ${move.to}: it closed as completed.`)
+      } else {
+        await update($, board, was => was && { ...was, issues: was.issues.map(one => (one.number === move.number ? { ...one, status: move.to } : one)) })
+        verified.push(move.number)
+        moved.push(`#${move.number} moved to ${move.to}: pull request #${move.pr}, which refers to it without closing it, merged.`)
+      }
     } catch (cause) {
-      $.ui.toast(`Couldn't move epic #${number} on: ${messageOf(cause)}. /issues check may say why.`)
+      failed.push({ rule: move.rule, number: move.number, to: move.to, message: messageOf(cause) })
     }
   }
+  // The person sees what the board did on its own, once a read, and what it couldn't.
+  const doneName = roleOf(project, 'done')?.name
+  const verifyName = roleOf(project, 'verification')?.name
+  if (doneName && done.length > 0) $.ui.toast(movedText(doneName, done, 'it closed as completed', 'they closed as completed'))
+  if (verifyName && verified.length > 0) {
+    $.ui.toast(movedText(verifyName, verified, 'a pull request that refers to it merged without closing it', 'pull requests that refer to them merged without closing them'))
+  }
+  for (const rule of ['closed', 'refs'] as const) {
+    const unmoved = failed.filter(one => one.rule === rule)
+    const to = unmoved[0]?.to
+    if (to) $.ui.toast(unmovedText(to, unmoved))
+  }
+  for (const one of failed.filter(one => one.rule === 'epic')) $.ui.toast(`Couldn't move epic #${one.number} on: ${one.message}. /issues check may say why.`)
   // A note raised again replaces the old one, so it shows once.
   if (notes.length > 0) await update($, epicNotes, list => [...list.filter(one => !notes.some(note => note.key === one.key)), ...notes].slice(-20))
 }
