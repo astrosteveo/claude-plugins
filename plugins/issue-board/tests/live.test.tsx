@@ -588,7 +588,8 @@ test('Start and Start in background change once pressed, and a second press star
     await new Promise<void>(go => (started = go))
     return { model: 'claude-sonnet-5-5', agentId: 'agent-1' }
   })
-  on('agent.list', async () => ({ value: [{ id: 'agent-1', description: '#315 Lay Kessik out for play', type: 'issue-board:worker', status: 'running' as const }] }))
+  let status: 'running' | 'completed' = 'running'
+  on('agent.list', async () => ({ value: [{ id: 'agent-1', description: '#315 Lay Kessik out for play', type: 'issue-board:worker', status }] }))
   // Start's message waits until the test lets it go.
   const sent: string[] = []
   let entered = (): void => {}
@@ -630,14 +631,21 @@ test('Start and Start in background change once pressed, and a second press star
   expect(await ui.find({ text: /^⚙ Starting in background…$/ })).toBeDefined()
   await expect(ui.press({ key: 'background-315' })).rejects.toThrow(/no Button of issue-board keyed "background-315"/)
 
-  // It starts: the row shows it working, and there's no button while it works.
+  // It starts: the row shows it working, and there's no start button of either kind while it works.
   started()
   await clock.settle()
   expect(await ui.find({ text: /^⚙ working$/ })).toBeDefined()
   expect(await ui.find({ text: /^⚙ Starting in background…$/ })).toBeUndefined()
   expect(await ui.find({ key: 'background-315' })).toBeUndefined()
+  expect(await ui.find({ key: 'start-315' })).toBeUndefined()
+  expect(await ui.find({ text: /^⚙ Worker on it · working now$/ })).toBeDefined()
   expect(spawns).toBe(3)
   expect(sent).toEqual([])
+
+  // It ends: the buttons come back.
+  status = 'completed'
+  await clock.advance(10_000)
+  expect(await ui.find({ key: 'start-315' })).toBeDefined()
 
   // Start: while Claude is being sent the issue, its button says so; once sent, it says it started, and stays that way.
   await Promise.all([ui.press({ key: 'start-315' }), ui.press({ key: 'start-315' })])
