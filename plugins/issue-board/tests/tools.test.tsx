@@ -1547,28 +1547,22 @@ test('a field the project gained since the last read is read before setting it, 
   expect(gh.issueReads).toBeGreaterThan(reads)
 })
 
-test('/issues help names every filter, subcommand and tool the board has, and the argument hint every subcommand', async ($, on) => {
+test('/issues help names every filter and subcommand the board has, and the argument hint every subcommand', async ($, on) => {
   adoptedStore(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-04T10:00:00Z') })
   world(on)
-  const tools: string[] = []
   let hint = ''
   on('session.start', async (_$, e) => ({ cwd: e.cwd }))
   on('command.register', async (_$, e) => {
     hint = e.argumentHint ?? ''
     return { value: { command: e.name } }
   })
-  on('tool.register', async (_$, e) => {
-    tools.push(e.name)
-    return { value: { tool: `mcp__issue-board__${e.name}` } }
-  })
+  on('tool.register', async (_$, e) => ({ value: { tool: `mcp__issue-board__${e.name}` } }))
   on('agent.register', async (_$, e) => ({ value: { agent: `issue-board:${e.name}` } }))
   await $.session.start({ cwd: REPO.root, surface: 'terminal', isInteractive: true })
   await clock.settle()
   const help = String((await $.command.run({ ...REFRESH, args: 'help' })).text)
 
-  expect(tools.length).toBeGreaterThan(5)
-  for (const tool of tools) expect(help).toContain(`- ${tool}: `)
   for (const sub of ['refresh', 'new <what>', 'new epic <what>', 'setup', 'check', 'stats', 'help']) expect(help).toContain(`- /issues ${sub}: `)
   // Without a project there is no Inbox; every other filter is there.
   expect(help).toContain('Filters: 1 Active, 2 Future, 3 Bugs, 4 Mine, 5 All, 7 Closed.')

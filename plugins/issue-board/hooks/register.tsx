@@ -1,13 +1,14 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentSpawnResult, Caught, EngineInterface, HookFailure, ModelForkResult, Register, RenderChildren, ThemeKey, Timer, ToolCallResult, UiCopyArgs } from 'claude-code'
 
-import type { Adopted, Adoption, Alert, Armed, Board, FieldValues, BoxTask, BuiltInFilter, Check, Comment, EpicNote, GroupBy, Issue, Known, LabelChange, Launch, ViewChange, Markers, Plan, PlanRow, Problem, Project, ProjectField, Role, Roles, StatusPicks, StatusUpdate, PullRequest, RunWatch, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
+import type { Adopted, Adoption, Alert, Armed, Board, FieldValues, BoxTask, BuiltInFilter, Check, Comment, EpicNote, GroupBy, Issue, Known, LabelChange, Launch, ViewChange, Markers, Plan, PlanRow, Problem, Project, Role, Roles, StatusUpdate, PullRequest, RunWatch, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
 import type { Ended, FilterSource, IssueChanges, NewIssue, PrRule, StartMode, Switches, Tab } from './parse'
+import { TOOL_SPECS, WORKER } from './tools'
 import type { Linked } from './project'
 import { authOf, problemsOf, problemsText, repoOf } from './access'
 import { isBug, markerAskOf, markerKey, markerOptionsOf, markerText, markersOf } from './markers'
-import type { Cause, ContextSource, Tally } from './stats'
-import { countCall, countContext, countPoints, countPrompt, defineTool, kindOf, loadTool, matchesOf, minus, newStats, statsText } from './stats'
+import type { Cause, ContextSource } from './stats'
+import { countCall, countContext, countPoints, countPrompt, defineTool, kindOf, loadTool, matchesOf, minus, newStats, statsText, zero } from './stats'
 import {
   ADD_ITEM,
   ARCHIVE_ITEM,
@@ -27,10 +28,10 @@ import {
   ROLE_ORDER,
   LINKED_QUERY,
   adoptReason,
+  adoptedOf,
   adoptTarget,
   approvedOf,
   adoptText,
-  projectKey,
   projectKeyOf,
   projectKeysOf,
   projectKeysText,
@@ -42,9 +43,7 @@ import {
   issuesQuery,
   orderFilter,
   linkedOf,
-  nowNames,
   optionOf,
-  ownerOf,
   releaseReason,
   roleOf,
   rolesFor,
@@ -83,7 +82,6 @@ import {
   START_MODES,
   THREADS_QUERY,
   WEEKS,
-  WORKER,
   absorbed,
   ago,
   agoText,
@@ -136,7 +134,6 @@ import {
   peekPlace,
   startTargetOf,
   proseOf,
-  matches,
   mergeNoteOf,
   named,
   parseDraft,
@@ -183,7 +180,18 @@ import {
   writesGitHub,
   filedText,
   newIssueOf,
-  numbersOf,
+  captureOf,
+  changesOf,
+  textOf,
+  notFoundText,
+  milestoneDue,
+  ciGlyph,
+  prCountsText,
+  issueNumberIn,
+  groupingOf,
+  toolListOf,
+  NOT_READ,
+  NOT_READ_SENTENCE,
   leftForDone,
   addBoxes,
   rewordBoxes,
@@ -314,69 +322,6 @@ const PLAN_TOOL = 'mcp__issue-board__project_plan'
 // bypassPermissions lets every call through. Adopting a project and applying a plan need the person to read the prompt,
 // so project_adopt and project_plan are refused in them.
 const UNSEEN_MODES = new Set(['auto', 'bypassPermissions'])
-
-const strings = (value: unknown): string[] | undefined =>
-  Array.isArray(value) ? value.filter((one): one is string => typeof one === 'string' && one.trim() !== '').map(one => one.trim()) : undefined
-
-// The issue_update tool's input as a change; null without an issue number. A parent of 0 and an empty milestone remove
-// them, as the tool says.
-const changesOf = (input: unknown): (IssueChanges & { number: number }) | null => {
-  const raw = (input ?? {}) as Record<string, unknown>
-  if (typeof raw.number !== 'number' || !Number.isInteger(raw.number) || raw.number < 1) return null
-  const text = (value: unknown) => (typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined)
-  const changes: IssueChanges & { number: number } = { number: raw.number }
-  const status = text(raw.status)
-  const priority = text(raw.priority)
-  if (status) changes.status = status
-  if (priority) changes.priority = priority
-  for (const key of ['addLabels', 'removeLabels', 'assign', 'unassign'] as const) {
-    const list = strings(raw[key])
-    if (list?.length) changes[key] = list
-  }
-  if (typeof raw.parent === 'number') changes.parent = raw.parent > 0 ? raw.parent : null
-  if (typeof raw.milestone === 'string') changes.milestone = raw.milestone.trim() || null
-  const comment = text(raw.comment)
-  if (comment) changes.comment = comment
-  if (raw.close === 'completed' || raw.close === 'not planned') changes.close = raw.close
-  if (raw.reopen === true) changes.reopen = true
-  const title = text(raw.title)
-  if (title) changes.title = title
-  if (typeof raw.body === 'string') changes.body = raw.body
-  const boxes = strings(raw.addBoxes)
-  if (boxes?.length) changes.addBoxes = boxes
-  const rewords = Array.isArray(raw.rewordBoxes)
-    ? raw.rewordBoxes.flatMap(one => {
-        const edit = one as { box?: unknown; text?: unknown }
-        return typeof edit.box === 'number' && Number.isInteger(edit.box) && typeof edit.text === 'string' && edit.text.trim() ? [{ box: edit.box, text: edit.text.trim() }] : []
-      })
-    : []
-  if (rewords.length > 0) changes.rewordBoxes = rewords
-  if (raw.fields && typeof raw.fields === 'object' && !Array.isArray(raw.fields)) {
-    const given = Object.entries(raw.fields as Record<string, unknown>).flatMap(([name, value]) =>
-      name.trim() && (value === null || typeof value === 'string' || typeof value === 'number') ? [[name.trim(), value as string | number | null]] : [],
-    )
-    if (given.length > 0) changes.fields = Object.fromEntries(given)
-  }
-  if (typeof raw.pin === 'boolean') changes.pin = raw.pin
-  // A tool's caller may send lock's true or false as a string, since the field also takes GitHub's reasons.
-  const lock = raw.lock === 'true' ? true : raw.lock === 'false' ? false : raw.lock
-  if (lock === true || lock === false) changes.lock = lock
-  else if (lock === 'off_topic' || lock === 'resolved' || lock === 'spam' || lock === 'too_heated') changes.lock = lock
-  const target = text(raw.transferTo)
-  if (target) changes.transferTo = target
-  if (raw.confirmTransfer === true) changes.confirmTransfer = true
-  if (typeof raw.moveBefore === 'number' && Number.isInteger(raw.moveBefore)) changes.moveBefore = raw.moveBefore
-  else if (typeof raw.moveAfter === 'number' && Number.isInteger(raw.moveAfter)) changes.moveAfter = raw.moveAfter
-  if (typeof raw.projectAfter === 'number' && Number.isInteger(raw.projectAfter) && raw.projectAfter >= 0) changes.projectAfter = raw.projectAfter
-  if (raw.type === null) changes.type = null
-  else if (text(raw.type)) changes.type = text(raw.type)
-  if (typeof raw.duplicateOf === 'number' && Number.isInteger(raw.duplicateOf) && raw.duplicateOf > 0 && raw.duplicateOf !== raw.number) changes.duplicateOf = raw.duplicateOf
-  const blocking = numbersOf(raw.addBlockedBy)
-  const unblocking = numbersOf(raw.removeBlockedBy)
-  if (blocking.length > 0) changes.addBlockedBy = blocking
-  if (unblocking.length > 0) changes.removeBlockedBy = unblocking
-  return changes
-}
 
 const board = atom({ plugin: 'issue-board', key: 'board' } as const, null)
 const error = atom({ plugin: 'issue-board', key: 'error' } as const, null)
@@ -855,10 +800,10 @@ const savedChoices = async ($: EngineInterface): Promise<Choices> => {
 const adoptedNow = async ($: EngineInterface): Promise<Adopted | null> => {
   const grants = await grantsNow($)
   const reads = (await read($, board))?.project
-  const owner = reads ? ownerOf(reads.url) : null
+  const record = reads ? adoptedOf(reads) : null
   const found =
-    reads && owner && grants.all.includes(projectKey(owner, reads.number))
-      ? { key: projectKey(owner, reads.number), number: reads.number, id: reads.id, title: reads.title, owner }
+    record && grants.all.includes(record.key)
+      ? record
       : lastAdopted && grants.all.includes(lastAdopted.key)
         ? lastAdopted
         : null
@@ -920,11 +865,11 @@ const changeChoices = async ($: EngineInterface, change: (was: Choices) => Choic
 // its owner/number, and keeps the others. The setting is written last, since the reload it brings may cut short what
 // the module does after. Apply passes `later` and writes it once its steps are done, going by the project meanwhile.
 const adoptProject = async ($: EngineInterface, project: { id: string; number: number; title: string; url: string }, later = false): Promise<void> => {
-  const owner = ownerOf(project.url)
-  if (!owner) throw new Error(`the board can't tell who owns ${project.title} from its page, ${project.url || 'which it has none of'}`)
-  const key = projectKey(owner, project.number)
+  const record = adoptedOf(project)
+  if (!record) throw new Error(`the board can't tell who owns ${project.title} from its page, ${project.url || 'which it has none of'}`)
+  const key = record.key
   await changeChoices($, was => ({ ...was, declined: (was.declined ?? []).filter(id => id !== project.id) }))
-  lastAdopted = { key, number: project.number, id: project.id, title: project.title, owner }
+  lastAdopted = record
   const keys = [...(await grantsNow($)).own.filter(one => one !== key), key]
   if (!later) return writeSetting($, keys)
   settings = { ...settings, writeProjects: keys }
@@ -978,9 +923,10 @@ const projectWrite = async (
 const mayWrite = async ($: EngineInterface, project: { number: number; title: string; url: string }): Promise<boolean> => writeRefusal((await grantsNow($)).all, project) === null
 
 // Why the board may not write to the project it reads for this repo, or null when it may or reads none. The write tools
-// check this before they ask, so the person never approves a change the gate would refuse straight after.
-const boardRefusal = async ($: EngineInterface): Promise<string | null> => {
-  const project = (await read($, board))?.project
+// check this before they ask, so the person never approves a change the gate would refuse straight after. A caller
+// that has read the board already passes it, so the answer is about the same board it goes on to work with.
+const boardRefusal = async ($: EngineInterface, known?: Pick<Board, 'project'> | null): Promise<string | null> => {
+  const project = (known === undefined ? await read($, board) : known)?.project
   return project ? writeRefusal((await grantsNow($)).all, project) : null
 }
 
@@ -1116,9 +1062,8 @@ const releaseNow = async ($: EngineInterface, project: Adopted): Promise<void> =
 // Release, in setup, of the linked project it says the board may write to: the board only reads it again, and the plan
 // offers to adopt it once more.
 const releaseFromSetup = async ($: EngineInterface, project: SetupProject | undefined): Promise<void> => {
-  const owner = project && ownerOf(project.url)
-  if (!project || !owner) return
-  const was: Adopted = { key: projectKey(owner, project.number), number: project.number, id: project.id, title: project.title, owner }
+  const was = project && adoptedOf(project)
+  if (!was) return
   try {
     await releaseNow($, was)
   } catch (cause) {
@@ -1141,7 +1086,7 @@ const adoptPlan = async ($: EngineInterface, input: unknown): Promise<AdoptPlan>
   const number = ask.number
   if (number !== undefined && !(typeof number === 'number' && Number.isInteger(number) && number > 0)) return { refusal: 'number is a project number, such as 8.' }
   const now = await read($, board)
-  if (!now) return { refusal: "The issue board hasn't read GitHub yet; refresh it and try again." }
+  if (!now) return { refusal: NOT_READ_SENTENCE }
   const reads = now.project ? { id: now.project.id, number: now.project.number, title: now.project.title, url: now.project.url } : null
   // The linked projects are read only for a number other than the one the board reads.
   let linked: Linked[] = []
@@ -1304,6 +1249,8 @@ const begin = async ($: EngineInterface): Promise<void> => {
 
 // The repository the folder is, as gh names it: read once a session, since it doesn't change.
 let repoInfo: { nameWithOwner: string; hasIssuesEnabled: boolean } | undefined
+const repoNow = async ($: EngineInterface): Promise<{ nameWithOwner: string; hasIssuesEnabled: boolean }> =>
+  (repoInfo ??= JSON.parse(await gh($, ['repo', 'view', '--json', 'nameWithOwner,hasIssuesEnabled'])) as { nameWithOwner: string; hasIssuesEnabled: boolean })
 
 const readGitHub = async ($: EngineInterface, seen: boolean): Promise<void> => {
   // The rate limit ran out: the timer set for its reset reads then.
@@ -1311,15 +1258,14 @@ const readGitHub = async ($: EngineInterface, seen: boolean): Promise<void> => {
   await update($, loading, () => true)
   readTouches = touches
   // What the board had spent when the read began, so the stats can say what this read cost.
-  const spent = { calls: { ...(stats.calls['full read'] ?? { rest: 0, rest304: 0, graphql: 0 }) } as Tally, points: stats.points }
+  const spent = { calls: { ...(stats.calls['full read'] ?? zero()) }, points: stats.points }
   const before = await read($, board)
   let after = before
   try {
     const from = since(Date.now())
     const known = await read($, viewer)
     // First, so a folder that isn't a GitHub repo stops at one call, and a repo with issues turned off skips them.
-    repoInfo ??= JSON.parse(await gh($, ['repo', 'view', '--json', 'nameWithOwner,hasIssuesEnabled'])) as { nameWithOwner: string; hasIssuesEnabled: boolean }
-    const repo = repoInfo
+    const repo = await repoNow($)
     const listIssues = (args: string[]) => (repo.hasIssuesEnabled ? gh($, ['issue', 'list', ...args]) : Promise.resolve('[]'))
     const [owner = '', name = ''] = repo.nameWithOwner.split('/')
     // The weekly counts change a little a day, and reading them takes up to ten GraphQL searches: kept for an hour.
@@ -1738,6 +1684,15 @@ const claimIssue = async ($: EngineInterface, issue: Issue): Promise<void> => {
   if (failures.some(failure => ACCESS_ERROR.test(failure))) void checkAccess($, failures.join('\n'))
 }
 
+// An issue's REST id, by number. An issue that doesn't exist fails by its number, so Claude reads which one it was.
+const restIssueId = async ($: EngineInterface, repo: string, number: number): Promise<string> => {
+  try {
+    return (await gh($, ['api', `repos/${repo}/issues/${number}`, '--jq', '.id'])).trim()
+  } catch (cause) {
+    throw new Error(notFoundText(messageOf(cause), repo, number))
+  }
+}
+
 // Moves a sub-issue just before or just after a sibling in its epic, over REST, and the epic's order on the board with it.
 const reorder = async ($: EngineInterface, repo: string, number: number, beside: number, before: boolean): Promise<void> => {
   const issues = (await read($, board))?.issues ?? []
@@ -1745,7 +1700,7 @@ const reorder = async ($: EngineInterface, repo: string, number: number, beside:
   const epic = issue?.parent?.number
   if (!issue || !epic) throw new Error(`#${number} isn't a sub-issue of an open epic on the board`)
   if (issues.find(one => one.number === beside)?.parent?.number !== epic) throw new Error(`#${beside} isn't a sub-issue of #${epic}, as #${number} is`)
-  const [id, other] = await Promise.all([number, beside].map(async one => (await gh($, ['api', `repos/${repo}/issues/${one}`, '--jq', '.id'])).trim()))
+  const [id, other] = await Promise.all([number, beside].map(one => restIssueId($, repo, one)))
   await gh($, ['api', '-X', 'PATCH', `repos/${repo}/issues/${epic}/sub_issues/priority`, '-F', `sub_issue_id=${id}`, '-F', `${before ? 'before_id' : 'after_id'}=${other}`])
   await update($, board, was => {
     if (!was) return was
@@ -1800,11 +1755,7 @@ const setType = async ($: EngineInterface, repo: string, number: number, name: s
 // between them, then the close with GitHub's duplicate reason, or not planned where GitHub refuses it. The issue leaves
 // the board at once. The other issue must exist.
 const closeAsDuplicate = async ($: EngineInterface, repo: string, number: number, of: number): Promise<void> => {
-  try {
-    await gh($, ['api', `repos/${repo}/issues/${of}`, '--jq', '.number'])
-  } catch (cause) {
-    throw new Error(/HTTP 404|Not Found/i.test(messageOf(cause)) ? `#${of} doesn't exist in ${repo}` : `couldn't read #${of}: ${messageOf(cause)}`)
-  }
+  await restIssueId($, repo, of)
   await gh($, ['api', '-X', 'POST', `repos/${repo}/issues/${number}/comments`, '-f', `body=Duplicate of #${of}`])
   const close = (reason: string) => gh($, ['api', '-X', 'PATCH', `repos/${repo}/issues/${number}`, '-f', 'state=closed', '-f', `state_reason=${reason}`])
   await close('duplicate').catch(() => close('not_planned'))
@@ -1868,15 +1819,7 @@ const rewrite = async ($: EngineInterface, repo: string, number: number, changes
 // Makes or takes away an issue's blocked-by links, over REST, which spends none of the GraphQL limit, and shows them on
 // the board at once. A blocker that doesn't exist fails, by its number, before any link is made.
 const block = async ($: EngineInterface, repo: string, number: number, blockers: number[], on: boolean): Promise<void> => {
-  const ids = await Promise.all(
-    blockers.map(async one => {
-      try {
-        return { number: one, id: (await gh($, ['api', `repos/${repo}/issues/${one}`, '--jq', '.id'])).trim() }
-      } catch (cause) {
-        throw new Error(/HTTP 404|Not Found/i.test(messageOf(cause)) ? `#${one} doesn't exist in ${repo}` : `couldn't read #${one}: ${messageOf(cause)}`)
-      }
-    }),
-  )
+  const ids = await Promise.all(blockers.map(async one => ({ number: one, id: await restIssueId($, repo, one) })))
   const path = `repos/${repo}/issues/${number}/dependencies/blocked_by`
   for (const one of ids) await gh($, on ? ['api', '-X', 'POST', path, '-F', `issue_id=${one.id}`] : ['api', '-X', 'DELETE', `${path}/${one.id}`])
   // The board lists the open issues an issue is blocked by: a new link to one it holds shows, a removed one goes.
@@ -1922,7 +1865,9 @@ const readClosed = async ($: EngineInterface, repo: string, number: number): Pro
   try {
     raw = JSON.parse(await gh($, ['api', `repos/${repo}/issues/${number}`]))
   } catch (cause) {
-    return /HTTP 404|Not Found/i.test(messageOf(cause)) ? `#${number} doesn't exist in ${repo}.` : `Couldn't read #${number}: ${messageOf(cause)}`
+    // The reason stands alone here, so it starts with a capital, and a missing issue's words end with a full stop.
+    const why = notFoundText(messageOf(cause), repo, number)
+    return why.startsWith('#') ? `${why}.` : `${why.charAt(0).toUpperCase()}${why.slice(1)}`
   }
   if (raw.pull_request) return `#${number} is a pull request that isn't open. Read it with \`gh pr view ${number}\`.`
   const [found] = foundOf([{ ...raw, number }])
@@ -2096,7 +2041,7 @@ const fileIssue = async ($: EngineInterface, spec: NewIssue, quiet = false): Pro
 // caller, as a capture says its own.
 const fileOne = async ($: EngineInterface, spec: NewIssue, quiet = false): Promise<{ number: number; text: string }> => {
   const now = await read($, board)
-  if (!now) throw new Error("the board hasn't read GitHub yet; refresh it and try again")
+  if (!now) throw new Error(NOT_READ)
   const repo = now.repo
   const me = await read($, viewer)
   let milestone: { number: number; title: string } | undefined
@@ -2153,7 +2098,7 @@ const fileOne = async ($: EngineInterface, spec: NewIssue, quiet = false): Promi
   let item: string | null = null
   const set: { status?: string; priority?: string } = {}
   // A project the person hasn't let the board write to gets nothing: the issue is filed, and Claude reads why.
-  const refusal = project ? writeRefusal((await grantsNow($)).all, project) : null
+  const refusal = await boardRefusal($, now)
   if (project && refusal) {
     if (spec.status || spec.priority) failed.push(`set its Status or Priority: ${refusal}`)
     else did.push(`not added to ${project.title}, which the board only reads`)
@@ -2250,7 +2195,7 @@ const sameWork = async ($: EngineInterface, repo: string, issues: Issue[], title
 // the band counts what was filed until the person opens the Inbox.
 const capture = async ($: EngineInterface, spec: NewIssue): Promise<string> => {
   const now = await read($, board)
-  if (!now) throw new Error("the board hasn't read GitHub yet; refresh it and try again")
+  if (!now) throw new Error(NOT_READ)
   const found = await sameWork($, now.repo, now.issues, spec.title)
   if (found) {
     const parts = (spec.subIssues ?? []).map(part => `- ${part.title}`).join('\n')
@@ -2277,18 +2222,6 @@ const capture = async ($: EngineInterface, spec: NewIssue): Promise<string> => {
   return `Captured to the Inbox for the person to triage. ${filed}`
 }
 
-// The capture tool's input as an issue to capture, or why it can't be one.
-const captureOf = (input: unknown): NewIssue | string => {
-  const raw = (input ?? {}) as { title?: unknown; body?: unknown; labels?: unknown; epic?: unknown }
-  const title = typeof raw.title === 'string' ? raw.title.trim() : ''
-  if (!title) return 'Give the capture a title.'
-  const body = typeof raw.body === 'string' ? raw.body.trim() : ''
-  if (!body) return 'Say in body what the work is and why it came up.'
-  const labels = Array.isArray(raw.labels) ? raw.labels.filter((one): one is string => typeof one === 'string' && one.trim() !== '').map(one => one.trim()) : []
-  const epic = typeof raw.epic === 'number' && Number.isInteger(raw.epic) && raw.epic > 0 ? raw.epic : undefined
-  return { title, body, ...(labels.length > 0 ? { labels } : {}), ...(epic ? { parent: epic } : {}) }
-}
-
 // `/issues new`: Claude writes the issue, or with `epic` a parent and its sub-issues, over the conversation so far,
 // and it is captured to the Inbox at once. Toasts say how it went.
 const captureFromTalk = async ($: EngineInterface, what: string, epic = false): Promise<void> => {
@@ -2306,7 +2239,7 @@ const captureFromTalk = async ($: EngineInterface, what: string, epic = false): 
     return
   }
   try {
-    await capture($, { title: made.title, body: made.body, labels: made.labels, ...(made.children?.length ? { subIssues: made.children } : {}) })
+    await capture($, made)
   } catch (cause) {
     $.ui.toast(`Couldn't capture the issue: ${messageOf(cause)}`)
   }
@@ -2375,7 +2308,7 @@ const hasTemplate = async ($: EngineInterface, root: string): Promise<boolean> =
 const readSetup = async ($: EngineInterface): Promise<void> => {
   await update($, setup, () => ({ phase: 'reading' as const }))
   try {
-    const repoName = (JSON.parse(await gh($, ['repo', 'view', '--json', 'nameWithOwner'])) as { nameWithOwner: string }).nameWithOwner
+    const repoName = (await repoNow($)).nameWithOwner
     const [owner = '', name = ''] = repoName.split('/')
     const facts = await graphql($, FACTS_QUERY, { owner, name })
     const pages: string[] = []
@@ -2443,7 +2376,11 @@ const applySetup = async ($: EngineInterface): Promise<void> => {
       adopted = chosen
     })
   }
-  await run('issues', () => gh($, ['repo', 'edit', facts.repo.name, '--enable-issues']))
+  await run('issues', async () => {
+    await gh($, ['repo', 'edit', facts.repo.name, '--enable-issues'])
+    // The repo read setup used says issues are off, so the next read asks GitHub again.
+    repoInfo = undefined
+  })
   await run('project', async () => {
     const title = facts.repo.name.split('/')[1] ?? facts.repo.name
     const made = await projectWrite($, 'new', CREATE_PROJECT, { owner: facts.repo.ownerId, title, repo: facts.repo.id })
@@ -2981,8 +2918,8 @@ const change = async ($: EngineInterface, number: number, changes: IssueChanges)
 // `count` has each label delete count the issues that carry the label, for its row on the card.
 const planFor = async ($: EngineInterface, input: unknown, count = false): Promise<Planned> => {
   const now = await read($, board)
-  if (!now) return { problems: ["The issue board hasn't read GitHub yet; refresh it and try again."] }
-  const refusal = now.project ? writeRefusal((await grantsNow($)).all, now.project) : null
+  if (!now) return { problems: [NOT_READ_SENTENCE] }
+  const refusal = await boardRefusal($, now)
   const planned = planOf(input, { issues: now.issues, project: now.project, milestones: now.milestones, refusal, labels: now.labels, markers: await read($, chosenMarkers) })
   if (!count || 'problems' in planned) return planned
   const changes = await Promise.all(
@@ -3010,7 +2947,7 @@ const labelUses = async ($: EngineInterface, repo: string, name: string): Promis
 // keeps the card's label picker in step. GitHub keeps a renamed label on its issues. Answers what it did.
 const applyLabel = async ($: EngineInterface, change: LabelChange): Promise<string> => {
   const repo = (await read($, board))?.repo
-  if (!repo) throw new Error("the issue board hasn't read GitHub yet")
+  if (!repo) throw new Error(NOT_READ)
   const path = `repos/${repo}/labels/${encodeURIComponent(change.name)}`
   const fields = [
     ...(change.rename ? ['-f', `new_name=${change.rename}`] : []),
@@ -3220,7 +3157,7 @@ const acceptTriage = async ($: EngineInterface, issue: Issue, choice: { priority
   const label = choice.area ? `area:${choice.area}` : null
   const others = label ? issue.labels.map(one => one.name).filter(name => name.startsWith('area:') && name !== label) : []
   const project = (await read($, board))?.project
-  const refusal = project ? writeRefusal((await grantsNow($)).all, project) : null
+  const refusal = await boardRefusal($, { project })
   const target = triageTarget(project, status)
   const fields: IssueChanges = {
     ...(target ? { status: target } : {}),
@@ -3325,281 +3262,7 @@ export const register: Register = (on, options) => {
       description: 'Show open issues and pull requests in a pane',
       argumentHint: `[${SUBCOMMANDS.map(one => one.name.replace(' <what>', '')).filter((one, index, all) => all.indexOf(one) === index).join(' | ')}]`,
     })
-    // Each tool's text is sent with every request, so it says only what Claude needs to choose and call the tool.
-    // Claude Code's own permission prompt covers asking, and the working and orchestrator notes cover the workflow.
-    await registerTool($, {
-      name: 'issues',
-      description:
-        "Lists this repo's open issues and pull requests from the issue board's copy, one line each. " +
-        'With `number`, one in full with its boxes numbered as tick counts them. With `state` closed or all, or `search`, it searches GitHub instead. ' +
-        "Read an issue's whole text with `gh issue view`.",
-      inputSchema: {
-        type: 'object',
-        properties: {
-          number: { type: 'integer', description: 'One issue or pull request to show in full.' },
-          filter: {
-            type: 'string',
-            enum: ['active', 'future', 'bugs', 'mine', 'all', 'inbox'],
-            description:
-              'Default all. With a project, active is P0 and P1, future is P2, and inbox is Status Inbox or none; without one, future is labelled future.',
-          },
-          area: { type: 'string', description: 'Only issues with this area: label.' },
-          query: { type: 'string', description: 'Only issues whose title, number or labels hold every word.' },
-          state: { type: 'string', enum: ['open', 'closed', 'all'] },
-          search: { type: 'string', description: 'Words in any title or body.' },
-          label: { type: 'string' },
-          assignee: { type: 'string', description: 'A login.' },
-          milestone: { type: 'string', description: 'A milestone title.' },
-          milestones: { type: 'boolean', description: 'true lists the open milestones instead, with progress and due dates.' },
-          status: { type: 'string', description: "Lists the project's issues at this Status instead, open or closed, such as Done." },
-          since: { type: 'string', description: 'With status: closed on or after this date, YYYY-MM-DD.' },
-        },
-      },
-    })
-    await registerTool($, {
-      name: 'tick',
-      description:
-        "Ticks `- [ ]` boxes in an issue's body once their work is done and checked. Boxes count from 1 in body order, as the issues tool shows them with `number`.",
-      inputSchema: {
-        type: 'object',
-        properties: {
-          number: { type: 'integer' },
-          boxes: { type: 'array', items: { type: 'integer', minimum: 1 }, minItems: 1 },
-          done: { type: 'boolean', description: 'false unticks.' },
-        },
-        required: ['number', 'boxes'],
-      },
-    })
-    await registerTool($, {
-      name: 'issue_update',
-      description:
-        'Changes an issue and the issue board at once. Give only what changes. ' +
-        "When you start work on an issue or pull request here without the board's Start, call this with start: true. " +
-        `To work one in the background instead, dispatch the ${WORKER} agent with a description that starts with the issue's #number.`,
-      inputSchema: {
-        type: 'object',
-        properties: {
-          number: { type: 'integer', description: 'With start, a pull request starts its issue.' },
-          start: { type: 'boolean', description: "true makes it this session's issue, moves it to In progress and assigns it, as Start does." },
-          status: { type: 'string', description: 'A project Status option, such as In progress or Done.' },
-          priority: { type: 'string', description: 'A project Priority option, such as P1.' },
-          addLabels: { type: 'array', items: { type: 'string' }, description: 'Missing ones are created.' },
-          removeLabels: { type: 'array', items: { type: 'string' } },
-          assign: { type: 'array', items: { type: 'string' }, description: 'Logins; @me for you.' },
-          unassign: { type: 'array', items: { type: 'string' }, description: 'Logins; @me for you.' },
-          parent: { type: 'integer', minimum: 0, description: 'The epic to put it under; 0 takes it out.' },
-          milestone: { type: 'string', description: 'A milestone title; empty takes it off.' },
-          comment: { type: 'string', description: 'Markdown.' },
-          close: { type: 'string', enum: ['completed', 'not planned'] },
-          duplicateOf: { type: 'integer', minimum: 1, description: 'Closes it as a duplicate.' },
-          type: { type: ['string', 'null'], description: 'An issue type, such as Bug, where the org has types; null takes it off.' },
-          moveBefore: { type: 'integer', description: "Moves this sub-issue before this sibling in its epic's order." },
-          moveAfter: { type: 'integer' },
-          projectAfter: { type: 'integer', minimum: 0, description: "Moves it after this issue in the project's order; 0 to the top." },
-          pin: { type: 'boolean' },
-          lock: {
-            type: ['boolean', 'string'],
-            enum: [true, false, 'off_topic', 'resolved', 'spam', 'too_heated'],
-          },
-          transferTo: { type: 'string', description: "Moves it to another of the owner's repos, by name." },
-          confirmTransfer: { type: 'boolean', description: "Needed to move it from a public repo to a private one, which GitHub can't undo." },
-          fields: {
-            type: 'object',
-            additionalProperties: { type: ['string', 'number', 'null'] },
-            description: 'Other project fields by name, such as {"Estimate": 3, "Due": "2026-10-20"}: a number, YYYY-MM-DD, text, an iteration or option name; null clears.',
-          },
-          reopen: { type: 'boolean' },
-          title: { type: 'string' },
-          body: { type: 'string', description: 'A whole new Markdown body, refused if it changed on GitHub since the board read it. For boxes use addBoxes or rewordBoxes.' },
-          addBoxes: { type: 'array', items: { type: 'string' }, description: 'Acceptance boxes to add after the last one.' },
-          rewordBoxes: {
-            type: 'array',
-            items: { type: 'object', properties: { box: { type: 'integer', minimum: 1 }, text: { type: 'string' } }, required: ['box', 'text'] },
-            description: 'Ticked boxes stay ticked.',
-          },
-          addBlockedBy: { type: 'array', items: { type: 'integer' } },
-          removeBlockedBy: { type: 'array', items: { type: 'integer' } },
-        },
-        required: ['number'],
-      },
-    })
-    await registerTool($, {
-      name: 'milestone',
-      description: "Makes a milestone by title if the repo hasn't got it, or else changes it. The issues tool lists them with `milestones`.",
-      inputSchema: {
-        type: 'object',
-        properties: {
-          title: { type: 'string' },
-          newTitle: { type: 'string' },
-          due: { type: 'string', description: 'YYYY-MM-DD; empty clears it.' },
-          description: { type: 'string' },
-          close: { type: 'boolean' },
-          reopen: { type: 'boolean' },
-        },
-        required: ['title'],
-      },
-    })
-    await registerTool($, {
-      name: 'project_status',
-      description: "Reads the latest status update of the repo's GitHub Project, or with status posts one.",
-      inputSchema: {
-        type: 'object',
-        properties: {
-          status: { type: 'string', enum: ['On track', 'At risk', 'Off track', 'Complete', 'Inactive'] },
-          note: { type: 'string', description: 'Markdown.' },
-          start: { type: 'string', description: 'YYYY-MM-DD.' },
-          target: { type: 'string', description: 'YYYY-MM-DD.' },
-        },
-      },
-    })
-    await registerTool($, {
-      name: 'project_archive',
-      description:
-        "Archives items in the repo's GitHub Project, leaving the issues as they are: one issue's item, or every Done item closed before a date. " +
-        'The first call lists them and changes nothing; call again with confirm: true to archive.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          number: { type: 'integer' },
-          doneBefore: { type: 'string', description: 'YYYY-MM-DD.' },
-          confirm: { type: 'boolean' },
-        },
-      },
-    })
-    await registerTool($, {
-      name: 'project_plan',
-      description:
-        'Proposes many issue, label and view changes as one plan, each with a reason, refused whole if any is invalid. ' +
-        'The person approves it once, or applies some of it in /issues. A new plan replaces the last.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          issues: {
-            type: 'array',
-            description: 'Fields as in issue_update.',
-            items: {
-              type: 'object',
-              properties: {
-                number: { type: 'integer' },
-                reason: { type: 'string' },
-                status: { type: 'string' },
-                priority: { type: 'string' },
-                fields: { type: 'object', additionalProperties: { type: ['string', 'number', 'null'] } },
-                addLabels: { type: 'array', items: { type: 'string' } },
-                removeLabels: { type: 'array', items: { type: 'string' } },
-                assign: { type: 'array', items: { type: 'string' } },
-                unassign: { type: 'array', items: { type: 'string' } },
-                milestone: { type: 'string' },
-                parent: { type: 'integer', minimum: 0 },
-                projectAfter: { type: 'integer', minimum: 0 },
-              },
-              required: ['number', 'reason'],
-            },
-          },
-          labels: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                name: { type: 'string' },
-                reason: { type: 'string' },
-                create: { type: 'boolean' },
-                delete: { type: 'boolean' },
-                rename: { type: 'string' },
-                color: { type: 'string' },
-                description: { type: 'string' },
-              },
-              required: ['name', 'reason'],
-            },
-          },
-          views: {
-            type: 'array',
-            description: 'view: a number or name; omit to create.',
-            items: {
-              type: 'object',
-              properties: {
-                view: { type: ['integer', 'string'] },
-                reason: { type: 'string' },
-                name: { type: 'string' },
-                layout: { enum: ['table', 'board', 'roadmap'] },
-                filter: { type: 'string' },
-                delete: { type: 'boolean' },
-              },
-              required: ['reason'],
-            },
-          },
-        },
-      },
-    })
-    await registerTool($, {
-      name: 'project_adopt',
-      description:
-        'Lets the issue board write to a GitHub Project of this repo, which it otherwise only reads; release: true stops it. ' +
-        'Call it only when the person asks you to let the board write to a project, or to release one; never on your own, and never to get past a refusal.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          number: { type: 'integer', minimum: 1, description: 'A project linked to the repo; by default the one the board reads.' },
-          release: { type: 'boolean' },
-        },
-      },
-    })
-    await registerTool($, {
-      name: 'capture',
-      description:
-        "Files work found in conversation to the project's Inbox, for the person to triage, without asking. " +
-        'If an open issue, or one closed in the last 30 days, is the same work, it comments there instead.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          title: { type: 'string' },
-          body: { type: 'string', description: 'Markdown: what the work is and why it came up.' },
-          labels: { type: 'array', items: { type: 'string' } },
-          epic: { type: 'integer', minimum: 1, description: 'The epic to file it under.' },
-        },
-        required: ['title', 'body'],
-      },
-    })
-    await registerTool($, {
-      name: 'issue_create',
-      description:
-        "Files an issue and puts it on the issue board. Without a status it goes to the project's Inbox. " +
-        'Write the body in Markdown with an Acceptance list of `- [ ]` boxes. If a step after filing fails, the answer says which, with the new number.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          title: { type: 'string' },
-          body: { type: 'string' },
-          labels: { type: 'array', items: { type: 'string' }, description: 'Missing ones are created.' },
-          assign: { type: 'array', items: { type: 'string' }, description: 'Logins; @me for you.' },
-          milestone: { type: 'string', description: 'An open milestone title.' },
-          parent: { type: 'integer', minimum: 1, description: 'The epic to file it under.' },
-          blockedBy: { type: 'array', items: { type: 'integer' } },
-          type: { type: 'string', description: 'An issue type, such as Bug, where the org has types.' },
-          status: { type: 'string', description: 'A project Status option, such as Backlog.' },
-          priority: { type: 'string', description: 'A project Priority option, such as P1.' },
-          subIssues: {
-            type: 'array',
-            description: 'For an epic: sub-issues to file under it, in order.',
-            items: {
-              type: 'object',
-              properties: {
-                title: { type: 'string' },
-                body: { type: 'string' },
-                labels: { type: 'array', items: { type: 'string' } },
-                assign: { type: 'array', items: { type: 'string' } },
-                milestone: { type: 'string' },
-                status: { type: 'string' },
-                priority: { type: 'string' },
-                blockedBy: { type: 'array', items: { type: 'integer' } },
-              },
-              required: ['title'],
-            },
-          },
-        },
-        required: ['title'],
-      },
-    })
+    for (const { name, description, inputSchema } of TOOL_SPECS) await registerTool($, { name, description, inputSchema })
     // The agent Start in background runs: in its own worktree, in the background. Claude reads its description among the
     // agent types.
     const workerDescription = "Works one GitHub issue of this repository end to end in its own git worktree, for the issue board's Start in background."
@@ -3948,7 +3611,7 @@ export const register: Register = (on, options) => {
       // Closed issues, and words searched in every issue, are GitHub's search to answer: the board holds open issues only.
       if (input.number === undefined && (input.state === 'closed' || input.state === 'all' || input.search?.trim())) {
         const repo = (await read($, board))?.repo ?? repoInfo?.nameWithOwner
-        if (!repo) return { deny: "The issue board hasn't read GitHub yet; refresh it and try again." }
+        if (!repo) return { deny: NOT_READ_SENTENCE }
         return { result: await searchIssues($, repo, input) }
       }
       if ((await read($, board)) === null) await refresh($)
@@ -3970,33 +3633,8 @@ export const register: Register = (on, options) => {
         if (pr) return { result: `${prText(pr)}\nRead it in full with \`gh pr view ${pr.number}\`.` }
         return { result: await readClosed($, now.repo, input.number) }
       }
-      const chosen = input.filter ?? 'all'
-      const who = await read($, viewer)
-      const area = input.area?.replace(/^area:/, '')
-      const project = now.project ?? null
-      const marks = await markersNow($, now)
-      const kept = groupsOf(
-        now.issues.filter(
-          issue =>
-            matches(chosen, issue, who, project, marks) &&
-            (!area || areaOf(issue) === area) &&
-            (!input.query || searched(input.query, issue)) &&
-            (!input.label || issue.labels.some(label => label.name.toLowerCase() === input.label?.toLowerCase())) &&
-            (!input.assignee || issue.assignees.includes(input.assignee.replace(/^@/, ''))) &&
-            (!input.milestone || issue.milestone?.toLowerCase() === input.milestone.toLowerCase()),
-        ),
-        project ? 'status' : 'area',
-        project,
-        null,
-        marks,
-      ).flatMap(group => group.issues)
-      const label =
-        project && (chosen === 'active' || chosen === 'future')
-          ? `${chosen === 'active' ? 'now' : 'later'}: ${nowNames(project)[chosen === 'active' ? 'now' : 'later'].join(' and ') || 'none'}`
-          : chosen === 'inbox'
-            ? `inbox: Status ${roleOf(project, 'inbox')?.name ?? 'Inbox'} or none`
-            : chosen
-      return { result: boardText(now, kept, label, Date.now()) }
+      const listed = toolListOf(now.issues, input, await read($, viewer), now.project ?? null, await markersNow($, now))
+      return { result: boardText(now, listed.issues, listed.label, Date.now()) }
     }),
   ).catch(($, _e, next) => toolFailed($, next, 'issues'))
 
@@ -4148,16 +3786,15 @@ export const register: Register = (on, options) => {
         const latest = project.update
         return { result: latest ? `${project.title}: ${updateLine(latest, await nowOf($))}${latest.body.includes('\n') ? `\n${latest.body}` : ''}` : `${project.title} has no status update yet.` }
       }
-      const text = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : undefined)
       const status = ask.status
       // A post is all project, so a project the board may not write to refuses it here, before anything is asked.
       const refusal = await boardRefusal($)
       if (refusal) return { deny: `Couldn't post the status update. ${refusal}` }
       return askThenAct(e, next, async () => {
         try {
-          const note = text(ask.note)
-          const start = text(ask.start)
-          const target = text(ask.target)
+          const note = textOf(ask.note)
+          const start = textOf(ask.start)
+          const target = textOf(ask.target)
           return { result: await postStatus($, project, { status, ...(note ? { note } : {}), ...(start ? { start } : {}), ...(target ? { target } : {}) }) }
         } catch (cause) {
           return { deny: `Couldn't post the status update: ${messageOf(cause)}` }
@@ -4262,14 +3899,13 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: MILESTONE_TOOL }, async ($, e, next) =>
     asTool(e.tool, async () => {
       const ask = e as unknown as { title?: unknown; newTitle?: unknown; due?: unknown; description?: unknown; close?: unknown; reopen?: unknown }
-      const text = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : undefined)
-      const title = text(ask.title)
+      const title = textOf(ask.title)
       if (!title) return { deny: 'Give the milestone a title.' }
       const repo = (await read($, board))?.repo
-      if (!repo) return { deny: "The issue board hasn't read GitHub yet; refresh it and try again." }
+      if (!repo) return { deny: NOT_READ_SENTENCE }
       return askThenAct(e, next, async () => {
         try {
-          const newTitle = text(ask.newTitle)
+          const newTitle = textOf(ask.newTitle)
           return {
             result: await saveMilestone($, repo, {
               title,
@@ -4884,8 +4520,7 @@ export const register: Register = (on, options) => {
     // named for the view's field shows among the others while its tab does.
     const viewGrouping = viewGroupingOf(tab.view, project)
     const viewField = viewGrouping?.by === 'view' ? viewGrouping.field : null
-    const grouping: GroupBy =
-      picked === 'view' ? (viewField ? 'view' : project ? 'status' : 'area') : picked && (picked !== 'status' || project) ? picked : (viewGrouping?.by ?? (project ? 'status' : 'area'))
+    const grouping = groupingOf(picked, viewGrouping, Boolean(project))
     // The terms of the view's filter the board can't apply, for the note under the heading.
     const unknownTerms = tab.view ? viewMatchOf(tab.view.filter, project).unknown : []
     // Whether an issue is under the filter and the search. The open card stays in the list whether or not, until it is
@@ -5210,7 +4845,7 @@ export const register: Register = (on, options) => {
       const age = ago(issue.updatedAt, clock)
       const count = `${step.done}/${step.total}`.padEnd(5)
       const linked = prsFor(issue, now.prs)[0]
-      const pr = linked ? `⇄ #${linked.number} ${ciBadge[linked.ci].text.trim().split(' ')[0]}` : ''
+      const pr = linked ? `⇄ #${linked.number} ${ciGlyph(linked.ci)}` : ''
       const tag = project && issue.priority ? `${fit(issue.priority, 3)} ` : ''
       // The open issue it waits on, if any: the first, and how many more.
       const blockers = issue.blockedBy ?? []
@@ -5558,8 +5193,8 @@ export const register: Register = (on, options) => {
                 submitLabel="set"
                 onInput={text => void update($, typing, was => ({ ...was, parent: text }))}
                 onSubmit={text => {
-                  const parent = Number(text.replace(/^#/, '').trim())
-                  if (!Number.isInteger(parent) || parent < 1) return
+                  const parent = issueNumberIn(text)
+                  if (parent === null) return
                   void update($, typing, was => ({ ...was, parent: '' })).then(() => change($, n, { parent }))
                 }}
               />
@@ -5647,8 +5282,8 @@ export const register: Register = (on, options) => {
                 submitLabel="close"
                 onInput={text => void update($, typing, was => ({ ...was, duplicate: text }))}
                 onSubmit={text => {
-                  const of = Number(text.replace(/^#/, '').trim())
-                  if (!Number.isInteger(of) || of < 1 || of === n) return
+                  const of = issueNumberIn(text)
+                  if (of === null || of === n) return
                   void update($, typing, was => ({ ...was, duplicate: '' }))
                     .then(() => update($, editing, () => null))
                     .then(() => change($, n, { duplicateOf: of }))
@@ -5934,13 +5569,7 @@ export const register: Register = (on, options) => {
               <Text dimColor>
                 {sectionOpen('prs')
                   ? `${now.prs.length} open`
-                  : [
-                      `${now.prs.length} open`,
-                      ...(['pass', 'fail', 'pending'] as const).flatMap(ci => {
-                        const count = now.prs.filter(pr => pr.ci === ci).length
-                        return count > 0 ? [`${ciBadge[ci].text.trim().split(' ')[0]} ${count}`] : []
-                      }),
-                    ].join(' · ')}
+                  : prCountsText(now.prs)}
               </Text>
             </Box>
             {!arming && (
@@ -5992,15 +5621,15 @@ export const register: Register = (on, options) => {
             </Box>
             {(sectionOpen('milestones') ? (now.milestones ?? []) : []).map(one => {
               const total = one.open + one.closed
-              const late = one.due !== null && one.due < new Date(clock).toISOString().slice(0, 10) && one.open > 0
+              const due = milestoneDue(one, new Date(clock).toISOString().slice(0, 10))
               return (
                 <Box key={`milestone-${one.number}`} flexDirection="row" justifyContent="space-between">
                   <Text>{fit(one.title, Math.max(12, width - 34))}</Text>
                   <Box flexDirection="row" gap={1}>
                     {meter(one.closed, total, 8)}
                     <Text dimColor>{`${one.closed}/${total}`}</Text>
-                    <Text color={late ? 'error' : undefined} dimColor={!late}>
-                      {one.due ? (late ? `was due ${one.due}` : `due ${one.due}`) : 'no due date'}
+                    <Text color={due.late ? 'error' : undefined} dimColor={!due.late}>
+                      {due.text}
                     </Text>
                   </Box>
                 </Box>

@@ -234,6 +234,13 @@ export const projectKeyOf = (project: { number: number; url: string }): string |
   return owner ? projectKey(owner, project.number) : null
 }
 
+// A project as the board records one it may write to, keyed as the setting names it; null when its page doesn't say
+// who owns it.
+export const adoptedOf = (project: { id: string; number: number; title: string; url: string }): Adopted | null => {
+  const owner = ownerOf(project.url)
+  return owner ? { key: projectKey(owner, project.number), number: project.number, id: project.id, title: project.title, owner } : null
+}
+
 // The writeProjects setting as project keys, each once. An entry that isn't owner/number is left out. The setting is a
 // text row in /config, so it holds entries split by commas, such as `astrosteveo/9, astrosteveo/8`; spaces split them
 // too. A list, as a settings file edited by hand or written by an earlier board might hold, is read entry by entry.

@@ -1,7 +1,8 @@
 import type { ModelTextBlock, ThemeKey } from 'claude-code'
-import type { Alert, Board, BoxTask, BuiltInFilter, Check, Ci, Comment, Draft, EpicNote, Field, Filter, Found, GroupBy, Issue, Known, Label, Markers, Milestone, ProjectField, ProjectView, StatusUpdate, Project, PullRequest, Role, RunWatch, Suggestion, Worker, Working } from '../types'
-import { DEFAULT_MARKERS, isBug, isBugLabel, isFuture } from './markers'
-import { ROLE_NAMES, isLater, isNow, isRole, nowCountOf, priorityRank, roleOf } from './project'
+import type { Alert, Board, BoxTask, BuiltInFilter, Check, Ci, Comment, EpicNote, Filter, Found, GroupBy, Issue, Known, Label, Markers, Milestone, ProjectField, ProjectView, StatusUpdate, Project, PullRequest, Role, RunWatch, Suggestion, Worker, Working } from '../types'
+import { DEFAULT_MARKERS, isBug, isBugLabel, isFuture, same } from './markers'
+import { TOOLS, WORKER } from './tools'
+import { ROLE_NAMES, isLater, isNow, isRole, nowCountOf, nowNames, priorityRank, roleOf } from './project'
 
 type RawLabel = { name: string; color?: string }
 type RawUser = { login: string }
@@ -493,8 +494,6 @@ const groupsByField = (issues: Issue[], name: string, project: Project | null, m
   return [...named, { key: `field:${name}:none`, title: `No ${name}`, issues: rest, folded: false }].filter(group => group.issues.length > 0)
 }
 
-const same = (a: string, b: string): boolean => a.trim().toLowerCase() === b.trim().toLowerCase()
-
 // A field named the way a filter writes it: any case, and a hyphen for a space, so `story-points` is Story Points.
 const sameField = (written: string, name: string): boolean => same(written.replace(/-/g, ' '), name.replace(/-/g, ' '))
 
@@ -703,6 +702,16 @@ export const tabTest = (tab: Tab, project: Project | null | undefined, markers: 
   if (tab.view) return viewMatchOf(tab.view.filter, project).test
   const id = tab.id as BuiltInFilter
   return (issue, viewer) => matches(id, issue, viewer, project ?? null, markers)
+}
+
+// What the issues group by: the one the person picked, while it still applies, else the view's own, else Status with
+// a project and area without one. The view's field grouping applies only while its tab shows, and Status only with a
+// project.
+export const groupingOf = (picked: GroupBy | null, view: { by: GroupBy; field: string } | null, hasProject: boolean): GroupBy => {
+  const field = view?.by === 'view' ? view.field : null
+  const fallback: GroupBy = hasProject ? 'status' : 'area'
+  if (picked === 'view') return field ? 'view' : fallback
+  return picked && (picked !== 'status' || hasProject) ? picked : (view?.by ?? fallback)
 }
 
 // How a view's tab groups its issues: by Status or by epic as the pane does, by another field the board read, or not
@@ -937,12 +946,6 @@ export const sumProgress = (issues: Issue[]): Progress =>
     return { done: sum.done + one.done, total: sum.total + one.total }
   }, { done: 0, total: 0 })
 
-export const progressOf = (checks: Check[]): string => {
-  const { done, total } = progress(checks)
-  if (total === 0) return '  -  '
-  return `${String(done).padStart(2)}/${String(total).padEnd(2)}`
-}
-
 // A bar of `width` cells, filled in proportion: the filled and the empty run, drawn in two colors.
 export const bar = ({ done, total }: Progress, width: number): [string, string] => {
   if (total === 0) return ['', '╌'.repeat(width)]
@@ -962,6 +965,19 @@ export const ciBadge: Record<Ci, { text: string; color: ThemeKey }> = {
   none: { text: ' · NO CI ', color: 'inactive' },
 }
 
+// A CI state's mark alone, as a row or a count shows it beside a pull request.
+export const ciGlyph = (ci: Ci): string => ciBadge[ci].text.trim().split(' ')[0] ?? ''
+
+// The folded Pull requests heading: how many are open, then how many pass, fail and are running, each that has any.
+export const prCountsText = (prs: PullRequest[]): string =>
+  [
+    `${prs.length} open`,
+    ...(['pass', 'fail', 'pending'] as const).flatMap(ci => {
+      const count = prs.filter(pr => pr.ci === ci).length
+      return count > 0 ? [`${ciGlyph(ci)} ${count}`] : []
+    }),
+  ].join(' · ')
+
 export const reviewBadge = (pr: PullRequest): { text: string; color: ThemeKey } | undefined => {
   if (pr.isDraft) return { text: 'draft', color: 'inactive' }
   switch (pr.review) {
@@ -974,11 +990,6 @@ export const reviewBadge = (pr: PullRequest): { text: string; color: ThemeKey } 
     default:
       return undefined
   }
-}
-
-export const clockTime = (at: number): string => {
-  const date = new Date(at)
-  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
 }
 
 // How long ago, the way GitHub's lists say it: now, 5m, 3h, 2d, 6w, 1y. It takes a time in milliseconds or an ISO
@@ -1334,6 +1345,41 @@ export const prText = (pr: PullRequest): string => {
 
 const LISTED = 150
 
+// The issues tool's list: the board's issues under the filter and the narrowing asked for, in the pane's order, and
+// the words that name the filter for Claude. A project groups them by Status, else by area.
+export const toolListOf = (
+  issues: Issue[],
+  ask: { filter?: BuiltInFilter; area?: string; query?: string; label?: string; assignee?: string; milestone?: string },
+  viewer: string | null,
+  project: Project | null,
+  markers: Markers,
+): { issues: Issue[]; label: string } => {
+  const chosen = ask.filter ?? 'all'
+  const area = ask.area?.replace(/^area:/, '')
+  const kept = groupsOf(
+    issues.filter(
+      issue =>
+        matches(chosen, issue, viewer, project, markers) &&
+        (!area || areaOf(issue) === area) &&
+        (!ask.query || searched(ask.query, issue)) &&
+        (!ask.label || issue.labels.some(label => label.name.toLowerCase() === ask.label?.toLowerCase())) &&
+        (!ask.assignee || issue.assignees.includes(ask.assignee.replace(/^@/, ''))) &&
+        (!ask.milestone || issue.milestone?.toLowerCase() === ask.milestone.toLowerCase()),
+    ),
+    project ? 'status' : 'area',
+    project,
+    null,
+    markers,
+  ).flatMap(group => group.issues)
+  const label =
+    project && (chosen === 'active' || chosen === 'future')
+      ? `${chosen === 'active' ? 'now' : 'later'}: ${nowNames(project)[chosen === 'active' ? 'now' : 'later'].join(' and ') || 'none'}`
+      : chosen === 'inbox'
+        ? `inbox: Status ${roleOf(project, 'inbox')?.name ?? 'Inbox'} or none`
+        : chosen
+  return { issues: kept, label }
+}
+
 // The board as the issues tool answers it: its pull requests, then the issues the filter keeps, one line each.
 export const boardText = (board: Board, issues: Issue[], label: string, clock: number): string => {
   const line = (issue: Issue) => {
@@ -1423,14 +1469,15 @@ export const draftPrompt = (what: string, labels: string[], epic = false): strin
 type RawDraft = { title?: unknown; body?: unknown; labels?: unknown }
 
 // One issue of a draft, its labels kept to the ones the repository has; null when it has no title or body.
-const draftOf = (raw: RawDraft, labels: string[]): Omit<Draft, 'children'> | null => {
+const draftOf = (raw: RawDraft, labels: string[]): NewIssue | null => {
   if (typeof raw.title !== 'string' || raw.title.trim() === '' || typeof raw.body !== 'string') return null
   const picked = Array.isArray(raw.labels) ? raw.labels.filter((one): one is string => typeof one === 'string' && labels.includes(one)) : []
   return { title: raw.title.trim(), body: raw.body.trim(), labels: [...new Set(picked)] }
 }
 
-// The draft in Claude's reply; null when the reply holds none. An epic's sub-issues come as `children`.
-export const parseDraft = (text: string, labels: string[]): Draft | null => {
+// The draft in Claude's reply as an issue to capture; null when the reply holds none. An epic's sub-issues come as
+// `children` in the reply and go to `subIssues`.
+export const parseDraft = (text: string, labels: string[]): NewIssue | null => {
   const start = text.indexOf('{')
   const end = text.lastIndexOf('}')
   if (start < 0 || end <= start) return null
@@ -1439,7 +1486,7 @@ export const parseDraft = (text: string, labels: string[]): Draft | null => {
     const parent = draftOf(raw, labels)
     if (!parent) return null
     const children = Array.isArray(raw.children) ? raw.children.flatMap(child => (child && typeof child === 'object' ? [draftOf(child as RawDraft, labels)] : [])).filter(one => one !== null) : []
-    return children.length > 0 ? { ...parent, children } : parent
+    return children.length > 0 ? { ...parent, subIssues: children } : parent
   } catch {
     return null
   }
@@ -1759,10 +1806,14 @@ export const milestonesOf = (items: unknown[]): Milestone[] =>
   }))
 
 // One milestone in a line: how many of its issues are closed, and when it is due, or how long since it was.
-export const milestoneLine = (milestone: Milestone, today: string): string => {
-  const total = milestone.open + milestone.closed
-  const due = milestone.due ? (milestone.due < today && milestone.open > 0 ? `was due ${milestone.due}` : `due ${milestone.due}`) : 'no due date'
-  return `${milestone.title} · ${milestone.closed}/${total} closed · ${due}`
+export const milestoneLine = (milestone: Milestone, today: string): string =>
+  `${milestone.title} · ${milestone.closed}/${milestone.open + milestone.closed} closed · ${milestoneDue(milestone, today).text}`
+
+// When a milestone is due, as words, and whether it is late: past its date with issues still open. `today` is a
+// YYYY-MM-DD date.
+export const milestoneDue = (milestone: Milestone, today: string): { text: string; late: boolean } => {
+  const late = milestone.due !== null && milestone.due < today && milestone.open > 0
+  return { text: milestone.due ? (late ? `was due ${milestone.due}` : `due ${milestone.due}`) : 'no due date', late }
 }
 
 // An item's field values, by field name, from the ITEM_VALUES query: each as text, as the card and Claude read it.
@@ -1884,20 +1935,6 @@ export const SUBCOMMANDS: { name: string; what: string }[] = [
   { name: 'help', what: 'this list' },
 ]
 
-// The board's tools for Claude, each in a line: /issues help lists them. A test holds it to the tools registered.
-export const TOOLS: { name: string; what: string }[] = [
-  { name: 'issues', what: 'lists the board, one issue in full with its comments and fields, searches every issue, and lists by Status or milestones' },
-  { name: 'tick', what: 'ticks or unticks acceptance boxes' },
-  { name: 'issue_update', what: 'changes an issue: Status, Priority, title, body, boxes, labels, epic, fields, type, links, closing, and starting work on it' },
-  { name: 'capture', what: 'files work found in conversation to the Inbox, or comments on the same work already filed, without asking' },
-  { name: 'issue_create', what: 'files an issue, or an epic with its sub-issues, into the project with a Status, Priority or fields' },
-  { name: 'milestone', what: 'makes or changes a milestone' },
-  { name: 'project_status', what: "reads or posts the project's status update" },
-  { name: 'project_archive', what: "archives the project's Done items closed before a date, or one issue's item" },
-  { name: 'project_plan', what: 'proposes many issue, label and view changes as one plan, which you approve once or apply in part from its card in the pane' },
-  { name: 'project_adopt', what: 'lets the board write to a project, or releases it, when you ask, after a permission prompt' },
-]
-
 // The # suggestions' feature name, which /issues help also looks for to mark its line off.
 const HASH_FEATURE = 'Issues and pull requests offered after # in the prompt box'
 
@@ -1992,9 +2029,31 @@ export const unmovedText = (to: string, failed: { number: number; message: strin
   return `Couldn't move ${which} to ${to}: ${first?.message ?? 'GitHub refused'}. /issues check may say why.`
 }
 
+// What the board says when it has no read of GitHub to work from yet. A thrown error carries the clause, which the
+// caller puts after its own "Couldn't ...: "; a refusal that stands alone is the sentence.
+export const NOT_READ = "the issue board hasn't read GitHub yet; refresh it and try again"
+export const NOT_READ_SENTENCE = `T${NOT_READ.slice(1)}.`
+
+// Why reading an issue over REST failed, by its number: that it doesn't exist, on GitHub's 404, or what gh said.
+export const notFoundText = (message: string, repo: string, number: number): string =>
+  /HTTP 404|Not Found/i.test(message) ? `#${number} doesn't exist in ${repo}` : `couldn't read #${number}: ${message}`
+
+// The issue number typed into a field, with or without its #; null for anything that isn't a whole number above 0.
+export const issueNumberIn = (text: string): number | null => {
+  const number = Number(text.replace(/^#/, '').trim())
+  return Number.isInteger(number) && number > 0 ? number : null
+}
+
 // Issue numbers from a tool's input: whole and positive, each once.
 export const numbersOf = (value: unknown): number[] =>
   Array.isArray(value) ? [...new Set(value.filter((one): one is number => typeof one === 'number' && Number.isInteger(one) && one > 0))] : []
+
+// A tool input's text, trimmed; undefined when it is missing, not text, or blank.
+export const textOf = (value: unknown): string | undefined => (typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined)
+
+// A tool input's list of names, each trimmed, without the blank ones and anything that isn't text.
+export const stringsOf = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((one): one is string => typeof one === 'string' && one.trim() !== '').map(one => one.trim()) : []
 
 // An issue for Claude's issue_create tool to file: its title and body, and what it starts with.
 export type NewIssue = {
@@ -2017,23 +2076,21 @@ export type NewIssue = {
 // sub-issues of its own.
 export const newIssueOf = (input: unknown, nested = false): NewIssue | string => {
   const raw = (input ?? {}) as Record<string, unknown>
-  const text = (value: unknown) => (typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined)
-  const list = (value: unknown) => (Array.isArray(value) ? value.filter((one): one is string => typeof one === 'string' && one.trim() !== '').map(one => one.trim()) : [])
-  const title = text(raw.title)
+  const title = textOf(raw.title)
   if (!title) return 'Give the issue a title.'
   const made: NewIssue = { title, body: typeof raw.body === 'string' ? raw.body : '' }
-  const labels = list(raw.labels)
-  const assign = list(raw.assign)
+  const labels = stringsOf(raw.labels)
+  const assign = stringsOf(raw.assign)
   if (labels.length > 0) made.labels = labels
   if (assign.length > 0) made.assign = assign
-  const milestone = text(raw.milestone)
+  const milestone = textOf(raw.milestone)
   if (milestone) made.milestone = milestone
   if (typeof raw.parent === 'number' && Number.isInteger(raw.parent) && raw.parent > 0) made.parent = raw.parent
-  const status = text(raw.status)
-  const priority = text(raw.priority)
+  const status = textOf(raw.status)
+  const priority = textOf(raw.priority)
   if (status) made.status = status
   if (priority) made.priority = priority
-  const type = text(raw.type)
+  const type = textOf(raw.type)
   if (type) made.type = type
   const blockers = numbersOf(raw.blockedBy)
   if (blockers.length > 0) made.blockedBy = blockers
@@ -2045,6 +2102,77 @@ export const newIssueOf = (input: unknown, nested = false): NewIssue | string =>
     made.subIssues = parts as NewIssue[]
   }
   return made
+}
+
+// The capture tool's input as an issue to capture, or why it can't be one.
+export const captureOf = (input: unknown): NewIssue | string => {
+  const raw = (input ?? {}) as { title?: unknown; body?: unknown; labels?: unknown; epic?: unknown }
+  const title = textOf(raw.title)
+  if (!title) return 'Give the capture a title.'
+  const body = textOf(raw.body)
+  if (!body) return 'Say in body what the work is and why it came up.'
+  const labels = stringsOf(raw.labels)
+  const epic = typeof raw.epic === 'number' && Number.isInteger(raw.epic) && raw.epic > 0 ? raw.epic : undefined
+  return { title, body, ...(labels.length > 0 ? { labels } : {}), ...(epic ? { parent: epic } : {}) }
+}
+
+// The issue_update tool's input as a change; null without an issue number. A parent of 0 and an empty milestone remove
+// them, as the tool says.
+export const changesOf = (input: unknown): (IssueChanges & { number: number }) | null => {
+  const raw = (input ?? {}) as Record<string, unknown>
+  if (typeof raw.number !== 'number' || !Number.isInteger(raw.number) || raw.number < 1) return null
+  const changes: IssueChanges & { number: number } = { number: raw.number }
+  const status = textOf(raw.status)
+  const priority = textOf(raw.priority)
+  if (status) changes.status = status
+  if (priority) changes.priority = priority
+  for (const key of ['addLabels', 'removeLabels', 'assign', 'unassign'] as const) {
+    const list = stringsOf(raw[key])
+    if (list.length) changes[key] = list
+  }
+  if (typeof raw.parent === 'number') changes.parent = raw.parent > 0 ? raw.parent : null
+  if (typeof raw.milestone === 'string') changes.milestone = raw.milestone.trim() || null
+  const comment = textOf(raw.comment)
+  if (comment) changes.comment = comment
+  if (raw.close === 'completed' || raw.close === 'not planned') changes.close = raw.close
+  if (raw.reopen === true) changes.reopen = true
+  const title = textOf(raw.title)
+  if (title) changes.title = title
+  if (typeof raw.body === 'string') changes.body = raw.body
+  const boxes = stringsOf(raw.addBoxes)
+  if (boxes.length) changes.addBoxes = boxes
+  const rewords = Array.isArray(raw.rewordBoxes)
+    ? raw.rewordBoxes.flatMap(one => {
+        const edit = one as { box?: unknown; text?: unknown }
+        return typeof edit.box === 'number' && Number.isInteger(edit.box) && typeof edit.text === 'string' && edit.text.trim() ? [{ box: edit.box, text: edit.text.trim() }] : []
+      })
+    : []
+  if (rewords.length > 0) changes.rewordBoxes = rewords
+  if (raw.fields && typeof raw.fields === 'object' && !Array.isArray(raw.fields)) {
+    const given = Object.entries(raw.fields as Record<string, unknown>).flatMap(([name, value]) =>
+      name.trim() && (value === null || typeof value === 'string' || typeof value === 'number') ? [[name.trim(), value as string | number | null]] : [],
+    )
+    if (given.length > 0) changes.fields = Object.fromEntries(given)
+  }
+  if (typeof raw.pin === 'boolean') changes.pin = raw.pin
+  // A tool's caller may send lock's true or false as a string, since the field also takes GitHub's reasons.
+  const lock = raw.lock === 'true' ? true : raw.lock === 'false' ? false : raw.lock
+  if (lock === true || lock === false) changes.lock = lock
+  else if (lock === 'off_topic' || lock === 'resolved' || lock === 'spam' || lock === 'too_heated') changes.lock = lock
+  const target = textOf(raw.transferTo)
+  if (target) changes.transferTo = target
+  if (raw.confirmTransfer === true) changes.confirmTransfer = true
+  if (typeof raw.moveBefore === 'number' && Number.isInteger(raw.moveBefore)) changes.moveBefore = raw.moveBefore
+  else if (typeof raw.moveAfter === 'number' && Number.isInteger(raw.moveAfter)) changes.moveAfter = raw.moveAfter
+  if (typeof raw.projectAfter === 'number' && Number.isInteger(raw.projectAfter) && raw.projectAfter >= 0) changes.projectAfter = raw.projectAfter
+  if (raw.type === null) changes.type = null
+  else if (textOf(raw.type)) changes.type = textOf(raw.type)
+  if (typeof raw.duplicateOf === 'number' && Number.isInteger(raw.duplicateOf) && raw.duplicateOf > 0 && raw.duplicateOf !== raw.number) changes.duplicateOf = raw.duplicateOf
+  const blocking = numbersOf(raw.addBlockedBy)
+  const unblocking = numbersOf(raw.removeBlockedBy)
+  if (blocking.length > 0) changes.addBlockedBy = blocking
+  if (unblocking.length > 0) changes.removeBlockedBy = unblocking
+  return changes
 }
 
 // What filing an issue did, for Claude: what it was filed with, and each later step that failed, by what it was for.
@@ -2355,9 +2483,6 @@ export const workerPrompt = (rule: PrRule): string =>
     "Don't merge, don't force-push, and don't push to the default branch.",
     'End with a short report in plain sentences: the pull request, what you did, and what is left.',
   ].join('\n')
-
-// The agent type Start in background runs, as `$.agent.register` names it.
-export const WORKER = 'issue-board:worker'
 
 // What Start in background sends Claude: dispatch the board's agent on the issue, and leave the work to it.
 export const backgroundPrompt = (issue: Issue): string =>

@@ -1,5 +1,5 @@
 import type { On } from 'claude-code'
-import { expect, mock, test } from 'claude-code/testing'
+import { expect, test } from 'claude-code/testing'
 
 import type { Board, Issue } from '../types'
 import { addBoxes, changesText, commandsOf, leftForDone, leftForVerification, movedText, rewordBoxes, statusOnly, unmovedText } from '../hooks/parse'
@@ -64,6 +64,8 @@ const github = (on: On, prs: unknown[] = [], extra: Raw[] = []) => {
     // #35's sub-issues in GitHub's order, and each move made, as `<sub-issue id> <before_id|after_id>=<id>`.
     order: [43] as number[],
     moves: [] as string[],
+    // Issues the board holds that GitHub no longer has, so reading their REST id answers 404.
+    gone: [] as number[],
     // When set, GitHub refuses to set a project field.
     refuseFields: false,
     // Every command run, answered or not, as one line each.
@@ -155,7 +157,7 @@ const github = (on: On, prs: unknown[] = [], extra: Raw[] = []) => {
     // An issue's REST id, by number: #35 and #43 exist, nothing else does.
     const one = /^repos\/[^/]+\/[^/]+\/issues\/(\d+)$/.exec(argv[2] ?? '')
     if (argv[1] === 'api' && one) {
-      if (!['35', '43', '44', '45'].includes(one[1] ?? '')) return { value: { exitCode: 1, stdout: '', stderr: 'gh: Not Found (HTTP 404)', isStdoutTruncated: false, isStderrTruncated: false } }
+      if (!['35', '43', '44', '45'].includes(one[1] ?? '') || state.gone.includes(Number(one[1]))) return { value: { exitCode: 1, stdout: '', stderr: 'gh: Not Found (HTTP 404)', isStdoutTruncated: false, isStderrTruncated: false } }
       return answer(`90${one[1]}\n`)
     }
     if (argv[1] === 'api' && argv[2] === '-X' && argv[4]?.includes('/dependencies/blocked_by')) {
@@ -569,6 +571,11 @@ test("an epic's sub-issues follow GitHub's order where the board has no reason t
 
   // A sibling outside the epic can't be the place.
   expect((await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, moveAfter: 35 })).deny).toBe("Couldn't change #43: #35 isn't a sub-issue of #35, as #43 is")
+
+  // A sibling the board still holds but GitHub has deleted is named, not left to gh's own words.
+  gh.gone = [45]
+  expect((await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 44, moveAfter: 45 })).deny).toBe("Couldn't change #44: #45 doesn't exist in astrosteveo/claude-plugins")
+  expect(gh.moves).toEqual(['9044 before_id=9045'])
 })
 
 test('an issue is pinned, locked and moved to another of the owner\'s repos, each as a gh command, and leaves the board when moved', async ($, on) => {
