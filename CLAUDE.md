@@ -39,20 +39,31 @@ entries the same.
 
 - `hooks/hooks.json` names one module, `./register.tsx`, which exports `register: Register = (on, options) => …`.
   Every hook is `($, e, next)`; `next(e)` runs the plugins beneath and the engine's own behavior.
+- The `$` rule shapes the rest of the layout. A plugin has one hooks module, and the engine never follows `$` across
+  an import: it only follows `$` into functions declared in `register.tsx`. So every function that calls `$` lives in
+  `register.tsx`, and everything that doesn't moves out of it, into the pure `.ts` files and the views below. A big `$`
+  function gathers GitHub's answers first, hands them to a pure function that decides, and then writes what that
+  decided. `moves.ts` is the model: `planMoves` plans the board's automatic Status moves, and `moveOnRead` and
+  `applyMoves` in `register.tsx` ask GitHub and apply the plan.
 - Every hook at a gating site (`tool.call`, `tool.check`, `prompt.submit`, `ui.close`…) ends in `.catch`, written as a
   function literal that calls `fallBack` (the site's default, `next(e)`, plus a debug log line) or, for the board's own
-  tools, `toolFailed` (a deny that names the error). The engine only follows `$` into functions declared in
-  `register.tsx`, so helpers that take `$` live there, not in the pure files below.
-- Pure logic lives in sibling `.ts` files and is imported by `register.tsx`. Tests call these directly. Put new layout
-  or text logic there when it can be tested without mounting a pane. Each file is imported by name; there is no barrel.
+  tools, `toolFailed` (a deny that names the error).
+- issue-board's `register.tsx` is in labelled sections, each opened by a one-line `// ---- … ----` comment, in this
+  order: atoms and shared constants; gh and I/O; adoption and grants; refresh and poll, with the movers; project
+  writes; capture and filing; setup; workers; plan and triage, with the pane's other actions; tool registration; and
+  `register`. Put a new `$` function in the section it belongs to.
+- Pure logic lives in sibling `.ts` files and is imported by `register.tsx`. Tests call these directly, with no faked
+  `gh`. Put new deciding, layout or text logic there when it can be tested without mounting a pane. Each file is
+  imported by name; there is no barrel.
   - ask: `parse.ts` and `decide.ts`.
-  - issue-board, by topic: `github.ts` (reading gh's issues, pull requests, CI, comments and the project graph),
-    `rest.ts` (REST answers: search, project items, milestones, labels), `filters.ts` (filters, view tabs, sorting and
-    grouping, `#` rows), `layout.ts` (cell widths, fitting, badges, glyphs, times), `prompts.ts` (what the board hands
-    Claude, the system prompt's sections, help text), `boxes.ts` (acceptance boxes), `changes.ts` (issue edits and
-    new issues from tool input), `epics.ts`, `workers.ts` (background agents and handoff), `news.ts` (mentions,
-    copies, news on an issue, alerts, runs), and `access.ts`, `markers.ts`, `plan.ts`, `project.ts`, `settings.ts`,
-    `setup.ts`, `stats.ts` and `tools.ts`.
+  - issue-board, by topic: `github.ts` (reading gh's issues, pull requests, CI, comments and the project graph, and
+    the board a full read makes), `rest.ts` (REST answers: search, project items, milestones, labels), `filters.ts`
+    (filters, view tabs, sorting and grouping, `#` rows), `layout.ts` (cell widths, fitting, badges, glyphs, times),
+    `prompts.ts` (what the board hands Claude, the system prompt's sections, help text), `boxes.ts` (acceptance
+    boxes), `changes.ts` (issue edits and new issues from tool input, and what an edit says), `filing.ts` (filing one
+    issue), `moves.ts` (the automatic Status moves), `epics.ts`, `workers.ts` (background agents and handoff),
+    `news.ts` (mentions, copies, news on an issue, alerts, runs), `setup.ts` (setup's plan and Apply's steps), and
+    `access.ts`, `markers.ts`, `plan.ts`, `project.ts`, `settings.ts`, `stats.ts` and `tools.ts`.
 - Drawing moved out of `register.tsx` lives in `hooks/views/`, one `.tsx` file per piece. In issue-board these are
   `parts.tsx` (`partsOf`, the small parts rows are built from), `issue-row.tsx`, `pr-row.tsx`, `peek.tsx`,
   `header.tsx` (the pane's header and trends), `tabs.tsx` (the Issues heading), `card.tsx` (the opened issue's card,
