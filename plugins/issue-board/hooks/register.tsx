@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
-import type { AgentSpawnResult, Caught, EngineInterface, HookFailure, ModelForkResult, Register, RenderChildren, ThemeKey, Timer, ToolCallResult, UiCopyArgs } from 'claude-code'
+import type { AgentSpawnResult, Caught, EngineInterface, HookFailure, ModelForkResult, Register, ThemeKey, Timer, ToolCallResult, UiCopyArgs } from 'claude-code'
 
-import type { Adopted, Adoption, Alert, Armed, Board, FieldValues, BoxTask, BuiltInFilter, Check, Comment, EpicNote, GroupBy, Issue, Known, LabelChange, Launch, ViewChange, Markers, Milestone, Plan, PlanRow, Problem, Project, Role, Roles, StatusUpdate, PullRequest, RunWatch, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
+import type { Adopted, Adoption, Armed, Board, FieldValues, BoxTask, BuiltInFilter, Check, Comment, EpicNote, GroupBy, Issue, Known, LabelChange, Launch, ViewChange, Markers, Milestone, Plan, PlanRow, Problem, Project, Role, Roles, StatusUpdate, PullRequest, RunWatch, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
 import type { IssueChanges, NewIssue } from './changes'
 import type { Tab } from './filters'
 import type { Ended } from './workers'
@@ -9,7 +9,7 @@ import type { Settings } from './settings'
 import { featuresOff, offText, settingsOf, switchesOf, withOldKeys } from './settings'
 import { TOOL_SPECS, WORKER } from './tools'
 import type { Linked } from './project'
-import { authOf, problemsOf, problemsText, repoOf } from './access'
+import { accessKey, authOf, problemsOf, problemsText, repoOf } from './access'
 import { isBug, markerAskOf, markerKey, markerOptionsOf, markerText, markersOf } from './markers'
 import type { Cause, ContextSource } from './stats'
 import { countCall, countContext, countPoints, countPrompt, defineTool, kindOf, loadTool, matchesOf, minus, newStats, statsText, zero } from './stats'
@@ -154,7 +154,6 @@ import {
   updateWords,
 } from './github'
 import {
-  WEEKS,
   ago,
   agoText,
   cells,
@@ -163,7 +162,6 @@ import {
   named,
   progress,
   since,
-  spark,
   sumProgress,
   summary,
   weekly,
@@ -177,6 +175,10 @@ import { issueRow as issueRowView } from './views/issue-row'
 import type { IssueRowHandlers } from './views/issue-row'
 import { prRow as prRowView } from './views/pr-row'
 import type { PrRowHandlers } from './views/pr-row'
+import { band as bandView } from './views/band'
+import type { BandHandlers } from './views/band'
+import { header as headerView, trends as trendsView } from './views/header'
+import { issuesHeading as issuesHeadingView } from './views/tabs'
 import {
   absorbed,
   alertsOf,
@@ -201,7 +203,6 @@ import {
   closeOutPrompt,
   captureSection,
   draftPrompt,
-  fixPrompt,
   issueText,
   labelsOf,
   parseDraft,
@@ -530,9 +531,6 @@ const checkAccess = ($: EngineInterface, message?: string): Promise<Problem[]> =
   checking = run.catch(() => undefined)
   return run
 }
-
-// How the dismissed list names a problem waved off from the band.
-const accessKey = (problem: Problem): string => `access-${problem.id}`
 
 // The branch the session's folder has checked out; null on a detached head or outside git.
 const currentBranch = async ($: EngineInterface): Promise<string | null> => {
@@ -3969,7 +3967,7 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const elements = $.ui.resolve(e)
     const { Box, Text, Button, Link } = elements
-    const { link, keep, choice, meter } = partsOf(elements)
+    const { link, choice, meter } = partsOf(elements)
     const problems = (await read($, access))?.problems ?? []
     const width = Math.max(40, e.props.bodyColumns)
     const roomy = width >= 72
@@ -4064,30 +4062,9 @@ export const register: Register = (on, options) => {
     }
     const togglePr = (number: number) => () => void update($, openPr, was => (was === number ? null : number))
 
-    // The header's right: when the board last synced, and Refresh. It keeps its width; the repo's name is cut instead.
-    const sync = (
-      <Box flexDirection="row" gap={1} flexShrink={0}>
-        <Text color={busy ? 'warning' : undefined} dimColor={!busy}>
-          {busy ? '◌ syncing…' : now ? `⟳ ${ago(now.fetchedAt, clock)}` : ''}
-        </Text>
-        <Button key="refresh" hotkey="r" dimColor onPress={() => void refresh($)}>
-          Refresh
-        </Button>
-      </Box>
-    )
-    const repoName = (
-      <Text wrap="truncate-end">
-        <Text color="claude">◆ </Text>
-        <Text bold>{now ? now.repo : 'GitHub'}</Text>
-      </Text>
-    )
-    // Before there is a board: the repo and the sync, nothing to total yet.
-    const header = (
-      <Box flexDirection="row" justifyContent="space-between">
-        {repoName}
-        {sync}
-      </Box>
-    )
+    // The header, drawn by views/header.tsx: before there is a board, the repo and the sync.
+    const headerHandlers = { refresh: () => refresh($) }
+    const header = headerView(elements, { repo: now ? now.repo : null, busy, fetchedAt: now ? now.fetchedAt : null, clock, totals: null }, headerHandlers)
 
     // What the last permission check found missing, each with its fix.
     const blocked = problems.some(problem => problem.blocks)
@@ -4470,78 +4447,29 @@ export const register: Register = (on, options) => {
     const failing = now.prs.filter(pr => pr.ci === 'fail').length
     const overall = sumProgress(shown)
 
-    const stat = (glyph: string, color: ThemeKey, value: number, label: string) => (
-      <Text>
-        <Text color={color}>{glyph}</Text>
-        <Text bold>{` ${value}`}</Text>
-        <Text dimColor>{` ${label}`}</Text>
-      </Text>
-    )
-
-    // One line: the repo and its totals at the left, the sync at the right. The ticked meter needs the room.
-    // The repo and its counts wrap onto a second line in a narrow pane rather than squeeze a count into two; the sync
-    // and Refresh keep their place at the right.
-    const topLine = (
-      <Box flexDirection="row" justifyContent="space-between" gap={1}>
-        <Box flexDirection="row" columnGap={2} flexWrap="wrap" flexShrink={1}>
-          {repoName}
-          {stat('●', 'claude', now.issues.length, now.issues.length === 1 ? 'issue' : 'issues')}
-          {stat('▲', bugs > 0 ? 'error' : 'inactive', bugs, bugs === 1 ? 'bug' : 'bugs')}
-          {stat('⇄', 'suggestion', now.prs.length, now.prs.length === 1 ? 'PR' : 'PRs')}
-          {failing > 0 && stat('✗', 'error', failing, 'failing')}
-          {wide && overall.total > 0 && (
-            <Text>
-              {meter(overall.done, overall.total, 6)}
-              <Text dimColor>{` ${Math.round((overall.done / overall.total) * 100)}%`}</Text>
-            </Text>
-          )}
-        </Box>
-        {sync}
-      </Box>
+    // With a board, its totals too.
+    const topLine = headerView(
+      elements,
+      { repo: now.repo, busy, fetchedAt: now.fetchedAt, clock, totals: { issues: now.issues.length, bugs, prs: now.prs.length, failing, overall, wide } },
+      headerHandlers,
     )
 
     // A board kept from before velocity was fetched has none until it refreshes.
     const velocity = now.velocity ?? { closed: [], merged: [] }
-    const trend = (label: string, color: ThemeKey, counts: number[]) => (
-      <Text>
-        <Text dimColor>{`${label} `}</Text>
-        <Text color={color}>{spark(counts)}</Text>
-        <Text bold>{` ${counts.reduce((sum, count) => sum + count, 0)}`}</Text>
-      </Text>
-    )
-    const trends = wide && velocity.closed.length > 0 && (
-      <Box flexDirection="row" gap={3} flexWrap="wrap">
-        {trend('closed', 'success', velocity.closed)}
-        {trend('merged', 'suggestion', velocity.merged)}
-        <Text dimColor>{`last ${WEEKS} weeks`}</Text>
-      </Box>
-    )
+    const trends = trendsView(elements, { wide, velocity })
 
-    // The Issues heading: its filters, the search and the grouping, which act on the issues below it alone. With a
-    // project the first two filters read Priority, and the grouping can be Status.
+    // The Issues heading, drawn by views/tabs.tsx. With a project the grouping can be Status.
     const groupings = [...GROUPINGS.filter(one => one.id !== 'status' || project), ...(viewField ? [{ id: 'view' as const, label: viewField }] : [])]
     // A tab's label: its name and how many open issues it holds; Closed's count isn't known until it is read.
     const tabLabel = (one: Tab) => (one.id === 'closed' ? one.name : `${one.name} ${now.issues.filter(issue => inTab(one, issue)).length}`)
-    const issuesHeading = (
-      <Box flexDirection="row" gap={1} flexWrap="wrap">
-        <Text bold color="claude">
-          Issues
-        </Text>
-        {tabs.map(one => choice(`filter-${one.id}`, tabLabel(one), one.id === shownTab, () => void pickTab($, one, project), { hotkey: one.hotkey }))}
-        {Input && (
-          <Input
-            key="search"
-            label="⌕ "
-            placeholder="search titles, #numbers, labels"
-            value={typed}
-            submitLabel="search"
-            onInput={text => void update($, query, () => text)}
-            onSubmit={text => void update($, query, () => text)}
-          />
-        )}
-        <Text dimColor>by</Text>
-        {groupings.map(one => choice(`group-${one.id}`, one.label, one.id === grouping, () => void update($, groupBy, () => one.id)))}
-      </Box>
+    const issuesHeading = issuesHeadingView(
+      { Box, Text, Button, Link, Input },
+      { tabs: tabs.map(one => ({ tab: one, label: tabLabel(one) })), shown: shownTab, typed, groupings, grouping },
+      {
+        pickTab: one => pickTab($, one, project),
+        search: text => update($, query, () => text),
+        group: id => update($, groupBy, () => id),
+      },
     )
 
     // The plan Claude proposed with project_plan: a row per change, grouped by issue, each with a box to tick and
@@ -5468,255 +5396,52 @@ export const register: Register = (on, options) => {
     if (problems.length === 0 && alerts.length === 0 && offers.length === 0 && notes.length === 0 && !unadopted && !guessed && !marked && !planned && caught === 0)
       return next(e)
 
-    const elements = $.ui.resolve(e)
-    const { Box, Text, Button } = elements
-    // Each line keeps its badge, number and buttons whole, as the pane's rows do; its text is cut to what is left.
-    const { link, keep } = partsOf(elements)
-    const width = e.props.bodyColumns
-    const clock = Date.now()
-    const repo = now?.repo ?? ''
-    const dismiss = (alert: Alert) => async () => {
-      await update($, dismissed, list => [...list.slice(-50), alert.key])
-      if (alert.kind === 'closed') await update($, working, () => null)
-      await save($)
+    // The lines, drawn by views/band.tsx with these handlers.
+    const handlers: BandHandlers = {
+      dismiss: async alert => {
+        await update($, dismissed, list => [...list.slice(-50), alert.key])
+        if (alert.kind === 'closed') await update($, working, () => null)
+        await save($)
+      },
+      // A button that hands Claude a pull request: into the prompt box while Claude is busy, sent otherwise.
+      hand: text => (e.props.isWorking ? $.prompt.fill({ text }) : submit($, 'other prompts', { text, asUser: true })),
+      tickTask: task => tickTask($, task),
+      skipTask: task => update($, tasks, list => list.filter(one => one.id !== task.id)),
+      dismissNote: note => update($, epicNotes, list => list.filter(one => one.key !== note.key)),
+      copyFix: (problem, surface) => copyFix($, problem, surface),
+      recheck: () => recheck($),
+      dismissProblem: problem => dismissProblem($, problem),
+      review: () => $.ui.open(OPEN),
+      decline: project => declineFromPrompt($, project),
+      confirmGuess: project => confirmGuess($, project),
+      openStatuses: () => openStatuses($),
+      confirmMarkers: () => confirmMarkers($, markerAsk),
+      openMarkers: () => openMarkers($),
+      seeGuess: seen => seeGuess($, seen),
+      openInbox: () => openInbox($),
+      clearCaptured: () => update($, captured, () => 0),
     }
-    // A button that hands Claude a pull request: into the prompt box while Claude is busy, sent otherwise.
-    const hand = (text: string) => (e.props.isWorking ? $.prompt.fill({ text }) : submit($, 'other prompts', { text, asUser: true }))
-
-    // One line of the band: `<badge> #<number> <text> <buttons> ✕`. The badge, number, buttons and ✕ keep their width;
-    // the text is cut to what is left.
-    const bandRow = (row: {
-      key?: string
-      badge: string
-      color: ThemeKey
-      number?: { value: number; color: ThemeKey }
-      text: RenderChildren
-      actions?: RenderChildren[]
-      dismiss?: { key: string; onPress: () => void }
-    }) => (
-      <Box key={row.key} flexDirection="row" gap={1}>
-        {keep(
-          <Text color={row.color} inverse bold>
-            {` ${row.badge} `}
-          </Text>,
-        )}
-        {row.number && keep(<Text color={row.number.color} bold>{`#${row.number.value}`}</Text>)}
-        <Text wrap="truncate-end">{row.text}</Text>
-        {(row.actions ?? []).map(part => part && keep(part))}
-        {row.dismiss &&
-          keep(
-            <Button key={row.dismiss.key} dimColor onPress={row.dismiss.onPress}>
-              ✕
-            </Button>,
-          )}
-      </Box>
-    )
-
-    const line = (alert: Alert) => {
-      const gone = { key: `dismiss-${alert.key}`, onPress: () => void dismiss(alert)() }
-      switch (alert.kind) {
-        case 'ci': {
-          const { pr } = alert
-          const names = pr.failing ?? []
-          return bandRow({
-            badge: '✗ CI',
-            color: 'error',
-            number: { value: pr.number, color: 'suggestion' },
-            text: [
-              <Text>{fit(pr.title, Math.max(12, width - 44))}</Text>,
-              <Text dimColor>{` ${names.length > 0 ? fit(names.join(', '), 24) : 'failing'} on ${fit(pr.branch, 20)}`}</Text>,
-            ],
-            actions: [
-              <Button key={`fix-${pr.number}`} variant="primary" onPress={() => void hand(fixPrompt(pr))}>
-                Fix
-              </Button>,
-              link(pageOf(repo, 'pull', pr)),
-            ],
-            dismiss: gone,
-          })
-        }
-        case 'pass': {
-          const { pr } = alert
-          return bandRow({
-            badge: '✓ CI',
-            color: 'success',
-            number: { value: pr.number, color: 'suggestion' },
-            text: [<Text>{fit(pr.title, Math.max(12, width - 57))}</Text>, <Text dimColor>{` passed on ${fit(pr.branch, 20)}`}</Text>],
-            actions: [
-              <Button key={`merge-${pr.number}`} variant="primary" onPress={() => void hand(closeOutPrompt(pr))}>
-                Finish & merge
-              </Button>,
-              link(pageOf(repo, 'pull', pr)),
-            ],
-            dismiss: gone,
-          })
-        }
-        case 'activity': {
-          const { issue } = alert
-          return bandRow({
-            badge: '● NEW',
-            color: 'warning',
-            number: { value: issue.number, color: 'claude' },
-            text: [<Text>{fit(issue.title, Math.max(12, width - 44))}</Text>, <Text dimColor>{` changed ${agoText(issue.updatedAt, clock)}`}</Text>],
-            actions: [link(pageOf(repo, 'issues', issue))],
-            dismiss: gone,
-          })
-        }
-        case 'closed':
-          return bandRow({
-            badge: '✓ DONE',
-            color: 'success',
-            number: { value: alert.working.number, color: 'claude' },
-            text: [<Text>{fit(alert.working.title, Math.max(12, width - 30))}</Text>, <Text dimColor> is closed</Text>],
-            dismiss: gone,
-          })
-      }
-    }
-
-    const offerLine = ({ task, box }: { task: BoxTask; box: number }) =>
-      bandRow({
-        key: `offer-${task.id}`,
-        badge: '☑ TICK?',
-        color: 'success',
-        number: { value: task.number, color: 'claude' },
-        text: [<Text dimColor>{`box ${box} `}</Text>, <Text>{fit(task.text, Math.max(12, width - 52))}</Text>, <Text dimColor> is done</Text>],
-        actions: [
-          <Button key={`tick-task-${task.id}`} variant="primary" onPress={() => void tickTask($, task)}>
-            {`Tick box ${box}`}
-          </Button>,
-        ],
-        dismiss: { key: `skip-task-${task.id}`, onPress: () => void update($, tasks, list => list.filter(one => one.id !== task.id)) },
-      })
-
-    // An epic the board moved on, or that has a sub-issue open again: `◆ EPIC #35 <title> · <what happened>`.
-    const epicLine = (note: EpicNote) => {
-      const tail = ` · ${note.text}`
-      return bandRow({
-        key: `epic-row-${note.key}`,
-        badge: '◆ EPIC',
-        color: 'warning',
-        number: { value: note.epic, color: 'claude' },
-        text: [<Text>{fit(note.title, Math.max(12, width - cells(tail) - 30))}</Text>, <Text dimColor>{tail}</Text>],
-        actions: [link(pageOf(repo, 'issues', { number: note.epic, url: '' }))],
-        dismiss: { key: `dismiss-${note.key}`, onPress: () => void update($, epicNotes, list => list.filter(one => one.key !== note.key)) },
-      })
-    }
-
-    // Something missing: what it is, the command or page that fixes it, and a look again once it's done.
-    const problemLine = (problem: Problem) => {
-      const how = problem.command ? `run ${problem.command}` : problem.fix
-      return bandRow({
-        key: `problem-row-${problem.id}`,
-        badge: '⚠ SETUP',
-        color: problem.blocks ? 'error' : 'warning',
-        text: [<Text>{fit(problem.title, Math.max(16, width - 64))}</Text>, <Text dimColor>{` · ${fit(how, 32)}`}</Text>],
-        actions: [
-          problem.command && (
-            <Button key={`copy-fix-${problem.id}`} variant="primary" onPress={press => void copyFix($, problem, press.surface)}>
-              Copy command
-            </Button>
-          ),
-          problem.url && !problem.command && link(problem.url, '↗ Open page'),
-          <Button key={`recheck-${problem.id}`} dimColor onPress={() => void recheck($)}>
-            Check again
-          </Button>,
-        ],
-        dismiss: { key: `dismiss-${accessKey(problem)}`, onPress: () => void dismissProblem($, problem) },
-      })
-    }
-
-    // `⚠ PROJECT Let the board write to <title>, owned by <owner>? · it only reads it until you say yes`. Review opens the
-    // pane, where the warning says what it would write; ✕ keeps it read-only.
-    const adoptLine = (project: Project) => {
-      const tail = ' · it only reads it until you say yes'
-      return bandRow({
-        key: 'adopt-row',
-        badge: '⚠ PROJECT',
-        color: 'warning',
-        text: [<Text>{fit(adoptText(project, settings.refresh).title, Math.max(16, width - cells(tail) - 26))}</Text>, <Text dimColor>{tail}</Text>],
-        actions: [
-          <Button key="adopt-review" variant="primary" onPress={() => void $.ui.open(OPEN)}>
-            Review
-          </Button>,
-        ],
-        dismiss: { key: 'adopt-dismiss', onPress: () => void declineFromPrompt($, project) },
-      })
-    }
-
-    // `✦ PLAN Claude's plan: 5 changes to 3 issues · Status 3 · Priority 2`. Review opens the pane at the plan's card.
-    const planLine = (one: Plan) => {
-      const changes = one.rows.map(row => row.change)
-      const head = `Claude's plan: ${sizeText(changes)}`
-      const tail = ` · ${kindsText(changes)}`
-      return bandRow({
-        key: 'plan-row',
-        badge: '✦ PLAN',
-        color: 'suggestion',
-        text: [<Text>{fit(head, Math.max(16, width - 22))}</Text>, <Text dimColor>{fit(tail, Math.max(0, width - 22 - cells(head)))}</Text>],
-        actions: [
-          <Button key="plan-review" variant="primary" onPress={() => void $.ui.open(OPEN)}>
-            Review
-          </Button>,
-        ],
-      })
-    }
-
-    // A guess the board asks the person to look at: Looks right saves it; Change opens the card that picks it; ✕ leaves
-    // it a guess, unasked. `id` names its row and buttons, `seen` the guess.
-    const askLine = (id: 'guess' | 'labels', badge: string, text: string, seen: string, confirm: () => Promise<unknown>, change: () => Promise<unknown>) =>
-      bandRow({
-        key: `${id}-row`,
-        badge,
-        color: 'suggestion',
-        text: fit(text, Math.max(16, width - 44)),
-        actions: [
-          <Button key={`${id}-yes`} variant="primary" onPress={() => void confirm()}>
-            Looks right
-          </Button>,
-          <Button key={`${id}-change`} dimColor onPress={() => void seeGuess($, seen).then(change)}>
-            Change
-          </Button>,
-        ],
-        dismiss: { key: `${id}-dismiss`, onPress: () => void seeGuess($, seen) },
-      })
-    // `? STATUS Status: Todo is Ready, Doing is In progress, Shipped is Done`, changed in /issues statuses.
-    const guessLine = (project: Project) =>
-      askLine('guess', '? STATUS', guessText(guess), guessKey(project, guess), () => confirmGuess($, project), () => openStatuses($))
-    // `? LABELS Bugs: the Bug issue type · Later: the label someday`, changed in /issues labels.
-    const markerLine = () =>
-      askLine('labels', '? LABELS', markerText(markerAsk), markerKey(markerAsk), () => confirmMarkers($, markerAsk), () => openMarkers($))
-
-    // `✚ INBOX 3 captured to the Inbox`. Open Inbox opens the pane at the Inbox tab, which ends the count; ✕ ends it too.
-    const capturedLine = () => {
-      const project = now?.project ?? null
-      const tab = inboxTabOf(filtersFor(project), project)
-      return bandRow({
-        key: 'captured-row',
-        badge: '✚ INBOX',
-        color: 'suggestion',
-        text: fit(`${caught} captured to the Inbox`, Math.max(16, width - 32)),
-        actions: [
-          <Button key="captured-open" variant="primary" onPress={() => void openInbox($)}>
-            {tab ? 'Open Inbox' : 'Open issues'}
-          </Button>,
-        ],
-        dismiss: { key: 'captured-dismiss', onPress: () => void update($, captured, () => 0) },
-      })
-    }
-
-    return (
-      <Box flexDirection="column">
-        {problems.slice(0, 2).map(problemLine)}
-        {unadopted && adoptLine(unadopted)}
-        {planned && planLine(planned)}
-        {guessed && guessLine(guessed)}
-        {marked && markerLine()}
-        {alerts.slice(0, 3).map(line)}
-        {offers.slice(0, 3).map(offerLine)}
-        {caught > 0 && capturedLine()}
-        {/* Epic lines come last: they report what happened, and the lines above ask for something now. */}
-        {notes.slice(-2).map(epicLine)}
-      </Box>
+    return bandView(
+      $.ui.resolve(e),
+      {
+        width: e.props.bodyColumns,
+        clock: Date.now(),
+        repo: now?.repo ?? '',
+        project: now?.project ?? null,
+        refresh: settings.refresh,
+        problems,
+        unadopted,
+        planned,
+        guessed,
+        guess,
+        marked,
+        markerAsk,
+        alerts,
+        offers,
+        caught,
+        notes,
+      },
+      handlers,
     )
   })
 }

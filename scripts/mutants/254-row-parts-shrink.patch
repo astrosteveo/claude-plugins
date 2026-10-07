@@ -3,19 +3,10 @@ Test: plugins/issue-board: no number, link, count, badge or key hint splits acro
 Test: plugins/issue-board: a pull request's row keeps its number, badge, linked issue and counts whole, and cuts the title, narrow and wide
 
 diff --git a/plugins/issue-board/hooks/register.tsx b/plugins/issue-board/hooks/register.tsx
-index c32f110..836df29 100644
+index 258891b..72fbfcb 100644
 --- a/plugins/issue-board/hooks/register.tsx
 +++ b/plugins/issue-board/hooks/register.tsx
-@@ -4066,7 +4066,7 @@ export const register: Register = (on, options) => {
- 
-     // The header's right: when the board last synced, and Refresh. It keeps its width; the repo's name is cut instead.
-     const sync = (
--      <Box flexDirection="row" gap={1} flexShrink={0}>
-+      <Box flexDirection="row" gap={1} flexShrink={1}>
-         <Text color={busy ? 'warning' : undefined} dimColor={!busy}>
-           {busy ? '◌ syncing…' : now ? `⟳ ${ago(now.fetchedAt, clock)}` : ''}
-         </Text>
-@@ -5105,7 +5105,7 @@ export const register: Register = (on, options) => {
+@@ -5033,7 +5033,7 @@ export const register: Register = (on, options) => {
                </Text>
                {issue.checks.map((check, index) => (
                  <Box key={`box-row-${issue.number}-${index + 1}`} flexDirection="row">
@@ -24,7 +15,7 @@ index c32f110..836df29 100644
                      <Text color={check.done ? 'success' : 'warning'}>{check.done ? '✔ ' : '☐ '}</Text>
                    </Box>
                    <Box flexShrink={1}>
-@@ -5359,7 +5359,7 @@ export const register: Register = (on, options) => {
+@@ -5287,7 +5287,7 @@ export const register: Register = (on, options) => {
                          </Text>
                          <Text dimColor>{` ${count}`}</Text>
                        </Text>
@@ -33,6 +24,19 @@ index c32f110..836df29 100644
                          {meter(epic.completed, epic.total, 10)}
                          <Text dimColor>{closed}</Text>
                          {next && (
+diff --git a/plugins/issue-board/hooks/views/header.tsx b/plugins/issue-board/hooks/views/header.tsx
+index 3143e91..ff0222d 100644
+--- a/plugins/issue-board/hooks/views/header.tsx
++++ b/plugins/issue-board/hooks/views/header.tsx
+@@ -38,7 +38,7 @@ export const header = (elements: Elements, data: HeaderData, handlers: HeaderHan
+ 
+   // The header's right: when the board last synced, and Refresh. It keeps its width; the repo's name is cut instead.
+   const sync = (
+-    <Box flexDirection="row" gap={1} flexShrink={0}>
++    <Box flexDirection="row" gap={1} flexShrink={1}>
+       <Text color={busy ? 'warning' : undefined} dimColor={!busy}>
+         {busy ? '◌ syncing…' : data.fetchedAt !== null ? `⟳ ${ago(data.fetchedAt, clock)}` : ''}
+       </Text>
 diff --git a/plugins/issue-board/hooks/views/issue-row.tsx b/plugins/issue-board/hooks/views/issue-row.tsx
 index e265840..26fd389 100644
 --- a/plugins/issue-board/hooks/views/issue-row.tsx
