@@ -142,7 +142,7 @@ test('setup on a fresh repo shows its plan, changes nothing until Apply, then ma
   expect(saved.setup?.priority.id).toBe('F_priority')
   expect(saved.setup?.status.roles).toMatchObject({ inbox: 'n1', started: 'd1', done: 'd2' })
   // The board may write to the project it made: the setting names it.
-  expect(set).toEqual([{ key: 'issue-board.writeProjects', value: ['astrosteveo/9'] }])
+  expect(set).toEqual([{ key: 'issue-board.writeProjects', value: 'astrosteveo/9' }])
 
   await ui.press({ key: 'setup-close' })
   expect(await ui.find({ key: 'setup-plan' })).toBeUndefined()
@@ -197,17 +197,17 @@ test('setup says which project the board may write to; Release makes it read-onl
   expect(await ui.find({ text: /^the board may write to Void Sector$/ })).toBeDefined()
   expect(await ui.find({ text: /^✓ Nothing to change/ })).toBeDefined()
   // The saved setup's project moved into the setting, once.
-  expect(set).toEqual([{ key: 'issue-board.writeProjects', value: ['astrosteveo/8'] }])
+  expect(set).toEqual([{ key: 'issue-board.writeProjects', value: 'astrosteveo/8' }])
 
   await ui.press({ key: 'setup-release' })
-  expect(set.at(-1)).toEqual({ key: 'issue-board.writeProjects', value: [] })
+  expect(set.at(-1)).toEqual({ key: 'issue-board.writeProjects', value: '' })
   expect(await ui.find({ text: /^none: the board only reads Void Sector until Apply$/ })).toBeDefined()
   expect(await ui.find({ text: /^Let the board write to Void Sector$/ })).toBeDefined()
   expect(await ui.find({ key: 'setup-release' })).toBeUndefined()
 
   await ui.press({ key: 'setup-apply' })
   await clock.settle()
-  expect(set.at(-1)).toEqual({ key: 'issue-board.writeProjects', value: ['astrosteveo/8'] })
+  expect(set.at(-1)).toEqual({ key: 'issue-board.writeProjects', value: 'astrosteveo/8' })
   expect(set).toHaveLength(3)
   expect(await ui.find({ text: /^the board may write to Void Sector$/ })).toBeDefined()
   // Adopting is the board's own note; GitHub isn't changed.
@@ -215,12 +215,13 @@ test('setup says which project the board may write to; Release makes it read-onl
   await ui.unmount()
 })
 
-test("setup says when the repo's own settings let the board write to the project, in place of Release", { options: { writeProjects: ['astrosteveo/8'] } }, async ($, on) => {
+// The repo's .claude/settings.json alone grants it, as text; the board's options say nothing.
+test("setup says when the repo's own settings let the board write to the project, in place of Release", async ($, on) => {
   mock.store(on)
   const set = settingsLog(on)
   on('ui.toast', async () => ({ value: undefined }))
   on('settings.read', async (_$, e) => ({
-    value: e.source === 'project' ? { pluginConfigs: { 'issue-board@astrosteveo-plugins': { options: { writeProjects: ['astrosteveo/8'] } } } } : {},
+    value: e.source === 'project' ? { pluginConfigs: { 'issue-board@astrosteveo-plugins': { options: { writeProjects: 'astrosteveo/8' } } } } : {},
   }))
   const clock = mock.clock(on, { now: Date.parse('2026-10-05T03:00:00Z') })
   github(on, { hasIssues: true, projects: [complete], labels: ['bug', 'area:sim'], issues: [{ number: 1, items: [{ project: 'PVT_8', item: 'PVTI_1', status: 'Ready' }] }] })

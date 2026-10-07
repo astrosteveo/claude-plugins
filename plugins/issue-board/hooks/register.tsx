@@ -26,6 +26,8 @@ import {
   projectKey,
   projectKeyOf,
   projectKeysOf,
+  projectKeysText,
+  grantsOf,
   savedAdoptionOf,
   guessKey,
   guessOf,
@@ -43,6 +45,7 @@ import {
   startedOf,
   writeRefusal,
 } from './project'
+import type { Grants } from './project'
 import {
   CREATE_FIELD,
   CREATE_PROJECT,
@@ -824,40 +827,46 @@ const savedAll = async ($: EngineInterface): Promise<Partial<Saved>> => {
   }
 }
 
-// The project of this repo the board may write to: the one it reads, when writeProjects lists it, or else the one this
-// module adopted last, while the setting still lists it. Null when neither is listed.
+// The project of this repo the board may write to: the one it reads, when it may write there, or else the one this
+// module adopted last, while it still may. Null when neither. `granted` says this repo's own settings grant it.
 const adoptedNow = async ($: EngineInterface): Promise<Adopted | null> => {
+  const grants = await grantsNow($)
   const reads = (await read($, board))?.project
   const owner = reads ? ownerOf(reads.url) : null
-  if (reads && owner && settings.writeProjects.includes(projectKey(owner, reads.number))) {
-    return { key: projectKey(owner, reads.number), number: reads.number, id: reads.id, title: reads.title, owner }
-  }
-  return lastAdopted && settings.writeProjects.includes(lastAdopted.key) ? lastAdopted : null
+  const found =
+    reads && owner && grants.all.includes(projectKey(owner, reads.number))
+      ? { key: projectKey(owner, reads.number), number: reads.number, id: reads.id, title: reads.title, owner }
+      : lastAdopted && grants.all.includes(lastAdopted.key)
+        ? lastAdopted
+        : null
+  return found && grants.repo.includes(found.key) ? { ...found, granted: true } : found
 }
 
-// The projects this repo's own settings let the board write to, in its .claude/settings.json or settings.local.json.
-// Those files likely win over the person's own settings in this repo, so Release can't take such a project out of the
-// list: the person edits the repo's file instead. Empty when they list none, or can't be read.
-const repoGrants = async ($: EngineInterface): Promise<string[]> => {
-  const grants: string[] = []
-  for (const source of ['project', 'local'] as const) {
-    try {
-      const configs = ((await $.settings.read({ source })) as { pluginConfigs?: Record<string, { options?: Record<string, unknown> }> }).pluginConfigs ?? {}
-      for (const [name, config] of Object.entries(configs)) {
-        if (name === 'issue-board' || name.startsWith('issue-board@')) grants.push(...projectKeysOf(config.options?.writeProjects))
-      }
-    } catch {
-      // A source that can't be read grants nothing the board could tell.
-    }
+// The writeProjects values one settings file holds, under either name Claude Code keys the board by. Empty when it
+// holds none, or can't be read.
+const grantsIn = async ($: EngineInterface, source: 'user' | 'project' | 'local'): Promise<string[]> => {
+  try {
+    const configs = ((await $.settings.read({ source })) as { pluginConfigs?: Record<string, { options?: Record<string, unknown> }> }).pluginConfigs ?? {}
+    return Object.entries(configs).flatMap(([name, config]) => (name === 'issue-board' || name.startsWith('issue-board@') ? projectKeysOf(config.options?.writeProjects) : []))
+  } catch {
+    // A source that can't be read grants nothing the board could tell.
+    return []
   }
-  return grants
+}
+
+// The one answer to which projects the board may write to, for the write gate, the prompt, setup and project_adopt
+// alike. The repo's own .claude/settings.json and settings.local.json count, read straight from the files: Claude Code
+// may not pass a value to the board's options that it can't show in /config, as with the list the setting used to be.
+const grantsNow = async ($: EngineInterface): Promise<Grants> => {
+  const repo = [...(await grantsIn($, 'project')), ...(await grantsIn($, 'local'))]
+  return grantsOf(settings.writeProjects, await grantsIn($, 'user'), repo)
 }
 
 // Sets writeProjects. A plugin's options are fixed for each load, and Claude Code reloads the board with the new value
 // after the change, so the module goes by it from here: the change counts at once in this session, before and after
 // the reload. Other sessions see it by the next time they load the board.
 const writeSetting = async ($: EngineInterface, keys: string[]): Promise<void> => {
-  const done = await $.config.set({ key: WRITE_PROJECTS, value: keys })
+  const done = await $.config.set({ key: WRITE_PROJECTS, value: projectKeysText(keys) })
   if (done.deny !== undefined) throw new Error(done.deny)
   settings = { ...settings, writeProjects: keys }
   await loadAdoption($)
@@ -875,7 +884,8 @@ const moveAdoption = async ($: EngineInterface, known?: readonly { id: string; n
     const reads = (await read($, board))?.project
     const key = savedAdoptionOf(shared, known ?? (reads ? [reads] : []))
     if (key === undefined) return
-    if (key !== null && !settings.writeProjects.includes(key)) await writeSetting($, [...settings.writeProjects, key])
+    const grants = await grantsNow($)
+    if (key !== null && !grants.all.includes(key)) await writeSetting($, [...grants.own, key])
     const stored = await choicesKeyOf($)
     await $.store.set(stored, { ...(((await $.store.get(stored)) as Choices | undefined) ?? choices), adoptionMoved: true })
   } catch (cause) {
@@ -887,8 +897,7 @@ const moveAdoption = async ($: EngineInterface, known?: readonly { id: string; n
 const loadAdoption = async ($: EngineInterface): Promise<void> => {
   await moveAdoption($)
   const saved = await savedAll($)
-  const now = await adoptedNow($)
-  const adopted = now && (await repoGrants($)).includes(now.key) ? { ...now, granted: true } : now
+  const adopted = await adoptedNow($)
   const next = { adopted, declined: saved.declined ?? [] }
   const was = await read($, adoption)
   if (JSON.stringify(was.adopted) !== JSON.stringify(next.adopted) || was.declined.join() !== next.declined.join()) await update($, adoption, () => next)
@@ -913,7 +922,7 @@ const adoptProject = async ($: EngineInterface, project: { id: string; number: n
   const key = projectKey(owner, project.number)
   await changeChoices($, was => ({ ...was, adoptionMoved: true, declined: (was.declined ?? []).filter(id => id !== project.id) }))
   lastAdopted = { key, number: project.number, id: project.id, title: project.title, owner }
-  const keys = [...settings.writeProjects.filter(one => one !== key), key]
+  const keys = [...(await grantsNow($)).own.filter(one => one !== key), key]
   if (!later) return writeSetting($, keys)
   settings = { ...settings, writeProjects: keys }
   await loadAdoption($)
@@ -923,9 +932,10 @@ const adoptProject = async ($: EngineInterface, project: { id: string; number: n
 // again. A project this repo's own settings grant can't be released here. An adoption an earlier board kept in the
 // store isn't moved after a release.
 const releaseProject = async ($: EngineInterface, project: Adopted): Promise<void> => {
-  if ((await repoGrants($)).includes(project.key)) throw new Error(grantedText(project.title))
+  const grants = await grantsNow($)
+  if (grants.repo.includes(project.key)) throw new Error(grantedText(project.title))
   await changeChoices($, was => ({ ...was, adoptionMoved: true }))
-  await writeSetting($, settings.writeProjects.filter(one => one !== project.key))
+  await writeSetting($, grants.own.filter(one => one !== project.key))
 }
 
 // Why Release can't take away a project the repo's own settings grant.
@@ -947,7 +957,7 @@ const projectWrite = async (
   variables: Record<string, string | number | boolean | null | object>,
   fields = false,
 ): Promise<Record<string, any>> => {
-  const refusal = writeRefusal(settings.writeProjects, target)
+  const refusal = writeRefusal((await grantsNow($)).all, target)
   if (refusal) throw new Error(refusal)
   if (fields) {
     const out = await runGh($, ['api', 'graphql', '-f', `query=${query}`, ...Object.entries(variables).flatMap(([name, value]) => ['-f', `${name}=${String(value)}`])])
@@ -964,7 +974,7 @@ const projectWrite = async (
 
 // Whether the board may write to a project, for the work it does by itself, which skips a project it may not write
 // to without a word: /issues check and /issues help say so.
-const mayWrite = async (_$: EngineInterface, project: { number: number; title: string; url: string }): Promise<boolean> => writeRefusal(settings.writeProjects, project) === null
+const mayWrite = async ($: EngineInterface, project: { number: number; title: string; url: string }): Promise<boolean> => writeRefusal((await grantsNow($)).all, project) === null
 
 // What the pane and the band ask about the project the board reads, or null: nothing once the board may write to it, or
 // once the person kept it read-only.
@@ -1086,7 +1096,7 @@ const adoptPlan = async ($: EngineInterface, input: unknown): Promise<AdoptPlan>
   const was = await adoptedNow($)
   if (ask.release === true) {
     if (!was) return { refusal: "The board writes to no project for this repo, so there's nothing to release." }
-    return (await repoGrants($)).includes(was.key) ? { refusal: grantedText(was.title) } : { release: was }
+    return was.granted ? { refusal: grantedText(was.title) } : { release: was }
   }
   const number = ask.number
   if (number !== undefined && !(typeof number === 'number' && Number.isInteger(number) && number > 0)) return { refusal: 'number is a project number, such as 8.' }
@@ -1102,7 +1112,7 @@ const adoptPlan = async ($: EngineInterface, input: unknown): Promise<AdoptPlan>
   const target = adoptTarget(reads, linked, number, now.repo)
   if (typeof target === 'string') return { refusal: target }
   const key = projectKeyOf(target)
-  if (key && settings.writeProjects.includes(key)) return { refusal: `The board already writes to ${target.title}; nothing changed.` }
+  if (key && (await grantsNow($)).all.includes(key)) return { refusal: `The board already writes to ${target.title}; nothing changed.` }
   return { adopt: target }
 }
 
@@ -2190,7 +2200,7 @@ const fileOne = async ($: EngineInterface, spec: NewIssue): Promise<{ number: nu
   let item: string | null = null
   const set: { status?: string; priority?: string } = {}
   // A project the person hasn't let the board write to gets nothing: the issue is filed, and Claude reads why.
-  const refusal = project ? writeRefusal(settings.writeProjects, project) : null
+  const refusal = project ? writeRefusal((await grantsNow($)).all, project) : null
   if (project && refusal) {
     if (spec.status || spec.priority) failed.push(`set its Status or Priority: ${refusal}`)
     else did.push(`not added to ${project.title}, which the board only reads`)
@@ -2329,10 +2339,11 @@ const readSetup = async ($: EngineInterface): Promise<void> => {
     await moveAdoption($, read$.projects)
     // The project the board already reads, when setup saved one and it's still linked; else the first linked.
     const chosen = read$.projects.find(one => one.id === saved?.project.id)?.id ?? read$.projects[0]?.id ?? null
-    // The linked project the board may write to: the chosen one when writeProjects lists it, else the first listed.
-    const listed = read$.projects.filter(one => settings.writeProjects.includes(projectKeyOf(one) ?? ''))
+    // The linked project the board may write to: the chosen one when it may write there, else the first it may.
+    const grants = await grantsNow($)
+    const listed = read$.projects.filter(one => grants.all.includes(projectKeyOf(one) ?? ''))
     const writes = listed.find(one => one.id === chosen) ?? listed[0]
-    const granted = writes ? (await repoGrants($)).includes(projectKeyOf(writes) ?? '') : false
+    const granted = writes ? grants.repo.includes(projectKeyOf(writes) ?? '') : false
     const known = { ...read$, adopted: writes?.id ?? null, ...(granted ? { granted } : {}) }
     // The mapping saved for it, by an earlier setup or by /issues statuses, which setup starts from.
     const roles$ = chosen ? savedRolesOf(kept, chosen) : undefined
@@ -2452,7 +2463,7 @@ const applySetup = async ($: EngineInterface): Promise<void> => {
   const wrote = adopted as { number: number; title: string } | null
   if (wrote) {
     try {
-      await writeSetting($, settings.writeProjects)
+      await writeSetting($, (await grantsNow($)).own)
     } catch (cause) {
       $.ui.toast(`Couldn't save that the board may write to ${wrote.title}: ${messageOf(cause)}`)
     }

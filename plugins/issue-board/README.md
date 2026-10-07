@@ -435,25 +435,31 @@ you adopt it. Until then the project is read-only to the board, whatever the
 settings below say.
 
 The projects the board may write to are a setting, **Projects the board may
-write to** (`writeProjects`): a list of projects, each as `owner/number`, such
-as `["astrosteveo/9", "astrosteveo/8"]`. A project has the same name in every
+write to** (`writeProjects`): projects as `owner/number`, split by commas,
+such as `astrosteveo/9, astrosteveo/8`. A project has the same name in every
 repo, so one list in your own settings covers all your repos. In a repo, the
 board writes only to a listed project that is the one it reads there, or one
 linked to the repo. Empty, the default, means the board only reads. You can
-change the list in `/config`. The buttons and the tool below add and remove
-projects for you.
+change it in `/config`, where it is a text row. The buttons and the tool
+below add and remove projects for you. A list such as `["astrosteveo/9"]`,
+which earlier versions used, no longer fits the setting, and Claude Code may
+refuse to load the board with one. Change it to the text form.
 
 A repo's `.claude/settings.json` can set `writeProjects` too, for everyone
 who works in it:
 
 ```json
-{ "pluginConfigs": { "issue-board@astrosteveo-plugins": { "options": { "writeProjects": ["astrosteveo/9"] } } } }
+{ "pluginConfigs": { "issue-board@astrosteveo-plugins": { "options": { "writeProjects": "astrosteveo/9" } } } }
 ```
 
-In that repo, the repo's list likely takes the place of your own. So Release
-can't take away a project the repo's file grants: `/issues setup` says so
-where Release would be, and `project_adopt` refuses. To release it, edit the
-repo's file.
+The board reads the repo's `.claude/settings.json` and
+`.claude/settings.local.json` itself, so a project they grant counts even
+when Claude Code's merged value doesn't carry it. It also reads your own user
+settings, so a repo's file can't hide your list. A project the repo grants
+gets no prompt, and Release can't take it away: `/issues setup` says so where
+Release would be, and `project_adopt` refuses. To release it, edit the repo's
+file. Adopting writes only your own list to your settings, never the repo's
+projects.
 
 While the board reads a project it may not write to, the pane asks once:
 **Let the board write to Void Sector, owned by astrosteveo?** It says what
@@ -501,8 +507,9 @@ What stays the same without an adopted project:
   says why and how to adopt the project. `/issues check` and `/issues help`
   list it under Off.
 
-Every project write goes through one check against `writeProjects`. A write
-to any other project is refused.
+Every project write goes through one check: your `writeProjects` and the
+repo's together. The prompt, setup and `project_adopt` use the same check. A
+write to any other project is refused.
 
 The setting lives in Claude Code's settings, not in the board's store, which
 every session on the repo rewrites. So a session still running an older board
