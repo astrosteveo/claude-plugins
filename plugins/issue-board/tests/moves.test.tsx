@@ -217,6 +217,40 @@ test('an issue a merged pull request refers to with Refs moves to Verification, 
   expect(prompts.at(-1)?.join('\n') ?? '').not.toMatch(/Verification/)
 })
 
+// Epic #319 went to Verification while two of its sub-issues were open, because pull requests that each said
+// `Refs #319` merged. An epic's Status belongs to its sub-issues.
+test('a merged pull request that refers to an epic with open sub-issues leaves the epic alone, and moves the plain issue beside it', { options: { autoMove: true } }, async ($, on) => {
+  adoptedStore(on)
+  const prs = [
+    {
+      number: 52,
+      title: 'Part of the epic',
+      url: 'https://github.com/astrosteveo/claude-plugins/pull/52',
+      headRefName: 'feat/52',
+      isDraft: false,
+      body: 'Refs #35\nRefs #43',
+      statusCheckRollup: [],
+      reviewDecision: null,
+      additions: 1,
+      deletions: 1,
+      author: { login: 'astrosteveo' },
+      updatedAt: '2026-10-05T00:00:00Z',
+    },
+  ]
+  const gh = github(on, prs)
+  on('ui.toast', async () => ({ value: undefined }))
+  await $.command.run(REFRESH)
+  const before = writes(gh.calls).length
+
+  // #52 merges and leaves the board. #35 is an epic with open sub-issues; #43 is one of them.
+  gh.merged = { 52: true }
+  prs.length = 0
+  await $.command.run(REFRESH)
+  await $.command.run(REFRESH)
+  const moved = writes(gh.calls).slice(before)
+  expect(moved.map(call => [graphArg(call, 'item'), graphArg(call, 'option')])).toEqual([[expect.stringMatching(/43/), `option=${optionId('Verification')}`]])
+})
+
 test("an epic's sub-issues follow GitHub's order where the board has no reason to change it, and move before or after a sibling", async ($, on) => {
   adoptedStore(on)
   const sub = (number: number) => ({ number, title: `Part ${number}`, labels: [], body: '', updatedAt: '2026-10-05T00:00:00Z', parent: EPIC, status: 'Ready', priority: 'P1' })

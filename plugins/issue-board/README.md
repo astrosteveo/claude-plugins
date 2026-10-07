@@ -56,8 +56,14 @@ default:
   wherever it closed. One closed as not planned or as a duplicate stays where
   it was, so Done means shipped.
 - An issue a merged pull request names with `Refs #N` moves to Verification,
-  since the merge didn't finish it. Claude's next prompt says so.
+  since the merge didn't finish it. Claude's next prompt says so. An epic
+  doesn't: its Status follows its sub-issues.
 - Epics move with their sub-issues. See [Epics](#epics).
+
+One rule decides each move. When two pick the same issue in one read, the
+board makes one move: the one that takes the issue furthest, so Done beats
+Verification. No move goes backwards, and the moves of a read are made one at
+a time.
 
 Each move needs its Status. To skip one, set its Status to none in
 `/issues statuses`: with no Verification, for example, a Refs merge moves
@@ -328,6 +334,9 @@ its sub-issues. It is off by default.
   the epic to Verification, and the band and the next prompt say how many.
 - A sub-issue that reopens, or a new one under a closed epic, shows in the
   band. The board doesn't reopen or move anything for it.
+- A merged pull request that says `Refs #N` for the epic leaves its Status
+  alone, even when its sub-issues are all open. Only its sub-issues, or its
+  own closing, move it.
 
 These epic lines come last in the band and clear themselves once they no
 longer apply. A Verification line goes when the epic closes or every box is
