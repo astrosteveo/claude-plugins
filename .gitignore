@@ -14,3 +14,8 @@ __pycache__/
 
 # Each person's own Claude Code settings for this repo
 .claude/settings.local.json
+
+# A plugin's TypeScript runs as source. JavaScript next to it is compiler output, never committed.
+plugins/*/hooks/*.js
+plugins/*/tests/*.js
+plugins/*/types/*.js

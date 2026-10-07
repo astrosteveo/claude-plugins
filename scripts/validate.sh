@@ -32,4 +32,11 @@ for plugin in plugins/*/; do
     status=1
   fi
 done
+# A plugin's TypeScript runs as source. Compiled .js beside it would be stale code nobody runs, so none may be tracked.
+compiled=$(git ls-files 'plugins/*/hooks/*.js' 'plugins/*/tests/*.js' 'plugins/*/types/*.js')
+if [ -n "$compiled" ]; then
+  echo "Compiled JavaScript is tracked beside the TypeScript; remove it:"
+  echo "$compiled" | sed 's/^/  /'
+  status=1
+fi
 exit "$status"
