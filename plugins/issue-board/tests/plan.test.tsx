@@ -2,9 +2,10 @@ import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { parseIssues } from '../hooks/parse'
-import { changeText, issueOf, kindsText, planAsk, planOf, sizeText } from '../hooks/plan'
+import { cardParts, changeText, issueOf, kindsText, planAsk, planOf, rowText, rowsOf, sizeText, viewNoteOf } from '../hooks/plan'
 import type { Project } from '../types'
 import { PRIORITIES, STATUSES, adoptedStore, graphPage, isIssuesQuery, optionId } from './graph'
+import type { RawView } from './graph'
 import { permissions } from './engine'
 
 const TOOL = 'mcp__issue-board__project_plan'
@@ -48,6 +49,8 @@ const world = (on: On, adopted = true) => {
     reads: 0,
     failEdit: 0,
     toasts: [] as string[],
+    // The project's views, as GitHub keeps them; the view writes change them, so the next read has them.
+    views: [] as RawView[],
     // The repo's labels, which label writes change, and how many open and closed issues search finds with each.
     labels: ['bug', 'area:ui', 'wontfix'],
     uses: { wontfix: { open: 3, closed: 2 } } as Record<string, { open: number; closed: number }>,
@@ -60,10 +63,12 @@ const world = (on: On, adopted = true) => {
     if (argv[1] === 'repo') return answer(JSON.stringify({ nameWithOwner: 'astrosteveo/void-sector', hasIssuesEnabled: true }))
     if (isIssuesQuery(argv)) {
       state.reads += 1
-      return answer(graphPage(state.issues.map(one => ({ ...one, ...state.planned[one.number] })), argv, true, [], {}, state.labels))
+      return answer(graphPage(state.issues.map(one => ({ ...one, ...state.planned[one.number] })), argv, true, [], { views: state.views }, state.labels))
     }
     if (argv[1] === 'api' && argv[2] === 'graphql' && argv.includes('--input')) {
       const asked = JSON.parse(e.init?.stdin ?? '{}') as { query: string; variables: Record<string, unknown> }
+      const view = viewWrite(state, asked)
+      if (view) return answer(JSON.stringify(view))
       if (asked.query.includes('updateProjectV2ItemPosition')) {
         state.writes.push(`move ${String(asked.variables.item)} after ${String(asked.variables.after)}`)
         // The project's order as GitHub keeps it, so the next read has the move.
@@ -173,7 +178,7 @@ test('a plan is checked whole: every problem is listed at once, and a valid plan
       'Entry 9 has no issue number.',
     ],
   })
-  expect(planOf({}, context)).toEqual({ problems: ['Give issues or labels: lists of changes, each with a reason.'] })
+  expect(planOf({}, context)).toEqual({ problems: ['Give issues, labels or views: lists of changes, each with a reason.'] })
   expect(planOf({ issues: [{ number: 340, reason: 'a', status: 'Ready' }, { number: 340, reason: 'b', status: 'Backlog' }] }, context)).toEqual({
     problems: ["#340's Status is in the plan twice."],
   })
@@ -190,7 +195,7 @@ test('a plan is checked whole: every problem is listed at once, and a valid plan
   )
   if (!('changes' in made)) throw new Error(made.problems.join('\n'))
   // Grouped by issue, in the order the issues first come, each with its entry's reason; option names as the project has them.
-  expect(made.changes.map(({ change, reason }) => `#${issueOf(change)} ${changeText(change)} (${reason})`)).toEqual([
+  expect(made.changes.map(({ change, reason }) => `${rowText(change)} (${reason})`)).toEqual([
     '#340 Status → Ready (Saves break.)',
     '#340 Priority → P0 (Saves break.)',
     '#340 labels +bug (Saves break.)',
@@ -446,11 +451,15 @@ test('a plan makes, renames, recolors and deletes labels, counts what a delete t
   expect(await ui.find({ text: /^Claude's plan · 4 changes to 4 labels$/ })).toBeDefined()
   expect(await ui.find({ text: /^The repo's labels$/ })).toBeDefined()
   expect((await ui.findAll({ type: 'Button', text: /^[☑☐] / })).map(one => one.text)).toEqual([
-    '☑ new label needs-info #1d76db “Needs an answer”',
-    '☑ label area:ui → area:hud · the saved Bugs marker follows',
-    '☑ label bug #d73a4a',
-    '☑ delete label wontfix · on 3 open and 2 closed issues · clears the saved Later marker',
+    '☑ new label needs-info',
+    '☑ label area:ui → area:hud',
+    '☑ label bug',
+    '☑ delete label wontfix',
   ])
+  // What each does beyond its name goes beside its button, where it can wrap.
+  for (const text of ['#1d76db “Needs an answer”', 'the saved Bugs marker follows', '#d73a4a', 'on 3 open and 2 closed issues · clears the saved Later marker']) {
+    expect(await ui.find({ type: 'Text', text }), text).toBeDefined()
+  }
 
   await ui.press({ key: 'plan-apply' })
   expect(gh.writes).toEqual([
@@ -491,6 +500,180 @@ test("a delete row says when it couldn't count the label's issues", async ($, on
   gh.engine.answer = 'no'
   await $.tool.call({ tool: TOOL, labels: [{ name: 'bug', reason: 'Gone.', delete: true }] })
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
-  expect(await ui.find({ key: 'plan-pick-label-1' })).toMatchObject({ text: "☑ delete label bug · couldn't count its issues" })
+  expect(await ui.find({ key: 'plan-pick-label-1' })).toMatchObject({ text: '☑ delete label bug' })
+  expect(await ui.find({ type: 'Text', text: "couldn't count its issues" })).toBeDefined()
   await ui.unmount()
+})
+
+// The view reads and writes a plan makes, answered as GitHub would, each write kept. A view's id is PVTV_ and its number.
+function viewWrite(state: { views: RawView[]; writes: string[] }, asked: { query: string; variables: Record<string, any> }) {
+  const idOf = (number: number) => `PVTV_${number}`
+  const numberOf = (id: unknown) => Number(String(id).slice('PVTV_'.length))
+  if (asked.query.includes('view(number:')) {
+    const found = state.views.find(one => one.number === asked.variables.number)
+    return { data: { node: { view: found ? { id: idOf(found.number) } : null } } }
+  }
+  if (asked.query.includes('createProjectV2View')) {
+    const input = asked.variables.input as { projectId: string; name: string; layout: RawView['layout'] }
+    const number = Math.max(0, ...state.views.map(one => one.number)) + 1
+    state.views = [...state.views, { name: input.name, number, layout: input.layout, filter: null }]
+    state.writes.push(`create view ${input.name} ${input.layout} in ${input.projectId}`)
+    return { data: { createProjectV2View: { projectV2View: { id: idOf(number), number } } } }
+  }
+  if (asked.query.includes('updateProjectV2View')) {
+    const { viewId, ...rest } = asked.variables.input as { viewId: string; name?: string; layout?: RawView['layout']; filter?: string }
+    state.views = state.views.map(one => (one.number === numberOf(viewId) ? { ...one, ...rest } : one))
+    state.writes.push(`update view ${viewId} ${JSON.stringify(rest)}`)
+    return { data: { updateProjectV2View: { projectV2View: { id: viewId } } } }
+  }
+  if (asked.query.includes('deleteProjectV2View')) {
+    state.views = state.views.filter(one => one.number !== numberOf(asked.variables.view))
+    state.writes.push(`delete view ${String(asked.variables.view)}`)
+    return { data: { deleteProjectV2View: { projectV2View: { id: asked.variables.view } } } }
+  }
+  return null
+}
+
+// Void Sector's views: Bugs and Old with filters, so they are tabs, and Everything with none.
+const VIEWS: RawView[] = [
+  { name: 'Bugs', number: 1, layout: 'TABLE_LAYOUT', filter: 'label:bug' },
+  { name: 'Old', number: 2, layout: 'BOARD_LAYOUT', filter: 'label:old' },
+  { name: 'Everything', number: 3, layout: 'TABLE_LAYOUT', filter: null },
+]
+const PROJECT_VIEWS = [
+  { name: 'Bugs', number: 1, layout: 'table' as const, filter: 'label:bug', groupBy: null },
+  { name: 'Old', number: 2, layout: 'board' as const, filter: 'label:old', groupBy: null },
+  { name: 'Everything', number: 3, layout: 'table' as const, filter: '', groupBy: null },
+]
+const VIEW_PLAN = {
+  views: [
+    { reason: 'Ready work for this sprint.', name: 'Sprint', layout: 'board', filter: 'status:Ready sprint:@current' },
+    { view: 'bugs', reason: 'Bugs that are ready.', name: 'Ready bugs', filter: 'label:bug status:Ready' },
+    { view: 2, reason: 'Nobody uses it.', delete: true },
+  ],
+}
+
+test('a plan creates, changes and deletes views, flags filter terms the board cannot apply, and checks each entry', () => {
+  const context = { issues: ISSUES, project: { ...PROJECT, views: PROJECT_VIEWS }, milestones: MILESTONES, refusal: null }
+  const made = planOf({ ...VIEW_PLAN, issues: [{ number: 340, reason: 'Saves break.', status: 'Ready' }] }, context)
+  if (!('changes' in made)) throw new Error(made.problems.join('\n'))
+  const changes = made.changes.map(one => one.change)
+  // The issues first, then the views in the plan's order. A delete names the view and its filter.
+  expect(changes.map(rowText)).toEqual([
+    '#340 Status → Ready',
+    'new board view Sprint · status:Ready sprint:@current',
+    'view Bugs: renamed Ready bugs, filter label:bug status:Ready',
+    'delete view Old · label:old',
+  ])
+  expect(sizeText(changes)).toBe('4 changes to 1 issue and 3 views')
+  // On the card the button says which view, and the text beside it the rest.
+  expect(changes.map(cardParts)).toEqual([
+    { head: 'Status → Ready', detail: '' },
+    { head: 'new board view Sprint', detail: 'status:Ready sprint:@current' },
+    { head: 'view Bugs', detail: 'renamed Ready bugs, filter label:bug status:Ready' },
+    { head: 'delete view Old', detail: 'label:old' },
+  ])
+  expect(sizeText([...changes, { kind: 'label', action: 'create', name: 'area:net' }])).toBe('5 changes to 1 issue, 1 label and 3 views')
+  expect(sizeText(changes.slice(1))).toBe('3 changes to 3 views')
+  // Label changes come first on the card, then the issues, then the views.
+  const all = planOf({ ...VIEW_PLAN, issues: [{ number: 340, reason: 'Saves break.', status: 'Ready' }], labels: [{ name: 'area:net', reason: 'New area.', create: true }] }, context)
+  if (!('changes' in all)) throw new Error(all.problems.join('\n'))
+  expect(all.changes.map(({ change }) => change.kind)).toEqual(['label', 'status', 'view', 'view', 'view'])
+  expect(rowsOf(all.changes).map(row => row.id)).toEqual(['label-1', '340-2', 'view-3', 'view-4', 'view-5'])
+  expect(kindsText(changes)).toBe('Status 1 · views 3')
+  // Only the new view's filter holds a term the board can't apply: `@current` is an iteration.
+  expect(changes.map(viewNoteOf)).toEqual([
+    null,
+    "The board can't apply sprint:@current, so its tab in /issues leaves that term out and shows more than GitHub does.",
+    null,
+    null,
+  ])
+  expect(changeText({ kind: 'view', view: PROJECT_VIEWS[2] ?? null, to: null, partial: [] })).toBe('delete view Everything · no filter')
+  expect(changeText({ kind: 'view', view: PROJECT_VIEWS[0] ?? null, to: { name: 'Bugs', layout: 'table', filter: '' }, partial: [] })).toBe('view Bugs: filter cleared')
+
+  const refused = planOf(
+    {
+      views: [
+        { view: 9, reason: 'Gone.', name: 'Nine' },
+        { reason: 'Which?', delete: true },
+        { view: 'Old', reason: 'Tidy.', delete: true, name: 'Older' },
+        { reason: 'Nameless.', filter: 'label:bug' },
+        { name: 'Wide', reason: 'Wide.', layout: 'gantt' },
+        { view: 1, reason: 'Same.', name: 'Bugs' },
+        { name: 'Docs', filter: 'label:docs', colour: 'red' },
+      ],
+    },
+    context,
+  )
+  expect(refused).toEqual({
+    problems: [
+      'View 9: Void Sector has no such view; it has Bugs (1), Old (2), Everything (3).',
+      'New view (entry 2): give view, the view to delete.',
+      "View Old: a view that's deleted takes no name, layout or filter.",
+      'New view (entry 4) has no name.',
+      'New view Wide: a layout is table, board or roadmap, not gantt.',
+      'View 1 changes nothing.',
+      'New view Docs has no reason.',
+      "New view Docs: a view entry can't hold colour.",
+    ],
+  })
+  expect(planOf({ views: [{ name: 'A', reason: 'a' }, { name: 'a', reason: 'b' }] }, context)).toEqual({ problems: ['View a is in the plan twice.'] })
+
+  // Views are the project's, so a project the board may not write to refuses them, and with no project there are none.
+  expect(planOf(VIEW_PLAN, { ...context, refusal: 'The issue board only reads Void Sector.' })).toEqual({ problems: ['The issue board only reads Void Sector.'] })
+  expect(planOf({ views: [{ name: 'Sprint', reason: 'Soon.' }] }, { ...context, project: null })).toEqual({
+    problems: ["New view Sprint: the board reads no project, so it can't change its views."],
+  })
+})
+
+test('applying a plan writes the views through the project write check, and the pane shows them as tabs', async ($, on) => {
+  const gh = world(on)
+  gh.views = [...VIEWS]
+  await $.command.run(REFRESH)
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  const tabs = async () => (await ui.findAll({ type: 'Button' })).filter(one => String(one.key ?? '').startsWith('filter-')).map(one => `${one.key} ${one.text}`)
+  expect(await tabs()).toEqual(['filter-view:1 Bugs 0', 'filter-view:2 Old 0', 'filter-all All 3', 'filter-closed Closed'])
+
+  expect(await $.tool.check({ tool: TOOL, input: VIEW_PLAN })).toMatchObject({ reason: expect.stringMatching(/^Apply Claude's plan: 3 changes to 3 views\?\nviews 3\n/) })
+  gh.engine.verdict = 'ask'
+  gh.engine.answer = 'no'
+  await $.tool.call({ tool: TOOL, ...VIEW_PLAN })
+  // The card lists the views under the project, and flags the filter the board can only partly apply.
+  expect(await ui.find({ text: /^Claude's plan · 3 changes to 3 views$/ })).toBeDefined()
+  expect(await ui.find({ text: /^Void Sector views$/ })).toBeDefined()
+  expect((await ui.findAll({ type: 'Button', text: /^[☑☐] / })).map(one => one.text)).toEqual([
+    '☑ new board view Sprint',
+    '☑ view Bugs',
+    '☑ delete view Old',
+  ])
+  // The filters and what changes go beside the buttons, where they can wrap; a delete names the filter it takes.
+  for (const text of ['status:Ready sprint:@current', 'renamed Ready bugs, filter label:bug status:Ready', 'label:old']) expect(await ui.find({ type: 'Text', text }), text).toBeDefined()
+  expect((await ui.findAll({ type: 'Text', text: /^⚠ / })).map(one => one.text)).toEqual([
+    "⚠ The board can't apply sprint:@current, so its tab in /issues leaves that term out and shows more than GitHub does.",
+  ])
+
+  await ui.press({ key: 'plan-apply' })
+  // A new view's filter goes in by a change straight after it is made; a change sends only what changes.
+  expect(gh.writes).toEqual([
+    'create view Sprint BOARD_LAYOUT in PVT_8',
+    'update view PVTV_4 {"filter":"status:Ready sprint:@current"}',
+    'update view PVTV_1 {"name":"Ready bugs","filter":"label:bug status:Ready"}',
+    'delete view PVTV_2',
+  ])
+  expect(gh.toasts.at(-1)).toBe('Applied the plan: 3 changes.')
+  expect(await ui.find({ key: 'plan-card' })).toBeUndefined()
+  // The new and changed views are tabs now, and the deleted one is gone.
+  expect(await tabs()).toEqual(['filter-view:1 Ready bugs 0', 'filter-view:4 Sprint 1', 'filter-all All 3', 'filter-closed Closed'])
+  await ui.unmount()
+})
+
+test('a project nobody let the board write to refuses view changes, before anything is asked', async ($, on) => {
+  const gh = world(on, false)
+  gh.views = [...VIEWS]
+  await $.command.run(REFRESH)
+  gh.engine.verdict = 'ask'
+  const answer = await $.tool.call({ tool: TOOL, ...VIEW_PLAN })
+  expect(answer.deny).toMatch(/^The plan wasn't made\. Fix this and call again:\n- The issue board only reads Void Sector: nobody has let it write there\./)
+  expect(gh.engine.asked).toEqual([])
+  expect(gh.writes).toEqual([])
 })

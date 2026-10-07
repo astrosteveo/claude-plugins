@@ -424,7 +424,8 @@ The board gives Claude nine tools:
 - `project_adopt` lets the board write to a project, or releases it, only
   when you ask. It always asks first; see
   [Letting the board write to a project](#letting-the-board-write-to-a-project).
-- `project_plan` proposes many changes, to issues and the repo's labels, as one plan; see
+- `project_plan` proposes many changes, to issues, the repo's labels and the
+  project's views, as one plan; see
   [Plans](#plans).
 
 Each tool that changes something goes through Claude Code's permission
@@ -459,6 +460,20 @@ description, or delete it. Label changes come first on the card, under
   name, and a delete clears it, so the board guesses it again.
 - Label changes are repo writes. They go through the permission prompt but
   don't need the board to be allowed to write to the project.
+A plan can also change the project's views, in its `views` list:
+
+- **Create** a view with a name, a layout (table, board or roadmap; table
+  by default) and a filter.
+- **Change** a view's name, layout or filter. Name the view by its number
+  or its name.
+- **Delete** a view with `delete: true`. Its row names the view and its
+  filter, so you can see what goes.
+
+A filter is checked with the same parser the tabs use. A term the board
+can't apply, such as `sprint:@current`, is allowed, but its row says so:
+the view's tab will leave that term out and show more issues than GitHub
+does. After Apply the board reads the views again, so new and changed views
+with a filter show as tabs in `/issues`, and deleted ones go.
 
 The board checks the whole plan first: the issues are open on the board, the
 options, fields and milestones exist, and the board may write to the
@@ -468,8 +483,9 @@ at once, and nothing is shown or asked.
 A valid plan shows at once as a card at the top of `/issues`, and the band
 shows a `✦ PLAN` line with **Review**, which opens the pane:
 
-- The card has one row per change, grouped by issue, each with a box to
-  tick and Claude's reason. All rows start ticked.
+- The card has one row per change: label changes first, then the changes
+  grouped by issue, then view changes under the project's name. Each row has a box to tick and Claude's
+  reason. All rows start ticked.
 - **Apply** writes the ticked rows in order, then reads GitHub once. Rows
   that went through leave the card, and so do unticked ones. A row that
   failed stays, with why, so you can try it again or discard it.

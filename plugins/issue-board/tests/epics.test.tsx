@@ -532,7 +532,9 @@ for (const [when, change] of ORPHANED) {
   })
 }
 
-test('an epic line is dropped after 24 hours', ON, async ($, on) => {
+// The age limit is checked when the band draws, so the board needn't read GitHub through the day; reading every 5
+// minutes made the test too slow for CI.
+test('an epic line is dropped after 24 hours', { options: { ...ON.options, refresh: 'manual' } }, async ($, on) => {
   adoptedStore(on)
   const clock = mock.clock(on, { now: Date.parse('2026-10-05T10:00:00Z') })
   await reopening($, on)

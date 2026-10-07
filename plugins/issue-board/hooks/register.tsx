@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentSpawnResult, Caught, EngineInterface, HookFailure, ModelForkResult, Register, RenderChildren, ThemeKey, Timer, ToolCallResult, UiCopyArgs } from 'claude-code'
 
-import type { Adopted, Adoption, Alert, Board, BoxTask, BuiltInFilter, Check, Comment, Draft, DraftEdit, EpicNote, GroupBy, Issue, Known, LabelChange, Launch, Markers, Plan, PlanRow, Problem, Project, ProjectField, Role, Roles, StatusPicks, StatusUpdate, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
+import type { Adopted, Adoption, Alert, Board, BoxTask, BuiltInFilter, Check, Comment, Draft, DraftEdit, EpicNote, GroupBy, Issue, Known, LabelChange, Launch, ViewChange, Markers, Plan, PlanRow, Problem, Project, ProjectField, Role, Roles, StatusPicks, StatusUpdate, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
 import type { Ended, FilterSource, IssueChanges, NewIssue, PrRule, StartMode, Switches, Tab } from './parse'
 import type { Linked } from './project'
 import { authOf, problemsOf, problemsText, repoOf } from './access'
@@ -13,6 +13,11 @@ import {
   ARCHIVE_ITEM,
   CLEAR_VALUE,
   ISSUE_ITEMS,
+  CREATE_VIEW,
+  DELETE_VIEW,
+  LAYOUT_NAMES,
+  UPDATE_VIEW,
+  VIEW_ID,
   MOVE_ITEM,
   ITEM_VALUES,
   POST_STATUS,
@@ -49,7 +54,7 @@ import {
   writeRefusal,
 } from './project'
 import type { Grants } from './project'
-import { appliedText, changeText, issueChangesOf, issueOf, kindsText, planAsk, planOf, problemsOfPlan, rowsOf, sizeText } from './plan'
+import { appliedText, cardParts, groupOf, issueChangesOf, kindsText, planAsk, planOf, problemsOfPlan, rowsOf, sizeText, viewDoneText, viewNoteOf } from './plan'
 import type { Planned } from './plan'
 import {
   CREATE_FIELD,
@@ -3084,6 +3089,43 @@ const applyLabel = async ($: EngineInterface, change: LabelChange): Promise<stri
   return done
 }
 
+// Makes a plan's change to one of the project's views, through the project write check. An existing view is found by
+// its number, as the board read it. A new view's filter goes in by a change straight after it is made, since creating
+// takes none. The board's next read has the views, so the pane's tabs show them. Answers what it did.
+const applyView = async ($: EngineInterface, change: ViewChange): Promise<string> => {
+  const project = (await read($, board))?.project
+  if (!project) throw new Error("the board reads no project for this repo, so it can't change its views")
+  const { view, to } = change
+  let id: string | undefined
+  if (view) {
+    const found = (await graphql($, VIEW_ID, { project: project.id, number: view.number })) as { node?: { view?: { id?: string } | null } | null }
+    id = found.node?.view?.id
+    if (!id) throw new Error(`${project.title} has no view ${view.name} any more`)
+  }
+  if (!to) {
+    await projectWrite($, project, DELETE_VIEW, { view: id ?? '' })
+    return viewDoneText(change)
+  }
+  if (!id) {
+    const made = (await projectWrite($, project, CREATE_VIEW, { input: { projectId: project.id, name: to.name, layout: LAYOUT_NAMES[to.layout] } })) as {
+      createProjectV2View?: { projectV2View?: { id?: string } | null } | null
+    }
+    const madeId = made.createProjectV2View?.projectV2View?.id
+    if (to.filter && !madeId) throw new Error(`GitHub made the view ${to.name} but didn't say which it is, so its filter isn't set`)
+    if (to.filter && madeId) await projectWrite($, project, UPDATE_VIEW, { input: { viewId: madeId, filter: to.filter } })
+    return viewDoneText(change)
+  }
+  const was = view as NonNullable<typeof view>
+  const input = {
+    viewId: id,
+    ...(to.name !== was.name ? { name: to.name } : {}),
+    ...(to.layout !== was.layout ? { layout: LAYOUT_NAMES[to.layout] } : {}),
+    ...(to.filter !== was.filter ? { filter: to.filter } : {}),
+  }
+  await projectWrite($, project, UPDATE_VIEW, { input })
+  return viewDoneText(change)
+}
+
 // Puts a plan on the pane's card, every row ticked, in place of any plan before it. Answers its id, which tells it from
 // the plan that may replace it while the permission prompt waits.
 const propose = async ($: EngineInterface, changes: Extract<Planned, { changes: unknown }>['changes']): Promise<number> => {
@@ -3108,7 +3150,10 @@ const applyPlan = async ($: EngineInterface, id: number): Promise<string> => {
   try {
     for (const row of chosen) {
       try {
-        done.push(row.change.kind === 'label' ? await applyLabel($, row.change) : await applyChanges($, row.change.number, issueChangesOf(row.change), false))
+        const change = row.change
+        done.push(
+          change.kind === 'label' ? await applyLabel($, change) : change.kind === 'view' ? await applyView($, change) : await applyChanges($, change.number, issueChangesOf(change), false),
+        )
       } catch (cause) {
         failed.push({ row, message: messageOf(cause) })
       }
@@ -3430,7 +3475,7 @@ export const register: Register = (on, options) => {
     await registerTool($, {
       name: 'project_plan',
       description:
-        'Proposes many issue and repo label changes as one plan, each with a reason, refused whole if any is invalid. ' +
+        'Proposes many issue, label and view changes as one plan, each with a reason, refused whole if any is invalid. ' +
         'The person approves it once, or applies some of it in /issues. A new plan replaces the last.',
       inputSchema: {
         type: 'object',
@@ -3471,6 +3516,22 @@ export const register: Register = (on, options) => {
                 description: { type: 'string' },
               },
               required: ['name', 'reason'],
+            },
+          },
+          views: {
+            type: 'array',
+            description: 'view: a number or name; omit to create.',
+            items: {
+              type: 'object',
+              properties: {
+                view: { type: ['integer', 'string'] },
+                reason: { type: 'string' },
+                name: { type: 'string' },
+                layout: { enum: ['table', 'board', 'roadmap'] },
+                filter: { type: 'string' },
+                delete: { type: 'boolean' },
+              },
+              required: ['reason'],
             },
           },
         },
@@ -5045,7 +5106,8 @@ export const register: Register = (on, options) => {
     // Claude's reason. Apply writes the ticked rows; Discard drops the plan. A row that failed stays, saying why.
     const planRows = proposed?.rows ?? []
     const planTicked = planRows.filter(row => row.picked).length
-    const planIssues = [...new Set(planRows.map(row => issueOf(row.change)))]
+    // The rows grouped: the repo's labels first, then each issue, then the project's views.
+    const planGroups = [...new Set(planRows.map(row => groupOf(row.change)))]
     const pickRow = (id: string) => () => void update($, proposal, was => was && { ...was, rows: was.rows.map(row => (row.id === id ? { ...row, picked: !row.picked } : row)) })
     const planCard = proposed && planRows.length > 0 && (
       <Box key="plan-card" flexDirection="column" borderStyle="round" borderColor="suggestion" paddingX={1} marginTop={1}>
@@ -5053,30 +5115,38 @@ export const register: Register = (on, options) => {
         <Text dimColor wrap="wrap">
           {kindsText(planRows.map(row => row.change))}
         </Text>
-        {planIssues.map(number => (
-          <Box key={`plan-issue-${number ?? 'labels'}`} flexDirection="column" marginTop={1}>
-            {number === null ? (
+        {planGroups.map(group => (
+          <Box key={`plan-${typeof group === 'number' ? `issue-${group}` : `${group}s`}`} flexDirection="column" marginTop={1}>
+            {group === 'label' ? (
               <Text color="claude" bold>
                 {"The repo's labels"}
               </Text>
+            ) : group === 'view' ? (
+              <Text color="claude" bold wrap="truncate-end">{`${now.project?.title ?? 'Project'} views`}</Text>
             ) : (
               <Text wrap="truncate-end">
-                <Text color="claude" bold>{`#${number} `}</Text>
-                {now.issues.find(one => one.number === number)?.title ?? ''}
+                <Text color="claude" bold>{`#${group} `}</Text>
+                {now.issues.find(one => one.number === group)?.title ?? ''}
               </Text>
             )}
             {planRows
-              .filter(row => issueOf(row.change) === number)
+              .filter(row => groupOf(row.change) === group)
               .map(row => (
                 <Box key={`plan-row-${row.id}`} flexDirection="column">
                   <Box flexDirection="row" gap={1} flexWrap="wrap">
                     <Button key={`plan-pick-${row.id}`} variant={row.picked ? 'primary' : undefined} dimColor={!row.picked} onPress={pickRow(row.id)}>
-                      {`${row.picked ? '☑' : '☐'} ${changeText(row.change)}`}
+                      {`${row.picked ? '☑' : '☐'} ${cardParts(row.change).head}`}
                     </Button>
+                    {cardParts(row.change).detail && <Text wrap="wrap">{cardParts(row.change).detail}</Text>}
                     <Text dimColor wrap="wrap">
                       {row.reason}
                     </Text>
                   </Box>
+                  {viewNoteOf(row.change) && (
+                    <Text color="warning" wrap="wrap">
+                      {`⚠ ${viewNoteOf(row.change)}`}
+                    </Text>
+                  )}
                   {row.failed && <Text color="error" wrap="wrap">{`✗ ${row.failed}`}</Text>}
                 </Box>
               ))}

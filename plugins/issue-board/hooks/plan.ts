@@ -1,6 +1,6 @@
-import type { Issue, LabelChange, Markers, Milestone, PlanChange, PlanRow, Project } from '../types'
+import type { Issue, LabelChange, Markers, Milestone, PlanChange, PlanRow, Project, ProjectView, ViewChange, ViewShape } from '../types'
 import type { IssueChanges } from './parse'
-import { fieldValueOf, projectMoveOf } from './parse'
+import { fieldValueOf, projectMoveOf, viewMatchOf } from './parse'
 import { optionOf } from './project'
 
 // A plan Claude proposes with project_plan: the changes it lists, checked against the board, each with its reason.
@@ -14,6 +14,10 @@ const ISSUE_KEYS = new Set(['number', 'reason', 'status', 'priority', 'fields', 
 // What one entry of the tool's `labels` list may say.
 const LABEL_KEYS = new Set(['name', 'reason', 'create', 'rename', 'color', 'description', 'delete'])
 
+// What one entry of the tool's `views` list may hold: the view it changes (none to create one), and what it becomes.
+const VIEW_KEYS = new Set(['view', 'reason', 'name', 'layout', 'filter', 'delete'])
+const LAYOUTS: readonly ProjectView['layout'][] = ['table', 'board', 'roadmap']
+
 // What the checks need of the board: its open issues, its project and its open milestones, why the project can't be
 // written to, if it can't, the repo's labels when the board has read them, and the Bugs and Later markers the person
 // saved.
@@ -26,11 +30,18 @@ export type PlanContext = {
   markers?: Partial<Markers>
 }
 
-// A change to an issue, as opposed to one to the repo's labels.
-export type IssueChange = Exclude<PlanChange, LabelChange>
+// A change to an issue, as opposed to one to the repo's labels or the project's views.
+export type IssueChange = Exclude<PlanChange, LabelChange | ViewChange>
 
-// The issue a change is on; null for a change to the repo's labels.
-export const issueOf = (change: PlanChange): number | null => (change.kind === 'label' ? null : change.number)
+// The issue a change is on; null for a change to the repo's labels or the project's views.
+export const issueOf = (change: PlanChange): number | null => (change.kind === 'label' || change.kind === 'view' ? null : change.number)
+
+// The group a change's row goes in on the card: the repo's labels, its issue, or the project's views. Also the start of
+// the row's id.
+export const groupOf = (change: PlanChange): number | 'label' | 'view' => (change.kind === 'label' || change.kind === 'view' ? change.kind : change.number)
+
+// The name of the view a change is to: the view's own, or the new one's.
+const viewNameOf = (change: ViewChange): string => change.view?.name ?? change.to?.name ?? ''
 
 // GitHub keeps label names unique whatever their case.
 const same = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase()
@@ -43,11 +54,70 @@ const names = (value: unknown): string[] =>
 const text = (value: unknown): string | undefined => (typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined)
 
 // The name a kind goes by in the card, the prompt and the problems.
-const KIND_NAMES: Record<PlanChange['kind'], string> = { status: 'Status', priority: 'Priority', field: 'fields', labels: 'labels', assignees: 'assignees', milestone: 'milestone', parent: 'parent', order: 'order', label: 'repo labels' }
+const KIND_NAMES: Record<PlanChange['kind'], string> = { status: 'Status', priority: 'Priority', field: 'fields', labels: 'labels', assignees: 'assignees', milestone: 'milestone', parent: 'parent', order: 'order', label: 'repo labels', view: 'views' }
 
-// What a change touches, so the same thing changed twice for one issue is caught.
-const slotOf = (change: PlanChange): string =>
-  change.kind === 'label' ? `label ${change.name.toLowerCase()}` : `${change.number} ${change.kind}${change.kind === 'field' ? ` ${change.field.toLowerCase()}` : ''}`
+// What a change touches, so the same thing changed twice for one issue, label or view is caught.
+const slotOf = (change: PlanChange): string => {
+  if (change.kind === 'label') return `label ${change.name.toLowerCase()}`
+  if (change.kind === 'view') return change.view ? `view ${change.view.number}` : `new view ${viewNameOf(change).toLowerCase()}`
+  return `${change.number} ${change.kind}${change.kind === 'field' ? ` ${change.field.toLowerCase()}` : ''}`
+}
+
+// One entry of the tool's `views` list as a change, or null with its problems added. An entry without `view` creates
+// one; with `view`, named by number or by name, it changes that view, or deletes it with `delete: true`. Filters are
+// checked with the tabs' own parser: a term the board can't apply is allowed, and kept to say so on the row.
+const viewChangeOf = (entry: unknown, index: number, context: PlanContext, problems: string[]): ViewChange | null => {
+  const one = (entry ?? {}) as Record<string, unknown>
+  const { project } = context
+  const named = typeof one.view === 'number' || typeof one.view === 'string' ? one.view : undefined
+  const name = text(one.name)
+  const at = named !== undefined ? `View ${named}` : `New view ${name ?? `(entry ${index + 1})`}`
+  const before = problems.length
+  if (!project) {
+    problems.push(`${at}: the board reads no project, so it can't change its views.`)
+    return null
+  }
+  if (!text(one.reason)) problems.push(`${at} has no reason.`)
+  const unknown = Object.keys(one).filter(key => !VIEW_KEYS.has(key))
+  if (unknown.length > 0) problems.push(`${at}: a view entry can't hold ${unknown.join(', ')}.`)
+  const written = text(one.layout)?.toLowerCase()
+  const layout = LAYOUTS.find(known => known === written)
+  if (written !== undefined && !layout) problems.push(`${at}: a layout is table, board or roadmap, not ${written}.`)
+  if (one.filter !== undefined && typeof one.filter !== 'string') problems.push(`${at}: give its filter as text.`)
+  const filter = typeof one.filter === 'string' ? one.filter.trim() : undefined
+  let view: ProjectView | null = null
+  if (named !== undefined) {
+    const views = project.views
+    const found = views?.filter(known => (typeof named === 'number' ? known.number === named : known.name.toLowerCase() === named.trim().toLowerCase())) ?? []
+    if (!views) problems.push(`${at}: the board hasn't read ${project.title}'s views; refresh it and try again.`)
+    else if (found.length > 1) problems.push(`${at}: ${project.title} has ${found.length} views called ${named}; name it by number.`)
+    else if (!found[0]) problems.push(`${at}: ${project.title} has no such view${views.length > 0 ? `; it has ${views.map(known => `${known.name} (${known.number})`).join(', ')}` : ''}.`)
+    else view = found[0]
+  }
+  if (one.delete === true) {
+    if (named === undefined) problems.push(`${at}: give view, the view to delete.`)
+    else if (name !== undefined || written !== undefined || filter !== undefined) problems.push(`${at}: a view that's deleted takes no name, layout or filter.`)
+    return problems.length > before || !view ? null : { kind: 'view', view, to: null, partial: [] }
+  }
+  if (problems.length > before) return null
+  let to: ViewShape
+  if (!view) {
+    if (!name) {
+      problems.push(`${at} has no name.`)
+      return null
+    }
+    to = { name, layout: layout ?? 'table', filter: filter ?? '' }
+  } else {
+    to = { name: name ?? view.name, layout: layout ?? view.layout, filter: filter ?? view.filter }
+    if (to.name === view.name && to.layout === view.layout && to.filter === view.filter) {
+      problems.push(`${at} changes nothing.`)
+      return null
+    }
+  }
+  // Only a filter the plan sets is checked; one the view keeps shows on its tab as it did.
+  const partial = filter ? viewMatchOf(filter, project).unknown : []
+  return { kind: 'view', view, to, partial }
+}
 
 // The label changes of project_plan's input, one row each. Their problems go on `problems`.
 const labelChangesOf = (entries: unknown[], context: PlanContext, problems: string[]): { change: LabelChange; reason: string }[] => {
@@ -109,12 +179,14 @@ const labelChangesOf = (entries: unknown[], context: PlanContext, problems: stri
 // The changes project_plan's input asks for, checked against the board as a whole: every problem is listed at once, and
 // a plan with any problem is refused. Each entry may change several things on its issue; each becomes a row of its own,
 // with the entry's reason. Changes to the repo's labels come first, so an issue can take a label the plan makes; then
-// the rows are grouped by issue, in the order the issues first come. They apply in that order.
+// the rows are grouped by issue, in the order the issues first come, and the changes to the project's views come last,
+// in the plan's order. They apply in that order.
 export const planOf = (input: unknown, context: PlanContext): Planned => {
-  const raw = (input ?? {}) as { issues?: unknown; labels?: unknown }
+  const raw = (input ?? {}) as { issues?: unknown; labels?: unknown; views?: unknown }
   const entries = Array.isArray(raw.issues) ? raw.issues : []
   const labelEntries = Array.isArray(raw.labels) ? raw.labels : []
-  if (entries.length === 0 && labelEntries.length === 0) return { problems: ['Give issues or labels: lists of changes, each with a reason.'] }
+  const viewEntries = Array.isArray(raw.views) ? raw.views : []
+  if (entries.length === 0 && labelEntries.length === 0 && viewEntries.length === 0) return { problems: ['Give issues, labels or views: lists of changes, each with a reason.'] }
   const problems: string[] = []
   const changes: { change: PlanChange; reason: string }[] = labelChangesOf(labelEntries, context, problems)
   const { project } = context
@@ -199,21 +271,30 @@ export const planOf = (input: unknown, context: PlanContext): Planned => {
     if (made.length === 0 && !asked && unknown.length === 0) problems.push(`${at} changes nothing.`)
     for (const change of made) changes.push({ change, reason: reason ?? '' })
   })
+  viewEntries.forEach((entry, index) => {
+    const change = viewChangeOf(entry, index, context, problems)
+    if (change) changes.push({ change, reason: text((entry as { reason?: unknown } | null)?.reason) ?? '' })
+  })
   const seen = new Set<string>()
   for (const { change } of changes) {
     const slot = slotOf(change)
-    if (seen.has(slot)) problems.push(change.kind === 'label' ? `Label ${change.name} is in the plan twice.` : `#${change.number}'s ${change.kind === 'field' ? change.field : KIND_NAMES[change.kind]} is in the plan twice.`)
+    if (seen.has(slot)) problems.push(`${subjectOf(change)} is in the plan twice.`)
     seen.add(slot)
   }
   if (changes.length > PLAN_LIMIT) problems.push(`A plan holds at most ${PLAN_LIMIT} changes; this one has ${changes.length}. Split it.`)
   if (context.refusal && changes.some(({ change }) => touchesProject(change))) problems.unshift(context.refusal)
   if (problems.length > 0) return { problems: [...new Set(problems)] }
-  const order = [...new Set(changes.map(({ change }) => issueOf(change)))]
-  return { changes: order.flatMap(number => changes.filter(({ change }) => issueOf(change) === number)) }
+  const order = [...new Set(changes.map(({ change }) => groupOf(change)))]
+  return { changes: order.flatMap(group => changes.filter(({ change }) => groupOf(change) === group)) }
 }
 
+// What a change touches, for the problem of a plan that changes it twice: `#340's Status`, `Label bug`, `View Bugs`.
+const subjectOf = (change: PlanChange): string =>
+  change.kind === 'label' ? `Label ${change.name}` : change.kind === 'view' ? `View ${viewNameOf(change)}` : `#${change.number}'s ${change.kind === 'field' ? change.field : KIND_NAMES[change.kind]}`
+
 // Whether a change writes to the project rather than to the issue.
-export const touchesProject = (change: PlanChange): boolean => change.kind === 'status' || change.kind === 'priority' || change.kind === 'field' || change.kind === 'order'
+export const touchesProject = (change: PlanChange): boolean =>
+  change.kind === 'status' || change.kind === 'priority' || change.kind === 'field' || change.kind === 'order' || change.kind === 'view'
 
 // The change as issue_update makes it.
 export const issueChangesOf = (change: IssueChange): IssueChanges => {
@@ -257,7 +338,54 @@ export const changeText = (change: PlanChange): string => {
       return change.after === null ? "top of the project's order" : `after #${change.after} in the order`
     case 'label':
       return labelText(change)
+    case 'view':
+      return viewText(change)
   }
+}
+
+// A change split for its row on the card: the head goes on the row's button, which can't wrap, and the rest in text
+// beside it, which can. A label or view change says what it does to which label or view in the head, and its counts,
+// colors, markers and filters in the rest, so a long filter can't push the button past a narrow pane. Other changes
+// are short, and all head.
+export const cardParts = (change: PlanChange): { head: string; detail: string } => {
+  const full = changeText(change)
+  let head = full
+  if (change.kind === 'label') head = change.action === 'create' ? `new label ${change.name}` : change.action === 'delete' ? `delete label ${change.name}` : `label ${change.name}${change.rename ? ` → ${change.rename}` : ''}`
+  if (change.kind === 'view') head = !change.to ? `delete view ${viewNameOf(change)}` : !change.view ? `new ${change.to.layout} view ${change.to.name}` : `view ${change.view.name}`
+  return { head, detail: full.slice(head.length).replace(/^(?: · |: | )/, '') }
+}
+
+// A change with what it is on, for lists outside the card: `#340 Status → Ready`, `new label area:net`, `new table view
+// Bugs`.
+export const rowText = (change: PlanChange): string => (issueOf(change) === null ? changeText(change) : `#${issueOf(change)} ${changeText(change)}`)
+
+// What a view change does, in a few words: `new table view Bugs · label:bug`, `view Bugs: renamed Triage, filter
+// cleared`, `delete view Bugs · label:bug`. A delete names the filter, or says it had none, so the person sees what goes.
+const viewText = (change: ViewChange): string => {
+  const { view, to } = change
+  if (!to) return `delete view ${view?.name ?? ''} · ${view?.filter ? view.filter : 'no filter'}`
+  if (!view) return `new ${to.layout} view ${to.name}${to.filter ? ` · ${to.filter}` : ''}`
+  const parts = [
+    ...(to.name !== view.name ? [`renamed ${to.name}`] : []),
+    ...(to.layout !== view.layout ? [`${to.layout} layout`] : []),
+    ...(to.filter !== view.filter ? [to.filter ? `filter ${to.filter}` : 'filter cleared'] : []),
+  ]
+  return `view ${view.name}: ${parts.join(', ')}`
+}
+
+// The note under a view's row when its filter holds terms the board can't apply. Those terms are left out of the tab's
+// filter, so the tab shows every issue the rest keeps.
+export const viewNoteOf = (change: PlanChange): string | null =>
+  change.kind === 'view' && change.partial.length > 0
+    ? `The board can't apply ${change.partial.join(' ')}, so its tab in /issues leaves ${change.partial.length === 1 ? 'that term' : 'those terms'} out and shows more than GitHub does.`
+    : null
+
+// What an applied view change answers.
+export const viewDoneText = (change: ViewChange): string => {
+  const partial = change.partial.length > 0 ? ` Its tab leaves out ${change.partial.join(' ')}, which the board can't apply.` : ''
+  if (!change.to) return `Deleted the view ${viewNameOf(change)}.`
+  if (!change.view) return `Created the ${change.to.layout} view ${change.to.name}${change.to.filter ? ` with the filter ${change.to.filter}` : ''}.${partial}`
+  return `Changed the ${viewText(change)}.${partial}`
 }
 
 // A label change in a few words: `new label area:net #1d76db`, `label bug → defect`, `delete label wontfix · on 3 open
@@ -275,14 +403,18 @@ const labelText = (change: LabelChange): string => {
 
 // The plan's rows, each ticked, with an id that stays the row's own through an Apply.
 export const rowsOf = (changes: { change: PlanChange; reason: string }[]): PlanRow[] =>
-  changes.map(({ change, reason }, index) => ({ id: `${issueOf(change) ?? 'label'}-${index + 1}`, change, reason, picked: true, failed: null }))
+  changes.map(({ change, reason }, index) => ({ id: `${groupOf(change)}-${index + 1}`, change, reason, picked: true, failed: null }))
 
-// How many changes to how many issues and labels: `5 changes to 3 issues`, `4 changes to 2 issues and 2 labels`.
+// How many changes to how many issues, labels and views: `5 changes to 3 issues`, `4 changes to 2 issues and 2 labels`,
+// `6 changes to 3 issues, 2 labels and 1 view`.
 export const sizeText = (changes: readonly PlanChange[]): string => {
   const issues = new Set(changes.map(issueOf).filter(one => one !== null)).size
   const labels = changes.filter(change => change.kind === 'label').length
-  const what = [issues > 0 || labels === 0 ? `${issues} ${issues === 1 ? 'issue' : 'issues'}` : '', labels > 0 ? `${labels} ${labels === 1 ? 'label' : 'labels'}` : '']
-  return `${changes.length} ${changes.length === 1 ? 'change' : 'changes'} to ${what.filter(Boolean).join(' and ')}`
+  const views = changes.filter(change => change.kind === 'view').length
+  const count = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`
+  const what = [issues > 0 || labels + views === 0 ? count(issues, 'issue') : '', labels > 0 ? count(labels, 'label') : '', views > 0 ? count(views, 'view') : ''].filter(Boolean)
+  const listed = what.length > 1 ? `${what.slice(0, -1).join(', ')} and ${what.at(-1)}` : (what[0] ?? '')
+  return `${count(changes.length, 'change')} to ${listed}`
 }
 
 // The changes counted by kind, in the order kinds first come: `Status 3 · Priority 2 · labels 1`.
@@ -308,5 +440,5 @@ export const appliedText = (done: readonly string[], failed: readonly { row: Pla
     failed.length === 0
       ? `Applied the plan: ${total} ${total === 1 ? 'change' : 'changes'}.`
       : `Applied ${done.length} of ${total} changes. ${failed.length} failed and ${failed.length === 1 ? 'stays' : 'stay'} on the plan card in /issues.`
-  return [head, ...done, ...failed.map(({ row, message }) => `Failed: ${row.change.kind === 'label' ? '' : `#${row.change.number} `}${changeText(row.change)}: ${message}`)].join('\n')
+  return [head, ...done, ...failed.map(({ row, message }) => `Failed: ${rowText(row.change)}: ${message}`)].join('\n')
 }

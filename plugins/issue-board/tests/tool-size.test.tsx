@@ -8,6 +8,8 @@ const REPO = '/work/void-sector'
 const BEFORE = 12946
 // project_plan came after #223, for #236: the cap grows by its size and no more. #238's label changes added 282.
 const PLAN = 925 + 282
+// #239 let a plan change the project's views: the cap grows by what that added and no more.
+const VIEWS = 335
 
 test('the tool definitions stay at least 35% shorter than before #223: name, description and input schema', async ($, on) => {
   const clock = mock.clock(on, { now: Date.parse('2026-10-06T10:00:00Z') })
@@ -25,8 +27,8 @@ test('the tool definitions stay at least 35% shorter than before #223: name, des
 
   expect(Object.keys(sizes).sort()).toEqual(['issue_create', 'issue_update', 'issues', 'milestone', 'project_adopt', 'project_archive', 'project_plan', 'project_status', 'tick'])
   const total = Object.values(sizes).reduce((sum, one) => sum + one, 0)
-  expect(sizes.project_plan).toBeLessThanOrEqual(PLAN)
-  expect(total).toBeLessThanOrEqual(Math.floor(BEFORE * 0.65) + PLAN)
+  expect(sizes.project_plan).toBeLessThanOrEqual(PLAN + VIEWS)
+  expect(total).toBeLessThanOrEqual(Math.floor(BEFORE * 0.65) + PLAN + VIEWS)
 })
 
 test("the worker prompt defers to the repo's guidelines in one sentence and keeps its safety rules", () => {

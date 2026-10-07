@@ -162,6 +162,20 @@ const world = async ($: Engine, on: On) => {
       { id: 'r2', change: { kind: 'labels', number: 303, add: ['bug'], remove: ['area:art-audio'] }, reason: 'It is a bug.', picked: true, failed: null },
       { id: 'r3', change: { kind: 'parent', number: 1234, value: 301 }, reason: 'Part of the overhaul.', picked: false, failed: 'GitHub refused the change' },
       { id: 'r4', change: { kind: 'order', number: 303, after: 302 }, reason: 'Next after #302.', picked: true, failed: null },
+      // The repo's labels and the project's views have rows of their own, a label first and a view last.
+      { id: 'label-5', change: { kind: 'label', action: 'delete', name: 'area:art-audio', uses: { open: 12, closed: 1234 }, markers: ['later'] }, reason: 'Nobody files under it.', picked: true, failed: null },
+      {
+        id: 'view-6',
+        change: {
+          kind: 'view',
+          view: { name: 'Hangar overhaul', number: 12, layout: 'table', filter: 'label:area:hangar', groupBy: null },
+          to: { name: 'Hangar and docking ring', layout: 'board', filter: 'label:area:hangar,area:docking status:Ready sprint:@current' },
+          partial: ['sprint:@current'],
+        },
+        reason: 'One view for the whole overhaul.',
+        picked: true,
+        failed: null,
+      },
     ],
   }
   put('plan', plan)
@@ -174,7 +188,9 @@ const world = async ($: Engine, on: On) => {
     await ui.unmount()
   }
   const setup = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...pane(120) })
-  for (const key of ['pr-row-252', 'filter-view:2', 'filter-all', 'plan-card', 'adopt-card', 'card-302', 'next-301', 'box-row-302-2']) expect(await setup.find({ key }), key).toBeDefined()
+  for (const key of ['pr-row-252', 'filter-view:2', 'filter-all', 'plan-card', 'plan-pick-label-5', 'plan-pick-view-6', 'adopt-card', 'card-302', 'next-301', 'box-row-302-2'])
+    expect(await setup.find({ key }), key).toBeDefined()
+  expect(await setup.find({ text: /^⚠ The board can't apply sprint:@current/ })).toBeDefined()
   expect(await setup.find({ text: /last \d+ weeks/ })).toBeDefined()
   await setup.unmount()
 }
