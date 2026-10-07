@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import { ago, agoText, bar, cells, checksOf, ciOf, filterKeys, fit, hintFit, issuesOf, openedText, pad, peekPlace, proseOf, rowRoom, spark, summary, weekly, wrappedLines } from '../hooks/parse'
-import { ASTEROIDS, KESSIK, fakeGitHub, json } from './github'
+import { ASTEROIDS, KESSIK, fakeGitHub, json, pr335 } from './github'
 import type { Call } from './github'
 import { HINT, REFRESH, RUN, engineHint, pane } from './ui'
 
@@ -24,20 +24,8 @@ const ISSUES = [
   { ...ASTEROIDS, url: undefined, assignees: undefined, labels: [{ name: 'bug', color: 'd73a4a' }, { name: 'area:art-audio', color: 'fbca04' }] },
 ]
 
-const PRS = [
-  {
-    number: 335,
-    title: 'Glide in to a planet',
-    headRefName: 'fix/planet-glide',
-    isDraft: false,
-    statusCheckRollup: [{ status: 'COMPLETED', conclusion: 'SUCCESS' }],
-    reviewDecision: 'APPROVED',
-    additions: 120,
-    deletions: 40,
-    author: { login: 'astrosteveo' },
-    updatedAt: '2026-10-03T20:00:00Z',
-  },
-]
+// #335 without a URL or a body, so it links to the page the repo gives and names no issue.
+const PRS = [{ ...pr335('pass'), url: undefined, body: undefined, statusCheckRollup: [{ status: 'COMPLETED', conclusion: 'SUCCESS' }], additions: 120, deletions: 40 }]
 
 const PANE = pane(100, 40)
 

@@ -8,7 +8,7 @@ import { ADOPTED, fakeGitHub, json, memoryStore, ok, session, settingsLog } from
 import type { Route } from './github'
 import { PROJECT, graphArg, isIssuesQuery } from './graph'
 import type { Raw } from './graph'
-import { REFRESH, REPO, band, pane } from './ui'
+import { REFRESH, REPO, band, engineBand, pane } from './ui'
 
 const PANE = pane(120, 80)
 const BAND = band(120)
@@ -254,11 +254,7 @@ test('Keep read-only puts the prompt away for good and writes nothing', async ($
   const kept = memoryStore(on)
   const set = settingsLog(on)
   const { mutations } = world(on)
-  // What the engine draws in the band when the board has nothing to say.
-  on('ui.render', { component: 'AbovePrompt' }, async ($$, e) => {
-    const { Box } = $$.ui.resolve(e)
-    return <Box key="engine" />
-  })
+  engineBand(on)
   await $.command.run(REFRESH)
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   await ui.press({ key: 'adopt-no' })
@@ -339,11 +335,7 @@ test("a project the repo's own settings grant needs no prompt, takes writes, and
   on('settings.read', async (_$, e) => ({
     value: e.source === 'project' ? { pluginConfigs: { 'issue-board@astrosteveo-plugins': { options: { writeProjects: ['astrosteveo/8'] } } } } : {},
   }))
-  // What the engine draws in the band when the board has nothing to say.
-  on('ui.render', { component: 'AbovePrompt' }, async ($$, e) => {
-    const { Box } = $$.ui.resolve(e)
-    return <Box key="engine" />
-  })
+  engineBand(on)
   await $.command.run(REFRESH)
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   expect(await ui.find({ key: 'adopt-card' })).toBeUndefined()

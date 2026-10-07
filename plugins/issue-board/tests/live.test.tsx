@@ -2,28 +2,20 @@ import type { AgentSpawnInput, On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { eventRepoOf, liveRunsOf, runProgressOf, startedByClaude, workerBadge } from '../hooks/parse'
-import { KESSIK, fakeGitHub, issueReads, json, line, session } from './github'
+import { KESSIK, fakeGitHub, issueReads, json, line, pr335, session } from './github'
 import type { Route } from './github'
 import type { Raw } from './graph'
 import { REFRESH, REPO, band, engineBand, pane } from './ui'
 
 const issue: Raw = { ...KESSIK, labels: [], body: '- [ ] Layout in place' }
 
+// #335 on #315's branch, its CI one validate check.
 const pr = (ci: 'pending' | 'pass') => ({
-  number: 335,
-  title: 'Glide in to a planet',
-  url: 'https://github.com/astrosteveo/void-sector/pull/335',
+  ...pr335(ci),
   headRefName: 'fix/315-glide',
-  headRefOid: 'abc123',
-  isDraft: false,
   statusCheckRollup: ci === 'pass' ? [{ name: 'validate', status: 'COMPLETED', conclusion: 'SUCCESS' }] : [{ name: 'validate', status: 'IN_PROGRESS' }],
   reviewDecision: null,
-  additions: 1,
-  deletions: 1,
-  author: { login: 'astrosteveo' },
-  updatedAt: '2026-10-03T20:00:00Z',
   body: 'Refs #315.',
-  closingIssuesReferences: [],
 })
 
 // Two drawings `gh run watch` makes, a few seconds apart: one job done and one running, then both ended.

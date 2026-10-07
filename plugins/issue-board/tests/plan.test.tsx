@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { parseIssues } from '../hooks/parse'
-import { PLAN_LIMIT, alreadyTrue, cardParts, changeText, issueOf, kindsText, planAsk, planOf, rowText, rowsOf, sizeText, viewDoneText, viewNoteOf } from '../hooks/plan'
+import { PLAN_LIMIT, alreadyTrue, cardParts, changeText, kindsText, planAsk, planOf, rowText, rowsOf, sizeText, viewDoneText, viewNoteOf } from '../hooks/plan'
 import type { PlanChange, Project } from '../types'
 import { permissions } from './engine'
 import { adoptedStore, fail, fakeGitHub, json, ok, session } from './github'

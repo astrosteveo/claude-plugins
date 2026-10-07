@@ -3,7 +3,7 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import { absorbed, issueOfBranch, knownOf, mentionsOf, newsOf, nextStepOf, parseIssues, parsePrs, writesGitHub } from '../hooks/parse'
 import { letThrough } from './engine'
-import { ASTEROIDS, KESSIK, fakeGitHub, issueReads, json, ok, session } from './github'
+import { ASTEROIDS, KESSIK, fakeGitHub, issueReads, json, ok, pr335, session } from './github'
 import type { Route } from './github'
 import { graphPage, isIssuesQuery } from './graph'
 import { COMPOSE, REFRESH, band, engineBand, pane } from './ui'
@@ -14,22 +14,13 @@ const issue = (body: string, comments = 0) => ({ ...KESSIK, labels: [{ name: 'ar
 
 const other = { ...ASTEROIDS, body: '- [ ] Asteroids draw' }
 
+// #335 on #315's branch; failing, only its build fails.
 const pr = (ci: 'pass' | 'pending' | 'fail', sha = 'abc123') => ({
-  number: 335,
-  title: 'Glide in to a planet',
-  url: 'https://github.com/astrosteveo/void-sector/pull/335',
+  ...pr335(ci, sha),
   headRefName: 'fix/315-glide',
-  headRefOid: sha,
-  isDraft: false,
-  statusCheckRollup:
-    ci === 'pass' ? [{ name: 'build', status: 'COMPLETED', conclusion: 'SUCCESS' }] : ci === 'pending' ? [{ name: 'build', status: 'IN_PROGRESS' }] : [{ name: 'build', status: 'COMPLETED', conclusion: 'FAILURE' }],
+  ...(ci === 'fail' ? { statusCheckRollup: [{ name: 'build', status: 'COMPLETED', conclusion: 'FAILURE' }] } : {}),
   reviewDecision: null,
-  additions: 1,
-  deletions: 1,
-  author: { login: 'astrosteveo' },
-  updatedAt: '2026-10-03T20:00:00Z',
   body: 'Refs #315.',
-  closingIssuesReferences: [],
 })
 
 const PANE = pane(100, 40)
