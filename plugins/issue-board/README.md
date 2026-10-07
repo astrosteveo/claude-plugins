@@ -260,8 +260,15 @@ alert off until it happens again.
 Each open pull request is a row: its CI (`✓ PASS`, `✗ FAIL`, `◷ CI`), title,
 the issue it is for (`→ #38`), its review, and `◆` on the branch you have
 checked out. It says why it can't merge yet: `⚠ conflicts`, `↓ behind`,
-open review threads, and who is asked to review. Press the title for its
-details.
+open review threads, and who is asked to review. At the right are its diff
+counts (`+120 −40`) and **Finish & merge**. Press the title for its details.
+
+A pull request's row stays on one line. Its number, CI, linked issue and
+counts never break across lines; the title is cut with `…` instead. A narrow
+pane drops parts in this order: who is asked to review, open threads, the
+diff counts, the linked issue, the merge note and the review mark. Last,
+**Finish & merge** becomes **Merge**. The band's lines work the same way:
+their badge, number and buttons keep their width, and the text is cut.
 
 - **Finish & merge** sends Claude to see it through: fix CI, answer review,
   and merge, without bypassing branch protection or force-pushing.

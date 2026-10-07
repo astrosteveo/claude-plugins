@@ -1033,6 +1033,33 @@ export const rowRoom = (
   return { ...shown, title: Math.max(1, room()) }
 }
 
+// What a pull request's row has room for. `fixed` is the cells that always stay: the CI badge, the number, the ◆ and
+// the gaps around the title. Each part is its width in cells with the gap before it, 0 when the row has none. Short of
+// room for a title of `floor` cells, the row drops the reviewers it asks, then the open threads, the diff counts, the
+// linked issue, the merge note and the review mark, in that order, and last shortens Finish & merge to Merge. The
+// title gets what is left, so the row stays on one line.
+export const PR_PARTS = ['asked', 'threads', 'size', 'issue', 'merge', 'review'] as const
+export type PrPart = (typeof PR_PARTS)[number]
+export const FINISH = '⇲ Finish & merge'
+export const FINISH_SHORT = '⇲ Merge'
+export const prRowRoom = (
+  width: number,
+  fixed: number,
+  parts: Record<PrPart, number>,
+  floor = 16,
+): { shown: Record<PrPart, boolean>; finish: string; title: number } => {
+  const shown = Object.fromEntries(PR_PARTS.map(part => [part, parts[part] > 0])) as Record<PrPart, boolean>
+  let finish = FINISH
+  // A framed button is its label and four cells of brackets, with a cell between it and the title's side.
+  const room = () => width - fixed - (cells(finish) + 4 + 1) - PR_PARTS.reduce((sum, part) => sum + (shown[part] ? parts[part] : 0), 0)
+  for (const part of PR_PARTS) {
+    if (room() >= floor) break
+    shown[part] = false
+  }
+  if (room() < floor) finish = FINISH_SHORT
+  return { shown, finish, title: Math.max(1, room()) }
+}
+
 // `text` padded with spaces to `width` cells.
 export const pad = (text: string, width: number): string => `${text}${' '.repeat(Math.max(0, width - cells(text)))}`
 

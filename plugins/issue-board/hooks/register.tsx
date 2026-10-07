@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { AgentSpawnResult, Caught, EngineInterface, HookFailure, ModelForkResult, Register, ThemeKey, Timer, ToolCallResult, UiCopyArgs } from 'claude-code'
+import type { AgentSpawnResult, Caught, EngineInterface, HookFailure, ModelForkResult, Register, RenderChildren, ThemeKey, Timer, ToolCallResult, UiCopyArgs } from 'claude-code'
 
 import type { Adopted, Adoption, Alert, Board, BoxTask, BuiltInFilter, Check, Comment, Draft, DraftEdit, EpicNote, GroupBy, Issue, Known, Launch, Markers, Plan, PlanRow, Problem, Project, ProjectField, Role, Roles, StatusPicks, StatusUpdate, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
 import type { Ended, FilterSource, IssueChanges, NewIssue, PrRule, StartMode, Switches, Tab } from './parse'
@@ -150,6 +150,7 @@ import {
   startedByClaude,
   statusFor,
   statusOnly,
+  prRowRoom,
   rowRoom,
   sumProgress,
   summary,
@@ -4184,6 +4185,9 @@ export const register: Register = (on, options) => {
         <Link href={href} label={label} />
       </Text>
     )
+    // A part of a one-line row that keeps its width: a number, a badge, a count or a button. A row short of room
+    // squeezes only the part left to shrink, which cuts its text, rather than breaking `#252` into `#25` over `2`.
+    const keep = (part: RenderChildren) => <Box flexShrink={0}>{part}</Box>
 
     // Start: the issue is the one Claude is on, and Claude gets it. Its button says so from the press on.
     const start = (issue: Issue) =>
@@ -4253,9 +4257,9 @@ export const register: Register = (on, options) => {
       )
     }
 
-    // The header's right: when the board last synced, and Refresh.
+    // The header's right: when the board last synced, and Refresh. It keeps its width; the repo's name is cut instead.
     const sync = (
-      <Box flexDirection="row" gap={1}>
+      <Box flexDirection="row" gap={1} flexShrink={0}>
         <Text color={busy ? 'warning' : undefined} dimColor={!busy}>
           {busy ? '◌ syncing…' : now ? `⟳ ${ago(new Date(now.fetchedAt).toISOString(), clock)}` : ''}
         </Text>
@@ -4265,7 +4269,7 @@ export const register: Register = (on, options) => {
       </Box>
     )
     const repoName = (
-      <Text>
+      <Text wrap="truncate-end">
         <Text color="claude">◆ </Text>
         <Text bold>{now ? now.repo : 'GitHub'}</Text>
       </Text>
@@ -4326,7 +4330,7 @@ export const register: Register = (on, options) => {
             {line}
           </Text>
         ))}
-        <Box flexDirection="row" gap={1} marginTop={1}>
+        <Box flexDirection="row" gap={1} marginTop={1} flexWrap="wrap">
           <Button key="adopt-yes" variant="primary" onPress={() => void adoptFromPrompt($, asked)}>
             Let it write
           </Button>
@@ -4701,9 +4705,11 @@ export const register: Register = (on, options) => {
     )
 
     // One line: the repo and its totals at the left, the sync at the right. The ticked meter needs the room.
+    // The repo and its counts wrap onto a second line in a narrow pane rather than squeeze a count into two; the sync
+    // and Refresh keep their place at the right.
     const topLine = (
-      <Box flexDirection="row" justifyContent="space-between">
-        <Box flexDirection="row" gap={2}>
+      <Box flexDirection="row" justifyContent="space-between" gap={1}>
+        <Box flexDirection="row" columnGap={2} flexWrap="wrap" flexShrink={1}>
           {repoName}
           {stat('●', 'claude', now.issues.length, now.issues.length === 1 ? 'issue' : 'issues')}
           {stat('▲', bugs > 0 ? 'error' : 'inactive', bugs, bugs === 1 ? 'bug' : 'bugs')}
@@ -4971,7 +4977,7 @@ export const register: Register = (on, options) => {
               .filter(row => row.change.number === number)
               .map(row => (
                 <Box key={`plan-row-${row.id}`} flexDirection="column">
-                  <Box flexDirection="row" gap={1}>
+                  <Box flexDirection="row" gap={1} flexWrap="wrap">
                     <Button key={`plan-pick-${row.id}`} variant={row.picked ? 'primary' : undefined} dimColor={!row.picked} onPress={pickRow(row.id)}>
                       {`${row.picked ? '☑' : '☐'} ${changeText(row.change)}`}
                     </Button>
@@ -5008,15 +5014,17 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
-    // A pull request on one row: CI, number, title, a review mark and whether it is this branch's, then Finish & merge.
+    // A pull request on one row: CI, number, title, the issue it is for, a review mark, why it can't merge yet and
+    // whether it is this branch's, then its diff counts and Finish & merge. Every part but the title keeps its width,
+    // and the title is cut to what is left; a narrow pane drops parts in prRowRoom's order rather than wrap the row.
     // The title opens its details beneath: branch, author, age, review, failing checks and its link.
     const prRow = (pr: PullRequest) => {
       const badge = ciBadge[pr.ci]
       const review = reviewBadge(pr)
       const isOpen = shownPr === pr.number
       const mine = here !== null && pr.branch === here
+      // The counts stay on one line, `+12 −3`, never one above the other.
       const size = `+${pr.additions} −${pr.deletions}`
-      const right = 18 + (roomy ? size.length + 1 : 0)
       // The issue it closes or refers to, on the row: the first it names.
       const forIssue = (pr.issues ?? [])[0]
       const forText = forIssue ? `→ #${forIssue}` : ''
@@ -5025,40 +5033,50 @@ export const register: Register = (on, options) => {
       const threads = pr.openThreads ?? 0
       const threadText = threads > 0 ? `${threads} open ${threads === 1 ? 'thread' : 'threads'}` : ''
       const askedText = (pr.reviewers ?? []).length > 0 ? `asks ${(pr.reviewers ?? []).slice(0, 2).join(', ')}${(pr.reviewers ?? []).length > 2 ? ` +${(pr.reviewers ?? []).length - 2}` : ''}` : ''
-      const notes = [merge?.text ?? '', threadText, askedText].filter(Boolean)
-      const titleRoom =
-        width - [...badge.text].length - String(pr.number).length - 3 - (review ? 2 : 0) - (mine ? 2 : 0) - (forText ? forText.length + 1 : 0) - notes.reduce((sum, note) => sum + cells(note) + 1, 0) - right
+      const gapped = (text: string) => (text ? cells(text) + 1 : 0)
+      const fits = prRowRoom(width, cells(badge.text) + 1 + cells(`#${pr.number}`) + 1 + (mine ? 2 : 0), {
+        asked: gapped(askedText),
+        threads: gapped(threadText),
+        size: roomy ? gapped(size) : 0,
+        issue: gapped(forText),
+        merge: gapped(merge?.text ?? ''),
+        review: review ? 2 : 0,
+      })
+      const { shown } = fits
       return (
         <Box key={`pr-row-${pr.number}`} flexDirection="column">
-          <Box flexDirection="row" justifyContent="space-between">
-            <Box flexDirection="row" gap={1}>
-              <Text color={badge.color} inverse bold>
-                {badge.text}
-              </Text>
-              <Text color="suggestion" bold>{`#${pr.number}`}</Text>
-              <Button key={`pr-${pr.number}`} plain hover={{ bold: true }} onPress={togglePr(pr.number)}>
-                {fit(pr.title, Math.max(12, titleRoom))}
-              </Button>
-              {forText && <Text color="claude">{forText}</Text>}
-              {review && <Text color={review.color}>{pr.isDraft ? '◌' : review.text.slice(0, 1)}</Text>}
-              {merge && <Text color={merge.color}>{merge.text}</Text>}
-              {threadText && <Text color="warning">{threadText}</Text>}
-              {askedText && <Text dimColor>{askedText}</Text>}
-              {mine && (
-                <Text color="claude" bold>
-                  ◆
-                </Text>
+          <Box flexDirection="row" justifyContent="space-between" gap={1}>
+            <Box flexDirection="row" gap={1} flexShrink={1}>
+              {keep(
+                <Text color={badge.color} inverse bold>
+                  {badge.text}
+                </Text>,
               )}
+              {keep(<Text color="suggestion" bold>{`#${pr.number}`}</Text>)}
+              <Button key={`pr-${pr.number}`} plain hover={{ bold: true }} onPress={togglePr(pr.number)}>
+                {fit(pr.title, fits.title)}
+              </Button>
+              {shown.issue && keep(<Text color="claude">{forText}</Text>)}
+              {shown.review && review && keep(<Text color={review.color}>{pr.isDraft ? '◌' : review.text.slice(0, 1)}</Text>)}
+              {shown.merge && merge && keep(<Text color={merge.color}>{merge.text}</Text>)}
+              {shown.threads && keep(<Text color="warning">{threadText}</Text>)}
+              {shown.asked && keep(<Text dimColor>{askedText}</Text>)}
+              {mine &&
+                keep(
+                  <Text color="claude" bold>
+                    ◆
+                  </Text>,
+                )}
             </Box>
-            <Box flexDirection="row" gap={1}>
-              {roomy && (
+            <Box flexDirection="row" gap={1} flexShrink={0}>
+              {shown.size && (
                 <Text>
                   <Text color="success">{`+${pr.additions}`}</Text>
                   <Text color="error">{` −${pr.deletions}`}</Text>
                 </Text>
               )}
               <Button key={`close-out-${pr.number}`} dimColor hover={{ dimColor: false, color: 'suggestion' }} onPress={() => void closeOut(pr)}>
-                ⇲ Finish & merge
+                {fits.finish}
               </Button>
             </Box>
           </Box>
@@ -5127,24 +5145,27 @@ export const register: Register = (on, options) => {
       return (
         <Box key={`row-${issue.number}`} flexDirection="row" justifyContent="space-between">
           {!isOpen && peek(issue)}
-          <Box flexDirection="row">
-            {onIt ? (
-              <Text color="claude" bold>
-                {'▶ '}
+          {/* The marks, priority and number keep their width; were the row ever short of room, the title gives way. */}
+          <Box flexDirection="row" flexShrink={1}>
+            <Box flexDirection="row" flexShrink={0}>
+              {onIt ? (
+                <Text color="claude" bold>
+                  {'▶ '}
+                </Text>
+              ) : (
+                <Text color="error">{bug ? '▲ ' : '  '}</Text>
+              )}
+              {onIt && bug && <Text color="error">▲ </Text>}
+              {tag && <Text color={priorityColor(issue.priority ?? '')}>{tag}</Text>}
+              <Text color={isOpen || onIt ? 'claude' : undefined} dimColor={!isOpen && !onIt} hover={{ dimColor: false, color: 'claude' }}>
+                {`#${issue.number} `}
               </Text>
-            ) : (
-              <Text color="error">{bug ? '▲ ' : '  '}</Text>
-            )}
-            {onIt && bug && <Text color="error">▲ </Text>}
-            {tag && <Text color={priorityColor(issue.priority ?? '')}>{tag}</Text>}
-            <Text color={isOpen || onIt ? 'claude' : undefined} dimColor={!isOpen && !onIt} hover={{ dimColor: false, color: 'claude' }}>
-              {`#${issue.number} `}
-            </Text>
+            </Box>
             <Button key={`issue-${issue.number}`} plain hover={{ bold: true }} onPress={toggle(issue.number)}>
               {fit(issue.title, fits.title)}
             </Button>
           </Box>
-          <Box flexDirection="row" gap={1}>
+          <Box flexDirection="row" gap={1} flexShrink={0}>
             {badge && <Text color={badge.color}>{badge.text}</Text>}
             {blocked && <Text color="warning">{blocked}</Text>}
             {linked && <Text color={ciBadge[linked.ci].color}>{pr}</Text>}
@@ -5966,14 +5987,14 @@ export const register: Register = (on, options) => {
                   const next = nextOf(now.issues, epic.number, project, marks)
                   const closed = `${epic.completed}/${epic.total} closed`
                   return (
-                    <Box flexDirection="row" justifyContent="space-between">
-                      <Text>
+                    <Box flexDirection="row" justifyContent="space-between" gap={1}>
+                      <Text wrap="truncate-end">
                         <Text bold color="claude">
                           {fit(group.title, Math.max(12, width - 12 - cells(closed) - (next ? 10 : 0) - 5 - count.length))}
                         </Text>
                         <Text dimColor>{` ${count}`}</Text>
                       </Text>
-                      <Box flexDirection="row" gap={1}>
+                      <Box flexDirection="row" gap={1} flexShrink={0}>
                         {meter(epic.completed, epic.total, 10)}
                         <Text dimColor>{closed}</Text>
                         {next && (
@@ -6091,6 +6112,8 @@ export const register: Register = (on, options) => {
         <Link href={href} label={label} />
       </Text>
     )
+    // Each line keeps its badge, number and buttons whole, as the pane's rows do; its text is cut to what is left.
+    const keep = (part: RenderChildren) => <Box flexShrink={0}>{part}</Box>
     const clock = Date.now()
     const repo = now?.repo ?? ''
     const dismiss = (alert: Alert) => async () => {
@@ -6108,21 +6131,27 @@ export const register: Register = (on, options) => {
           const names = pr.failing ?? []
           return (
             <Box flexDirection="row" gap={1}>
-              <Text color="error" inverse bold>
-                {' ✗ CI '}
-              </Text>
-              <Text>
-                <Text color="suggestion" bold>{`#${pr.number} `}</Text>
+              {keep(
+                <Text color="error" inverse bold>
+                  {' ✗ CI '}
+                </Text>,
+              )}
+              {keep(<Text color="suggestion" bold>{`#${pr.number}`}</Text>)}
+              <Text wrap="truncate-end">
                 <Text>{fit(pr.title, Math.max(12, width - 44))}</Text>
                 <Text dimColor>{` ${names.length > 0 ? fit(names.join(', '), 24) : 'failing'} on ${fit(pr.branch, 20)}`}</Text>
               </Text>
-              <Button key={`fix-${pr.number}`} variant="primary" onPress={() => void hand(fixPrompt(pr))}>
-                Fix
-              </Button>
-              {link(pageOf(repo, 'pull', pr))}
-              <Button key={`dismiss-${alert.key}`} dimColor onPress={() => void dismiss(alert)()}>
-                ✕
-              </Button>
+              {keep(
+                <Button key={`fix-${pr.number}`} variant="primary" onPress={() => void hand(fixPrompt(pr))}>
+                  Fix
+                </Button>,
+              )}
+              {keep(link(pageOf(repo, 'pull', pr)))}
+              {keep(
+                <Button key={`dismiss-${alert.key}`} dimColor onPress={() => void dismiss(alert)()}>
+                  ✕
+                </Button>,
+              )}
             </Box>
           )
         }
@@ -6130,21 +6159,27 @@ export const register: Register = (on, options) => {
           const { pr } = alert
           return (
             <Box flexDirection="row" gap={1}>
-              <Text color="success" inverse bold>
-                {' ✓ CI '}
-              </Text>
-              <Text>
-                <Text color="suggestion" bold>{`#${pr.number} `}</Text>
+              {keep(
+                <Text color="success" inverse bold>
+                  {' ✓ CI '}
+                </Text>,
+              )}
+              {keep(<Text color="suggestion" bold>{`#${pr.number}`}</Text>)}
+              <Text wrap="truncate-end">
                 <Text>{fit(pr.title, Math.max(12, width - 57))}</Text>
                 <Text dimColor>{` passed on ${fit(pr.branch, 20)}`}</Text>
               </Text>
-              <Button key={`merge-${pr.number}`} variant="primary" onPress={() => void hand(closeOutPrompt(pr))}>
-                Finish & merge
-              </Button>
-              {link(pageOf(repo, 'pull', pr))}
-              <Button key={`dismiss-${alert.key}`} dimColor onPress={() => void dismiss(alert)()}>
-                ✕
-              </Button>
+              {keep(
+                <Button key={`merge-${pr.number}`} variant="primary" onPress={() => void hand(closeOutPrompt(pr))}>
+                  Finish & merge
+                </Button>,
+              )}
+              {keep(link(pageOf(repo, 'pull', pr)))}
+              {keep(
+                <Button key={`dismiss-${alert.key}`} dimColor onPress={() => void dismiss(alert)()}>
+                  ✕
+                </Button>,
+              )}
             </Box>
           )
         }
@@ -6152,35 +6187,43 @@ export const register: Register = (on, options) => {
           const { issue } = alert
           return (
             <Box flexDirection="row" gap={1}>
-              <Text color="warning" inverse bold>
-                {' ● NEW '}
-              </Text>
-              <Text>
-                <Text color="claude" bold>{`#${issue.number} `}</Text>
+              {keep(
+                <Text color="warning" inverse bold>
+                  {' ● NEW '}
+                </Text>,
+              )}
+              {keep(<Text color="claude" bold>{`#${issue.number}`}</Text>)}
+              <Text wrap="truncate-end">
                 <Text>{fit(issue.title, Math.max(12, width - 44))}</Text>
                 <Text dimColor>{` changed ${ago(issue.updatedAt, clock)} ago`}</Text>
               </Text>
-              {link(pageOf(repo, 'issues', issue))}
-              <Button key={`dismiss-${alert.key}`} dimColor onPress={() => void dismiss(alert)()}>
-                ✕
-              </Button>
+              {keep(link(pageOf(repo, 'issues', issue)))}
+              {keep(
+                <Button key={`dismiss-${alert.key}`} dimColor onPress={() => void dismiss(alert)()}>
+                  ✕
+                </Button>,
+              )}
             </Box>
           )
         }
         case 'closed':
           return (
             <Box flexDirection="row" gap={1}>
-              <Text color="success" inverse bold>
-                {' ✓ DONE '}
-              </Text>
-              <Text>
-                <Text color="claude" bold>{`#${alert.working.number} `}</Text>
+              {keep(
+                <Text color="success" inverse bold>
+                  {' ✓ DONE '}
+                </Text>,
+              )}
+              {keep(<Text color="claude" bold>{`#${alert.working.number}`}</Text>)}
+              <Text wrap="truncate-end">
                 <Text>{fit(alert.working.title, Math.max(12, width - 30))}</Text>
                 <Text dimColor> is closed</Text>
               </Text>
-              <Button key={`dismiss-${alert.key}`} dimColor onPress={() => void dismiss(alert)()}>
-                ✕
-              </Button>
+              {keep(
+                <Button key={`dismiss-${alert.key}`} dimColor onPress={() => void dismiss(alert)()}>
+                  ✕
+                </Button>,
+              )}
             </Box>
           )
       }
@@ -6188,21 +6231,27 @@ export const register: Register = (on, options) => {
 
     const offerLine = ({ task, box }: { task: BoxTask; box: number }) => (
       <Box key={`offer-${task.id}`} flexDirection="row" gap={1}>
-        <Text color="success" inverse bold>
-          {' ☑ TICK? '}
-        </Text>
-        <Text>
-          <Text color="claude" bold>{`#${task.number} `}</Text>
+        {keep(
+          <Text color="success" inverse bold>
+            {' ☑ TICK? '}
+          </Text>,
+        )}
+        {keep(<Text color="claude" bold>{`#${task.number}`}</Text>)}
+        <Text wrap="truncate-end">
           <Text dimColor>{`box ${box} `}</Text>
           <Text>{fit(task.text, Math.max(12, width - 52))}</Text>
           <Text dimColor> is done</Text>
         </Text>
-        <Button key={`tick-task-${task.id}`} variant="primary" onPress={() => void tickTask($, task)}>
-          {`Tick box ${box}`}
-        </Button>
-        <Button key={`skip-task-${task.id}`} dimColor onPress={() => void update($, tasks, list => list.filter(one => one.id !== task.id))}>
-          ✕
-        </Button>
+        {keep(
+          <Button key={`tick-task-${task.id}`} variant="primary" onPress={() => void tickTask($, task)}>
+            {`Tick box ${box}`}
+          </Button>,
+        )}
+        {keep(
+          <Button key={`skip-task-${task.id}`} dimColor onPress={() => void update($, tasks, list => list.filter(one => one.id !== task.id))}>
+            ✕
+          </Button>,
+        )}
       </Box>
     )
 
@@ -6211,18 +6260,22 @@ export const register: Register = (on, options) => {
       const tail = ` · ${note.text}`
       return (
         <Box key={`epic-row-${note.key}`} flexDirection="row" gap={1}>
-          <Text color="warning" inverse bold>
-            {' ◆ EPIC '}
-          </Text>
-          <Text>
-            <Text color="claude" bold>{`#${note.epic} `}</Text>
+          {keep(
+            <Text color="warning" inverse bold>
+              {' ◆ EPIC '}
+            </Text>,
+          )}
+          {keep(<Text color="claude" bold>{`#${note.epic}`}</Text>)}
+          <Text wrap="truncate-end">
             <Text>{fit(note.title, Math.max(12, width - cells(tail) - 30))}</Text>
             <Text dimColor>{tail}</Text>
           </Text>
-          {link(pageOf(repo, 'issues', { number: note.epic, url: '' }))}
-          <Button key={`dismiss-${note.key}`} dimColor onPress={() => void update($, epicNotes, list => list.filter(one => one.key !== note.key))}>
-            ✕
-          </Button>
+          {keep(link(pageOf(repo, 'issues', { number: note.epic, url: '' })))}
+          {keep(
+            <Button key={`dismiss-${note.key}`} dimColor onPress={() => void update($, epicNotes, list => list.filter(one => one.key !== note.key))}>
+              ✕
+            </Button>,
+          )}
         </Box>
       )
     }
@@ -6232,25 +6285,32 @@ export const register: Register = (on, options) => {
       const how = problem.command ? `run ${problem.command}` : problem.fix
       return (
         <Box key={`problem-row-${problem.id}`} flexDirection="row" gap={1}>
-          <Text color={problem.blocks ? 'error' : 'warning'} inverse bold>
-            {' ⚠ SETUP '}
-          </Text>
-          <Text>
+          {keep(
+            <Text color={problem.blocks ? 'error' : 'warning'} inverse bold>
+              {' ⚠ SETUP '}
+            </Text>,
+          )}
+          <Text wrap="truncate-end">
             <Text>{fit(problem.title, Math.max(16, width - 64))}</Text>
             <Text dimColor>{` · ${fit(how, 32)}`}</Text>
           </Text>
-          {problem.command && (
-            <Button key={`copy-fix-${problem.id}`} variant="primary" onPress={press => void copyFix($, problem, press.surface)}>
-              Copy command
-            </Button>
+          {problem.command &&
+            keep(
+              <Button key={`copy-fix-${problem.id}`} variant="primary" onPress={press => void copyFix($, problem, press.surface)}>
+                Copy command
+              </Button>,
+            )}
+          {problem.url && !problem.command && keep(link(problem.url, '↗ Open page'))}
+          {keep(
+            <Button key={`recheck-${problem.id}`} dimColor onPress={() => void recheck($)}>
+              Check again
+            </Button>,
           )}
-          {problem.url && !problem.command && link(problem.url, '↗ Open page')}
-          <Button key={`recheck-${problem.id}`} dimColor onPress={() => void recheck($)}>
-            Check again
-          </Button>
-          <Button key={`dismiss-${accessKey(problem)}`} dimColor onPress={() => void dismissProblem($, problem)}>
-            ✕
-          </Button>
+          {keep(
+            <Button key={`dismiss-${accessKey(problem)}`} dimColor onPress={() => void dismissProblem($, problem)}>
+              ✕
+            </Button>,
+          )}
         </Box>
       )
     }
@@ -6261,19 +6321,25 @@ export const register: Register = (on, options) => {
       const tail = ' · it only reads it until you say yes'
       return (
         <Box key="adopt-row" flexDirection="row" gap={1}>
-          <Text color="warning" inverse bold>
-            {' ⚠ PROJECT '}
-          </Text>
-          <Text>
+          {keep(
+            <Text color="warning" inverse bold>
+              {' ⚠ PROJECT '}
+            </Text>,
+          )}
+          <Text wrap="truncate-end">
             <Text>{fit(adoptText(project, settings.refreshMinutes).title, Math.max(16, width - cells(tail) - 26))}</Text>
             <Text dimColor>{tail}</Text>
           </Text>
-          <Button key="adopt-review" variant="primary" onPress={() => void $.ui.open(OPEN)}>
-            Review
-          </Button>
-          <Button key="adopt-dismiss" dimColor onPress={() => void declineFromPrompt($, project)}>
-            ✕
-          </Button>
+          {keep(
+            <Button key="adopt-review" variant="primary" onPress={() => void $.ui.open(OPEN)}>
+              Review
+            </Button>,
+          )}
+          {keep(
+            <Button key="adopt-dismiss" dimColor onPress={() => void declineFromPrompt($, project)}>
+              ✕
+            </Button>,
+          )}
         </Box>
       )
     }
@@ -6285,16 +6351,20 @@ export const register: Register = (on, options) => {
       const tail = ` · ${kindsText(changes)}`
       return (
         <Box key="plan-row" flexDirection="row" gap={1}>
-          <Text color="suggestion" inverse bold>
-            {' ✦ PLAN '}
-          </Text>
+          {keep(
+            <Text color="suggestion" inverse bold>
+              {' ✦ PLAN '}
+            </Text>,
+          )}
           <Text wrap="truncate-end">
             <Text>{fit(head, Math.max(16, width - 22))}</Text>
             <Text dimColor>{fit(tail, Math.max(0, width - 22 - cells(head)))}</Text>
           </Text>
-          <Button key="plan-review" variant="primary" onPress={() => void $.ui.open(OPEN)}>
-            Review
-          </Button>
+          {keep(
+            <Button key="plan-review" variant="primary" onPress={() => void $.ui.open(OPEN)}>
+              Review
+            </Button>,
+          )}
         </Box>
       )
     }
@@ -6305,19 +6375,27 @@ export const register: Register = (on, options) => {
       const key = guessKey(project, guess)
       return (
         <Box key="guess-row" flexDirection="row" gap={1}>
-          <Text color="suggestion" inverse bold>
-            {' ? STATUS '}
-          </Text>
-          <Text>{fit(guessText(guess), Math.max(16, width - 44))}</Text>
-          <Button key="guess-yes" variant="primary" onPress={() => void confirmGuess($, project)}>
-            Looks right
-          </Button>
-          <Button key="guess-change" dimColor onPress={() => void seeGuess($, key).then(() => openStatuses($))}>
-            Change
-          </Button>
-          <Button key="guess-dismiss" dimColor onPress={() => void seeGuess($, key)}>
-            ✕
-          </Button>
+          {keep(
+            <Text color="suggestion" inverse bold>
+              {' ? STATUS '}
+            </Text>,
+          )}
+          <Text wrap="truncate-end">{fit(guessText(guess), Math.max(16, width - 44))}</Text>
+          {keep(
+            <Button key="guess-yes" variant="primary" onPress={() => void confirmGuess($, project)}>
+              Looks right
+            </Button>,
+          )}
+          {keep(
+            <Button key="guess-change" dimColor onPress={() => void seeGuess($, key).then(() => openStatuses($))}>
+              Change
+            </Button>,
+          )}
+          {keep(
+            <Button key="guess-dismiss" dimColor onPress={() => void seeGuess($, key)}>
+              ✕
+            </Button>,
+          )}
         </Box>
       )
     }
@@ -6328,19 +6406,27 @@ export const register: Register = (on, options) => {
       const key = markerKey(markerAsk)
       return (
         <Box key="labels-row" flexDirection="row" gap={1}>
-          <Text color="suggestion" inverse bold>
-            {' ? LABELS '}
-          </Text>
-          <Text>{fit(markerText(markerAsk), Math.max(16, width - 44))}</Text>
-          <Button key="labels-yes" variant="primary" onPress={() => void confirmMarkers($, markerAsk)}>
-            Looks right
-          </Button>
-          <Button key="labels-change" dimColor onPress={() => void seeGuess($, key).then(() => openMarkers($))}>
-            Change
-          </Button>
-          <Button key="labels-dismiss" dimColor onPress={() => void seeGuess($, key)}>
-            ✕
-          </Button>
+          {keep(
+            <Text color="suggestion" inverse bold>
+              {' ? LABELS '}
+            </Text>,
+          )}
+          <Text wrap="truncate-end">{fit(markerText(markerAsk), Math.max(16, width - 44))}</Text>
+          {keep(
+            <Button key="labels-yes" variant="primary" onPress={() => void confirmMarkers($, markerAsk)}>
+              Looks right
+            </Button>,
+          )}
+          {keep(
+            <Button key="labels-change" dimColor onPress={() => void seeGuess($, key).then(() => openMarkers($))}>
+              Change
+            </Button>,
+          )}
+          {keep(
+            <Button key="labels-dismiss" dimColor onPress={() => void seeGuess($, key)}>
+              ✕
+            </Button>,
+          )}
         </Box>
       )
     }
