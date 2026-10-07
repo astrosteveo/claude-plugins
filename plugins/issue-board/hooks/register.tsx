@@ -3,6 +3,7 @@ import type { AgentSpawnResult, Caught, EngineInterface, HookFailure, ModelForkR
 
 import type { Adopted, Adoption, Alert, Board, BoxTask, Check, Comment, Draft, DraftEdit, EpicNote, Filter, GroupBy, Issue, Known, Launch, Problem, Project, ProjectField, Role, Roles, StatusPicks, StatusUpdate, PullRequest, RunWatch, SavedSetup, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
 import type { Ended, IssueChanges, NewIssue, PrRule, StartMode, Switches } from './parse'
+import type { Linked } from './project'
 import { authOf, problemsOf, problemsText, repoOf } from './access'
 import {
   ADD_ITEM,
@@ -15,6 +16,10 @@ import {
   SET_VALUE,
   ROLE_NAMES,
   ROLE_ORDER,
+  LINKED_QUERY,
+  adoptReason,
+  adoptTarget,
+  approvedOf,
   adoptText,
   adoptedOf,
   guessKey,
@@ -22,9 +27,11 @@ import {
   guessText,
   isMutation,
   issuesQuery,
+  linkedOf,
   nowNames,
   optionOf,
   ownerOf,
+  releaseReason,
   roleOf,
   rolesFor,
   savedRolesOf,
@@ -254,6 +261,10 @@ const CREATE_TOOL = 'mcp__issue-board__issue_create'
 const MILESTONE_TOOL = 'mcp__issue-board__milestone'
 const ARCHIVE_TOOL = 'mcp__issue-board__project_archive'
 const STATUS_TOOL = 'mcp__issue-board__project_status'
+const ADOPT_TOOL = 'mcp__issue-board__project_adopt'
+// Permission modes that settle a plugin's ask without showing it to the person: auto has a classifier decide.
+// Adopting a project needs the person to read its warning, so project_adopt is refused in them.
+const UNSEEN_MODES = new Set(['auto'])
 
 const strings = (value: unknown): string[] | undefined =>
   Array.isArray(value) ? value.filter((one): one is string => typeof one === 'string' && one.trim() !== '').map(one => one.trim()) : undefined
@@ -448,6 +459,13 @@ const fallBack = <E, R>($: EngineInterface, e: E, next: ((e: E) => R) & Caught, 
 const toolFailed = ($: EngineInterface, next: Caught, tool: string) => {
   $.ui.log(`issue-board: the ${tool} tool failed: ${failureOf(next.error)}`, { to: 'debug' })
   return { deny: `The issue board's ${tool} tool failed: ${failureOf(next.error)}` }
+}
+
+// What project_adopt's permission check answers when it fails. Falling back to the verdict beneath could let an allow
+// rule adopt a project without a prompt, so it refuses, and says why.
+const adoptCheckFailed = ($: EngineInterface, next: Caught) => {
+  $.ui.log(`issue-board: the project_adopt permission check failed: ${failureOf(next.error)}`, { to: 'debug' })
+  return { decision: 'deny' as const, reason: `The issue board couldn't check the project_adopt call: ${failureOf(next.error)}` }
 }
 
 // How a command that couldn't start says so, as against one that ran too long.
@@ -839,22 +857,56 @@ const saveStatuses = async ($: EngineInterface): Promise<void> => {
   }
 }
 
-// Release, in setup: the board only reads the project again, and the plan offers to adopt it once more.
-const releaseFromSetup = async ($: EngineInterface): Promise<void> => {
-  const was = (await adoptedNow($))?.title
-  try {
-    await releaseProject($)
-  } catch (cause) {
-    $.ui.toast(`Couldn't release the project: ${messageOf(cause)}`)
-    return
-  }
+// Releases the adopted project, and has setup, when it shows, offer to adopt it once more. Release in setup and the
+// project_adopt tool both come here.
+const releaseNow = async ($: EngineInterface): Promise<void> => {
+  await releaseProject($)
   await update($, setup, now =>
     now && 'facts' in now && now.phase !== 'applying'
       ? { ...now, phase: 'ready' as const, facts: { ...now.facts, adopted: null }, steps: stepsOf({ ...now.facts, adopted: null }, now.chosen, now.areas, now.roles) }
       : now,
   )
+}
+
+// Release, in setup: the board only reads the project again, and the plan offers to adopt it once more.
+const releaseFromSetup = async ($: EngineInterface): Promise<void> => {
+  const was = (await adoptedNow($))?.title
+  try {
+    await releaseNow($)
+  } catch (cause) {
+    $.ui.toast(`Couldn't release the project: ${messageOf(cause)}`)
+    return
+  }
   $.ui.toast(`Released ${was ?? 'the project'}: the board only reads it now.`)
 }
+
+// What a project_adopt call would do: release the adopted project, adopt one, or nothing, with why. It is worked out
+// afresh for the permission check and again for the call, so the prompt and the change name the same project.
+type AdoptPlan = { release: Adopted } | { adopt: Linked; was: Adopted | null } | { refusal: string }
+const adoptPlan = async ($: EngineInterface, input: unknown): Promise<AdoptPlan> => {
+  const ask = (input ?? {}) as { number?: unknown; release?: unknown }
+  const was = await adoptedNow($)
+  if (ask.release === true) return was ? { release: was } : { refusal: "The board writes to no project for this repo, so there's nothing to release." }
+  const number = ask.number
+  if (number !== undefined && !(typeof number === 'number' && Number.isInteger(number) && number > 0)) return { refusal: 'number is a project number, such as 8.' }
+  const now = await read($, board)
+  if (!now) return { refusal: "The issue board hasn't read GitHub yet; refresh it and try again." }
+  const reads = now.project ? { id: now.project.id, number: now.project.number, title: now.project.title, url: now.project.url } : null
+  // The linked projects are read only for a number other than the one the board reads.
+  let linked: Linked[] = []
+  if (number !== undefined && reads?.number !== number) {
+    const [owner = '', name = ''] = now.repo.split('/')
+    linked = linkedOf(await graphql($, LINKED_QUERY, { owner, name }))
+  }
+  const target = adoptTarget(reads, linked, number, now.repo)
+  if (typeof target === 'string') return { refusal: target }
+  if (was?.id === target.id) return { refusal: `The board already writes to ${target.title}; nothing changed.` }
+  return { adopt: target, was }
+}
+
+// The permission mode as the classic hooks last gave it, for project_adopt to tell whether its prompt would be seen.
+// Undefined until one says.
+let permissionMode: string | undefined
 
 const save = async ($: EngineInterface): Promise<void> => {
   try {
@@ -2892,6 +2944,21 @@ export const register: Register = (on, options) => {
       },
     })
     await $.tool.register({
+      name: 'project_adopt',
+      description:
+        "Lets the issue board write to a GitHub Project for this repo, which it otherwise only reads: the project the board reads, or another linked to the repo, by number. " +
+        'With release: true, it stops the board writing to the adopted project instead. ' +
+        'Call it only when the person asks you to let the board write to a project, or to release one; never on your own, and never to get past a refusal. ' +
+        'It always asks the person in a permission prompt that shows what the board would write and what it costs.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          number: { type: 'integer', minimum: 1, description: "A project linked to the repo, by number; leave it out for the project the board reads." },
+          release: { type: 'boolean', description: 'true releases the adopted project: the board only reads it again.' },
+        },
+      },
+    })
+    await $.tool.register({
       name: 'issue_create',
       description:
         "Files a new GitHub issue in this repository and puts it on the issue board at once: its title and body, labels, assignees, milestone, the epic it is a sub-issue of, " +
@@ -2974,6 +3041,7 @@ export const register: Register = (on, options) => {
 
   // The new session's SessionStart hooks run once its state is empty: the board fills it again.
   on('classic.SessionStart', async ($, e, next) => {
+    if (e.permission_mode) permissionMode = e.permission_mode
     if (restarted) void begin($)
     return next(e)
   }).catch(($, e, next) => fallBack($, e, next, 'classic.SessionStart'))
@@ -3403,6 +3471,50 @@ export const register: Register = (on, options) => {
     const verdict = await next(e)
     return verdict.decision === 'ask' && mayAllow(e.ceiling) && (e.input as { confirm?: unknown }).confirm !== true ? { decision: 'allow' as const } : verdict
   }).catch(($, e, next) => fallBack($, e, next, 'tool.check on project_archive'))
+
+  // Claude letting the board write to a project, or releasing it, when the person asked. A hook that answers a tool call
+  // itself skips the engine's permission check, which only runs beneath it, so this one calls next(e) first: that runs
+  // the check below and its prompt. Only when the person said yes does the engine go on to find no hook answered, and
+  // only then does the change happen. Anything else, a no included, is passed back as it came and changes nothing.
+  on('tool.call', { tool: ADOPT_TOOL }, async ($, e, next) => {
+    const plan = await adoptPlan($, e)
+    if ('refusal' in plan) return { deny: plan.refusal }
+    const asked = await next(e)
+    if (!approvedOf(asked)) return asked
+    try {
+      if ('release' in plan) {
+        await releaseNow($)
+        return { result: `Released ${plan.release.title}: the board only reads it now.` }
+      }
+      await adoptProject($, plan.adopt)
+      const instead = plan.was ? `, in place of ${plan.was.title}` : ''
+      return { result: `The board may write to ${plan.adopt.title} now${instead}. Release it with project_adopt and release: true, or in /issues setup.` }
+    } catch (cause) {
+      return { deny: `Couldn't save that: ${messageOf(cause)}` }
+    }
+  }).catch(($, _e, next) => toolFailed($, next, 'project_adopt'))
+
+  // Adopting or releasing a project always asks the person, whatever their rules allow, with the pane's warning in the
+  // prompt: a hook's ask outranks an allow rule. A rule that denies still stands. Where nobody would see the prompt, it
+  // is refused instead: in a subagent, and in auto mode, where a classifier settles the ask.
+  on('tool.check', { tool: ADOPT_TOOL }, async ($, e, next) => {
+    const verdict = await next(e)
+    if (verdict.decision === 'deny') return verdict
+    const ask = 'Ask the person to press Let it write in /issues, or to run /issues setup.'
+    if (e.agentId !== undefined) return { decision: 'deny' as const, reason: `Only the person can let the board write to a project, and nobody watches a subagent's permission prompts. ${ask}` }
+    if (permissionMode && UNSEEN_MODES.has(permissionMode)) {
+      return { decision: 'deny' as const, reason: `The ${permissionMode} permission mode settles prompts without showing them, and this one needs the person to read it. ${ask} Or switch to a mode that asks, and try again.` }
+    }
+    const plan = await adoptPlan($, e.input)
+    if ('refusal' in plan) return { decision: 'deny' as const, reason: plan.refusal }
+    return { decision: 'ask' as const, reason: 'release' in plan ? releaseReason(plan.release) : adoptReason(plan.adopt, plan.was, settings.refreshMinutes) }
+  }).catch(($, _e, next) => adoptCheckFailed($, next))
+
+  // The permission mode, which each prompt's classic hook carries, for project_adopt's check.
+  on('classic.UserPromptSubmit', async ($, e, next) => {
+    if (e.permission_mode) permissionMode = e.permission_mode
+    return next(e)
+  }).catch(($, e, next) => fallBack($, e, next, 'classic.UserPromptSubmit'))
 
   // Claude making or changing a milestone. Claude Code asks first, as for any tool that changes something.
   on('tool.call', { tool: MILESTONE_TOOL }, async ($, e) => {

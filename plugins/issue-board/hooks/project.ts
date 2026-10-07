@@ -239,3 +239,46 @@ export const adoptText = (project: { title: string; url: string }, refresh: numb
     ],
   }
 }
+
+// The repo's linked projects, for the project_adopt tool to find one named by number.
+export const LINKED_QUERY =
+  'query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { projectsV2(first: 20) { nodes { id number title url closed } } } }'
+
+// A project as project_adopt picks it: enough to adopt it and to word the warning.
+export type Linked = { id: string; number: number; title: string; url: string }
+
+// The open projects in the linked-projects query's answer.
+export const linkedOf = (data: unknown): Linked[] => {
+  type Raw = Linked & { closed?: boolean }
+  const nodes = (data as { repository?: { projectsV2?: { nodes?: (Raw | null)[] | null } | null } | null } | null)?.repository?.projectsV2?.nodes ?? []
+  return nodes.filter((one): one is Raw => !!one && !one.closed).map(({ id, number, title, url }) => ({ id, number, title, url }))
+}
+
+// The project project_adopt may adopt, or why not: the one the board reads for the repo, or one linked to the repo and
+// named by number. Any other is refused, so Claude can't point the board at a project the repo has nothing to do with.
+// `linked` is only needed for a number the board's own project doesn't have.
+export const adoptTarget = (reads: Linked | null, linked: Linked[], number: number | undefined, repo: string): Linked | string => {
+  if (number === undefined) return reads ?? `The board reads no project for ${repo}. Name a project linked to the repo by its number, or run /issues setup.`
+  if (reads?.number === number) return reads
+  return linked.find(one => one.number === number) ?? `Project ${number} isn't linked to ${repo}, so the board won't write to it. Link it to the repo on GitHub first, or run /issues setup.`
+}
+
+// What the permission prompt for project_adopt says: the same warning the pane shows, and the project it stops writing
+// to when it switches.
+export const adoptReason = (project: { id: string; title: string; url: string }, was: Adopted | null, refresh: number | null): string => {
+  const text = adoptText(project, refresh)
+  const switching = was && was.id !== project.id ? [`It stops writing to ${was.title}.`] : []
+  return [text.title, ...text.lines, ...switching].join('\n')
+}
+
+// Whether a board tool's call got past the permission check, read from what its `next(e)` came back with. A plugin's
+// tool has no core behind it, so once the check lets the call through the engine answers that no hook served it. A
+// refused or unanswered prompt comes back as a different error. Anything but that one answer counts as no, so if the
+// engine words it differently one day, the tool refuses rather than changing something unasked.
+const NOBODY_ANSWERED = /no tool\.call hook answered/
+export const approvedOf = (answer: { deny?: string; isError?: boolean; text?: string; result?: unknown }): boolean =>
+  answer.deny === undefined && answer.isError === true && NOBODY_ANSWERED.test(`${answer.text ?? ''} ${typeof answer.result === 'string' ? answer.result : ''}`)
+
+// What the permission prompt for releasing says.
+export const releaseReason = (adopted: Adopted): string =>
+  `Stop the board writing to ${adopted.title}${adopted.owner ? `, owned by ${adopted.owner}` : ''}?\nIt only reads the project again until someone lets it write.`
