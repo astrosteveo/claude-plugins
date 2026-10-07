@@ -714,8 +714,10 @@ once and still knows the issue you were on.
 
 ### What it costs
 
-`/issues stats` says what the board has spent since it loaded, per hour, and
-for its last full read:
+`/issues stats` says what the board has spent since it loaded, and for its
+last full read. Once the board has been loaded 10 minutes, it also gives
+each count per hour. Before then it says how long the board has been loaded,
+since a rate scaled up from a few seconds says little.
 
 - **GitHub calls**, as REST, REST answered 304 (nothing changed, so free
   against the rate limit), and GraphQL. `gh issue`, `gh pr` and
@@ -726,10 +728,15 @@ for its last full read:
 - **GraphQL points**, added up from the issues query's own rate limit
   answer, with what is left and when it resets.
 - **Context**: the characters the board adds to Claude's context, by
-  source. The tool definitions count once, when they are registered. The
-  working and orchestrator notes count when they first go into the system
-  prompt and when they change. Issue copies, moved lines, news, the prompts
-  the board sends, and its tools' answers count each time.
+  source, and per prompt Claude received. The working and orchestrator
+  notes count when they first go into the system prompt and when they
+  change. Issue copies, moved lines, news, the prompts the board sends, and
+  its tools' answers count each time.
+- **Tool definitions**, on their own line: the size of all the board's
+  tools, and how many are loaded so far. Claude Code defers the board's
+  tools, so only their names are in context until a tool is loaded. A tool's
+  definition counts as context once: when Claude Code lists it in the
+  prompt, when ToolSearch finds it, or when Claude first calls it.
 
 The counts stay in memory. A reload starts them over.
 

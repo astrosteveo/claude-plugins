@@ -7,7 +7,7 @@ import type { Linked } from './project'
 import { authOf, problemsOf, problemsText, repoOf } from './access'
 import { isBug, markerAskOf, markerKey, markerOptionsOf, markerText, markersOf } from './markers'
 import type { Cause, ContextSource, Tally } from './stats'
-import { countCall, countContext, countPoints, kindOf, minus, newStats, statsText } from './stats'
+import { countCall, countContext, countPoints, countPrompt, defineTool, kindOf, loadTool, matchesOf, minus, newStats, statsText } from './stats'
 import {
   ADD_ITEM,
   ARCHIVE_ITEM,
@@ -537,7 +537,9 @@ const askThenAct = async <E, R>(e: E, next: (e: E) => Promise<ToolCallResult>, a
 }
 
 // One of the board's tools at work: its gh calls count under tool, and its answer as context Claude reads.
-const asTool = async <R,>(work: () => Promise<R>): Promise<R> => {
+const asTool = async <R,>(tool: string, work: () => Promise<R>): Promise<R> => {
+  // Claude called the tool, so its definition is in context now, if ToolSearch hadn't loaded it already.
+  loadTool(stats, tool)
   const answer = await within('tool', work)
   countText('tool results', answerText(answer))
   return answer
@@ -3333,17 +3335,21 @@ const countSection = (id: string, text: string, source: ContextSource): void => 
   countText(source, text)
 }
 
-// Sends Claude a prompt of the board's. What reaches Claude counts as context.
+// Sends Claude a prompt of the board's. What reaches Claude counts as context, and as a prompt, since the board's own
+// prompt.submit hook doesn't see it.
 const submit = async ($: EngineInterface, source: ContextSource, args: Parameters<EngineInterface['prompt']['submit']>[0]) => {
   const sent = await $.prompt.submit(args)
-  if (sent.drop === undefined) countText(source, args.text)
+  if (sent.drop === undefined) {
+    countText(source, args.text)
+    countPrompt(stats)
+  }
   return sent
 }
 
-// Registers one of the board's tools. Its name, description and schema go to Claude with every request, and count
-// once, as the tool is registered.
+// Registers one of the board's tools. Its name, description and schema count as context only once Claude Code puts
+// them in front of Claude: see the tool.describe and tool.call hooks.
 const registerTool = ($: EngineInterface, tool: Parameters<EngineInterface['tool']['register']>[0]) => {
-  countText('tool definitions', JSON.stringify(tool))
+  defineTool(stats, `mcp__issue-board__${tool.name}`, JSON.stringify(tool).length)
   return $.tool.register(tool)
 }
 
@@ -3618,7 +3624,7 @@ export const register: Register = (on, options) => {
     // The agent Start in background runs: in its own worktree, in the background. Claude reads its description among the
     // agent types.
     const workerDescription = "Works one GitHub issue of this repository end to end in its own git worktree, for the issue board's Start in background."
-    countText('tool definitions', workerDescription)
+    countText('agent type', workerDescription)
     await $.agent
       .register({
         name: 'worker',
@@ -3790,6 +3796,22 @@ export const register: Register = (on, options) => {
     return { value: undefined }
   }).catch(($, e, next) => fallBack($, e, next, 'ui.close'))
 
+  // A board tool's definition goes into Claude's context when Claude Code first lists it in front, rather than behind
+  // ToolSearch, for /issues stats.
+  on('tool.describe', async ($, e, next) => {
+    const described = await next(e)
+    const deferred = described.isDeferred ?? e.isDeferred === true
+    if (!deferred) loadTool(stats, e.tool)
+    return described
+  }).catch(($, e, next) => fallBack($, e, next, 'tool.describe'))
+
+  // A deferred tool's definition loads when ToolSearch finds it. One Claude calls loads too: see asTool.
+  on('tool.call', { tool: 'ToolSearch' }, async ($, e, next) => {
+    const ran = await next(e)
+    if (ran.deny === undefined && !ran.isError) for (const name of matchesOf(ran.result)) loadTool(stats, name)
+    return ran
+  }).catch(($, e, next) => fallBack($, e, next, 'tool.call on ToolSearch'))
+
   // Claude changing GitHub through gh or a push: show the change straight away, and a change Claude made through gh to
   // the issue it is on isn't news to it. A checkout moves the branch marker, and to a branch named for an issue, the
   // issue Claude is on, when the main session moves: a subagent's checkout is its own. Any git or gh has the board read
@@ -3867,6 +3889,7 @@ export const register: Register = (on, options) => {
     // A dropped prompt never reached Claude, so its copies count as unsent, and nothing it carried counts as context.
     if (entered.drop === undefined) for (const [number, key] of copied) sentCopies.set(number, key)
     if (entered.drop === undefined) for (const [source, text] of lines) countText(source, text)
+    if (entered.drop === undefined) countPrompt(stats)
     if (starting && entered.drop === undefined) {
       $.ui.toast(`Sent #${starting.issue.number} to Claude`)
       await claim($, starting.issue)
@@ -3927,7 +3950,7 @@ export const register: Register = (on, options) => {
   on('prompt.suggest', async ($, e, next) => (e.origin.kind === 'suggestion' && nextStep ? next({ ...e, text: nextStep }) : next(e)))
 
   on('tool.call', { tool: ISSUES_TOOL }, async ($, e) =>
-    asTool(async () => {
+    asTool(e.tool, async () => {
       const input = e as unknown as {
         number?: number
         filter?: BuiltInFilter
@@ -4008,7 +4031,7 @@ export const register: Register = (on, options) => {
   ).catch(($, _e, next) => toolFailed($, next, 'issues'))
 
   on('tool.call', { tool: TICK_TOOL }, async ($, e, next) =>
-    asTool(async () => {
+    asTool(e.tool, async () => {
       const input = e as unknown as { number?: unknown; boxes?: unknown; done?: unknown }
       const { number, boxes } = input
       if (typeof number !== 'number' || !Array.isArray(boxes) || boxes.length === 0 || !boxes.every(box => Number.isInteger(box))) {
@@ -4031,7 +4054,7 @@ export const register: Register = (on, options) => {
   ).catch(($, _e, next) => toolFailed($, next, 'tick'))
 
   on('tool.call', { tool: UPDATE_TOOL }, async ($, e, next) =>
-    asTool(async () => {
+    asTool(e.tool, async () => {
       const changes = changesOf(e)
       if (!changes) return { deny: 'Give the issue number, and what to change on it.' }
       // A lock the board doesn't know is refused, not dropped without a word.
@@ -4066,7 +4089,7 @@ export const register: Register = (on, options) => {
   // A no leaves it on the card, for the person to apply some of it or discard it. In a mode that settles prompts unseen,
   // it stays on the card and the call asks nothing.
   on('tool.call', { tool: PLAN_TOOL }, async ($, e, next) =>
-    asTool(async () => {
+    asTool(e.tool, async () => {
       const planned = await planFor($, e, true)
       if ('problems' in planned) return { deny: problemsOfPlan(planned.problems) }
       const id = await propose($, planned.changes)
@@ -4097,7 +4120,7 @@ export const register: Register = (on, options) => {
 
   // Claude filing an issue. Claude Code asks first, as for any tool that changes something.
   on('tool.call', { tool: CREATE_TOOL }, async ($, e, next) =>
-    asTool(async () => {
+    asTool(e.tool, async () => {
       const spec = newIssueOf(e)
       if (typeof spec === 'string') return { deny: spec }
       return askThenAct(e, next, async () => {
@@ -4114,7 +4137,7 @@ export const register: Register = (on, options) => {
 
   // Claude reading or posting the project's status update. Reading answers at once; posting asks, then acts.
   on('tool.call', { tool: STATUS_TOOL }, async ($, e, next) =>
-    asTool(async () => {
+    asTool(e.tool, async () => {
       const ask = e as unknown as { status?: unknown; note?: unknown; start?: unknown; target?: unknown }
       const project = (await read($, board))?.project
       if (!project) return { deny: 'The board reads no project for this repo.' }
@@ -4147,7 +4170,7 @@ export const register: Register = (on, options) => {
   // Claude archiving project items: the first call lists them and answers at once; the second, with confirm, asks and
   // then archives them.
   on('tool.call', { tool: ARCHIVE_TOOL }, async ($, e, next) =>
-    asTool(async () => {
+    asTool(e.tool, async () => {
       const ask = e as unknown as { number?: unknown; doneBefore?: unknown; confirm?: unknown }
       const project = (await read($, board))?.project
       if (!project) return { deny: "The board reads no project for this repo, so there's nothing to archive." }
@@ -4179,7 +4202,7 @@ export const register: Register = (on, options) => {
   // Claude letting the board write to a project, or releasing it, when the person asked. It asks, then acts, so the
   // check below and its prompt run first, and a no changes nothing.
   on('tool.call', { tool: ADOPT_TOOL }, async ($, e, next) =>
-    asTool(async () => {
+    asTool(e.tool, async () => {
       const plan = await adoptPlan($, e)
       if ('refusal' in plan) return { deny: plan.refusal }
       return askThenAct(e, next, async () => {
@@ -4223,7 +4246,7 @@ export const register: Register = (on, options) => {
 
   // Claude making or changing a milestone. Claude Code asks first, as for any tool that changes something.
   on('tool.call', { tool: MILESTONE_TOOL }, async ($, e, next) =>
-    asTool(async () => {
+    asTool(e.tool, async () => {
       const ask = e as unknown as { title?: unknown; newTitle?: unknown; due?: unknown; description?: unknown; close?: unknown; reopen?: unknown }
       const text = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : undefined)
       const title = text(ask.title)
