@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentSpawnResult, Caught, EngineInterface, HookFailure, ModelForkResult, Register, RenderChildren, ThemeKey, Timer, ToolCallResult, UiCopyArgs } from 'claude-code'
 
-import type { Adopted, Adoption, Alert, Board, BoxTask, BuiltInFilter, Check, Comment, EpicNote, GroupBy, Issue, Known, LabelChange, Launch, ViewChange, Markers, Plan, PlanRow, Problem, Project, ProjectField, Role, Roles, StatusPicks, StatusUpdate, PullRequest, RunWatch, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
+import type { Adopted, Adoption, Alert, Armed, Board, FieldValues, BoxTask, BuiltInFilter, Check, Comment, EpicNote, GroupBy, Issue, Known, LabelChange, Launch, ViewChange, Markers, Plan, PlanRow, Problem, Project, ProjectField, Role, Roles, StatusPicks, StatusUpdate, PullRequest, RunWatch, Setup, SetupProject, SetupStep, Worker, Working } from '../types'
 import type { Ended, FilterSource, IssueChanges, NewIssue, PrRule, StartMode, Switches, Tab } from './parse'
 import type { Linked } from './project'
 import { authOf, problemsOf, problemsText, repoOf } from './access'
@@ -382,11 +382,11 @@ const board = atom({ plugin: 'issue-board', key: 'board' } as const, null)
 const error = atom({ plugin: 'issue-board', key: 'error' } as const, null)
 const loading = atom({ plugin: 'issue-board', key: 'loading' } as const, false)
 const filter = atom({ plugin: 'issue-board', key: 'filter' } as const, 'active')
-const expanded = atom({ plugin: 'issue-board', key: 'expanded' } as const, [])
+const expanded = atom({ plugin: 'issue-board', key: 'expanded' } as const, null)
 const working = atom({ plugin: 'issue-board', key: 'working' } as const, null)
 const dismissed = atom({ plugin: 'issue-board', key: 'dismissed' } as const, [])
-const confirming = atom({ plugin: 'issue-board', key: 'confirming' } as const, false)
-const confirmingPr = atom({ plugin: 'issue-board', key: 'confirmingPr' } as const, null)
+// The one confirm waiting on a second press, so arming one cancels any other.
+const armed = atom({ plugin: 'issue-board', key: 'armed' } as const, null)
 const query = atom({ plugin: 'issue-board', key: 'query' } as const, '')
 const viewer = atom({ plugin: 'issue-board', key: 'viewer' } as const, null)
 const branch = atom({ plugin: 'issue-board', key: 'branch' } as const, null)
@@ -395,11 +395,12 @@ const greened = atom({ plugin: 'issue-board', key: 'greened' } as const, [])
 const captured = atom({ plugin: 'issue-board', key: 'captured' } as const, 0)
 const editing = atom({ plugin: 'issue-board', key: 'editing' } as const, null)
 const palette = atom({ plugin: 'issue-board', key: 'palette' } as const, null)
-const closing = atom({ plugin: 'issue-board', key: 'closing' } as const, null)
-const typing = atom({ plugin: 'issue-board', key: 'typing' } as const, { comment: '', parent: '', title: '', box: '', label: '', duplicate: '' })
+// What the open card's text fields hold before they are sent, by field.
+const typing = atom({ plugin: 'issue-board', key: 'typing' } as const, {})
+// The issues closed lately, read when the Closed filter is chosen.
 const recent = atom({ plugin: 'issue-board', key: 'recent' } as const, null)
+// Each issue's values in the project's other fields, read when its card opens.
 const values = atom({ plugin: 'issue-board', key: 'values' } as const, {})
-const typedFields = atom({ plugin: 'issue-board', key: 'typedFields' } as const, {})
 // Which of the pane's sections above the issues the person opened (true) or folded (false); one not set yet follows the
 // pane's height. Saved with the board.
 const sections = atom({ plugin: 'issue-board', key: 'sections' } as const, {})
@@ -1406,6 +1407,11 @@ const readGitHub = async ($: EngineInterface, seen: boolean): Promise<void> => {
   }
 }
 
+// Lets go of the confirm waiting on a second press when it is of this kind; one of another kind stays armed.
+const disarm = async ($: EngineInterface, kind: NonNullable<Armed>['kind']): Promise<void> => {
+  await update($, armed, was => (was?.kind === kind ? null : was))
+}
+
 // A new read of the board, this session's or another's: it goes on the board, and what follows from the change does.
 const land = async ($: EngineInterface, before: Board | null, next: Board, seen: boolean): Promise<void> => {
   await update($, board, () => next)
@@ -1413,7 +1419,7 @@ const land = async ($: EngineInterface, before: Board | null, next: Board, seen:
   // being applied is left to its Apply.
   await update($, proposal, was => (was && !was.applying && rowsToMake(was.rows, next).length === 0 ? null : was))
   // Merge all's confirm waits on pull requests that are all gone now.
-  if (next.prs.length === 0) await update($, confirming, () => false)
+  if (next.prs.length === 0) await disarm($, 'merge-all')
   const green = wentGreen(before, next)
   if (green.length > 0) await update($, greened, list => [...list.slice(-50), ...green.map(greenKey)])
   if (seen) {
@@ -1633,7 +1639,7 @@ const addItem = async ($: EngineInterface, project: Project, content: string): P
 
 // An issue's values for the project's fields, by name, read from GitHub: one item at a time, when its card opens or a
 // tool asks, so the board's main read stays cheap.
-const readValues = async ($: EngineInterface, issue: Target): Promise<Record<string, string>> => {
+const readValues = async ($: EngineInterface, issue: Target): Promise<FieldValues> => {
   if (!issue.item) return {}
   try {
     const read$ = itemValuesOf(await graphql($, ITEM_VALUES, { item: issue.item }))
@@ -3752,9 +3758,9 @@ export const register: Register = (on, options) => {
       if (shown.phase !== 'applying') await update($, setup, () => null)
       return { value: undefined }
     }
-    const folding = (await read($, expanded)).length > 0 || (await read($, openPr)) !== null
+    const folding = (await read($, expanded)) !== null || (await read($, openPr)) !== null
     if (!folding) return next(e)
-    await update($, expanded, () => [])
+    await update($, expanded, () => null)
     await update($, editing, () => null)
     await update($, openPr, () => null)
     return { value: undefined }
@@ -4362,15 +4368,16 @@ export const register: Register = (on, options) => {
     const busy = await read($, loading)
     const chosen = await read($, filter)
     const open = await read($, expanded)
-    const arming = await read($, confirming)
-    const armedPr = await read($, confirmingPr)
+    const armedNow = await read($, armed)
+    const arming = armedNow?.kind === 'merge-all'
+    const armedPr = armedNow?.kind === 'pr' ? armedNow.number : null
     const who = await read($, viewer)
     const typed = await read($, query)
     const here = await read($, branch)
     const doing = await read($, working)
     const changing = await read($, editing)
     const offered = await read($, palette)
-    const armedClose = await read($, closing)
+    const armedClose = armedNow?.kind === 'close' ? armedNow.number : null
     const fields = await read($, typing)
     const said = await read($, talk)
     const shownPr = await read($, openPr)
@@ -4428,14 +4435,14 @@ export const register: Register = (on, options) => {
     }
 
     const closeOut = async (pr: PullRequest) => {
-      await update($, confirmingPr, () => null)
+      await disarm($, 'pr')
       await submit($, 'other prompts', { text: closeOutPrompt(pr), asUser: true })
       $.ui.toast(`Sent PR #${pr.number} to Claude to finish and merge`)
     }
 
     // Merge all merges every open pull request, so it asks once more before it goes.
     const closeOutAll = async (prs: PullRequest[]) => {
-      await update($, confirming, () => false)
+      await disarm($, 'merge-all')
       // The pull requests it was asked for may have merged while it waited on its confirm.
       if (prs.length === 0) {
         $.ui.toast('No pull requests are open now, so there is nothing to merge.')
@@ -4444,12 +4451,12 @@ export const register: Register = (on, options) => {
       await submit($, 'other prompts', { text: closeOutAllPrompt(prs), asUser: true })
       $.ui.toast(`Sent ${prs.length} ${prs.length === 1 ? 'PR' : 'PRs'} to Claude to finish and merge`)
     }
-    const arm = (to: boolean) => () => void update($, confirming, () => to)
+    const arm = (to: boolean) => () => void (to ? update($, armed, (): Armed => ({ kind: 'merge-all' })) : disarm($, 'merge-all'))
 
     // One card at a time, so its letter keys always work; an opened card is scrolled into view.
     const toggle = (number: number) => async () => {
-      const opening = !open.includes(number)
-      await update($, expanded, () => (opening ? [number] : []))
+      const opening = open !== number
+      await update($, expanded, () => (opening ? number : null))
       await update($, editing, () => null)
       if (opening) await $.ui.scroll({ to: { key: `card-${number}` }, in: PANE }).catch(() => undefined)
       if (opening) await loadComments($, number)
@@ -4676,7 +4683,7 @@ export const register: Register = (on, options) => {
         return { ...was, roles, steps: stepsOf(was.facts, was.chosen, was.areas, roles) }
       })
     const manual = facts ? automationsOff(chosenProject) : []
-    const unwanted = facts ? automationsOn(chosenProject) : []
+    const unwanted = facts && planned && 'roles' in planned ? automationsOn(chosenProject, settings.moveToDone && planned.roles.done !== null) : []
     const setupPlan = planned && (
       <Box key="setup-plan" flexDirection="column" borderStyle="round" borderColor="suggestion" paddingX={1} marginTop={1}>
         <Text color="suggestion" bold>
@@ -4884,12 +4891,11 @@ export const register: Register = (on, options) => {
     // Whether an issue is under the filter and the search. The open card stays in the list whether or not, until it is
     // collapsed, so setting its Priority or Status doesn't take it away while it's being changed.
     const kept = (issue: Issue) => inTab(tab, issue) && searched(typed, issue)
-    const shown = now.issues.filter(issue => open.includes(issue.number) || kept(issue))
+    const shown = now.issues.filter(issue => open === issue.number || kept(issue))
     const closedNow = shownTab === 'closed' ? await read($, recent) : null
     // The project's fields beyond Status and Priority, and what the open card's issue has in them.
     const otherFields = (project?.fields ?? []).filter(field => !/^(status|priority)$/i.test(field.name))
     const fieldValues = await read($, values)
-    const typedField = await read($, typedFields)
     const more = await read($, editorMore)
     // The sections above the issues: open or folded as the person left them, else folded on a short pane.
     const opened$ = await read($, sections)
@@ -4903,7 +4909,7 @@ export const register: Register = (on, options) => {
       </Box>
     )
     // One card open: its letter keys work.
-    const single = open.filter(number => shown.some(issue => issue.number === number)).length === 1
+    const single = open !== null && shown.some(issue => issue.number === open)
     const filterName = tab.name
     const bugs = now.issues.filter(issue => isBug(issue, marks)).length
     const failing = now.prs.filter(pr => pr.ci === 'fail').length
@@ -5144,7 +5150,7 @@ export const register: Register = (on, options) => {
                   <Text color="error">{` −${pr.deletions}`}</Text>
                 </Text>
               )}
-              <Button key={`close-out-${pr.number}`} dimColor hover={{ dimColor: false, color: 'suggestion' }} onPress={() => void (risk ? update($, confirmingPr, () => pr.number) : closeOut(pr))}>
+              <Button key={`close-out-${pr.number}`} dimColor hover={{ dimColor: false, color: 'suggestion' }} onPress={() => void (risk ? update($, armed, (): Armed => ({ kind: 'pr', number: pr.number })) : closeOut(pr))}>
                 {fits.finish}
               </Button>
             </Box>
@@ -5155,7 +5161,7 @@ export const register: Register = (on, options) => {
               <Button key={`close-out-yes-${pr.number}`} variant="primary" onPress={() => void closeOut(pr)}>
                 Close out anyway
               </Button>
-              <Button key={`close-out-no-${pr.number}`} dimColor onPress={() => void update($, confirmingPr, () => null)}>
+              <Button key={`close-out-no-${pr.number}`} dimColor onPress={() => void disarm($, 'pr')}>
                 Cancel
               </Button>
             </Box>
@@ -5197,7 +5203,7 @@ export const register: Register = (on, options) => {
     // what blocks it, its pull request with CI, chips, a short progress bar with the count, and its age. The mark is ▶
     // on the issue this session is on and ▲ on a bug.
     const issueRow = (issue: Issue) => {
-      const isOpen = open.includes(issue.number)
+      const isOpen = open === issue.number
       const step = progress(issue.checks)
       const bug = isBug(issue, marks)
       const chipList = roomy ? chipsOf(issue, marks).slice(0, 2) : []
@@ -5431,7 +5437,7 @@ export const register: Register = (on, options) => {
     const openEditor = (number: number) => async () => {
       const opening = changing !== number
       await update($, editing, () => (opening ? number : null))
-      await update($, closing, () => null)
+      await disarm($, 'close')
       if (opening && !offered) await loadPalette($)
     }
 
@@ -5445,10 +5451,10 @@ export const register: Register = (on, options) => {
       const labels = [...new Set([...(offered?.labels ?? labelsOf(now.issues)), ...issue.labels.map(label => label.name)])].sort()
       const closeAs = (reason: 'completed' | 'not planned') => async () => {
         if (open > 0 && armedClose !== n) {
-          await update($, closing, () => n)
+          await update($, armed, (): Armed => ({ kind: 'close', number: n }))
           return
         }
-        await update($, closing, () => null)
+        await disarm($, 'close')
         await update($, editing, () => null)
         await change($, n, { close: reason })
       }
@@ -5463,7 +5469,7 @@ export const register: Register = (on, options) => {
                 key={`title-${n}`}
                 label=""
                 placeholder={fit(issue.title, 50)}
-                value={fields.title}
+                value={fields.title ?? ''}
                 submitLabel="rename"
                 onInput={text => void update($, typing, was => ({ ...was, title: text }))}
                 onSubmit={text => {
@@ -5480,7 +5486,7 @@ export const register: Register = (on, options) => {
                 key={`box-${n}`}
                 label="+ "
                 placeholder="add an acceptance box"
-                value={fields.box}
+                value={fields.box ?? ''}
                 submitLabel="add"
                 onInput={text => void update($, typing, was => ({ ...was, box: text }))}
                 onSubmit={text => {
@@ -5509,7 +5515,7 @@ export const register: Register = (on, options) => {
                 key={`new-label-${n}`}
                 label="+ "
                 placeholder="new label"
-                value={fields.label}
+                value={fields.label ?? ''}
                 submitLabel="add"
                 onInput={text => void update($, typing, was => ({ ...was, label: text }))}
                 onSubmit={text => {
@@ -5548,7 +5554,7 @@ export const register: Register = (on, options) => {
                 key={`parent-${n}`}
                 label="put under #"
                 placeholder="epic number"
-                value={fields.parent}
+                value={fields.parent ?? ''}
                 submitLabel="set"
                 onInput={text => void update($, typing, was => ({ ...was, parent: text }))}
                 onSubmit={text => {
@@ -5596,12 +5602,12 @@ export const register: Register = (on, options) => {
                         key={`field-${key}`}
                         label=""
                         placeholder={now$ ?? (field.kind === 'date' ? 'YYYY-MM-DD' : field.kind === 'number' ? 'a number' : 'text')}
-                        value={typedField[key] ?? ''}
+                        value={fields[key] ?? ''}
                         submitLabel="set"
-                        onInput={text => void update($, typedFields, was => ({ ...was, [key]: text }))}
+                        onInput={text => void update($, typing, was => ({ ...was, [key]: text }))}
                         onSubmit={text => {
                           if (!text.trim()) return
-                          void update($, typedFields, was => ({ ...was, [key]: '' })).then(() => change($, n, { fields: { [field.name]: text.trim() } }))
+                          void update($, typing, was => ({ ...was, [key]: '' })).then(() => change($, n, { fields: { [field.name]: text.trim() } }))
                         }}
                       />
                     )}
@@ -5637,7 +5643,7 @@ export const register: Register = (on, options) => {
                 key={`duplicate-${n}`}
                 label="as duplicate of #"
                 placeholder="issue number"
-                value={fields.duplicate}
+                value={fields.duplicate ?? ''}
                 submitLabel="close"
                 onInput={text => void update($, typing, was => ({ ...was, duplicate: text }))}
                 onSubmit={text => {
@@ -5701,7 +5707,7 @@ export const register: Register = (on, options) => {
                 key={`reply-${n}`}
                 label="reply "
                 placeholder="write a comment, Enter posts it"
-                value={fields.comment}
+                value={fields.comment ?? ''}
                 submitLabel="post"
                 onInput={text => void update($, typing, was => ({ ...was, comment: text }))}
                 onSubmit={reply}
@@ -6054,7 +6060,7 @@ export const register: Register = (on, options) => {
           shown.map(issue => (
             <Box key={`triage-entry-${issue.number}`} flexDirection="column">
               {isInbox(issue, project) ? triageRow(issue) : issueRow(issue)}
-              {open.includes(issue.number) && issueCard(issue, single)}
+              {open === issue.number && issueCard(issue, single)}
             </Box>
           ))}
         {groups.map(group => {
@@ -6110,7 +6116,7 @@ export const register: Register = (on, options) => {
                 group.issues.map(issue => (
                   <Box flexDirection="column">
                     {issueRow(issue)}
-                    {open.includes(issue.number) && issueCard(issue, single)}
+                    {open === issue.number && issueCard(issue, single)}
                   </Box>
                 ))}
             </Box>

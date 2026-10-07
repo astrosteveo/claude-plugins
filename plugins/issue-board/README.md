@@ -420,6 +420,9 @@ becomes **Merge**.
 - **⇶ Merge all** (`m`) does the same for every open pull request, oldest
   first, after asking: `y` to send, `n` to cancel.
 
+One question waits at a time. Asking one, such as Merge all's, drops any
+other that was waiting, such as a pull request's or an epic's Close.
+
 While CI runs on your branch, a `◷` row shows its progress, such as
 `validate › Install Claude Code`, until it ends.
 
@@ -782,10 +785,12 @@ GitHub's API can't change a project's workflows, so setup lists those to
 change by hand, with a link:
 
 - Keep the **Auto-add** workflows on.
-- Turn **Item closed** off. It marks every closed issue Done, so Done would no
-  longer mean shipped. `/issues check` notes it while it's on, when **Move
-  closed issues to Done** is on and the board may write to the project.
-  Without those, turning it off would leave Done empty.
+- Turn **Item closed** off, but only when the board moves closed issues to
+  Done itself: **Move closed issues to Done** is on and a Done option is
+  picked. It marks every closed issue Done, so Done would no longer mean
+  shipped. Without those, Item closed is what puts closed issues in Done, so
+  setup leaves the step out. `/issues check` notes Item closed under the same
+  rule, while the board may write to the project.
 - Set **Item added to project** to Inbox rather than GitHub's Todo, so new
   issues land in the Inbox.
 

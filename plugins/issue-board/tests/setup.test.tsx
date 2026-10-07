@@ -1,3 +1,4 @@
+import type { TestBody } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
 
 import { groupsOf, isInbox, leftForDone, leftForVerification, toArchive } from '../hooks/parse'
@@ -60,9 +61,11 @@ test('setup plans only what is missing', () => {
   const done = facts({ projects: [complete], issues: [{ id: 'I_1', number: 1, items: [{ project: 'PVT_8', item: 'PVTI_1', status: 'Ready' }] }] })
   expect(stepsOf(done, 'PVT_8', '')).toEqual([])
   expect(automationsOff(complete)).toEqual(['Auto-add to project'])
-  // Item closed is on there: setup advises turning it off, since the board moves only completed issues to Done.
-  expect(automationsOn(complete)).toEqual(['Item closed'])
-  expect(automationsOn({ ...complete, workflows: [{ name: 'Item closed', enabled: false }] })).toEqual([])
+  // Item closed is on there: setup advises turning it off when the board moves completed issues to Done itself.
+  expect(automationsOn(complete, true)).toEqual(['Item closed'])
+  expect(automationsOn({ ...complete, workflows: [{ name: 'Item closed', enabled: false }] }, true)).toEqual([])
+  // When the board doesn't move them, Item closed is what puts closed issues in Done, so it stays.
+  expect(automationsOn(complete, false)).toEqual([])
   expect(rolesOf(complete.status.options)).toEqual({ inbox: 's0', backlog: 's1', ready: 's2', started: 's3', verification: 's4', done: 's5' })
 
   // An issue in the project with no Status is set to Inbox, not added again.
@@ -148,6 +151,30 @@ test('setup on a fresh repo shows its plan, changes nothing until Apply, then ma
   await ui.press({ key: 'setup-close' })
   expect(await ui.find({ key: 'setup-plan' })).toBeUndefined()
   await ui.unmount()
+})
+
+// Item closed puts every closed issue in Done. Setup says to turn it off only when the board moves closed issues to Done
+// itself, as /issues check does; otherwise Done would stay empty.
+const itemClosedStep = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1]) => {
+  adoptedStore(on)
+  const clock = mock.clock(on, { now: Date.parse('2026-10-05T03:00:00Z') })
+  github(on, { hasIssues: true, projects: [complete], labels: ['bug', 'area:sim'], issues: [{ number: 1, items: [{ project: 'PVT_8', item: 'PVTI_1', status: 'Ready' }] }] })
+  await $.command.run(SETUP)
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  // The Auto-add step shows either way, so the by-hand list is there to look in.
+  expect(await ui.find({ text: /^ {2}· turn on Auto-add to project$/ })).toBeDefined()
+  const step = await ui.find({ text: /^ {2}· turn off Item closed: / })
+  await ui.unmount()
+  return step
+}
+
+test('with Done moves off, setup leaves Item closed on', async ($, on) => {
+  expect(await itemClosedStep($, on)).toBeUndefined()
+})
+
+test('with Done moves on, setup says to turn Item closed off', { options: { moveToDone: true } }, async ($, on) => {
+  expect(await itemClosedStep($, on)).toBeDefined()
 })
 
 test('with two projects linked, setup asks which, and Cancel changes nothing', async ($, on) => {

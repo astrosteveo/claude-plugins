@@ -109,4 +109,19 @@ test('Finish & merge asks first on a worker-owned or pending pull request, and s
   await look(ui => ui.press({ key: 'close-out-403' }))
   expect(sent).toHaveLength(2)
   expect(sent[1]).toMatch(/^Close out PR #403: /)
+
+  // One confirm waits at a time: arming Merge all cancels a pull request's ask, and arming that ask again cancels Merge
+  // all's (#296).
+  await look(ui => ui.press({ key: 'close-out-401' }))
+  await look(ui => ui.press({ key: 'close-out-all' }))
+  await look(async ui => {
+    expect(await ui.find({ key: 'close-out-all-yes' })).toBeDefined()
+    expect(await ui.find({ key: 'close-out-ask-401' })).toBeUndefined()
+    await ui.press({ key: 'close-out-401' })
+  })
+  await look(async ui => {
+    expect(await ui.find({ key: 'close-out-ask-401' })).toBeDefined()
+    expect(await ui.find({ key: 'close-out-all-yes' })).toBeUndefined()
+  })
+  expect(sent).toHaveLength(2)
 })

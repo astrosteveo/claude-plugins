@@ -54,13 +54,12 @@ export type Roles = Partial<Record<Role, string>>
 // iteration field's iterations, by title.
 export type ProjectField = { id: string; name: string; kind: 'text' | 'number' | 'date' | 'iteration' | 'select'; options?: { id: string; name: string }[] }
 
+// What names a GitHub Project: its node id, its number in its owner's projects, its title and its page.
+export type ProjectRef = { id: string; number: number; title: string; url: string }
+
 // The GitHub Project linked to the repository, as far as the board uses it. `fields`: every field the board can read and
 // set, Status and Priority among them; absent on an older board.
-export type Project = {
-  id: string
-  number: number
-  title: string
-  url: string
+export type Project = ProjectRef & {
   status: Field | null
   priority: Field | null
   fields?: ProjectField[]
@@ -207,6 +206,18 @@ export type Filter = BuiltInFilter | `view:${number}`
 // A milestone: release scope. `due` is a date, `YYYY-MM-DD`, or null; `open` and `closed` count its issues.
 export type Milestone = { number: number; title: string; due: string | null; description: string; open: number; closed: number }
 
+// An issue's values in the project's fields beyond Status and Priority, by field name, as its card last read them.
+export type FieldValues = Record<string, string>
+
+// What the text fields of the open card hold before they are sent, by field: `comment`, `title`, `box`, `label`,
+// `parent` and `duplicate` for the editor's own fields, and `<issue>-<field id>` for a project field typed in.
+export type TypedText = Record<string, string>
+
+// The confirm waiting on a second press, if any. `merge-all` is Merge all; `pr` is a pull request's Finish & merge,
+// pressed while a worker owns its branch or its CI hasn't passed; `close` is Close on an epic with open sub-issues.
+// There is one at a time, so arming one cancels any other.
+export type Armed = { kind: 'merge-all' } | { kind: 'pr' | 'close'; number: number } | null
+
 // An issue as GitHub's search or REST answers it, open or closed, for what the board's copy of open issues can't show.
 export type Found = { number: number; title: string; url: string; state: 'open' | 'closed'; reason: string | null; closedAt: string | null; labels: string[] }
 
@@ -283,11 +294,7 @@ export type Access = { login: string | null; repo: string | null; permission: st
 export type SetupOption = { id?: string; name: string; color: string; description: string }
 
 // A project linked to the repo, as setup reads it.
-export type SetupProject = {
-  id: string
-  number: number
-  title: string
-  url: string
+export type SetupProject = ProjectRef & {
   status: { id: string; options: SetupOption[] } | null
   priority: { id: string; options: SetupOption[] } | null
   // The project's automations by name, and whether each is on.
@@ -361,14 +368,12 @@ declare module 'claude-code' {
       error: string | null
       loading: boolean
       filter: Filter
-      expanded: number[]
+      // The issue whose card is open; one at a time.
+      expanded: number | null
       working: Working | null
       dismissed: string[]
-      // Close out all was pressed and waits on its confirm.
-      confirming: boolean
-      // A pull request whose Finish & merge was pressed while a worker owns its branch or its CI hasn't passed; it waits
-      // on its confirm.
-      confirmingPr: number | null
+      // The confirm waiting on a second press: Merge all, a pull request's Finish & merge, or an epic's Close.
+      armed: Armed
       // What the search field holds.
       query: string
       // The GitHub login gh is signed in as, for the Mine filter.
@@ -383,10 +388,8 @@ declare module 'claude-code' {
       editing: number | null
       // What the editor offers: the repo's labels and open milestones; null until it first opens.
       palette: { labels: string[]; milestones: string[] } | null
-      // An epic whose Close was pressed once while it has open sub-issues; the next press closes it.
-      closing: number | null
-      // What the editor's fields hold: the comment being written, and the epic number typed.
-      typing: { comment: string; parent: string; title: string; box: string; label: string; duplicate: string }
+      // What the open card's text fields hold before they are sent.
+      typing: TypedText
       // The open card's comments, read when it opens; `comments` null while they're being read.
       talk: { number: number; comments: Comment[] | null; total: number } | null
       // The last permission check; null until one has run.
@@ -409,10 +412,14 @@ declare module 'claude-code' {
       workers: Worker[]
       // The Starts pressed that aren't under way yet: their buttons say so, and don't start the work again.
       launching: Launch[]
+      // The issues closed lately, for the Closed filter, and when they were read; `failed` says why the last read failed.
+      // null until the filter is first chosen.
       recent: { items: Found[]; at: number; failed?: string } | null
-      values: Record<number, Record<string, string>>
-      typedFields: Record<string, string>
+      // Each issue's values in the project's other fields, by issue number, read when its card opens.
+      values: Record<number, FieldValues>
+      // Which of the pane's sections above the issues the person opened (true) or folded (false), by section.
       sections: Record<string, boolean>
+      // Whether the card's editor shows its rarer rows: type, milestone, the project's fields and closing as a duplicate.
       editorMore: boolean
       // What the band says about epics until it is dismissed.
       epicNotes: EpicNote[]
