@@ -74,6 +74,25 @@ export const ACTIVE: readonly Worker['status'][] = ['pending', 'running', 'waiti
 export const workerOfPr = (pr: PullRequest, workers: Worker[]): Worker | undefined =>
   workers.find(one => ACTIVE.includes(one.status) && (pr.issues ?? []).includes(one.number))
 
+// The issue a pull request opened in a loop is for: in a background agent's loop, by its agent id, the issue that agent
+// works on; in the main loop, the issue the session is on. Another subagent's loop, such as a search the main session
+// sent, has none: its pull request may be for anything.
+export const prIssueOf = (agentId: string | undefined, main: number | null, workers: Worker[]): number | null =>
+  agentId === undefined ? main : (workers.find(one => one.agentId === agentId)?.number ?? null)
+
+// The open pull request whose keyword a tick on #N switches: one whose body names #N, made on a branch named for #N,
+// on the branch the session has checked out while it is on #N, or by a background agent on #N. Null when there is none,
+// or more than one, as the board can't tell which is the issue's own.
+export const prOfIssue = (prs: PullRequest[], number: number, own: { branch: string | null; working: number | null }, workers: Worker[]): PullRequest | null => {
+  const worked = workers.some(one => one.number === number)
+  const mine = prs.filter(
+    pr =>
+      (pr.issues ?? []).includes(number) &&
+      (issueOfBranch(pr.branch) === number || (own.working === number && own.branch !== null && pr.branch === own.branch) || worked),
+  )
+  return mine.length === 1 ? (mine[0] ?? null) : null
+}
+
 // Why closing out a pull request now may go wrong, as one sentence, or null when nothing says so: a background agent
 // may still push to its branch, or its CI hasn't passed yet.
 export const closeOutRisk = (pr: PullRequest, worker?: Worker): string | null => {

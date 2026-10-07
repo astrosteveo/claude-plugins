@@ -141,6 +141,7 @@ with it.
 | Start | 0 | 0 | 3 |
 | `issue_update` setting a Priority, with the refresh after it | 1 | 1 | 4 |
 | A capture: the closed issues to compare with, the issue, its project item and Status | 2 | 0 | 2 |
+| A tick of an issue's last box: its body read and written, and its pull request's body read and `Refs #N` switched to `Closes #N` | 4 | 0 | 0 |
 | A `project_plan` of a Status and a Priority, approved, with one refresh after it | 1 | 1 | 5 |
 | Setup's Apply on a fresh repo, with the refresh after it | 7 | 0 | 16 |
 | Finish & merge: the pull request's files | 1 | 0 | 0 |
