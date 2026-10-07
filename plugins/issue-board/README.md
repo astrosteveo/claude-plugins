@@ -429,8 +429,29 @@ a private one, which GitHub won't undo, needs a second, confirmed call.
 ## Letting the board write to a project
 
 The board reads any project linked to the repo, but writes to one only after
-you adopt it for this repo. Until then the project is read-only to the board,
-whatever the settings below say.
+you adopt it. Until then the project is read-only to the board, whatever the
+settings below say.
+
+The projects the board may write to are a setting, **Projects the board may
+write to** (`writeProjects`): a list of projects, each as `owner/number`, such
+as `["astrosteveo/9", "astrosteveo/8"]`. A project has the same name in every
+repo, so one list in your own settings covers all your repos. In a repo, the
+board writes only to a listed project that is the one it reads there, or one
+linked to the repo. Empty, the default, means the board only reads. You can
+change the list in `/config`. The buttons and the tool below add and remove
+projects for you.
+
+A repo's `.claude/settings.json` can set `writeProjects` too, for everyone
+who works in it:
+
+```json
+{ "pluginConfigs": { "issue-board@astrosteveo-plugins": { "options": { "writeProjects": ["astrosteveo/9"] } } } }
+```
+
+In that repo, the repo's list likely takes the place of your own. So Release
+can't take away a project the repo's file grants: `/issues setup` says so
+where Release would be, and `project_adopt` refuses. To release it, edit the
+repo's file.
 
 While the board reads a project it may not write to, the pane asks once:
 **Let the board write to Void Sector, owned by astrosteveo?** It says what
@@ -446,7 +467,8 @@ the pane.
 - **Keep read-only**, or `✕` on the band's line, puts the question away for
   that project. `/issues setup` can still adopt it.
 - `/issues setup` shows which project the board may write to, with
-  **Release** to make it read-only again.
+  **Release** to make it read-only again. Release takes only that project
+  off the list. Projects for other repos stay.
 - Claude can adopt or release a project when you ask it to, with the
   `project_adopt` tool, for example from Remote Control or the phone app.
   It adopts the project the board reads, or another linked to the repo by
@@ -454,8 +476,14 @@ the pane.
   the same warning as the pane, even if a rule allows the tool. Saying no
   changes nothing. A background agent is refused, and so is a session in
   auto mode, where a classifier would answer the prompt instead of you.
-- A repo whose saved setup already names a project counts as having adopted
-  it, so a board set up before this keeps working.
+- Adopting adds the project to the list and keeps the others.
+- Adopting or releasing counts at once in the session that did it. Other
+  sessions already open see the change by the next time they load the board:
+  after `/reload-plugins`, or in a new session.
+- A board from before this kept the adopted project in its store. Once this
+  board has read that project, it adds it to the list, once. A repo whose
+  saved setup names a project counts as having adopted it, so a board set up
+  before adopting existed keeps working.
 
 What stays the same without an adopted project:
 
@@ -471,8 +499,13 @@ What stays the same without an adopted project:
   says why and how to adopt the project. `/issues check` and `/issues help`
   list it under Off.
 
-Every project write goes through one check of the adopted project's id. A
-write to any other project is refused.
+Every project write goes through one check against `writeProjects`. A write
+to any other project is refused.
+
+The setting lives in Claude Code's settings, not in the board's store, which
+every session on the repo rewrites. So a session still running an older board
+can't take away what you let the board write to. The prompts you turned down
+and the Status mappings you saved are kept apart from that store too.
 
 ## What the board changes, and how to turn it off
 

@@ -3,12 +3,12 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import { adoptReason, adoptTarget, approvedOf, linkedOf, releaseReason } from '../hooks/project'
 import { approved, refused } from './engine'
-import { ADOPTED, PROJECT, graphPage, isIssuesQuery } from './graph'
+import { PROJECT, graphPage, isIssuesQuery, settingsLog } from './graph'
 
 const REFRESH = { command: 'issues', args: 'refresh', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
 const REPO = { root: '/work/void-sector', remote: null, internal: false, name: null }
-const KEY = `repo:${REPO.root}`
-const CHOICES = `choices:${REPO.root}`
+// The board's project, as the writeProjects setting lists it.
+const WRITES_8 = { options: { writeProjects: ['astrosteveo/8'] } }
 const TOOL = 'mcp__issue-board__project_adopt'
 const ROADMAP = { id: 'PVT_9', number: 9, title: 'Roadmap', url: 'https://github.com/orgs/acme/projects/9', closed: false }
 const OLD = { id: 'PVT_7', number: 7, title: 'Old plans', url: 'https://github.com/users/astrosteveo/projects/7', closed: true }
@@ -40,7 +40,8 @@ const ISSUES = [
 ]
 
 // GitHub with project 8 as the board's, and projects 9 (open) and 7 (closed) also linked to the repo; the store held
-// where the test can read it; and the engine's answer beneath the tool, approved unless the test says otherwise.
+// where the test can read it; the setting as the board last set it; and the engine's answer beneath the tool, approved
+// unless the test says otherwise.
 const world = (on: On, saved: Record<string, unknown> = {}) => {
   const state = { linkedReads: 0, mutations: 0, answer: APPROVED as typeof APPROVED, kept: new Map<string, unknown>(Object.entries(saved)) }
   on('process.run', async (_$, e) => {
@@ -74,7 +75,8 @@ const world = (on: On, saved: Record<string, unknown> = {}) => {
   on('ui.log', async () => ({ value: undefined }))
   on('tool.call', { tool: TOOL }, async () => state.answer)
   on('tool.call', { tool: 'mcp__issue-board__issue_update' }, async (_$, e) => approved(e.tool))
-  const adopted = () => (state.kept.get(CHOICES) as { adopted?: unknown } | undefined)?.adopted
+  const set = settingsLog(on)
+  const adopted = () => set.filter(one => one.key === 'issue-board.writeProjects').at(-1)?.value
   return { state, adopted }
 }
 
@@ -90,7 +92,7 @@ test('project_adopt asks with the full warning even when a rule allows it, and a
 
   const called = await $.tool.call({ tool: TOOL })
   expect(called.result).toBe('The board may write to Void Sector now. Release it with project_adopt and release: true, or in /issues setup.')
-  expect(adopted()).toEqual(ADOPTED)
+  expect(adopted()).toEqual(['astrosteveo/8'])
   // The board's own project needed no read of the linked ones, and adopting writes nothing to GitHub.
   expect(state.linkedReads).toBe(0)
   expect(state.mutations).toBe(0)
@@ -103,25 +105,34 @@ test('a no to the prompt changes nothing and passes the refusal back', async ($,
   const called = await $.tool.call({ tool: TOOL })
   expect(called).toMatchObject({ isError: true, text: REFUSED.text })
   expect(adopted()).toBeUndefined()
-
-  // The same for a release.
-  state.kept.set(CHOICES, { adopted: ADOPTED })
-  await $.tool.call({ tool: TOOL, release: true })
-  expect(adopted()).toEqual(ADOPTED)
 })
 
-test('project_adopt adopts a linked project by number in place of the adopted one, and refuses one not linked', async ($, on) => {
-  const { state, adopted } = world(on, { [KEY]: { adopted: ADOPTED } })
+test('a no to the release prompt leaves the setting as it was', WRITES_8, async ($, on) => {
+  const { state, adopted } = world(on)
+  on('tool.check', async () => ({ decision: 'ask' as const }))
+  await $.command.run(REFRESH)
+  state.answer = REFUSED
+  expect(await $.tool.call({ tool: TOOL, release: true })).toMatchObject({ isError: true, text: REFUSED.text })
+  expect(adopted()).toBeUndefined()
+  expect((await $.tool.check({ tool: TOOL, input: { release: true } })).decision).toBe('ask')
+})
+
+test('project_adopt adopts a linked project by number beside the adopted one, and refuses one not linked', WRITES_8, async ($, on) => {
+  const { state, adopted } = world(on)
   on('tool.check', async () => ({ decision: 'ask' as const }))
   await $.command.run(REFRESH)
 
   const check = await $.tool.check({ tool: TOOL, input: { number: 9 } })
   expect(check.decision).toBe('ask')
   expect(check.reason).toMatch(/^Let the board write to Roadmap, owned by acme\?\n/)
-  expect(check.reason).toMatch(/\nIt stops writing to Void Sector\.$/)
+  expect(check.reason).not.toMatch(/Void Sector/)
   const called = await $.tool.call({ tool: TOOL, number: 9 })
-  expect(called.result).toBe('The board may write to Roadmap now, in place of Void Sector. Release it with project_adopt and release: true, or in /issues setup.')
-  expect(adopted()).toEqual({ id: 'PVT_9', title: 'Roadmap', owner: 'acme' })
+  expect(called.result).toBe('The board may write to Roadmap now. Release it with project_adopt and release: true, or in /issues setup.')
+  // Roadmap joins the list; Void Sector stays on it, and the board still writes there.
+  expect(adopted()).toEqual(['astrosteveo/8', 'acme/9'])
+  expect((await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, priority: 'P0' })).deny).toBeUndefined()
+  expect(state.mutations).toBe(1)
+  expect((await $.tool.call({ tool: TOOL, number: 9 })).deny).toBe('The board already writes to Roadmap; nothing changed.')
 
   // A number linked to nothing, and a closed project, are refused at the check and at the call, and nothing changes.
   for (const number of [12, 7]) {
@@ -129,12 +140,12 @@ test('project_adopt adopts a linked project by number in place of the adopted on
     expect(refused).toEqual({ decision: 'deny', reason: `Project ${number} isn't linked to astrosteveo/void-sector, so the board won't write to it. Link it to the repo on GitHub first, or run /issues setup.` })
     expect((await $.tool.call({ tool: TOOL, number })).deny).toBe(refused.reason)
   }
-  expect(adopted()).toEqual({ id: 'PVT_9', title: 'Roadmap', owner: 'acme' })
-  expect(state.mutations).toBe(0)
+  expect(adopted()).toEqual(['astrosteveo/8', 'acme/9'])
+  expect(state.mutations).toBe(1)
 })
 
-test('project_adopt with release releases the adopted project after asking, and has nothing to release after', async ($, on) => {
-  const { adopted } = world(on, { [KEY]: { adopted: ADOPTED } })
+test('project_adopt with release releases the adopted project after asking, and has nothing to release after', WRITES_8, async ($, on) => {
+  const { adopted } = world(on)
   on('tool.check', async () => ({ decision: 'allow' as const }))
   await $.command.run(REFRESH)
   expect(await $.tool.check({ tool: TOOL, input: { release: true } })).toEqual({
@@ -142,8 +153,8 @@ test('project_adopt with release releases the adopted project after asking, and 
     reason: 'Stop the board writing to Void Sector, owned by astrosteveo?\nIt only reads the project again until someone lets it write.',
   })
   expect((await $.tool.call({ tool: TOOL, release: true })).result).toBe('Released Void Sector: the board only reads it now.')
-  expect(adopted()).toBeNull()
-  // Writes are refused again.
+  expect(adopted()).toEqual([])
+  // Writes are refused again, at once.
   expect((await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, priority: 'P0' })).deny).toMatch(/only reads Void Sector/)
   expect((await $.tool.check({ tool: TOOL, input: { release: true } })).decision).toBe('deny')
   expect((await $.tool.call({ tool: TOOL, release: true })).deny).toBe("The board writes to no project for this repo, so there's nothing to release.")
@@ -197,8 +208,8 @@ test('the target is the board project or a linked one by number; the prompt and 
   expect(adoptTarget(null, [], undefined, 'a/b')).toBe('The board reads no project for a/b. Name a project linked to the repo by its number, or run /issues setup.')
   expect(linkedOf({ repository: { projectsV2: { nodes: [PROJECT, ROADMAP, OLD, null] } } }).map(one => one.number)).toEqual([8, 9])
   expect(linkedOf(null)).toEqual([])
-  expect(adoptReason(reads, null, 5)).toBe(WARNING)
-  expect(releaseReason({ id: 'PVT_9', title: 'Roadmap', owner: null })).toBe('Stop the board writing to Roadmap?\nIt only reads the project again until someone lets it write.')
+  expect(adoptReason(reads, 5)).toBe(WARNING)
+  expect(releaseReason({ key: 'acme/9', number: 9, id: 'PVT_9', title: 'Roadmap', owner: 'acme' })).toBe('Stop the board writing to Roadmap, owned by acme?\nIt only reads the project again until someone lets it write.')
   expect(approvedOf(APPROVED)).toBe(true)
   expect(approvedOf(REFUSED)).toBe(false)
   expect(approvedOf({ deny: 'no' })).toBe(false)

@@ -263,6 +263,8 @@ export type SetupFacts = {
   saved?: { project: string; roles: Roles }
   // The project the board may write to, by id; null when it may write to none.
   adopted?: string | null
+  // Whether this repo's own settings let the board write to that project, so Release can't take it away.
+  granted?: boolean
 }
 
 // One change setup makes. `state` is how it went once Apply ran.
@@ -284,10 +286,10 @@ export type Setup =
 // name for one setup adds. null: none, and the role's features are off.
 export type RolePicks = Record<Role, string | null>
 
-// A project the person let the board write to, for one repo, by its id: through the board's prompt, or Apply in
-// `/issues setup`. The board reads any linked project, but writes only to this one. `owner` is the login or
-// organization the project belongs to, when the board could tell.
-export type Adopted = { id: string; title: string; owner: string | null }
+// A project of this repo the person let the board write to: listed in the writeProjects setting by `key`, owner/number,
+// through the board's prompt, Apply in `/issues setup` or project_adopt. `owner` is the login or organization it
+// belongs to. `granted` says this repo's own settings list it, so Release can't take it out.
+export type Adopted = { key: string; number: number; id: string; title: string; owner: string; granted?: boolean }
 
 // Which project the board may write to, and the projects whose prompt the person turned down, by id, so it isn't
 // asked again.

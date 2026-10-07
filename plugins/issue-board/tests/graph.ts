@@ -135,11 +135,27 @@ export const graphPage = (issues: Raw[], argv: readonly string[] = [], project =
   })
 }
 
-// The board writes only to a project the person let it write to. A test that has it write to the fake project uses
-// this store in place of `mock.store`: every repo's entry holds the adoption, unless the entry makes a choice of its own.
-// The choices key is kept as set, so the board moves the repo entry's adoption across the first time it looks.
-// A test's fake world and the test itself may both ask for it; the second call adds its entries to the first's store.
+// The board writes only to a project the writeProjects setting lists. A test that has it write to the fake project
+// uses this store in place of `mock.store`: every repo's entry holds an adoption as an earlier board kept it, unless the
+// entry makes a choice of its own, and the board moves it into the setting once it has read the project. The choices
+// key is kept as set. A test's fake world and the test itself may both ask for it; the second call adds its entries to
+// the first's store.
 export const ADOPTED = { id: PROJECT.id, title: PROJECT.title, owner: 'astrosteveo' }
+
+// Every `$.config.set` the board made, answered as written, as Claude Code's settings would.
+const logs = new WeakMap<On, { key: string; value: unknown }[]>()
+export const settingsLog = (on: On): { key: string; value: unknown }[] => {
+  const had = logs.get(on)
+  if (had) return had
+  const log: { key: string; value: unknown }[] = []
+  logs.set(on, log)
+  on('config.set', async (_$, e) => {
+    log.push({ key: e.key, value: e.value })
+    return { value: e.value }
+  })
+  return log
+}
+
 const stores = new WeakMap<On, Map<string, unknown>>()
 export const adoptedStore = (on: On, entries: Readonly<Record<string, unknown>> = {}): Map<string, unknown> => {
   const had = stores.get(on)
@@ -149,6 +165,7 @@ export const adoptedStore = (on: On, entries: Readonly<Record<string, unknown>> 
   }
   const kept = new Map<string, unknown>(Object.entries(entries))
   stores.set(on, kept)
+  settingsLog(on)
   on('store.get', async (_$, e) => {
     const value = kept.get(e.key)
     if (e.key.startsWith('choices:')) return { value }
