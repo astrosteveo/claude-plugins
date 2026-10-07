@@ -8,7 +8,7 @@ import { PROJECT, graphPage, isIssuesQuery, settingsLog } from './graph'
 const REFRESH = { command: 'issues', args: 'refresh', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
 const REPO = { root: '/work/void-sector', remote: null, internal: false, name: null }
 // The board's project, as the writeProjects setting lists it.
-const WRITES_8 = { options: { writeProjects: ['astrosteveo/8'] } }
+const WRITES_8 = { options: { writeProjects: 'astrosteveo/8' } }
 const TOOL = 'mcp__issue-board__project_adopt'
 const ROADMAP = { id: 'PVT_9', number: 9, title: 'Roadmap', url: 'https://github.com/orgs/acme/projects/9', closed: false }
 const OLD = { id: 'PVT_7', number: 7, title: 'Old plans', url: 'https://github.com/users/astrosteveo/projects/7', closed: true }
@@ -92,7 +92,7 @@ test('project_adopt asks with the full warning even when a rule allows it, and a
 
   const called = await $.tool.call({ tool: TOOL })
   expect(called.result).toBe('The board may write to Void Sector now. Release it with project_adopt and release: true, or in /issues setup.')
-  expect(adopted()).toEqual(['astrosteveo/8'])
+  expect(adopted()).toEqual('astrosteveo/8')
   // The board's own project needed no read of the linked ones, and adopting writes nothing to GitHub.
   expect(state.linkedReads).toBe(0)
   expect(state.mutations).toBe(0)
@@ -129,7 +129,7 @@ test('project_adopt adopts a linked project by number beside the adopted one, an
   const called = await $.tool.call({ tool: TOOL, number: 9 })
   expect(called.result).toBe('The board may write to Roadmap now. Release it with project_adopt and release: true, or in /issues setup.')
   // Roadmap joins the list; Void Sector stays on it, and the board still writes there.
-  expect(adopted()).toEqual(['astrosteveo/8', 'acme/9'])
+  expect(adopted()).toEqual('astrosteveo/8, acme/9')
   expect((await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, priority: 'P0' })).deny).toBeUndefined()
   expect(state.mutations).toBe(1)
   expect((await $.tool.call({ tool: TOOL, number: 9 })).deny).toBe('The board already writes to Roadmap; nothing changed.')
@@ -140,7 +140,7 @@ test('project_adopt adopts a linked project by number beside the adopted one, an
     expect(refused).toEqual({ decision: 'deny', reason: `Project ${number} isn't linked to astrosteveo/void-sector, so the board won't write to it. Link it to the repo on GitHub first, or run /issues setup.` })
     expect((await $.tool.call({ tool: TOOL, number })).deny).toBe(refused.reason)
   }
-  expect(adopted()).toEqual(['astrosteveo/8', 'acme/9'])
+  expect(adopted()).toEqual('astrosteveo/8, acme/9')
   expect(state.mutations).toBe(1)
 })
 
@@ -153,7 +153,7 @@ test('project_adopt with release releases the adopted project after asking, and 
     reason: 'Stop the board writing to Void Sector, owned by astrosteveo?\nIt only reads the project again until someone lets it write.',
   })
   expect((await $.tool.call({ tool: TOOL, release: true })).result).toBe('Released Void Sector: the board only reads it now.')
-  expect(adopted()).toEqual([])
+  expect(adopted()).toEqual('')
   // Writes are refused again, at once.
   expect((await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, priority: 'P0' })).deny).toMatch(/only reads Void Sector/)
   expect((await $.tool.check({ tool: TOOL, input: { release: true } })).decision).toBe('deny')

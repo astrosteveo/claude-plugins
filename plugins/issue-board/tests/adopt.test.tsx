@@ -1,7 +1,7 @@
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { adoptText, isMutation, ownerOf, projectKeysOf, savedAdoptionOf, writeRefusal } from '../hooks/project'
+import { adoptText, grantsOf, isMutation, ownerOf, projectKeysOf, projectKeysText, savedAdoptionOf, writeRefusal } from '../hooks/project'
 import { ADOPTED, PROJECT, graphPage, isIssuesQuery, settingsLog } from './graph'
 import { letThrough } from './engine'
 
@@ -181,7 +181,7 @@ const memory = (on: On, entries: Record<string, unknown> = {}): Map<string, unkn
   return kept
 }
 
-const WRITES_8 = { options: { writeProjects: ['astrosteveo/8'] } }
+const WRITES_8 = { options: { writeProjects: 'astrosteveo/8' } }
 
 test('the pane and the band ask once before writing, naming the project, its owner, what is written and what it costs; yes adopts it', async ($, on) => {
   memory(on)
@@ -202,7 +202,7 @@ test('the pane and the band ask once before writing, naming the project, its own
   expect(set).toEqual([])
 
   await ui.press({ key: 'adopt-yes' })
-  expect(set).toEqual([{ key: 'issue-board.writeProjects', value: ['astrosteveo/8'] }])
+  expect(set).toEqual([{ key: 'issue-board.writeProjects', value: 'astrosteveo/8' }])
   expect(await ui.find({ key: 'adopt-card' })).toBeUndefined()
 
   // Writes go through at once, to the adopted project, before Claude Code reloads the board with the new setting.
@@ -234,7 +234,7 @@ test('Keep read-only puts the prompt away for good and writes nothing', async ($
   await ui.unmount()
 })
 
-test('a writeProjects entry that is not owner/number, or names the number under another owner, leaves the board read-only', { options: { ...EVERYTHING.options, writeProjects: ['8', 'astrosteveo/eight', 'acme/8'] } }, async ($, on) => {
+test('a writeProjects entry that is not owner/number, or names the number under another owner, leaves the board read-only', { options: { ...EVERYTHING.options, writeProjects: '8, astrosteveo/eight, acme/8' } }, async ($, on) => {
   memory(on)
   settingsLog(on)
   const { mutations } = world(on)
@@ -244,7 +244,7 @@ test('a writeProjects entry that is not owner/number, or names the number under 
   expect(mutations()).toEqual([])
 })
 
-test('with astrosteveo/8 listed the board writes to project 8, with no prompt, and the store has no say', { options: { ...EVERYTHING.options, writeProjects: ['astrosteveo/8'] } }, async ($, on) => {
+test('with astrosteveo/8 listed the board writes to project 8, with no prompt, and the store has no say', { options: { ...EVERYTHING.options, writeProjects: 'astrosteveo/8' } }, async ($, on) => {
   // A store an earlier board left saying the project was released counts for nothing once the setting names one.
   memory(on, { [KEY]: { adopted: null } })
   const set = settingsLog(on)
@@ -258,7 +258,7 @@ test('with astrosteveo/8 listed the board writes to project 8, with no prompt, a
   await ui.unmount()
 })
 
-test("a project another repo listed gives this repo's project nothing, and adopting here keeps it", { options: { writeProjects: ['acme/9'] } }, async ($, on) => {
+test("a project another repo listed gives this repo's project nothing, and adopting here keeps it", { options: { writeProjects: 'acme/9' } }, async ($, on) => {
   memory(on)
   const set = settingsLog(on)
   const { mutations } = world(on)
@@ -269,13 +269,13 @@ test("a project another repo listed gives this repo's project nothing, and adopt
   // The pane still asks about this repo's project, and Let it write adds it beside the other repo's.
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   await ui.press({ key: 'adopt-yes' })
-  expect(set).toEqual([{ key: 'issue-board.writeProjects', value: ['acme/9', 'astrosteveo/8'] }])
+  expect(set).toEqual([{ key: 'issue-board.writeProjects', value: 'acme/9, astrosteveo/8' }])
   await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, priority: 'P0' })
   expect(mutations()).toHaveLength(1)
   await ui.unmount()
 })
 
-test("releasing this repo's project takes only it off the list, and leaves another repo's", { options: { writeProjects: ['acme/9', 'astrosteveo/8'] } }, async ($, on) => {
+test("releasing this repo's project takes only it off the list, and leaves another repo's", { options: { writeProjects: 'acme/9, astrosteveo/8' } }, async ($, on) => {
   memory(on)
   const set = settingsLog(on)
   const { mutations } = world(on)
@@ -284,25 +284,64 @@ test("releasing this repo's project takes only it off the list, and leaves anoth
   await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, priority: 'P0' })
   expect(mutations()).toHaveLength(1)
   await $.tool.call({ tool: 'mcp__issue-board__project_adopt', release: true })
-  expect(set).toEqual([{ key: 'issue-board.writeProjects', value: ['acme/9'] }])
+  expect(set).toEqual([{ key: 'issue-board.writeProjects', value: 'acme/9' }])
   const update = await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, priority: 'P1' })
   expect(update.deny).toMatch(/only reads Void Sector/)
   expect(mutations()).toHaveLength(1)
 })
 
-test("a project the repo's own settings grant can't be released from the board", { options: { writeProjects: ['astrosteveo/8'] } }, async ($, on) => {
+test("a project the repo's own settings grant needs no prompt, takes writes, and can't be released from the board", async ($, on) => {
   memory(on)
   const set = settingsLog(on)
-  world(on)
+  const { mutations } = world(on)
   on('tool.check', async () => ({ decision: 'allow' as const }))
-  // This repo's .claude/settings.json lists the project; the person's own settings list nothing.
+  // This repo's .claude/settings.json lists the project, as a list written by hand. The board's options don't carry
+  // it, as Claude Code passes none for a value its /config row can't hold, and the person's own settings list nothing.
   on('settings.read', async (_$, e) => ({
     value: e.source === 'project' ? { pluginConfigs: { 'issue-board@astrosteveo-plugins': { options: { writeProjects: ['astrosteveo/8'] } } } } : {},
   }))
+  // What the engine draws in the band when the board has nothing to say.
+  on('ui.render', { component: 'AbovePrompt' }, async ($$, e) => {
+    const { Box } = $$.ui.resolve(e)
+    return <Box key="engine" />
+  })
   await $.command.run(REFRESH)
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  expect(await ui.find({ key: 'adopt-card' })).toBeUndefined()
+  const band = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...BAND })
+  expect(await band.find({ key: 'adopt-review' })).toBeUndefined()
+  await band.unmount()
+  await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, priority: 'P0' })
+  expect(mutations()).toHaveLength(1)
+  const again = await $.tool.call({ tool: 'mcp__issue-board__project_adopt' })
+  expect(again.deny).toBe('The board already writes to Void Sector; nothing changed.')
   const release = await $.tool.call({ tool: 'mcp__issue-board__project_adopt', release: true })
   expect(release.deny).toBe("This repo's .claude/settings.json lets the board write to Void Sector, so it can't be released here. To release it, take it out of writeProjects in that file.")
   expect(set).toEqual([])
+  await ui.unmount()
+})
+
+test("adopting beside a repo's grant keeps the person's own entries and copies none of the repo's", async ($, on) => {
+  memory(on)
+  const set = settingsLog(on)
+  const { mutations } = world(on)
+  on('tool.check', async () => ({ decision: 'allow' as const }))
+  // The repo grants another project; the person's user settings list one more, which the merged options may hide.
+  on('settings.read', async (_$, e) => ({
+    value:
+      e.source === 'project'
+        ? { pluginConfigs: { 'issue-board@astrosteveo-plugins': { options: { writeProjects: 'acme/9' } } } }
+        : e.source === 'user'
+          ? { pluginConfigs: { 'issue-board@astrosteveo-plugins': { options: { writeProjects: 'acme/3' } } } }
+          : {},
+  }))
+  await $.command.run(REFRESH)
+  const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'adopt-yes' })
+  expect(set).toEqual([{ key: 'issue-board.writeProjects', value: 'acme/3, astrosteveo/8' }])
+  await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, priority: 'P0' })
+  expect(mutations()).toHaveLength(1)
+  await ui.unmount()
 })
 
 test('a repo whose saved setup names the project has it moved into the setting once, and counts as adopted', EVERYTHING, async ($, on) => {
@@ -310,7 +349,7 @@ test('a repo whose saved setup names the project has it moved into the setting o
   const set = settingsLog(on)
   const { mutations } = world(on)
   await $.command.run(REFRESH)
-  expect(set).toEqual([{ key: 'issue-board.writeProjects', value: ['astrosteveo/8'] }])
+  expect(set).toEqual([{ key: 'issue-board.writeProjects', value: 'astrosteveo/8' }])
   expect(kept.get(CHOICES)).toEqual({ adoptionMoved: true })
   const ui = await $.ui.mount({ plugin: 'issue-board', surface: 'terminal', ...PANE })
   expect(await ui.find({ key: 'adopt-card' })).toBeUndefined()
@@ -337,7 +376,7 @@ test("an adoption an earlier board kept in the store moves to the setting once, 
   const set = settingsLog(on)
   const { mutations } = world(on)
   await $.command.run(REFRESH)
-  expect(set).toEqual([{ key: 'issue-board.writeProjects', value: ['astrosteveo/8'] }])
+  expect(set).toEqual([{ key: 'issue-board.writeProjects', value: 'astrosteveo/8' }])
   await $.tool.call({ tool: 'mcp__issue-board__issue_update', number: 43, priority: 'P0' })
   expect(mutations()).toHaveLength(1)
   // Once moved, the store's copy is never read again: a release there from an older board changes nothing.
@@ -428,6 +467,15 @@ test('the setting reads as owner/number keys, and a saved adoption moves only to
   expect(projectKeysOf('astrosteveo/9, acme/3')).toEqual(['astrosteveo/9', 'acme/3'])
   expect(projectKeysOf(['9', 'astrosteveo/0', 'astrosteveo/nine', '/9', 'a/b/9', 7])).toEqual([])
   expect(projectKeysOf(undefined)).toEqual([])
+  // The /config row's text, and a list written by hand whose entries may hold commas too.
+  expect(projectKeysOf(' astrosteveo/9,acme/3 , acme/4 ')).toEqual(['astrosteveo/9', 'acme/3', 'acme/4'])
+  expect(projectKeysOf('')).toEqual([])
+  expect(projectKeysOf(['astrosteveo/9, acme/3'])).toEqual(['astrosteveo/9', 'acme/3'])
+  expect(projectKeysText(['astrosteveo/9', 'acme/3'])).toBe('astrosteveo/9, acme/3')
+  expect(projectKeysOf(projectKeysText(['astrosteveo/9', 'acme/3']))).toEqual(['astrosteveo/9', 'acme/3'])
+  // The person's list is their user file and the session's value, less what the repo grants; the board may write to both.
+  expect(grantsOf(['acme/9', 'astrosteveo/8'], ['acme/3'], ['acme/9'])).toEqual({ own: ['acme/3', 'astrosteveo/8'], repo: ['acme/9'], all: ['acme/3', 'astrosteveo/8', 'acme/9'] })
+  expect(grantsOf([], [], [])).toEqual({ own: [], repo: [], all: [] })
 
   const setup = { project: { id: 'PVT_8' } }
   const reads = [{ id: 'PVT_8', number: 8, url: PROJECT.url }]

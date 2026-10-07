@@ -216,15 +216,33 @@ export const projectKeyOf = (project: { number: number; url: string }): string |
   return owner ? projectKey(owner, project.number) : null
 }
 
-// The writeProjects setting as project keys, each once. An entry that isn't owner/number is left out. A plain string,
-// as a hand-written setting might hold, is read as entries split by commas or spaces.
+// The writeProjects setting as project keys, each once. An entry that isn't owner/number is left out. The setting is a
+// text row in /config, so it holds entries split by commas, such as `astrosteveo/9, astrosteveo/8`; spaces split them
+// too. A list, as a settings file edited by hand or written by an earlier board might hold, is read entry by entry.
 export const projectKeysOf = (value: unknown): string[] => {
-  const entries = Array.isArray(value) ? value : typeof value === 'string' ? value.split(/[\s,]+/) : []
+  const entries = Array.isArray(value) ? value.flatMap(entry => (typeof entry === 'string' ? entry.split(/[\s,]+/) : [])) : typeof value === 'string' ? value.split(/[\s,]+/) : []
   const keys = entries.flatMap(entry => {
-    const found = typeof entry === 'string' ? /^([A-Za-z0-9][A-Za-z0-9-]*)\/([1-9]\d*)$/.exec(entry.trim()) : null
+    const found = /^([A-Za-z0-9][A-Za-z0-9-]*)\/([1-9]\d*)$/.exec(entry.trim())
     return found ? [projectKey(found[1] ?? '', Number(found[2]))] : []
   })
-  return keys.filter((key, index) => keys.indexOf(key) === index)
+  return once(keys)
+}
+
+const once = (keys: readonly string[]): string[] => keys.filter((key, index) => keys.indexOf(key) === index)
+
+// The writeProjects setting's text for a list of project keys, the way the /config row shows it.
+export const projectKeysText = (keys: readonly string[]): string => keys.join(', ')
+
+// Who lets the board write to which project. `repo` is what this repo's own settings files list: Release can't take
+// those away, and the board never copies them into the person's settings. `own` is the person's list, the one the board
+// writes: their user settings, and the board's value in this session, less the repo's. `all` is both, the projects the
+// board may write to. The board's value in this session comes from its options, which Claude Code merges over every
+// settings file, so a repo's file may hide the person's own list there; reading the user file brings it back.
+export type Grants = { own: string[]; repo: string[]; all: string[] }
+export const grantsOf = (session: readonly string[], user: readonly string[], repo: readonly string[]): Grants => {
+  const repoKeys = once(repo)
+  const own = once([...user, ...session]).filter(key => !repoKeys.includes(key))
+  return { own, repo: repoKeys, all: once([...own, ...repoKeys]) }
 }
 
 // The project an adoption an earlier board kept in the store stands for, as a key to add to writeProjects once. The
