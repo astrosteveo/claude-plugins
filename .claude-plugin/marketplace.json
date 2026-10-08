@@ -59,6 +59,23 @@
         "timing",
         "tools"
       ]
+    },
+    {
+      "name": "minimap",
+      "source": "./plugins/minimap",
+      "description": "The whole session as a strip of colored cells above the prompt: what each turn did, what it cost, and where it failed.",
+      "version": "0.1.0",
+      "author": {
+        "name": "astrosteveo"
+      },
+      "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/minimap",
+      "category": "productivity",
+      "tags": [
+        "mod",
+        "transcript",
+        "minimap",
+        "cost"
+      ]
     }
   ]
 }
