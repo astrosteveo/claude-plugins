@@ -1,0 +1,29 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "worktree",
+  "displayName": "Worktree",
+  "version": "0.1.0",
+  "description": "Asks once, before Claude's first edit on the default branch, whether to move the work into a git worktree.",
+  "author": {
+    "name": "astrosteveo"
+  },
+  "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/worktree",
+  "repository": "https://github.com/astrosteveo/claude-plugins",
+  "license": "MIT",
+  "keywords": [
+    "mod",
+    "git",
+    "worktree",
+    "branches"
+  ],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "mode": {
+      "type": "string",
+      "title": "Before the first edit on the default branch",
+      "description": "ask: Claude asks you whether to use a worktree. always: Claude moves into a worktree. never: nothing happens.",
+      "options": ["ask", "always", "never"],
+      "default": "ask"
+    }
+  }
+}
