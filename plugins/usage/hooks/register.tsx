@@ -5,6 +5,7 @@ import type { Turn } from '../types'
 import { HEADER, bandParts, colorOf, columns, crossings, levelOf, limitName, measureOf, resetIn, rowCells, tokens, totals, usd, withTurn } from './format'
 
 const PANE = 'usage'
+const COMMAND = 'spend'
 const measure = atom({ plugin: 'usage', key: 'measure' } as const, null)
 const turns = atom({ plugin: 'usage', key: 'turns' } as const, [])
 const warned = atom({ plugin: 'usage', key: 'warned' } as const, [])
@@ -22,7 +23,11 @@ const fallBack = <E, R>($: EngineInterface, e: E, next: ((e: E) => R) & Caught, 
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'usage', description: 'Show this session’s tokens, cache hits, cost and rate limits in a pane' })
+    // `/usage` is a built-in, so the pane's command is `/spend`. A refused
+    // name must not stop the figures below from loading.
+    await $.command
+      .register({ name: COMMAND, description: 'Show this session’s tokens, cache hits, cost and rate limits in a pane' })
+      .catch((cause: unknown) => $.ui.log(`usage: /${COMMAND} was not registered: ${String(cause)}`, { to: 'debug' }))
     // A reload starts the module over, but the figures are already there to read.
     const now = await $.session.usage()
     await update($, measure, () => measureOf(now))
@@ -30,7 +35,7 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('command.run', { command: 'usage' }, async $ => {
+  on('command.run', { command: COMMAND }, async $ => {
     await openPane($)
 
     return { text: 'Usage pane opened.' }

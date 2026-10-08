@@ -1,4 +1,4 @@
-import type { On } from 'claude-code'
+import type { On, SessionUsage } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
 const BAND = { component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120, scroll: { offset: 0, bodyRows: 10 }, view: {} } } as const
@@ -6,7 +6,9 @@ const PANE = { component: 'Pane', requestId: 'usage', props: { title: 'Usage', i
 const USAGE = { model: 'claude-opus-5-5', input_tokens: 200, output_tokens: 1234, cache_read_input_tokens: 8000, cache_creation_input_tokens: 1800 }
 // What the engine answers beneath the plugin: its own band, the end of a turn
 // and a measurement, a clock, and a session start with its command.
-function engine(on: On) {
+// `registered` collects the commands the plugin registers; `refuse` makes
+// each registration throw, as a clash with a built-in does.
+function engine(on: On, { registered = [] as string[], refuse = false, usage = { startedAt: 0, context: { window: 200_000 }, rateLimits: [] } as SessionUsage } = {}) {
   mock.clock(on, { now: 1_000 })
   on('ui.render', { component: 'AbovePrompt' }, async (_$, e) => {
     const { Box } = _$.ui.resolve(e)
@@ -15,8 +17,12 @@ function engine(on: On) {
   on('turn.complete', async () => ({ text: '' }))
   on('session.measure', async (_$, e) => ({ changed: e.changed }))
   on('session.start', async (_$, e) => ({ cwd: e.cwd }))
-  on('command.register', async (_$, e) => ({ value: { command: e.name } }))
-  on('session.usage', async () => ({ value: { startedAt: 0, context: { window: 200_000 }, rateLimits: [] } }))
+  on('command.register', async (_$, e) => {
+    if (refuse) throw new Error(`"/${e.name}" refused`)
+    registered.push(e.name)
+    return { value: { command: e.name } }
+  })
+  on('session.usage', async () => ({ value: usage }))
   on('ui.log', async () => ({ value: undefined }))
 }
 
@@ -76,15 +82,24 @@ test('the pane lists main-loop turns, newest first, with totals', async ($, on) 
   }
 })
 
-test('/usage opens the pane', async ($, on) => {
-  engine(on)
+test('/spend opens the pane', async ($, on) => {
+  const registered: string[] = []
+  engine(on, { registered })
   const opened: string[] = []
   on('ui.open', async (_$, e) => {
     opened.push(e.id)
     return { value: { isPlaced: true } }
   })
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
-  const ran = await $.command.run({ command: 'usage', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
+  expect(registered).toEqual(['spend'])
+  const ran = await $.command.run({ command: 'spend', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
   expect(opened).toEqual(['usage'])
   expect(ran).toMatchObject({ text: 'Usage pane opened.' })
+})
+
+test('a refused command still lets the start read the figures', async ($, on) => {
+  engine(on, { refuse: true, usage: { startedAt: 0, context: { window: 200_000, percent: 42 }, rateLimits: [] } })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  const band = await $.ui.mount({ plugin: 'usage', surface: 'terminal', ...BAND })
+  expect(await band.find({ type: 'Text', text: 'context 42%' })).toBeDefined()
 })
