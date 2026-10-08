@@ -7,8 +7,6 @@ status=0
 # Every userConfig field must be one /config can show as a row; the plugin test kit can't read plugin.json to check.
 echo "Checking userConfig fields"
 node --test scripts/config-rows.test.mjs || status=1
-# issue-board's setting titles in settings.ts must match plugin.json, which the test kit can't read either.
-node --test scripts/settings-titles.test.mjs || status=1
 # mutants.sh must warn when it tests a commit that the working tree has moved on from.
 node --test scripts/mutants.test.mjs || status=1
 # Given a base ref, mutants.sh must run only the patches the changes since it can affect.

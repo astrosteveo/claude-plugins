@@ -3,7 +3,7 @@
 # bug back, and names in its header the test (or tests) that must catch it:
 #
 #   Guards #214: what the fix guarantees. What the patch breaks.
-#   Test: plugins/issue-board: the name of the test, as `claude plugin test` prints it
+#   Test: plugins/usage: the name of the test, as `claude plugin test` prints it
 #   Test: scripts/config-rows.test.mjs: the name of the test, as `node --test` prints it
 #
 # Before the colon is where the test lives: a plugin folder, run with `claude plugin test`, or a test file, run with

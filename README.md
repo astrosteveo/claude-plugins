@@ -7,20 +7,17 @@ maintained by astrosteveo.
 
 | Plugin | What it does |
 | --- | --- |
-| [issue-board](plugins/issue-board) | Open GitHub issues and pull requests in a pane and under the prompt, with acceptance progress and CI, and a button that hands an issue to Claude. |
 | [ask](plugins/ask) | Ask Claude a side question in a pane, and get Claude's own pick, remembered answers and a decision log when Claude asks you. |
+| [usage](plugins/usage) | Context fill, cost and rate limits in a band above the prompt, each turn's tokens and cost on the line that closes it, and a `/spend` pane. |
+
+The issue board that used to live here has moved to its own repository.
 
 ## Requirements
 
 The plugins here are mods: plugins of function hooks that draw panes and hook
-Claude Code's events. They need Claude Code v2.1.287 or later, and the issue
-board needs v2.1.292 or later. Mods are an early access part of Claude Code:
-their API may change between releases, and a release may break a mod until it
-is updated.
-
-The issue board changes some things by itself and adds to Claude's prompts.
-Its README lists each, with its setting and default, under
-[Settings](plugins/issue-board/README.md#settings).
+Claude Code's events. Each plugin's README says which Claude Code version it
+needs. Mods are an early access part of Claude Code: their API may change
+between releases, and a release may break a mod until it is updated.
 
 ## Install
 
@@ -28,14 +25,14 @@ Inside Claude Code, add the marketplace from GitHub and install a plugin:
 
 ```text
 /plugin marketplace add astrosteveo/claude-plugins
-/plugin install issue-board@astrosteveo-plugins
+/plugin install ask@astrosteveo-plugins
 ```
 
 From a local checkout, register the checkout directory instead:
 
 ```text
 /plugin marketplace add /path/to/claude-plugins
-/plugin install issue-board@astrosteveo-plugins
+/plugin install ask@astrosteveo-plugins
 ```
 
 The same commands work from a shell as `claude plugin marketplace add ...` and
