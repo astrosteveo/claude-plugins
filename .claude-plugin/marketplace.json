@@ -93,6 +93,26 @@
         "worktree",
         "branches"
       ]
+    },
+    {
+      "name": "backlog",
+      "source": {
+        "source": "github",
+        "repo": "astrosteveo/backlog",
+        "sha": "8f713d91a3bf67c8f665f5fa922e4aa4590b3c6d"
+      },
+      "description": "A project tracker (milestones, epics, stories, tasks, bugs) stored outside your repo, with a board pane, Claude tools and a local web app.",
+      "author": {
+        "name": "astrosteveo"
+      },
+      "homepage": "https://github.com/astrosteveo/backlog",
+      "category": "productivity",
+      "tags": [
+        "mod",
+        "tracker",
+        "backlog",
+        "board"
+      ]
     }
   ]
 }

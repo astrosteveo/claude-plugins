@@ -14,6 +14,7 @@ function hooks, written in TypeScript/TSX, that draws inside Claude Code and hoo
 | `gutter` | A time column in the transcript: prompt times, tool run times, folded-group totals |
 | `minimap` | The session as a strip of colored cells in the band: each turn's kind, cost and failures |
 | `worktree` | Asks once, before the first edit on the default branch, whether to use a worktree; the `/wt` pane |
+| `backlog` | The project tracker: board pane, tracker tools, web app. Lives in its own repo (see below) |
 
 Load the `plugin-authoring` skill before writing or debugging hooks. It points at this build's API typings
 (`claude-code.d.ts`), the reference for every event, `$` method and element prop. Grep it for the name at hand.
@@ -53,6 +54,17 @@ locally can fail in CI. Install the pinned version into the scratchpad with npm 
 The marketplace is registered from this checkout, so the installed plugins are whatever is checked out. After a
 change, or after merging and pulling `main`, the person runs `/reload-plugins`. A new plugin needs
 `/plugin install <name>@astrosteveo-plugins` first.
+
+## Mods in their own repositories
+
+A mod with its own runtime, users or release schedule lives in its own repository. `backlog` does: it is
+`astrosteveo/backlog`, checked out at `~/Projects/claude-tasks`. Its `marketplace.json` entry has a `github` source
+pinned by `sha`, and no `version`; its own `plugin.json` holds that. The scripts here only cover `plugins/*`, so its
+own CI must validate and test it.
+
+- To release it, merge in its repo, then bump the `sha` here in its own pull request.
+- To work on it, install it from its own checkout (`/plugin marketplace add ~/Projects/claude-tasks`, then
+  `backlog@backlog`), not from this marketplace. Install it from only one marketplace at a time.
 
 ## How a mod is laid out
 
