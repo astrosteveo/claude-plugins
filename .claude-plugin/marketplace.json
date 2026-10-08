@@ -76,6 +76,23 @@
         "minimap",
         "cost"
       ]
+    },
+    {
+      "name": "worktree",
+      "source": "./plugins/worktree",
+      "description": "Asks once, before Claude's first edit on the default branch, whether to move the work into a git worktree.",
+      "version": "0.1.0",
+      "author": {
+        "name": "astrosteveo"
+      },
+      "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/worktree",
+      "category": "productivity",
+      "tags": [
+        "mod",
+        "git",
+        "worktree",
+        "branches"
+      ]
     }
   ]
 }

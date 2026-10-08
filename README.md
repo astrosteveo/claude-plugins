@@ -11,6 +11,7 @@ maintained by astrosteveo.
 | [usage](plugins/usage) | Context fill, cost and rate limits in a band above the prompt, each turn's tokens and cost on the line that closes it, and a `/spend` pane. |
 | [gutter](plugins/gutter) | A time column at the right of the transcript: when you sent each prompt, how long each tool ran, and each folded group's total. |
 | [minimap](plugins/minimap) | The whole session as a strip of colored cells above the prompt: what each turn did, what it cost, and where it failed. |
+| [worktree](plugins/worktree) | Asks once, before Claude's first edit on the default branch, whether to move the work into a git worktree. |
 
 The issue board that used to live here has moved to its own repository.
 
