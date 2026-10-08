@@ -3,116 +3,144 @@
 Ask Claude a side question without adding it to the chat. And when Claude
 asks you something, see which option Claude would pick, and why.
 
-Type a question in the Ask pane, or run `/ask <question>`. Claude answers in
-the background, in the pane. The main conversation never sees the question
-or the answer, so it doesn't fill up the context.
+Side questions go to a pane. The main conversation never sees the question or
+the answer, so they don't fill up its context. When Claude asks you a
+question with options, the plugin shows Claude's own pick, can answer for you
+when you are away, remembers answers you mark, and keeps a log of what you
+chose.
 
-It needs Claude Code v2.1.287 or later. Mods are an early access part of
-Claude Code: their API may change between releases, and a release may break
-the plugin until it is updated.
+## Side questions
 
-The answer comes from a fork of the session. The fork reads the whole
-conversation, so Claude knows what you are working on. The prompt cache serves
-that history, so a question costs little. If the session has no reply yet,
-the question goes to a plain Sonnet call instead.
-
-The main conversation never sees the pane, so each question also brings the
-last three answered questions from the pane with it. A follow-up like "any
-others?" then knows what Claude already said. Long answers are cut short so
-this stays small.
-
-## Use it
-
-The pane reads like a chat. The question box sits at the bottom, with the
-**Suggest next prompts** and **Clear answered** buttons under it. Questions
-stack above it, oldest first, so the newest is just above the box. When you
-ask or an answer comes in, the pane scrolls to the bottom so the box stays in
-view.
-
-- `/ask` opens the pane with the cursor in the question box.
+- `/ask` opens the Ask pane with the cursor in the question box.
 - `/ask <question>` sends the question and opens the pane. You can keep
   working while Claude thinks. A toast tells you when the answer is ready.
-- **Suggest next prompts** asks Claude for three prompts you could send next.
-- When Claude suggests prompts, each one gets a **Use** button. It puts that
-  prompt in the prompt box, ready to edit or send. When there are too many
-  buttons for one line, they wrap onto the next.
-- **Copy** copies an answer. **Remove** drops one. **Retry** runs a failed one
-  again. **Clear answered** keeps only the questions still running.
 
-The status line shows how many questions are still running.
+The pane reads like a chat. The question box sits at the bottom. Questions
+stack above it, oldest first, and the pane scrolls down when you ask or an
+answer comes in.
+
+Each question has buttons under it:
+
+- **Copy** copies the answer.
+- **Retry** runs a failed question again.
+- **Remove** drops the question.
+- **Use prompt** (or **Use 1**, **Use 2**, ... when there are several) puts a
+  prompt Claude suggested into the prompt box, ready to edit or send. The
+  suggested prompts are numbered in the answer to match.
+
+Under the question box, **Suggest next prompts** asks Claude for three
+prompts you could send next. **Clear answered** keeps only the questions
+still running.
+
+While questions are running, the status line says `ask: N thinking…`.
+
+### How it answers
+
+The answer comes from a fork of the session. The fork reads the whole
+conversation, so Claude knows what you are working on. The prompt cache
+serves that history, so a question costs little. If the session has no reply
+yet, the question goes to a plain Sonnet call instead.
+
+The fork can't use tools. It answers from the conversation alone.
+
+Each question also carries the last three answered questions from the pane,
+so a follow-up like "any others?" knows what Claude already said there. Those
+earlier answers are cut short so this stays small.
+
+The pane keeps the last 30 questions. If the plugin reloads while a question
+is running, that question is marked as stopped and you can retry it.
+
+A question typed in the pane leaves no trace in the chat. The `/ask` command
+prints nothing, but Claude Code may still log the command line itself, as it
+does for other commands.
 
 ## When Claude asks you
 
-When Claude asks a question with options (the AskUserQuestion dialog), this
-plugin adds four things.
+When Claude asks a question with options (the AskUserQuestion dialog), the
+plugin adds the following.
 
 ### Claude's take
 
 While the dialog is open, a fork of the session works out which option Claude
-would pick. A box above the dialog shows the pick, a confidence meter, and a
-short reason. The option descriptions get `★ Claude's pick (N%)` and an "In
-plain words" note. The option labels never change, because the label is the
-answer Claude gets back.
+would pick. A box above the dialog shows the pick, a confidence meter with
+"confident", "leaning" or "close call", and a short reason. With one
+question, it also says in plain words what is being decided.
 
-The box above the dialog has little room, so the fork is asked for short
-reasons. With one or two questions they fit whole. With more, each pick comes
-first and the reasons are cut at a word to fit.
+Each option's description gets a plain-words note, and the picked one gets
+`★ Claude's pick (N%)`. The option labels never change, because the label is
+the answer Claude gets back.
+
+The box has little room. With one or two questions the reasons fit whole.
+With more, each pick comes first and the reasons are cut to fit.
+
+If the take fails, the box says why, and the dialog works as usual.
 
 ### When you are away
 
-Claude Code can stop waiting for an answer. The `askUserQuestionTimeout`
-setting is `60s`, `5m`, `10m` or `never`, and it is `never` unless you set it.
-When the time runs out, the dialog sends whatever you had selected so far and
-tells Claude you may be away.
+Claude Code can stop waiting for an answer. Its `askUserQuestionTimeout`
+setting is `60s`, `5m`, `10m` or `never`, and it is `never` unless you set
+it. When the time runs out, the dialog sends whatever you had selected so far.
 
 With this plugin, Claude then goes with its own pick for each question you
 left open. An answer you selected before the timeout stands. Claude is told
-that you did not choose the pick. A toast and the band above the prompt say
-"You were away, so Claude went with X.", with a **Got it** button.
+you did not choose the pick, and to mention it when you are back. A toast and
+the band above the prompt say "You were away, so Claude went with X.", with a
+**Got it** button (`g`).
 
 While the timeout is on, the take box adds "If you're away for 5m, I'll go
-with X." If Claude has no pick (still thinking, or it failed), the timeout
-works as it would without the plugin.
-
-The timeout never runs while Remote Control is connected, because you could
-still answer from another device. Then there is no countdown and no away pick.
-To try it, use a session without Remote Control.
+with X." If Claude has no pick yet, or the take failed, the timeout works as
+it would without the plugin.
 
 ### Remembered answers
 
-After you answer, the band above the prompt offers **Remember** or **Not
-now**. Remember means the same question in the same project is answered for
-you next time, with a toast saying so. The same question means the same text
-and options, ignoring case and spacing.
+After you answer, the band above the prompt asks whether to remember the
+answer: **Remember** (`r`) or **Not now** (`n`). Sending your next prompt
+also clears the band.
+
+A remembered answer is given for you the next time Claude asks the same
+question in the same project, with a toast saying so. If every question in
+the dialog is remembered, the dialog doesn't open at all. The same question
+means the same text and the same options, ignoring case and spacing.
+
+Picks Claude took while you were away are never offered to remember.
 
 ### The decision log
 
 `/decisions` opens a pane with the answers Claude reuses and the log of your
-answers in this project.
+answers in this project. Esc closes it.
 
-- The log marks where you went against Claude's pick, and the picks Claude
-  took while you were away. Those are never offered to remember.
-- The search box at the top filters the log and the remembered answers. Every
-  word you type must appear in the question, the answer or the header.
+- The search box at the top filters both lists. Every word you type must
+  appear in the question, the answer, the header or Claude's pick.
+- **Forget** next to a remembered answer means you are asked again.
+- The log shows the 50 newest answers that match. Each one says whether
+  Claude agreed, what Claude would have picked instead, whether it came from
+  memory, or whether Claude picked it while you were away.
 - Under the log's title, a line says how often you went with Claude's pick:
   over the whole log, and over the last 20 answers once there are more. A
   second line splits it by week, for the last four weeks with answers.
-  Answers given from memory had no pick, and nobody chose a pick taken while
-  you were away, so neither counts.
-- **Forget** next to a remembered answer means you are asked again.
-- **Copy as Markdown** puts the project's log on the clipboard as markdown.
+  Answers from memory and picks taken while you were away don't count.
+- **Copy as Markdown** puts the project's whole log on the clipboard.
 - **Clear log** drops this project's log.
 
 The log and the remembered answers live in the plugin's own store, shared by
-every session. Nothing is written into the project. Each write reads the
-store first and changes only its own entries, so two sessions open at once
-don't erase each other's answers. The log keeps the last 300 answers.
+every session. Nothing is written into the project. Two sessions open at once
+don't erase each other's answers. The log keeps the last 300 answers across
+all projects.
 
-## Notes
+## Settings
 
-- The fork can't use tools. It answers from the conversation alone. This is
-  true of the side questions and of Claude's take.
-- A question typed in the pane leaves no trace in the chat. The `/ask`
-  command prints nothing, but Claude Code may still log the command line
-  itself, as it does for other commands.
-- The pane keeps the last 30 questions for the session.
+The plugin has no settings of its own. The away pick uses Claude Code's
+`askUserQuestionTimeout` setting, described above.
+
+## Requirements
+
+Claude Code v2.1.287 or later. Mods are an early access part of Claude Code,
+so a Claude Code release can break the plugin until it is updated.
+
+## Install
+
+```text
+/plugin marketplace add astrosteveo/claude-plugins
+/plugin install ask@astrosteveo-plugins
+/reload-plugins
+```
