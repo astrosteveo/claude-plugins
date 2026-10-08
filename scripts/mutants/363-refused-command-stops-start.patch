@@ -1,0 +1,18 @@
+Guards #363: a refused command registration stops session.start before it reads the figures.
+Test: plugins/usage: a refused command still lets the start read the figures
+
+diff --git a/plugins/usage/hooks/register.tsx b/plugins/usage/hooks/register.tsx
+index d6e65e4..25c120a 100644
+--- a/plugins/usage/hooks/register.tsx
++++ b/plugins/usage/hooks/register.tsx
+@@ -25,9 +25,7 @@ export const register: Register = on => {
+   on('session.start', async ($, e, next) => {
+     // `/usage` is a built-in, so the pane's command is `/spend`. A refused
+     // name must not stop the figures below from loading.
+-    await $.command
+-      .register({ name: COMMAND, description: 'Show this session’s tokens, cache hits, cost and rate limits in a pane' })
+-      .catch((cause: unknown) => $.ui.log(`usage: /${COMMAND} was not registered: ${String(cause)}`, { to: 'debug' }))
++    await $.command.register({ name: COMMAND, description: 'Show this session’s tokens, cache hits, cost and rate limits in a pane' })
+     // A reload starts the module over, but the figures are already there to read.
+     const now = await $.session.usage()
+     await update($, measure, () => measureOf(now))

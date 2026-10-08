@@ -26,7 +26,7 @@ back under its line toasts again the next time it crosses.
 
 ## The pane
 
-Run `/usage` to open the Usage pane. It shows the context window, the cost,
+Run `/spend` to open the Usage pane. (`/usage` is Claude Code's own command.) It shows the context window, the cost,
 each rate-limit window with when it resets, and the last 50 turns, newest
 first: the model, uncached input, cache read, cache written, output, hit rate
 and how long the turn ran. A last row sums them.
