@@ -12,8 +12,11 @@ maintained by astrosteveo.
 | [gutter](plugins/gutter) | A time column at the right of the transcript: when you sent each prompt, how long each tool ran, and each folded group's total. |
 | [minimap](plugins/minimap) | The whole session as a strip of colored cells above the prompt: what each turn did, what it cost, and where it failed. |
 | [worktree](plugins/worktree) | Asks once, before Claude's first edit on the default branch, whether to move the work into a git worktree, and a `/wt` pane to see, switch and leave worktrees. |
+| [backlog](https://github.com/astrosteveo/backlog) | A project tracker (milestones, epics, stories, tasks, bugs) stored outside your repo, with a board pane, Claude tools and a local web app. |
 
-The issue board that used to live here has moved to its own repository.
+Larger mods live in their own repositories, and this marketplace points at a
+pinned commit of each. backlog is one. The issue board that used to live here
+has also moved to its own repository.
 
 ## Requirements
 
@@ -50,7 +53,7 @@ directory: `claude --plugin-dir ./plugins/my-plugin`.
 ```text
 .claude-plugin/
   marketplace.json            # Marketplace identity and ordered plugin catalog
-plugins/                      # One directory per plugin
+plugins/                      # One directory per plugin kept in this repository
 scripts/validate.sh           # Strict validation of the marketplace and every plugin
 scripts/test.sh               # Every plugin's tests, and the userConfig check below
 scripts/config-rows.test.mjs  # Every userConfig field must be one /config can show as a row
