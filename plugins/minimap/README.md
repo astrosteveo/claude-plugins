@@ -1,47 +1,68 @@
 # Minimap
 
-The whole session as a strip of colored cells above the prompt, so you can
-see what kind of work happened, where it failed and where the cost went
-without scrolling back.
+Minimap draws the whole session as a strip of colored cells above the prompt.
+Each cell is one turn. At a glance you can see what kind of work each turn did,
+which turns cost the most, and where things failed, without scrolling back.
 
 ```
 ▄▄▄▄▄│▄▄▄▂▄▄
 ```
 
-- **Each cell is one turn**, oldest on the left. Its color says what the turn
-  mostly did: green for edits, amber for shell commands, blue for reads and
-  searches, purple for agents, teal for web, gray for other tools, and slate
-  for a turn that only talked.
-- **Brightness is cost.** The costliest turn is full color and the cheapest
-  is dim. Turns are ranked by their tokens, weighed as their prices compare,
-  so no ledger is needed. The strip shows no figures: `usage` has those.
-- **A red top** marks a turn where a tool failed, or that ended on an error
-  or a refusal. **A low cell** is a turn you interrupted.
-- **A divider** marks a compaction, before the turn it came in.
-- **A long session still fits.** Once there are more turns than columns,
-  neighboring turns share a cell, which takes the color of its costliest turn.
+## Reading the strip
+
+- **One cell per turn**, oldest on the left. A cell appears once its turn ends.
+- **Color is the kind of work.** Green is edits, amber is shell commands, blue
+  is reads and searches, purple is agents, teal is web, gray is other tools,
+  and slate is a turn that called no tools. A turn takes the color of the tools
+  it called most. On a tie, edits win, then shell, agents, web, reads and other.
+- **Brightness is cost.** The costliest turn is full color and the cheapest is
+  dim. Turns are ranked by their tokens, weighed by how their prices compare.
+  The strip shows no figures; the `usage` plugin shows those.
+- **A red top** means a tool failed in that turn, or the turn ended on an error
+  or a refusal.
+- **A low cell** (`▂`) is a turn you interrupted.
+- **A divider** (`│`) marks a compaction. It sits before the first turn after it.
+- **A long session still fits.** When there are more turns than columns,
+  neighboring turns share a cell. The cell takes the color of its costliest
+  turn, shows red if any of them failed, and is low only if all were
+  interrupted.
+
+Only the main conversation's turns get cells. A subagent's work counts as part
+of the turn that started it. Minimap only records turns that ran while it was
+loaded. A plugin reload keeps the strip. It keeps the last 2,000 turns.
 
 ## The /minimap pane
 
-`/minimap` opens a pane with the same map, wrapped to the pane's width, and
-a legend for its colors. Below the map is a list of every turn: its number,
-the start of its prompt, its kind, and how it ended. Press a turn to jump to
-its details further down, where the turn is highlighted. They give its whole
-prompt (up to 300 characters), its tool calls by kind, and where it ranks by
-cost. The list and details also work on desktop, where the map isn't drawn.
+Run `/minimap` to open a pane with:
 
-Turns recorded before version 0.2.0 have no prompt to show.
+- The same map, wrapped to the pane's width over up to six rows.
+- A legend for the colors and marks.
+- A list of every turn: its number, the start of its prompt, its kind, and how
+  it ended (errors, interrupted, after a compaction).
+- Details for each turn: its prompt (up to 300 characters), its tool calls by
+  kind, and its cost rank in the session.
 
-Only the main conversation's turns are cells. A subagent's work is part of
-the turn that called it. Only what happened while the mod was loaded is
-drawn, and a reload keeps the strip.
+Press a turn in the list to jump to its details. The picked turn is
+highlighted there. Turns recorded before version 0.2.0 have no prompt to show.
 
-The strip and the pane's map draw in the terminal only. It needs Claude Code v2.1.293 or later.
-Mods are an early access part of Claude Code: their API may change between
-releases, and a release may break the plugin until it is updated.
+## Terminal and desktop
+
+The strip and the pane's map draw in the terminal only. On desktop there is no
+strip, but `/minimap` still opens the pane with the legend, list and details.
+
+## Settings
+
+Minimap has no settings.
+
+## Requirements
+
+Claude Code v2.1.293 or later. Mods are an early access part of Claude Code, so
+a new release can break the plugin until it is updated.
 
 ## Install
 
 ```
+/plugin marketplace add astrosteveo/claude-plugins
 /plugin install minimap@astrosteveo-plugins
+/reload-plugins
 ```

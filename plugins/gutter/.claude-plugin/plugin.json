@@ -2,7 +2,7 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "gutter",
   "displayName": "Gutter",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A time column at the right of the transcript: when you sent each prompt, how long each tool ran, and each folded group's total.",
   "author": {
     "name": "astrosteveo"

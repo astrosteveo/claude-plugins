@@ -1,54 +1,65 @@
 # Usage
 
-See what the session is spending while you work: how full the context is,
-what it has cost, how much of each rate-limit window is used, and what each
-turn took in tokens and cache hits.
+Usage shows what the session is spending while you work. A line above the prompt shows how full the context is, what
+the session has cost and how much of each rate-limit window you have used. The line that closes each turn adds that
+turn's tokens, cache hits and cost. The `/spend` command opens a pane with the details. It draws the same way in the
+terminal and in the desktop app.
 
-It needs Claude Code v2.1.293 or later. Mods are an early access part of
-Claude Code: their API may change between releases, and a release may break
-the plugin until it is updated.
+## The band above the prompt
 
-## The band
-
-A line above the prompt shows the latest figures once the session has
-measured them, after the first reply:
+Once the session has figures, a line above the prompt shows them:
 
 ```
 context 42% · $1.23 · 5h 31% · 7d 12%
 ```
 
-Context and each rate-limit window turn yellow from 80% and red from 90%.
+The figures update after each reply. In a new session they appear after the first reply. The rate-limit windows are the ones your
+account reports, such as `5h`, `7d` or `spend`. The cost is left out where Claude Code keeps no cost ledger. The line is
+hidden while a survey is showing.
 
-A toast tells you once when context passes 85%, so there is time to
-`/compact`, and once when a rate-limit window passes 90%. A figure that falls
-back under its line toasts again the next time it crosses.
+Context and each rate-limit window turn yellow at 80% and red at 90%.
+
+A toast warns you once when context reaches 85%, so you have time to `/compact`. Another warns you once when a
+rate-limit window reaches 90%. If a figure drops back below its line, it warns again the next time it crosses.
 
 ## The end of each turn
 
-The line that closes a turn says what the turn took, after its length:
+The line that closes a turn adds what the turn took after its length:
 
 ```
 ✻ Baked for 12s · 10k in · 1.2k out · 80% cached · $0.04
 ```
 
-"Cached" is the share of the turn's input the prompt cache served. The cost
-is what the session total grew by over the turn, so it includes any
-subagents the turn ran. It shows once the session measures, just after the
-turn ends. Turns from before the session started, or before the mod loaded,
-keep Claude Code's own line.
+- **in** is all the input the turn sent, cached or not.
+- **cached** is the share of that input the prompt cache served.
+- **The cost** is how much the session total grew during the turn, so it includes any subagents the turn ran. It
+  appears a moment after the turn ends, once Claude Code reports the new total. A cost under a cent shows as `<$0.01`.
 
-## The pane
+Turns from before Usage loaded keep Claude Code's own line.
 
-Run `/spend` to open the Usage pane. (`/usage` is Claude Code's own command.) It shows the context window, the cost,
-each rate-limit window with when it resets, and the last 50 turns, newest
-first: the model, uncached input, cache read, cache written, output, hit
-rate, cost and how long the turn ran. A last row sums them.
+## The `/spend` pane
 
-Only your own turns are listed. A subagent's turns are left out, but their
-cost is still in the session total.
+Run `/spend` to open the Usage pane. (`/usage` is Claude Code's own command.) The top of the pane shows:
+
+- the context window: percent full, its size and the tokens used
+- the session's cost
+- each rate-limit window: percent used and how long until it resets
+
+Below that is a table of your last 50 turns, newest first. Each row shows the model, uncached input, cache reads,
+cache writes, output, cache hit rate, cost and how long the turn ran. A turn you stopped is dimmed and says `stopped`.
+The last row adds up the turn count, the four token columns and the overall hit rate.
+
+The table lists only your own turns. Subagent turns are left out, but their cost is still in the session total.
+
+## Requirements
+
+Usage needs Claude Code v2.1.293 or later. Mods are an early access part of Claude Code, so a Claude Code release can
+break the plugin until it is updated.
 
 ## Install
 
 ```
+/plugin marketplace add astrosteveo/claude-plugins
 /plugin install usage@astrosteveo-plugins
+/reload-plugins
 ```

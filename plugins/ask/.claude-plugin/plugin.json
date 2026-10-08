@@ -2,7 +2,7 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "ask",
   "displayName": "Ask",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Ask Claude a side question in a pane, and get Claude's own pick, remembered answers and a decision log when Claude asks you.",
   "author": {
     "name": "astrosteveo"
