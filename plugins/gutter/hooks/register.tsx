@@ -22,12 +22,13 @@ const record = async ($: EngineInterface, id: string, ms: number | undefined, is
 }
 
 // The engine's own row, narrowed by the gutter, with the badge right-aligned
-// in the gutter on the row's first line.
+// in the gutter. It sits on the row's last line: the engine opens most rows
+// with a blank margin line, and a one-line row's text is its last line.
 const withGutter = ($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0], row: RenderElement, badge: Badge) => {
   const { Box, Text } = $.ui.resolve(e)
 
   return (
-    <Box flexDirection="row">
+    <Box flexDirection="row" alignItems="flex-end">
       <Box flexGrow={1} flexShrink={1}>
         {row}
       </Box>
@@ -53,6 +54,17 @@ export const register: Register = on => {
     return next(e)
   }).catch(($, e, next) => fallBack($, e, next, 'PostToolUseFailure'))
 
+  // A row the person sees as typed is stored under the id its UserMessage
+  // row is drawn with, so the time is found by that id once it is kept.
+  on('session.append', async ($, e, next) => {
+    if (e.type === 'user' && e.message.isMeta !== true && e.agentId === undefined) {
+      const at = await $.clock.now()
+      await update($, memberOf(sent, { requestId: e.uuid }), held => held ?? at)
+    }
+    return next(e)
+  }).catch(($, e, next) => fallBack($, e, next, 'session.append'))
+
+  // The text is the fallback key, for a row whose id the append did not see.
   on('prompt.submit', async ($, e, next) => {
     const at = await $.clock.now()
     await update($, memberOf(sent, { requestId: keyOf(e.text) }), held => held ?? at)
@@ -60,7 +72,9 @@ export const register: Register = on => {
   }).catch(($, e, next) => fallBack($, e, next, 'prompt.submit'))
 
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
-    const at = e.props.isExpanded ? null : await read($, memberOf(sent, { requestId: keyOf(e.props.text) }))
+    const at = e.props.isExpanded
+      ? null
+      : ((await read($, memberOf(sent, e))) ?? (await read($, memberOf(sent, { requestId: keyOf(e.props.text) }))))
     const row = await next(e)
     if (at === null) return row
     return withGutter($, e, row, { text: clock(at), tone: 'quiet' })

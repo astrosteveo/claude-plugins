@@ -6,7 +6,7 @@ declare module 'claude-code' {
     gutter: {
       // Each tool call's run, by its tool_use_id.
       timings: StateFamily<Timing | null>
-      // When each prompt was sent, by a hash of its text.
+      // When each prompt was sent, by its message id and by a hash of its text.
       sent: StateFamily<number | null>
     }
   }
