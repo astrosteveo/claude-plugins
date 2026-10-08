@@ -1,0 +1,22 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "usage",
+  "displayName": "Usage",
+  "version": "0.1.0",
+  "description": "Context fill, cost and rate limits in a band above the prompt, and each turn's tokens and cache hits in a /usage pane.",
+  "author": {
+    "name": "astrosteveo"
+  },
+  "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/usage",
+  "repository": "https://github.com/astrosteveo/claude-plugins",
+  "license": "MIT",
+  "keywords": [
+    "mod",
+    "usage",
+    "cost",
+    "tokens",
+    "context",
+    "rate-limits"
+  ],
+  "types": "./types/index.d.ts"
+}

@@ -42,6 +42,24 @@
         "prompts",
         "pane"
       ]
+    },
+    {
+      "name": "usage",
+      "source": "./plugins/usage",
+      "description": "Context fill, cost and rate limits in a band above the prompt, and each turn's tokens and cache hits in a /usage pane.",
+      "version": "0.1.0",
+      "author": {
+        "name": "astrosteveo"
+      },
+      "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/usage",
+      "category": "productivity",
+      "tags": [
+        "mod",
+        "usage",
+        "cost",
+        "tokens",
+        "context"
+      ]
     }
   ]
 }
