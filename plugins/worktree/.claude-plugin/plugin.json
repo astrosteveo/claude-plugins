@@ -2,7 +2,7 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "worktree",
   "displayName": "Worktree",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Keeps Claude's edits off the default branch: Claude moves into a git worktree before its first edit.",
   "author": {
     "name": "astrosteveo"
