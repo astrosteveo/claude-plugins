@@ -78,23 +78,6 @@
       ]
     },
     {
-      "name": "worktree",
-      "source": "./plugins/worktree",
-      "description": "Keeps Claude's edits off the default branch: Claude moves into a git worktree before its first edit. Adds a /wt pane.",
-      "version": "0.4.0",
-      "author": {
-        "name": "astrosteveo"
-      },
-      "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/worktree",
-      "category": "productivity",
-      "tags": [
-        "mod",
-        "git",
-        "worktree",
-        "branches"
-      ]
-    },
-    {
       "name": "backlog",
       "source": {
         "source": "github",
