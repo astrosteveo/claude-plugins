@@ -38,16 +38,13 @@ Load the `plugin-authoring` skill before writing or debugging hooks. It points a
 sh scripts/validate.sh                      # strict validate of the marketplace and each plugin; each gating hook has a .catch
 sh scripts/test.sh                          # every plugin's tests, plus the scripts' own node tests
 sh scripts/typecheck.sh                     # type-check every plugin against the installed Claude Code
-sh scripts/mutants.sh                       # put each fixed bug back and check a test catches it; tests HEAD, so commit first
-sh scripts/mutants.sh origin/main           # only the patches the changes since origin/main can affect
 claude plugin test plugins/usage            # one plugin's tests; there is no per-test filter
 claude plugin validate --json plugins/usage # what the module hooks and calls, its state keys and gating hooks
 claude --plugin-dir ./plugins/usage         # try a plugin without installing it
 ```
 
-CI runs `validate.sh`, `test.sh` and `typecheck.sh` (`validate.yml`), and `mutants.sh` with the pull request's base
-(`mutants.yml`). Both install the latest Claude Code, the version used for development, and `validate.yml` also runs
-weekly. When a new release turns CI red, fix the plugins. Run `claude update` first if a test passes locally but
+CI runs `validate.sh`, `test.sh` and `typecheck.sh` (`validate.yml`). It installs the latest Claude Code, the version
+used for development, and also runs weekly. When a new release turns CI red, fix the plugins. Run `claude update` first if a test passes locally but
 fails in CI.
 
 The marketplace is registered from this checkout, so the installed plugins are whatever is checked out. After a
@@ -103,14 +100,6 @@ Tests import `test` and `expect` from `'claude-code/testing'` and get `($, on)`.
   `find` / `findAll` / `press` act on it. Run UI tests on both `'terminal'` and `'desktop'`.
 - There is no rendered frame. Check layout through element props, such as a `Box`'s `flexDirection`. Find a `Text` by
   its text: its `key` is not kept.
-
-When a fix comes with a regression test, add a mutant: a patch in `scripts/mutants/` that puts the bug back, named
-`<id>-<what-breaks>.patch`. Its first line says what it guards and what it breaks (`Guards S-12: …`). Then come one or
-more `Test: <where>: <test name>` lines, where `<where>` is a plugin folder (run with `claude plugin test`) or a
-`scripts/*.test.mjs` file (run with `node --test`), and the name is exactly as the run prints it. Add
-`Test-file: <path>` when the name can't be found by searching the test files. Make a patch by changing the code in a
-scratch worktree and saving `git diff` below the header. `mutants.sh` reports `SURVIVED`, `WRONG KILL`, `NO TEST` or
-`STALE` for a patch that doesn't hold, and fails.
 
 ## Working in this repo
 

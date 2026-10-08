@@ -58,9 +58,7 @@ scripts/validate.sh           # Strict validation of the marketplace and every p
 scripts/test.sh               # Every plugin's tests, and the userConfig check below
 scripts/config-rows.test.mjs  # Every userConfig field must be one /config can show as a row
 scripts/typecheck.sh          # Type-check every plugin against the installed Claude Code
-scripts/mutants.sh            # Proves each regression test still catches its bug
-scripts/mutants/              # One patch per fixed bug, which puts the bug back
-.github/workflows/            # validate.yml (CI) and mutants.yml
+.github/workflows/            # validate.yml (CI)
 CLAUDE.md                     # Guidance for Claude Code in this repository (AGENTS.md links to it)
 ```
 
@@ -173,11 +171,6 @@ site, such as `tool.check` or `prompt.submit`, without a `.catch`. The GitHub Ac
 then `scripts/test.sh`, which runs `claude plugin test` on every plugin that
 has tests, then `scripts/typecheck.sh`, which type-checks every plugin, on
 pushes to `main` and on pull requests. Run them locally before committing.
-
-`scripts/mutants.sh` puts each fixed bug in `scripts/mutants/` back, one at a
-time, and fails if the tests still pass. A second workflow, `mutants.yml`,
-runs it on pull requests that touch hooks, tests, `plugin.json` or
-`scripts/`, and weekly.
 
 ## Conventions
 
