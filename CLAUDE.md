@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A Claude Code plugin marketplace (`astrosteveo-plugins`). Each plugin under `plugins/` is a **mod**: a plugin of
 function hooks written in TypeScript/TSX that draws panes, bands and hint text inside Claude Code and hooks its events.
-`issue-board` is the big one; `ask` is small. Load the `plugin-authoring` skill before writing or debugging hooks: it
-points at this build's full API typings (`claude-code.d.ts`), which are the reference for every event, `$` method and
-element prop.
+`issue-board` is the big one; `ask` and `usage` are small. Load the `plugin-authoring` skill before writing or
+debugging hooks: it points at this build's full API typings (`claude-code.d.ts`), which are the reference for every
+event, `$` method and element prop.
 
 ## Commands
 
@@ -58,6 +58,7 @@ entries the same.
   `gh`. Put new deciding, layout or text logic there when it can be tested without mounting a pane. Each file is
   imported by name; there is no barrel.
   - ask: `parse.ts` and `decide.ts`.
+  - usage: `format.ts`.
   - issue-board, by topic: `github.ts` (reading gh's issues, pull requests, CI, comments and the project graph, and
     the board a full read makes), `rest.ts` (REST answers: search, project items, milestones, labels), `filters.ts`
     (filters, view tabs, sorting and grouping, `#` rows), `layout.ts` (cell widths, fitting, badges, glyphs, times),
