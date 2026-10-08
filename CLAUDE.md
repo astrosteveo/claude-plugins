@@ -13,7 +13,6 @@ function hooks that draw inside Claude Code and hook its events. `.claude-plugin
 | `usage` | Context, cost and rate limits in the band; each turn's figures on its closing line; the `/spend` pane |
 | `gutter` | A time column in the transcript: prompt times, tool run times, folded-group totals |
 | `minimap` | The session as a strip of colored cells in the band: each turn's kind, cost and failures |
-| `worktree` | Stops edits on the default branch until Claude moves into a worktree; the `/wt` pane |
 | `backlog` | The project tracker. It lives in its own repository (see below) |
 
 Load the `plugin-authoring` skill before writing or debugging hooks. It points at the API typings
@@ -87,7 +86,7 @@ plugins/<name>/
 Tests import `test` and `expect` from `'claude-code/testing'` and get `($, on)`.
 
 - The test's `on` hooks sit beneath the plugin and stand in for the engine. Any event the plugin passes on needs an
-  answer there. `usage`, `gutter`, `minimap` and `worktree` keep those answers in an `engine(on)` helper. Follow that.
+  answer there. `usage`, `gutter` and `minimap` keep those answers in an `engine(on)` helper. Follow that.
 - `$` raises events as the engine would: `$.session.measure(...)`, `$.turn.complete(...)`,
   `$.classic.PostToolUse(...)`, `$.command.run(...)`. `$.ui.mount({ plugin, surface, component, requestId, props })`
   draws a site, and `find` / `findAll` / `press` act on it. Run UI tests on both `'terminal'` and `'desktop'`.
