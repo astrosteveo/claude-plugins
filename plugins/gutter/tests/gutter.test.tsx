@@ -18,6 +18,15 @@ function engine(on: On) {
   on('classic.PostToolUse', async () => ({}))
   on('classic.PostToolUseFailure', async () => ({}))
   on('prompt.submit', async (_$, e) => ({ text: e.text }))
+  // Newer kits keep the row beneath this hook, older ones have nothing there.
+  on('session.append', async (_$, e, next) => {
+    try {
+      return await next(e)
+    } catch {
+      return { message: e.message, uuid: e.uuid }
+    }
+  })
+  on('ui.log', async () => ({ value: undefined }))
   on('clock.now', async () => ({ value: Date.parse('2026-10-07T14:05:30') }))
 }
 
