@@ -1,7 +1,7 @@
 import type { On } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 
-import { checkoutOf, isInside, mayStop, noteFor, pathOf, reasonFor } from '../hooks/guard'
+import { STOPPED_KEPT, checkoutOf, isInside, mayStop, noteFor, pathOf, reasonFor, withStopped } from '../hooks/guard'
 import type { Checkout } from '../hooks/guard'
 
 const MAIN: Checkout = { top: '/repo', branch: 'main', defaultBranch: 'main', isLinked: false }
@@ -55,6 +55,8 @@ test('only a main-loop edit, before the session was asked and with the guard on,
   expect(mayStop('ask', false, undefined, 'Edit')).toBe(true)
   expect(mayStop('always', false, undefined, 'Write')).toBe(true)
   expect(mayStop('ask', true, undefined, 'Edit')).toBe(false)
+  // Always holds after the first stop too.
+  expect(mayStop('always', true, undefined, 'Edit')).toBe(true)
   expect(mayStop('never', false, undefined, 'Edit')).toBe(false)
   expect(mayStop('ask', false, 'agent-1', 'Edit')).toBe(false)
   expect(mayStop('ask', false, undefined, 'Read')).toBe(false)
@@ -103,10 +105,11 @@ test('never stops nothing', { options: { mode: 'never' } }, async ($, on) => {
   expect((await $.tool.call(edit('/repo/a.ts'))).deny).toBeUndefined()
 })
 
-test('always tells Claude to move, and an edit in the worktree goes through', { options: { mode: 'always' } }, async ($, on) => {
+test('always stops every edit on main, and an edit in the worktree goes through', { options: { mode: 'always' } }, async ($, on) => {
   const git = { now: ON_MAIN }
   engine(on, git)
   expect(await $.tool.call(edit('/repo/a.ts'))).toMatchObject({ deny: expect.stringContaining('EnterWorktree') })
+  expect(await $.tool.call(edit('/repo/a.ts', 'tu2'))).toMatchObject({ deny: expect.stringContaining('Every edit on this branch') })
   git.now = { top: '/repo/.claude/worktrees/fix', branch: 'worktree-fix', gitDir: '/repo/.git/worktrees/fix', commonDir: '/repo/.git' }
   expect((await $.tool.call(edit('/repo/.claude/worktrees/fix/a.ts'))).deny).toBeUndefined()
 })
@@ -124,6 +127,14 @@ test('when git fails the edit goes through', async ($, on) => {
   })
   expect((await $.tool.call(edit('/repo/a.ts'))).deny).toBeUndefined()
   expect(logged.some(line => line.startsWith('worktree: tool.call failed'))).toBe(true)
+})
+
+test('the stopped list keeps the newest ids', () => {
+  const many = Array.from({ length: STOPPED_KEPT }, (_, i) => `tu${i}`)
+  expect(withStopped([], 'a')).toEqual(['a'])
+  expect(withStopped(many, 'new')).toHaveLength(STOPPED_KEPT)
+  expect(withStopped(many, 'new').at(-1)).toBe('new')
+  expect(withStopped(many, 'new')[0]).toBe('tu1')
 })
 
 test('only always mode on the default branch, outside a worktree, has a note', () => {
@@ -145,10 +156,10 @@ test('in always mode a prompt on main tells Claude to move first, until it has m
   expect((await $.prompt.submit(prompt('And the pane'))).context).toBeUndefined()
 })
 
-test('in always mode no note comes once the edit was stopped', { options: { mode: 'always' } }, async ($, on) => {
+test('in always mode the note keeps coming after a stop, while the session is still on main', { options: { mode: 'always' } }, async ($, on) => {
   engine(on, { now: ON_MAIN })
   await $.tool.call(edit('/repo/a.ts'))
-  expect((await $.prompt.submit(prompt('Go on'))).context).toBeUndefined()
+  expect((await $.prompt.submit(prompt('Go on'))).context).toEqual([expect.stringContaining('call EnterWorktree')])
 })
 
 test('ask mode adds no note', async ($, on) => {
@@ -161,14 +172,17 @@ test('a feature branch in always mode adds no note', { options: { mode: 'always'
   expect((await $.prompt.submit(prompt('Fix it'))).context).toBeUndefined()
 })
 
-test('the stopped edit draws as a dim note, and other rows as the engine draws them', { options: { mode: 'always' } }, async ($, on) => {
+test('each stopped edit draws as a dim note, and other rows as the engine draws them', { options: { mode: 'always' } }, async ($, on) => {
   engine(on, { now: ON_MAIN })
   await $.tool.call(edit('/repo/a.ts', 'tu1'))
+  await $.tool.call(edit('/repo/a.ts', 'tu3'))
   for (const surface of ['terminal', 'desktop'] as const) {
-    const row = await $.ui.mount({ plugin: 'worktree', surface, component: 'ToolUse', requestId: 'tu1', props: ROW })
-    expect(await row.find({ type: 'Text', text: '○ Edit stopped once to move into a worktree first' })).toMatchObject({ props: { dimColor: true } })
-    expect(await row.find({ type: 'Text', text: 'engine row' })).toBeUndefined()
-    await row.unmount()
+    for (const id of ['tu1', 'tu3']) {
+      const row = await $.ui.mount({ plugin: 'worktree', surface, component: 'ToolUse', requestId: id, props: { ...ROW, tool_use_id: id } })
+      expect(await row.find({ type: 'Text', text: '○ Edit stopped to move into a worktree first' })).toMatchObject({ props: { dimColor: true } })
+      expect(await row.find({ type: 'Text', text: 'engine row' })).toBeUndefined()
+      await row.unmount()
+    }
     const result = await $.ui.mount({ plugin: 'worktree', surface, component: 'ToolResult', requestId: 'tu1', props: { tool_use_id: 'tu1', tool: 'Edit', output: 'refused', isErrored: true } as never })
     expect(await result.find({ type: 'Text', text: '  ⎿ Claude makes the edit again.' })).toMatchObject({ props: { dimColor: true } })
     await result.unmount()

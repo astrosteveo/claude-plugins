@@ -21,11 +21,12 @@ per session.
 The stopped edit's row says so in dim text, such as `○ Edit stopped once to
 ask about a worktree first`, instead of showing a red error.
 
-With the `always` setting, Claude usually never gets stopped. While the
-session is on the default branch, each prompt carries a note Claude reads
-but you don't see. It tells Claude to move into a worktree before its first
-edit. A prompt that needs no edits doesn't move the session. If Claude edits
-without moving anyway, the edit is stopped as above.
+With the `always` setting, nothing is asked and every edit on the default
+branch is stopped until Claude has moved into a worktree. Claude usually
+moves before it is ever stopped: while the session is on the default branch,
+each prompt carries a note Claude reads but you don't see, telling it to
+move before its first edit. A prompt that needs no edits doesn't move the
+session.
 
 Nothing is stopped:
 
@@ -72,7 +73,8 @@ Set under `/config`.
 - `mode` (default `ask`): what happens before the first edit on the default
   branch.
   - `ask`: Claude asks you whether to use a worktree.
-  - `always`: Claude moves into a worktree without asking.
+  - `always`: Claude moves into a worktree without asking. No edit lands
+    on the default branch.
   - `never`: nothing is stopped. The `/wt` pane still works.
 
 ## Requirements

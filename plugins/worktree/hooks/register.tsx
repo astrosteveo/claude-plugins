@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Caught, EngineInterface, HookFailure, Register } from 'claude-code'
 
 import type { Mode, Row } from '../types'
-import { checkoutOf, mayStop, noteFor, pathOf, reasonFor, stoppedLabelOf } from './guard'
+import { checkoutOf, mayStop, noteFor, pathOf, reasonFor, stoppedLabelOf, withStopped } from './guard'
 import { isWorktreeName, labelOf, outcomeOf, parseWorktrees } from './worktrees'
 
 const PANE = 'worktree'
@@ -11,7 +11,7 @@ const COMMAND = 'wt'
 const asked = atom({ plugin: 'worktree', key: 'asked' } as const, false)
 const rows = atom({ plugin: 'worktree', key: 'rows' } as const, [])
 const here = atom({ plugin: 'worktree', key: 'here' } as const, null)
-const stopped = atom({ plugin: 'worktree', key: 'stopped' } as const, null)
+const stopped = atom({ plugin: 'worktree', key: 'stopped' } as const, [])
 
 const failureOf = (error: HookFailure): string => (error.kind === 'timeout' ? 'ran out of time' : (error.message ?? 'threw'))
 
@@ -59,8 +59,9 @@ const act = async ($: EngineInterface, input: { tool: 'EnterWorktree'; path: str
 export const register: Register = (on, options) => {
   const mode = (options.mode ?? 'ask') as Mode
 
-  // The first edit on the default branch is stopped once, with a reason that
-  // tells Claude to offer a worktree, or to move into one.
+  // An edit on the default branch is stopped with a reason that tells Claude
+  // to offer a worktree, or to move into one: in ask mode the first edit
+  // only, in always mode every edit until Claude has moved.
   on('tool.call', async ($, e, next) => {
     const path = pathOf(e as unknown as Record<string, unknown>)
     if (path === undefined || !mayStop(mode, await read($, asked), e.agentId, e.tool)) return next(e)
@@ -68,30 +69,30 @@ export const register: Register = (on, options) => {
     const reason = checkout === null ? null : reasonFor(mode, checkout, path)
     if (reason === null) return next(e)
     await update($, asked, () => true)
-    await update($, stopped, () => e.tool_use_id)
+    await update($, stopped, ids => withStopped(ids, e.tool_use_id))
     return { deny: reason }
   }).catch(($, e, next) => fallBack($, e, next, 'tool.call'))
 
   // In always mode each prompt on the default branch tells Claude to move
-  // first, so the first edit is made in the worktree and never stopped. The
-  // stop above stays for a Claude that does not.
+  // first, so its edits are made in the worktree and never stopped. The stop
+  // above stays for a Claude that does not.
   on('prompt.submit', async ($, e, next) => {
-    if (mode !== 'always' || (await read($, asked))) return next(e)
+    if (mode !== 'always') return next(e)
     const checkout = await checkoutNow($)
     const note = checkout === null ? null : noteFor(mode, checkout)
     return next(note === null ? e : { ...e, context: [...(e.context ?? []), note] })
   }).catch(($, e, next) => fallBack($, e, next, 'prompt.submit'))
 
-  // The stopped edit draws as a dim note, not a red error: the stop is the
+  // A stopped edit draws as a dim note, not a red error: the stop is the
   // plugin working, and Claude makes the edit again.
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
-    if (e.props.tool_use_id !== (await read($, stopped))) return next(e)
+    if (!(await read($, stopped)).includes(e.props.tool_use_id)) return next(e)
     const { Text } = $.ui.resolve(e)
     return <Text dimColor>{`○ ${e.props.tool} ${stoppedLabelOf(mode)}`}</Text>
   })
 
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
-    if (e.props.tool_use_id !== (await read($, stopped))) return next(e)
+    if (!(await read($, stopped)).includes(e.props.tool_use_id)) return next(e)
     const { Text } = $.ui.resolve(e)
     return <Text dimColor>{'  ⎿ Claude makes the edit again.'}</Text>
   })

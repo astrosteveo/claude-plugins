@@ -19,15 +19,16 @@ export type Row = Worktree & { isDirty: boolean }
 declare module 'claude-code' {
   interface PluginState {
     worktree: {
-      // Whether this session has already been stopped once. It is never
-      // stopped twice: the person has answered, or Claude has moved.
+      // Whether this session has already been stopped once. In ask mode it
+      // is never stopped twice, because the person has answered.
       asked: boolean
       // The worktrees the /wt pane lists, as last read from git.
       rows: Row[]
       // The top folder of the checkout the session is in, as last read.
       here: string | null
-      // The id of the edit that was stopped, so its row draws as a note.
-      stopped: string | null
+      // The ids of the edits that were stopped, newest last, so their rows
+      // draw as notes.
+      stopped: string[]
     }
   }
 }

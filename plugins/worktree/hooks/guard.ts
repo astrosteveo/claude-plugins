@@ -28,17 +28,18 @@ const isDefault = (checkout: Checkout): boolean =>
 
 export const isInside = (path: string, top: string): boolean => path === top || path.startsWith(top.endsWith('/') ? top : `${top}/`)
 
-// Whether this edit should be stopped, before anything is asked of git: the
-// main loop's first edit this session, with the guard on.
+// Whether this edit should be stopped, before anything is asked of git: a
+// main-loop edit with the guard on. Ask stops only the session's first, since
+// the person's answer stands; always stops every one until Claude moves.
 export const mayStop = (mode: Mode, asked: boolean, agentId: string | undefined, tool: string): boolean =>
-  mode !== 'never' && !asked && agentId === undefined && EDIT_TOOLS.has(tool)
+  mode !== 'never' && (mode === 'always' || !asked) && agentId === undefined && EDIT_TOOLS.has(tool)
 
 // The reason the edit is stopped, which Claude reads; null to let it through.
 export const reasonFor = (mode: Mode, checkout: Checkout, path: string): string | null => {
   if (checkout.isLinked || !isDefault(checkout) || !isInside(path, checkout.top)) return null
   const where = `This session is on ${checkout.branch}, the default branch of ${checkout.top}.`
   if (mode === 'always') {
-    return `${where} The person's worktree setting is "always": call EnterWorktree with a short name for this task, then make this edit again inside the worktree, with its paths. This edit is the only one stopped this session.`
+    return `${where} The person's worktree setting is "always": call EnterWorktree with a short name for this task, then make this edit again inside the worktree, with its paths. Every edit on this branch is stopped until you move.`
   }
   return `${where} Before the first edit, ask the person with AskUserQuestion whether to do this work in a git worktree instead. If they choose the worktree, call EnterWorktree with a short name for the task and make the edit inside it, with its paths. If they choose to stay, make the same edit again here. This edit is the only one stopped this session.`
 }
@@ -54,7 +55,12 @@ export const noteFor = (mode: Mode, checkout: Checkout): string | null => {
 // What the stopped edit's row says in place of the refusal, which reads as an
 // error though nothing went wrong.
 export const stoppedLabelOf = (mode: Mode): string =>
-  mode === 'always' ? 'stopped once to move into a worktree first' : 'stopped once to ask about a worktree first'
+  mode === 'always' ? 'stopped to move into a worktree first' : 'stopped once to ask about a worktree first'
+
+// The stopped edits whose rows draw as notes: the newest ones, so a long
+// session in always mode doesn't grow the list without end.
+export const STOPPED_KEPT = 50
+export const withStopped = (ids: readonly string[], id: string): string[] => [...ids, id].slice(-STOPPED_KEPT)
 
 // `git rev-parse` output, one answer per line, into a Checkout. The lines are
 // the top folder, the branch (`HEAD` when detached), the git folder and the
