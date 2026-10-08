@@ -2,7 +2,7 @@ import { atom, memberOf, read, update } from 'claude-code'
 import type { Caught, EngineInterface, HookFailure, Register, RenderElement } from 'claude-code'
 
 import type { Badge } from './format'
-import { WIDTH, clock, colorOf, groupBadge, keyOf, timingBadge } from './format'
+import { TIMED_BY_ENGINE, WIDTH, clock, colorOf, groupBadge, keyOf, timingBadge } from './format'
 
 const timings = atom({ plugin: 'gutter', key: 'timings' } as const, null)
 const sent = atom({ plugin: 'gutter', key: 'sent' } as const, null)
@@ -81,7 +81,8 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
-    const badge = e.props.isRunning ? null : timingBadge(await read($, memberOf(timings, e)))
+    const isQuiet = e.props.isRunning || TIMED_BY_ENGINE.has(e.props.tool)
+    const badge = isQuiet ? null : timingBadge(await read($, memberOf(timings, e)))
     const row = await next(e)
     if (badge === null) return row
     return withGutter($, e, row, badge)

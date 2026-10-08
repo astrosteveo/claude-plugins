@@ -4,7 +4,7 @@ import { expect, test } from 'claude-code/testing'
 import type { Timing } from '../types'
 import { clock, duration, groupBadge, keyOf, timingBadge } from '../hooks/format'
 
-const TOOL = { tool_use_id: 'tu1', tool: 'Bash', input: { command: 'npm test' }, isRunning: false, isErrored: false, isInterrupted: false } as const
+const TOOL = { tool_use_id: 'tu1', tool: 'WebFetch', input: { url: 'https://example.com' }, isRunning: false, isErrored: false, isInterrupted: false } as const
 const ORIGIN = { kind: 'composer' } as const
 const call = (id: string) => ({ tool_use_id: id, tool: 'Read', input: { file_path: `/${id}` }, isRunning: false, isErrored: false, isInterrupted: false })
 
@@ -61,6 +61,11 @@ test('a tool row shows its run time in the gutter, beside the engine row', async
     const failed = await $.ui.mount({ plugin: 'gutter', surface, component: 'ToolUse', requestId: 'tu2', props: { ...TOOL, tool_use_id: 'tu2', isErrored: true } })
     expect(await failed.find({ type: 'Text', text: '45s' })).toMatchObject({ props: { color: 'error' } })
     await failed.unmount()
+
+    // Bash says its own time on its row, so it gets no second one.
+    const bash = await $.ui.mount({ plugin: 'gutter', surface, component: 'ToolUse', requestId: 'tu1', props: { ...TOOL, tool: 'Bash' } })
+    expect(await bash.findAll({ type: 'Text' })).toHaveLength(1)
+    await bash.unmount()
 
     // A quick read gets no mark, and the engine's row is drawn as it was.
     const quick = await $.ui.mount({ plugin: 'gutter', surface, component: 'ToolUse', requestId: 'tu3', props: { ...TOOL, tool_use_id: 'tu3' } })

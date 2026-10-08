@@ -10,6 +10,10 @@ export const QUIET_MS = 1000
 // From here a call is slow enough to stand out.
 export const SLOW_MS = 30_000
 
+// Tools whose own row already says how long they ran (`(6s · 7 lines)`).
+// Their rows get no badge, so no time is shown twice.
+export const TIMED_BY_ENGINE: ReadonlySet<string> = new Set(['Bash', 'PowerShell', 'Agent', 'Task'])
+
 export function duration(ms: number): string {
   if (ms < 10_000) return `${(Math.floor(ms / 100) / 10).toFixed(1)}s`
   const seconds = Math.round(ms / 1000)

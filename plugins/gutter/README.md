@@ -5,15 +5,15 @@ session's time went without leaving it.
 
 ```
 > Fix the band                                                    14:05
-● Bash(npm test)                                                   3.2s
-  ⎿  14 pass
-● Read 6 files                                                     1.5s
-● Bash(npm run build)                                               48s
+● Fetch(https://example.com)                                       3.2s
+● Read 6 files, ran 2 shell commands                               12s
+● mcp__github__search_issues(…)                                    48s
 ```
 
 - **Your prompts** show the local time you sent them.
 - **Tool calls** show how long the tool itself ran. Time spent waiting on a
-  permission prompt is left out. Calls under a second get no mark, so quick
+  permission prompt is left out. Bash, PowerShell and Agent rows already say
+  how long they ran, so they get no second time. Calls under a second get no mark, so quick
   reads and searches stay quiet. From 30 seconds the time is yellow, and a
   call that failed is red.
 - **A folded group** of calls shows their total, once every call in it has
