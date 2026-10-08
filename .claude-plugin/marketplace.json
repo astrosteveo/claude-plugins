@@ -63,8 +63,8 @@
     {
       "name": "minimap",
       "source": "./plugins/minimap",
-      "description": "The whole session as a strip of colored cells above the prompt: what each turn did, what it cost, and where it failed.",
-      "version": "0.1.0",
+      "description": "The whole session as a strip of colored cells above the prompt: what each turn did, what it cost, and where it failed, and a /minimap pane.",
+      "version": "0.2.0",
       "author": {
         "name": "astrosteveo"
       },

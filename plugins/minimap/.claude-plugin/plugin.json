@@ -2,7 +2,7 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "minimap",
   "displayName": "Minimap",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "The whole session as a strip of colored cells above the prompt: what each turn did, what it cost, and where it failed.",
   "author": {
     "name": "astrosteveo"
