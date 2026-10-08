@@ -29,7 +29,7 @@
       "name": "usage",
       "source": "./plugins/usage",
       "description": "Context fill, cost and rate limits in a band above the prompt, each turn's tokens and cost on the line that closes it, and a /spend pane.",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "author": {
         "name": "astrosteveo"
       },
