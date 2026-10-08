@@ -46,10 +46,9 @@ claude --plugin-dir ./plugins/usage         # try a plugin without installing it
 ```
 
 CI runs `validate.sh`, `test.sh` and `typecheck.sh` (`validate.yml`), and `mutants.sh` with the pull request's base
-(`mutants.yml`). Both install the Claude Code version pinned in `.github/claude-code-version`. `validate.yml` also runs
-weekly against the latest release. When that fails, fix the plugins; once it passes, bump the pin in its own pull
-request. The pin can lag the version in use, and the test kit differs between versions, so a test that passes
-locally can fail in CI. Install the pinned version into the scratchpad with npm to reproduce it.
+(`mutants.yml`). Both install the latest Claude Code, the version used for development, and `validate.yml` also runs
+weekly. When a new release turns CI red, fix the plugins. Run `claude update` first if a test passes locally but
+fails in CI.
 
 The marketplace is registered from this checkout, so the installed plugins are whatever is checked out. After a
 change, or after merging and pulling `main`, the person runs `/reload-plugins`. A new plugin needs

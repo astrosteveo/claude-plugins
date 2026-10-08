@@ -22,7 +22,7 @@
 # affect: a patch that is new or changed, or one whose touched files or `Test:` test files changed. A `Test:` name in a
 # plugin is placed by searching that plugin's test files for it. When the search can't place it, as with a name built
 # from a table, a `Test-file: <path>` line in the header names the file that holds it; with neither, the patch runs. A
-# change to this script, the workflow, the pinned Claude Code, a shared test helper (a file in a plugin's tests/ that is
+# change to this script, the workflow, a shared test helper (a file in a plugin's tests/ that is
 # not a test file), or a plugin's plugin.json beyond its version line runs every patch. It says which patches it
 # skipped and why. With no base it runs every patch. Other changes can still change a verdict in rare cases, such as a
 # refactor of a helper the patched code calls, so CI also runs every patch on each push to main and weekly.
@@ -128,7 +128,7 @@ if [ -n "$base" ]; then
   # only changed line is the version doesn't count; any other change to it, such as a setting, does.
   everything=$(printf '%s\n' "$diffed" | while IFS= read -r file; do
     case "$file" in
-      scripts/mutants.sh | .github/workflows/mutants.yml | .github/claude-code-version) printf '%s\n' "$file" ;;
+      scripts/mutants.sh | .github/workflows/mutants.yml) printf '%s\n' "$file" ;;
       plugins/*/.claude-plugin/plugin.json)
         ! git diff --unified=0 "$base"...HEAD -- "$file" | grep '^[-+]' | grep -v '^+++ \|^--- ' |
           grep -qv '^[-+] *"version": *"[^"]*",\{0,1\} *$' || printf '%s\n' "$file"
