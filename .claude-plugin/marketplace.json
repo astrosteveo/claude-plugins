@@ -80,8 +80,8 @@
     {
       "name": "worktree",
       "source": "./plugins/worktree",
-      "description": "Asks once, before Claude's first edit on the default branch, whether to move the work into a git worktree, and a /wt pane.",
-      "version": "0.2.1",
+      "description": "Keeps Claude's edits off the default branch: Claude moves into a git worktree before its first edit. Adds a /wt pane.",
+      "version": "0.4.0",
       "author": {
         "name": "astrosteveo"
       },

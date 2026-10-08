@@ -1,30 +1,56 @@
 # Worktree
 
-Asks once, before Claude's first edit on the default branch, whether to do
-the work in a git worktree instead. This keeps changes off `main` without
-you having to remember to say so. It also adds a `/wt` pane to see, switch
+Keeps Claude's edits off the default branch. Before Claude changes a file,
+it moves the session into a git worktree, so `main` stays clean without you
+having to remember to say so. It also adds a `/wt` pane to see, switch
 between, create and leave worktrees.
 
-## Before the first edit
+## How edits are kept off main
 
-When Claude is about to change a file (with Edit, MultiEdit, Write or
-NotebookEdit) in a checkout of the default branch, the edit is stopped once.
+While the session is on the default branch, each prompt carries a note
+Claude reads but you don't see. It tells Claude to move into a worktree,
+with Claude Code's own `EnterWorktree` tool, before its first edit. A prompt
+that needs no edits doesn't move the session.
+
+If Claude tries to change a file there anyway (with Edit, MultiEdit, Write or
+NotebookEdit), the edit is stopped, and Claude is told to move and make it
+again in the worktree. Every such edit is stopped until Claude moves. The
+stopped edit's row says `○ Edit stopped to move into a worktree first` in
+dim text, instead of showing a red error.
+
+What decides is where the file really is. Its path is resolved first:
+relative paths, `.` and `..`, doubled slashes and symlinks all lead to the
+same file, and the checkout holding that file is asked. So an edit is
+stopped when the file sits in the main checkout on the default branch, or on
+a detached head there, however the path was spelled and whoever makes it:
+
+- a subagent's edit is stopped too, and the subagent is told to have its
+  parent move, or to be started with `isolation: "worktree"`; a subagent
+  working in its own worktree is not stopped
+- from a worktree, an edit aimed back at the main checkout is stopped
+- when git or the path lookup fails or runs out of time, the edit is
+  stopped rather than let through unchecked
+
 The default branch is the one `origin/HEAD` points at. If the repository has
 no `origin/HEAD`, `main` and `master` count as the default.
 
-Claude then asks you, with the usual question dialog, whether to use a
-worktree. If you say yes, Claude moves the session into a new worktree with
-Claude Code's own `EnterWorktree` tool and makes the edit there. If you say
-no, Claude makes the edit where it is. Either way, only one edit is stopped
-per session.
-
 Nothing is stopped:
 
-- on any other branch, on a detached head, or inside a worktree
+- on any other branch checked out in the main checkout, or inside a worktree
 - for files outside the repository, such as Claude's memory or a scratch
-  folder
-- for a subagent's edits
-- when git can't be read, for example outside a repository
+  folder, or in another repository
+- outside a git repository
+
+### Shell commands
+
+A shell command can write anywhere, and what it will write can't be told
+from the command beforehand, so shell commands are caught, not stopped.
+While the main checkout is on the default branch (or a detached head), the
+plugin reads it before and after each Bash command: its branch, its commit,
+and every file git would add, untracked ones included. If the command
+changed any of them, Claude is told what it did and to tell you, and a toast
+says so. Ignored files are not read. Reading the checkout writes git objects
+through a throwaway index; it changes no file, branch or index of yours.
 
 ## The /wt pane
 
@@ -51,7 +77,7 @@ Leaving only works for a worktree this session made or entered with Claude
 Code's own tools. The result of each action, or the reason it was refused,
 shows as a toast.
 
-The plugin never runs git commands that change anything. Every move in or
+The plugin never runs git commands that change your files, branches or index. Every move in or
 out goes through Claude Code's `EnterWorktree` and `ExitWorktree` tools,
 with their safety checks. `claude -w` still starts a session in a worktree
 from the start.
@@ -60,11 +86,12 @@ from the start.
 
 Set under `/config`.
 
-- `mode` (default `ask`): what happens before the first edit on the default
-  branch.
-  - `ask`: Claude asks you whether to use a worktree.
-  - `always`: Claude moves into a worktree without asking.
-  - `never`: nothing is stopped. The `/wt` pane still works.
+- `enabled` (default on): keep edits off the default branch. Turn it off
+  and nothing is stopped or added to your prompts. The `/wt` pane still
+  works.
+
+Versions before 0.3.0 had a `mode` setting with an `ask` choice. It is gone:
+isolation is either on or off. An old `mode` value is ignored.
 
 ## Requirements
 
