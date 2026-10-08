@@ -1,20 +1,43 @@
 import type { On } from 'claude-code'
 import type { Segment } from '../types'
 import { expect, test } from 'claude-code/testing'
+import type { TestBody } from 'claude-code/testing'
 
 import { MAX_TURNS, closeTurn, emptyDraft, kindOf, mainKind, weightOf, withCall, withCompaction, withTurn } from '../hooks/turns'
+import { MAP_ROWS, callsOf, clip, costRank, flagsOf, gridOf, oneLine } from '../hooks/pane'
 import { ABORTED_GLYPH, COLOR, DEFAULT, DIVIDER_GLYPH, ERROR, FLOOR, TURN_GLYPH, bucketsFor, decode, encode, scale, stripOf } from '../hooks/paint'
 
 const USAGE = { model: 'claude-opus-5-5', input_tokens: 200, output_tokens: 1000, cache_read_input_tokens: 10_000, cache_creation_input_tokens: 800 }
 const TURN = { answer: 'Done.', durationMs: 12_400, isAborted: false, turnId: 't1', reason: 'answer' } as const
 
 // The engine beneath the plugin: each tool call answers, Bash fails, and the
-// end of a turn and a compaction answer as the engine would.
-function engine(on: On) {
+// end of a turn and a compaction answer as the engine would. `registered`,
+// `opened`, `scrolled` and `logged` collect the commands, panes, scrolls and
+// debug lines asked for;
+// `refuse` makes each registration throw, as a clash with a built-in does.
+function engine(on: On, { registered = [] as string[], opened = [] as string[], scrolled = [] as unknown[], refuse = false, logged = [] as string[] } = {}) {
   on('tool.call', async (_$, e) => (e.tool === 'Bash' ? { isError: true, result: 'exit 1', text: 'exit 1' } : { result: {} }))
   on('turn.complete', async () => ({ text: '' }))
   on('session.compact', async (_$, e) => ({ messages: e.messages }) as never)
-  on('ui.log', async () => ({ value: undefined }))
+  on('ui.log', async (_$, e) => {
+    logged.push(e.text)
+    return { value: undefined }
+  })
+  on('turn.start', async (_$, e) => ({ turnId: e.turnId }))
+  on('session.start', async (_$, e) => ({ cwd: e.cwd }))
+  on('command.register', async (_$, e) => {
+    if (refuse) throw new Error(`"/${e.name}" refused`)
+    registered.push(e.name)
+    return { value: { command: e.name } }
+  })
+  on('ui.open', async (_$, e) => {
+    opened.push(e.id)
+    return { value: { id: e.id } } as never
+  })
+  on('ui.scroll', async (_$, e) => {
+    scrolled.push(e)
+    return {}
+  })
   on('ui.render', { component: 'AbovePrompt' }, async (_$, e) => {
     const { Box } = _$.ui.resolve(e)
     return <Box key="engine" />
@@ -42,6 +65,7 @@ test('a turn of mostly edits is an edit, and a failed call counts as an error', 
   draft = withCall(draft, 'Bash', true)
   expect(closeTurn(draft, { turnId: 't1', reason: 'answer', usage: USAGE })).toEqual({
     turnId: 't1',
+    calls: { read: 1, edit: 2, bash: 1 },
     kind: 'edit',
     errors: 1,
     weight: weightOf(USAGE),
@@ -146,4 +170,110 @@ test('the band is left to the engine before the first turn, on desktop, and unde
   const survey = await $.ui.mount({ plugin: 'minimap', surface: 'terminal', ...BAND, props: { ...BAND.props, hasSurvey: true } })
   expect(await strip(survey)).toBeUndefined()
   await survey.unmount()
+})
+
+const PANE = { component: 'Pane', requestId: 'minimap', props: { title: 'Minimap', isFocused: true, bodyColumns: 40, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} } } as const
+
+// Three turns: one that edited and failed once, one that only talked, and
+// one that read files after a compaction.
+async function session($: Parameters<TestBody>[0]) {
+  await $.turn.start({ text: 'Fix the band\nplease', turnId: 't1' })
+  await $.tool.call({ tool: 'Edit', file_path: '/a', old_string: 'a', new_string: 'b' } as never)
+  await $.tool.call({ tool: 'Bash', command: 'false' } as never)
+  await $.turn.complete({ ...TURN, usage: USAGE })
+  await $.turn.start({ text: 'Thanks', turnId: 't2' })
+  await $.turn.complete({ ...TURN, turnId: 't2', usage: { ...USAGE, output_tokens: 5 } })
+  await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'Fix it', toolUses: [] }] } as never)
+  await $.turn.start({ text: 'Read the docs', turnId: 't3' })
+  await $.tool.call({ tool: 'Read', file_path: '/d' } as never)
+  await $.turn.complete({ ...TURN, turnId: 't3', usage: { ...USAGE, output_tokens: 300 } })
+}
+
+test('the pane wraps the map to its width and adds no more than its rows', () => {
+  const turns = Array.from({ length: 90 }, (_, i) => seg(`t${i}`))
+  expect(gridOf(turns.slice(0, 3), 40)).toMatchObject({ columns: 3, rows: 1 })
+  const grid = gridOf(turns, 40)
+  expect(grid).toMatchObject({ columns: 40, rows: 3 })
+  expect(grid.cells).toHaveLength(120)
+  expect(grid.cells.at(-1)).toEqual({ glyph: 0x20, fg: DEFAULT, bg: DEFAULT })
+  expect(gridOf(Array.from({ length: 1000 }, (_, i) => seg(`t${i}`)), 40).rows).toBeLessThanOrEqual(MAP_ROWS)
+})
+
+test('a turn reads as its prompt, kind, errors and calls', () => {
+  const turn = seg('t1', { prompt: 'Fix\n  the band', calls: { read: 1, edit: 3 }, errors: 2, isCompacted: true })
+  expect(oneLine(turn.prompt)).toBe('Fix the band')
+  expect(oneLine(undefined)).toBe('(no prompt)')
+  expect(clip('abcdef', 4)).toBe('abc…')
+  expect(clip('abc', 4)).toBe('abc')
+  expect(flagsOf(turn)).toEqual(['edits', '2 errors', 'after a compaction'])
+  expect(callsOf(turn)).toBe('3 edits · 1 read')
+  expect(callsOf(seg('t2'))).toBe('no tool calls')
+  expect(costRank([seg('a', { weight: 5 }), seg('b', { weight: 900 }), turn], turn)).toBe(2)
+})
+
+test('/minimap opens the pane', async ($, on) => {
+  const registered: string[] = []
+  const opened: string[] = []
+  engine(on, { registered, opened })
+  await $.session.start({ cwd: '/repo' } as never)
+  expect(registered).toEqual(['minimap'])
+  const ran = await $.command.run({ command: 'minimap', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as never)
+  expect(ran).toMatchObject({ text: 'Minimap pane opened.' })
+  expect(opened).toEqual(['minimap'])
+})
+
+test('a refused /minimap does not stop the session from starting', async ($, on) => {
+  const logged: string[] = []
+  engine(on, { refuse: true, logged })
+  expect(await $.session.start({ cwd: '/repo' } as never)).toMatchObject({ cwd: '/repo' })
+  expect(logged.some(line => line.includes('/minimap was not registered'))).toBe(true)
+})
+
+test('the pane shows the legend and one row per turn, and the map on the terminal alone', async ($, on) => {
+  engine(on)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const quiet = await $.ui.mount({ plugin: 'minimap', surface, ...PANE })
+    expect(await quiet.find({ text: /No turns yet/ })).toBeDefined()
+    expect(await quiet.find({ type: 'Box', key: 'legend' })).toBeDefined()
+    await quiet.unmount()
+  }
+
+  await session($)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'minimap', surface, ...PANE })
+    expect(await ui.find({ type: 'Box', key: 'legend' })).toBeDefined()
+    const rows = await ui.findAll({ type: 'Button', text: /^\d+\. / })
+    expect(rows.map(row => row.text)).toEqual([
+      '1. Fix the band please · edits · 1 error',
+      '2. Thanks · talk only',
+      '3. Read the docs · reads · after a compaction',
+    ])
+    expect(await ui.find({ text: '1 edit · 1 shell command · cost rank 1 of 3' })).toBeDefined()
+    const map = (await ui.find({ type: 'Raster' })) as { props: { columns: number; rows: number } } | undefined
+    if (surface === 'terminal') expect(map?.props).toMatchObject({ columns: 4, rows: 1 })
+    else expect(map).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+test('pressing a turn marks its details and asks the pane to scroll there', async ($, on) => {
+  const logged: string[] = []
+  engine(on, { logged })
+  await session($)
+  const before = await $.ui.mount({ plugin: 'minimap', surface: 'terminal', ...PANE })
+  expect(await before.find({ type: 'Text', text: /^Turn 3/ })).toMatchObject({ props: { inverse: false } })
+  await before.unmount()
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'minimap', surface, ...PANE })
+    expect(await ui.find({ type: 'Box', key: 'turn-t3' })).toBeDefined()
+    await ui.press({ key: 'go-t3' })
+    expect(await ui.find({ type: 'Text', text: /^Turn 3/ })).toMatchObject({ props: { inverse: true } })
+    expect(await ui.find({ type: 'Text', text: /^Turn 1/ })).toMatchObject({ props: { inverse: false } })
+    await ui.unmount()
+  }
+  // The kit does not answer a scroll asked from a press, so the scroll itself
+  // is checked on screen. Here it shows the press still marks the turn, and a
+  // scroll that fails is logged rather than failing the press.
+  expect(logged.some(line => line.includes('did not scroll'))).toBe(true)
 })

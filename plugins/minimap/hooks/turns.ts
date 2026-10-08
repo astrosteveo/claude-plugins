@@ -39,6 +39,16 @@ export const withCall = (draft: Draft | null, tool: string, isError: boolean): D
   }
 }
 
+// The most of a prompt kept, enough to tell turns apart in the pane.
+export const PROMPT_CHARS = 300
+
+// A new turn keeps a compaction that ran between turns, as /compact does.
+export const startTurn = (draft: Draft | null, prompt: string): Draft => ({
+  ...emptyDraft(),
+  isCompacted: draft?.isCompacted ?? false,
+  prompt: prompt.slice(0, PROMPT_CHARS),
+})
+
 export const withCompaction = (draft: Draft | null): Draft => ({ ...(draft ?? emptyDraft()), isCompacted: true })
 
 export const mainKind = (calls: Draft['calls']): Kind => {
@@ -84,6 +94,8 @@ export const closeTurn = (draft: Draft | null, end: Ending): Segment => {
   const isFailed = end.reason === 'error' || end.reason === 'refusal'
   return {
     turnId: end.turnId,
+    ...(held.prompt === undefined ? {} : { prompt: held.prompt }),
+    calls: held.calls,
     kind: mainKind(held.calls),
     errors: held.errors + (isFailed ? 1 : 0),
     weight: weightOf(end.usage),
