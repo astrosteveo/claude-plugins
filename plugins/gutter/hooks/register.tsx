@@ -57,7 +57,7 @@ export const register: Register = on => {
   // A row the person sees as typed is stored under the id its UserMessage
   // row is drawn with, so the time is found by that id once it is kept.
   on('session.append', async ($, e, next) => {
-    if (e.type === 'user' && e.message.isMeta !== true && e.agentId === undefined) {
+    if (e.message.type === 'user' && e.message.isMeta !== true && e.agentId === undefined) {
       const at = await $.clock.now()
       await update($, memberOf(sent, { requestId: e.uuid }), held => held ?? at)
     }

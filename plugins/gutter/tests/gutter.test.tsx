@@ -108,9 +108,9 @@ test('a prompt shows when it was sent, and not in the expanded view', async ($, 
 test('a prompt is timed by the id its row is drawn with, whatever its text became', async ($, on) => {
   engine(on)
   const row = { type: 'user', role: 'user', content: [{ type: 'text', text: 'Fix the band' }] }
-  await $.session.append({ message: row, door: 'prompt', origin: { kind: 'person' }, uuid: 'm7', type: 'user', role: 'user' } as never)
+  await $.session.append({ message: row, door: 'prompt', origin: { kind: 'person' }, uuid: 'm7' } as never)
   // A row the person did not type, such as a reminder, is not timed.
-  await $.session.append({ message: { ...row, isMeta: true }, door: 'hook-context', origin: { kind: 'person' }, uuid: 'm8', type: 'user', role: 'user' } as never)
+  await $.session.append({ message: { ...row, isMeta: true }, door: 'hook-context', origin: { kind: 'person' }, uuid: 'm8' } as never)
 
   const ui = await $.ui.mount({ plugin: 'gutter', surface: 'terminal', component: 'UserMessage', requestId: 'm7', props: { text: 'Fix the band, rewritten', origin: ORIGIN, isExpanded: false } })
   expect(await ui.find({ type: 'Text', text: '14:05' })).toBeDefined()
