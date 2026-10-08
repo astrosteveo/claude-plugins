@@ -29,7 +29,7 @@
       "name": "usage",
       "source": "./plugins/usage",
       "description": "Context fill, cost and rate limits in a band above the prompt, each turn's tokens and cost on the line that closes it, and a /spend pane.",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "author": {
         "name": "astrosteveo"
       },
@@ -58,6 +58,23 @@
         "transcript",
         "timing",
         "tools"
+      ]
+    },
+    {
+      "name": "minimap",
+      "source": "./plugins/minimap",
+      "description": "The whole session as a strip of colored cells above the prompt: what each turn did, what it cost, and where it failed.",
+      "version": "0.1.0",
+      "author": {
+        "name": "astrosteveo"
+      },
+      "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/minimap",
+      "category": "productivity",
+      "tags": [
+        "mod",
+        "transcript",
+        "minimap",
+        "cost"
       ]
     }
   ]

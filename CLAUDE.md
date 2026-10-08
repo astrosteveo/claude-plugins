@@ -12,6 +12,7 @@ function hooks, written in TypeScript/TSX, that draws inside Claude Code and hoo
 | `ask` | A side-question pane, and Claude's own pick beside the question dialog |
 | `usage` | Context, cost and rate limits in the band; each turn's figures on its closing line; the `/spend` pane |
 | `gutter` | A time column in the transcript: prompt times, tool run times, folded-group totals |
+| `minimap` | The session as a strip of colored cells in the band: each turn's kind, cost and failures |
 
 Load the `plugin-authoring` skill before writing or debugging hooks. It points at this build's API typings
 (`claude-code.d.ts`), the reference for every event, `$` method and element prop. Grep it for the name at hand.

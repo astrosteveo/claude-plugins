@@ -1,0 +1,20 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "minimap",
+  "displayName": "Minimap",
+  "version": "0.1.0",
+  "description": "The whole session as a strip of colored cells above the prompt: what each turn did, what it cost, and where it failed.",
+  "author": {
+    "name": "astrosteveo"
+  },
+  "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/minimap",
+  "repository": "https://github.com/astrosteveo/claude-plugins",
+  "license": "MIT",
+  "keywords": [
+    "mod",
+    "transcript",
+    "minimap",
+    "cost"
+  ],
+  "types": "./types/index.d.ts"
+}

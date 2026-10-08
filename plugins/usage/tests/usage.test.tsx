@@ -65,6 +65,18 @@ test('the band shows the measurement and colors what is near its limit', async (
   expect(toasts).toHaveLength(2)
 })
 
+test('the band keeps what the plugins beneath it draw', async ($, on) => {
+  engine(on)
+  await $.session.measure({ context: { tokens: 20_000, window: 200_000, percent: 10 }, rateLimits: [], cost: { usd: 1 }, changed: ['context', 'cost'] })
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const band = await $.ui.mount({ plugin: 'usage', surface, ...BAND })
+    expect(await band.find({ type: 'Text', text: 'context 10%' })).toBeDefined()
+    expect(await band.find({ type: 'Box', key: 'engine' })).toBeDefined()
+    await band.unmount()
+  }
+})
+
 test('the pane lists main-loop turns, newest first, with totals', async ($, on) => {
   engine(on)
   await $.turn.complete({ ...TURN, usage: USAGE })

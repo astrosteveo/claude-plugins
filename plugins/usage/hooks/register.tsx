@@ -92,16 +92,22 @@ export const register: Register = on => {
     if (e.props.hasSurvey) return next(e)
     const parts = bandParts(await read($, measure))
     if (parts.length === 0) return next(e)
+    // What the plugins beneath draw stays under the figures, so another mod's
+    // band is not hidden by this one.
+    const below = await next(e)
     const { Box, Text } = $.ui.resolve(e)
 
     return (
-      <Box key="usage" flexWrap="wrap">
-        {parts.map((part, i) => (
-          <Text key={part.key} dimColor={part.level === 'ok'} color={colorOf(part.level)}>
-            {i === 0 ? '' : ' · '}
-            {part.text}
-          </Text>
-        ))}
+      <Box key="usage-band" flexDirection="column">
+        <Box key="usage" flexWrap="wrap">
+          {parts.map((part, i) => (
+            <Text key={part.key} dimColor={part.level === 'ok'} color={colorOf(part.level)}>
+              {i === 0 ? '' : ' · '}
+              {part.text}
+            </Text>
+          ))}
+        </Box>
+        {below}
       </Box>
     )
   })
