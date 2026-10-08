@@ -1,4 +1,4 @@
-import type { Level, Limit, Measure, Turn } from '../types'
+import type { Level, Limit, Measure, Start, Turn } from '../types'
 
 // The pane keeps this many turns. Older ones drop off the front.
 export const KEEP = 50
@@ -63,23 +63,48 @@ export const withTurn = (turns: Turn[], turn: Turn): Turn[] => [...turns, turn].
 // One piece of the band, with how close it is to its limit.
 export type Part = { key: string; text: string; level: Level }
 
-export function bandParts(measure: Measure | null, last: Turn | undefined): Part[] {
+// The band: the session's figures. The last turn's own figures are on the
+// line that closes it in the transcript, so the band leaves them out.
+export function bandParts(measure: Measure | null): Part[] {
   const parts: Part[] = []
-  if (measure !== null) {
-    const { percent } = measure.context
-    if (percent !== undefined) parts.push({ key: 'context', text: `context ${percent}%`, level: levelOf(percent) })
-    if (measure.usd !== undefined) parts.push({ key: 'cost', text: usd(measure.usd), level: 'ok' })
-    for (const limit of measure.limits) {
-      parts.push({ key: `limit-${limit.kind}`, text: `${limitName(limit.kind)} ${limit.percentUsed}%`, level: levelOf(limit.percentUsed) })
-    }
-  }
-  if (last !== undefined) {
-    const rate = hitRate(last)
-    const cached = rate === null ? '' : `, ${rate}% cached`
-    const input = last.input + last.cacheRead + last.cacheWrite
-    parts.push({ key: 'last', text: `last turn ${tokens(input)} in, ${tokens(last.output)} out${cached}`, level: 'ok' })
+  if (measure === null) return parts
+  const { percent } = measure.context
+  if (percent !== undefined) parts.push({ key: 'context', text: `context ${percent}%`, level: levelOf(percent) })
+  if (measure.usd !== undefined) parts.push({ key: 'cost', text: usd(measure.usd), level: 'ok' })
+  for (const limit of measure.limits) {
+    parts.push({ key: `limit-${limit.kind}`, text: `${limitName(limit.kind)} ${limit.percentUsed}%`, level: levelOf(limit.percentUsed) })
   }
   return parts
+}
+
+// What follows `Baked for 12s` on the line that closes a turn.
+export function turnFigures(turn: Turn): { key: string; text: string }[] {
+  const input = turn.input + turn.cacheRead + turn.cacheWrite
+  const rate = hitRate(turn)
+  return [
+    { key: 'in', text: `${tokens(input)} in` },
+    { key: 'out', text: `${tokens(turn.output)} out` },
+    ...(rate === null ? [] : [{ key: 'cached', text: `${rate}% cached` }]),
+    ...(turn.usd === undefined ? [] : [{ key: 'usd', text: cents(turn.usd) }]),
+  ]
+}
+
+// A turn's cost is often under a cent, which `$0.00` would hide.
+export const cents = (n: number): string => (n > 0 && n < 0.01 ? '<$0.01' : usd(n))
+
+// The turn a closing line belongs to. The line carries only the turn's
+// length, which `turn.complete` carried too, so the newest turn of that
+// length is the one.
+export const turnOf = (turns: readonly Turn[], durationMs: number): Turn | undefined =>
+  turns.findLast(turn => turn.ms === durationMs)
+
+// The turns with the newest one's cost filled in, from the session's cost
+// now and as that turn started; null when there is nothing to fill.
+export function withCost(turns: readonly Turn[], start: Start | null, usdNow: number | undefined): Turn[] | null {
+  const last = turns.at(-1)
+  if (last === undefined || start === null || usdNow === undefined) return null
+  if (last.turnId !== start.turnId || last.usd !== undefined) return null
+  return [...turns.slice(0, -1), { ...last, usd: Math.max(0, usdNow - start.usd) }]
 }
 
 export type Totals = { turns: number; input: number; cacheRead: number; cacheWrite: number; output: number; hit: number | null }
@@ -92,12 +117,12 @@ export function totals(turns: Turn[]): Totals {
     sum.cacheWrite += turn.cacheWrite
     sum.output += turn.output
   }
-  return { ...sum, hit: hitRate({ ...sum, at: 0, model: '', ms: 0, isAborted: false }) }
+  return { ...sum, hit: hitRate({ ...sum, turnId: '', at: 0, model: '', ms: 0, isAborted: false }) }
 }
 
 // The pane's columns. Each row is padded to these widths so the figures line up.
-export const HEADER = ['model', 'in', 'read', 'write', 'out', 'hit', 'time'] as const
-const WIDTHS: readonly number[] = [16, 7, 7, 7, 7, 5, 8]
+export const HEADER = ['model', 'in', 'read', 'write', 'out', 'hit', 'cost', 'time'] as const
+const WIDTHS: readonly number[] = [16, 7, 7, 7, 7, 5, 7, 8]
 
 export function columns(cells: readonly string[]): string {
   return cells
@@ -117,6 +142,7 @@ export function rowCells(turn: Turn): string[] {
     tokens(turn.cacheWrite),
     tokens(turn.output),
     rate === null ? '-' : `${rate}%`,
+    turn.usd === undefined ? '-' : cents(turn.usd),
     turn.isAborted ? 'stopped' : duration(turn.ms),
   ]
 }

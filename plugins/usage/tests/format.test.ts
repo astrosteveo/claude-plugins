@@ -1,9 +1,9 @@
 import { expect, test } from 'claude-code/testing'
 
 import type { Measure, Turn } from '../types'
-import { KEEP, bandParts, columns, crossings, duration, hitRate, levelOf, resetIn, rowCells, tokens, totals, usd, withTurn } from '../hooks/format'
+import { KEEP, bandParts, cents, columns, crossings, duration, hitRate, levelOf, resetIn, rowCells, tokens, totals, turnFigures, turnOf, usd, withCost, withTurn } from '../hooks/format'
 
-const TURN: Turn = { at: 0, model: 'claude-opus-5-5', input: 200, cacheRead: 8000, cacheWrite: 1800, output: 1234, ms: 12_400, isAborted: false }
+const TURN: Turn = { turnId: 't1', at: 0, model: 'claude-opus-5-5', input: 200, cacheRead: 8000, cacheWrite: 1800, output: 1234, ms: 12_400, isAborted: false }
 const MEASURE: Measure = {
   context: { tokens: 84_000, window: 200_000, percent: 42 },
   limits: [
@@ -37,15 +37,35 @@ test('the hit rate is the share of input the cache served', () => {
   expect(hitRate({ ...TURN, input: 0, cacheRead: 0, cacheWrite: 0 })).toBeNull()
 })
 
-test('the band shows context, cost, each window and the last turn', () => {
-  expect(bandParts(MEASURE, TURN)).toEqual([
+test('the band shows context, cost and each window, and leaves the last turn to its closing line', () => {
+  expect(bandParts(MEASURE)).toEqual([
     { key: 'context', text: 'context 42%', level: 'ok' },
     { key: 'cost', text: '$1.23', level: 'ok' },
     { key: 'limit-five_hour', text: '5h 81%', level: 'warn' },
     { key: 'limit-seven_day', text: '7d 12.5%', level: 'ok' },
-    { key: 'last', text: 'last turn 10k in, 1.2k out, 80% cached', level: 'ok' },
   ])
-  expect(bandParts(null, undefined)).toEqual([])
+  expect(bandParts(null)).toEqual([])
+})
+
+test('a closing line shows the turn it belongs to, with its cost once priced', () => {
+  expect(turnFigures(TURN).map(figure => figure.text)).toEqual(['10k in', '1.2k out', '80% cached'])
+  expect(turnFigures({ ...TURN, usd: 0.004 }).at(-1)?.text).toBe('<$0.01')
+  expect([cents(0), cents(0.004), cents(0.042)]).toEqual(['$0.00', '<$0.01', '$0.04'])
+
+  const older = { ...TURN, turnId: 't0', ms: 5000 }
+  expect(turnOf([older, TURN], 12_400)).toBe(TURN)
+  expect(turnOf([older, TURN], 5000)).toBe(older)
+  expect(turnOf([older, TURN], 1)).toBeUndefined()
+})
+
+test('the first measurement after a turn prices that turn alone', () => {
+  const start = { turnId: 't1', usd: 1.2 }
+  expect(withCost([TURN], start, 1.45)?.at(-1)?.usd).toBe(0.25)
+  // A measurement for another turn, or a turn already priced, changes nothing.
+  expect(withCost([TURN], { ...start, turnId: 't0' }, 1.25)).toBeNull()
+  expect(withCost([{ ...TURN, usd: 0.05 }], start, 1.3)).toBeNull()
+  expect(withCost([TURN], null, 1.25)).toBeNull()
+  expect(withCost([TURN], start, undefined)).toBeNull()
 })
 
 test('the pane keeps the last turns and sums them', () => {
@@ -54,7 +74,7 @@ test('the pane keeps the last turns and sums them', () => {
   expect(list).toHaveLength(KEEP)
   expect(list[0]?.at).toBe(5)
   expect(totals([TURN, TURN])).toEqual({ turns: 2, input: 400, cacheRead: 16_000, cacheWrite: 3600, output: 2468, hit: 80 })
-  expect(columns(rowCells(TURN))).toBe('opus-5-5             200      8k    1.8k    1.2k   80%      12s')
+  expect(columns(rowCells({ ...TURN, usd: 0.042 }))).toBe('opus-5-5             200      8k    1.8k    1.2k   80%   $0.04      12s')
   expect(rowCells({ ...TURN, isAborted: true }).at(-1)).toBe('stopped')
 })
 

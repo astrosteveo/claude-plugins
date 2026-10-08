@@ -46,8 +46,8 @@
     {
       "name": "usage",
       "source": "./plugins/usage",
-      "description": "Context fill, cost and rate limits in a band above the prompt, and each turn's tokens and cache hits in a /spend pane.",
-      "version": "0.1.1",
+      "description": "Context fill, cost and rate limits in a band above the prompt, each turn's tokens and cost on the line that closes it, and a /spend pane.",
+      "version": "0.2.0",
       "author": {
         "name": "astrosteveo"
       },
@@ -59,6 +59,23 @@
         "cost",
         "tokens",
         "context"
+      ]
+    },
+    {
+      "name": "gutter",
+      "source": "./plugins/gutter",
+      "description": "A time column at the right of the transcript: when you sent each prompt, how long each tool ran, and each folded group's total.",
+      "version": "0.1.0",
+      "author": {
+        "name": "astrosteveo"
+      },
+      "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/gutter",
+      "category": "productivity",
+      "tags": [
+        "mod",
+        "transcript",
+        "timing",
+        "tools"
       ]
     }
   ]

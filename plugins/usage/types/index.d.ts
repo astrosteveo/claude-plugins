@@ -12,8 +12,11 @@ export type Measure = {
   usd?: number
 }
 
-// One main-loop turn: who answered, the four token counts, and how long it ran.
+// One main-loop turn: who answered, the four token counts, how long it ran,
+// and what it cost. `usd` comes from the first measurement after the turn,
+// so it is absent until then, and where the host keeps no ledger.
 export type Turn = {
+  turnId: string
   at: number
   model: string
   input: number
@@ -22,7 +25,11 @@ export type Turn = {
   output: number
   ms: number
   isAborted: boolean
+  usd?: number
 }
+
+// The session's cost as a turn started, to tell what that turn added.
+export type Start = { turnId: string; usd: number }
 
 declare module 'claude-code' {
   interface PluginState {
@@ -33,6 +40,7 @@ declare module 'claude-code' {
       // The figures that are past their toast threshold now, so each
       // crossing toasts once.
       warned: string[]
+      start: Start | null
     }
   }
 }

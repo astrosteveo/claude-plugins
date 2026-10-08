@@ -55,7 +55,7 @@ test('the band shows the measurement and colors what is near its limit', async (
     expect(await band.find({ type: 'Text', text: 'context 86%' })).toMatchObject({ props: { color: 'warning' } })
     expect(await band.find({ type: 'Text', text: '5h 91%' })).toMatchObject({ props: { color: 'error' } })
     expect(await band.find({ text: /\$2\.50/ })).toBeDefined()
-    expect(await band.find({ text: /last turn 10k in, 1\.2k out, 80% cached/ })).toBeDefined()
+    expect(await band.find({ text: /last turn/ })).toBeUndefined()
     await band.unmount()
   }
   expect(toasts).toEqual(['Context is 86% full. Consider /compact.', '5h rate limit is 91% used.'])
@@ -102,4 +102,33 @@ test('a refused command still lets the start read the figures', async ($, on) =>
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   const band = await $.ui.mount({ plugin: 'usage', surface: 'terminal', ...BAND })
   expect(await band.find({ type: 'Text', text: 'context 42%' })).toBeDefined()
+})
+
+test('the line that closes a turn shows its tokens, cache hits and cost', async ($, on) => {
+  engine(on, { usage: { startedAt: 0, context: { window: 200_000 }, rateLimits: [], cost: { usd: 1.2 } } })
+  on('turn.start', async (_$, e) => ({ turnId: e.turnId }))
+  on('ui.render', { component: 'TurnDuration' }, async (_$, e) => {
+    const { Text } = _$.ui.resolve(e)
+    return <Text>engine line</Text>
+  })
+  const LINE = { component: 'TurnDuration', requestId: 'm1', props: { word: 'Baked', durationMs: 12_400 } } as const
+
+  await $.turn.start({ turnId: 't1' } as never)
+  await $.turn.complete({ ...TURN, usage: USAGE })
+  const before = await $.ui.mount({ plugin: 'usage', surface: 'terminal', ...LINE })
+  expect(await before.find({ type: 'Text', text: /Baked for 12s/ })).toBeDefined()
+  expect(await before.find({ type: 'Text', text: /10k in/ })).toBeDefined()
+  expect(await before.find({ type: 'Text', text: /80% cached/ })).toBeDefined()
+  expect(await before.find({ type: 'Text', text: /\$/ })).toBeUndefined()
+  await before.unmount()
+
+  await $.session.measure({ context: { window: 200_000, percent: 10 }, rateLimits: [], cost: { usd: 1.25 }, changed: ['cost'] })
+  const after = await $.ui.mount({ plugin: 'usage', surface: 'terminal', ...LINE })
+  expect(await after.find({ type: 'Text', text: /\$0\.05/ })).toMatchObject({ props: { color: 'claude' } })
+  await after.unmount()
+
+  // A line for a turn this session did not see is the engine's own.
+  const other = await $.ui.mount({ plugin: 'usage', surface: 'terminal', ...LINE, props: { word: 'Baked', durationMs: 999 } })
+  expect(await other.find({ type: 'Text', text: 'engine line' })).toBeDefined()
+  await other.unmount()
 })
