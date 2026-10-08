@@ -51,40 +51,25 @@ test('git output reads as a checkout', () => {
   expect(checkoutOf('/repo\nHEAD\n/repo/.git\n/repo/.git\n', undefined)).toMatchObject({ branch: undefined, defaultBranch: undefined })
 })
 
-test('only a main-loop edit, before the session was asked and with the guard on, may be stopped', () => {
-  expect(mayStop('ask', false, undefined, 'Edit')).toBe(true)
-  expect(mayStop('always', false, undefined, 'Write')).toBe(true)
-  expect(mayStop('ask', true, undefined, 'Edit')).toBe(false)
-  // Always holds after the first stop too.
-  expect(mayStop('always', true, undefined, 'Edit')).toBe(true)
-  expect(mayStop('never', false, undefined, 'Edit')).toBe(false)
-  expect(mayStop('ask', false, 'agent-1', 'Edit')).toBe(false)
-  expect(mayStop('ask', false, undefined, 'Read')).toBe(false)
+test('only an edit by the main loop may be stopped', () => {
+  expect(mayStop(undefined, 'Edit')).toBe(true)
+  expect(mayStop(undefined, 'Write')).toBe(true)
+  expect(mayStop('agent-1', 'Edit')).toBe(false)
+  expect(mayStop(undefined, 'Read')).toBe(false)
   expect(pathOf({ notebook_path: '/repo/a.ipynb' })).toBe('/repo/a.ipynb')
   expect(pathOf({ command: 'ls' })).toBeUndefined()
 })
 
 test('only an edit inside the checkout, on its default branch, outside a worktree, is stopped', () => {
-  expect(reasonFor('ask', MAIN, '/repo/src/a.ts')).toContain('AskUserQuestion')
-  expect(reasonFor('always', MAIN, '/repo/src/a.ts')).toContain('EnterWorktree')
-  expect(reasonFor('ask', { ...MAIN, branch: 's-1' }, '/repo/a.ts')).toBeNull()
-  expect(reasonFor('ask', { ...MAIN, isLinked: true }, '/repo/a.ts')).toBeNull()
-  expect(reasonFor('ask', MAIN, '/home/me/.claude/notes.md')).toBeNull()
+  expect(reasonFor(MAIN, '/repo/src/a.ts')).toContain('EnterWorktree')
+  expect(reasonFor({ ...MAIN, branch: 's-1' }, '/repo/a.ts')).toBeNull()
+  expect(reasonFor({ ...MAIN, isLinked: true }, '/repo/a.ts')).toBeNull()
+  expect(reasonFor(MAIN, '/home/me/.claude/notes.md')).toBeNull()
   // A folder that only starts with the same name is outside.
   expect(isInside('/repo-other/a.ts', '/repo')).toBe(false)
   // Without origin/HEAD, main and master count as the default.
-  expect(reasonFor('ask', { ...MAIN, defaultBranch: undefined, branch: 'master' }, '/repo/a.ts')).not.toBeNull()
-  expect(reasonFor('ask', { ...MAIN, defaultBranch: undefined, branch: 'dev' }, '/repo/a.ts')).toBeNull()
-})
-
-test('the first edit on main is stopped with a question to ask, and the next goes through', async ($, on) => {
-  const ran: string[] = []
-  engine(on, { now: ON_MAIN }, ran)
-  const first = await $.tool.call(edit('/repo/a.ts'))
-  expect(first).toMatchObject({ deny: expect.stringContaining('AskUserQuestion') })
-  const second = await $.tool.call(edit('/repo/a.ts'))
-  expect(second.deny).toBeUndefined()
-  expect(ran).toEqual(['Edit /repo/a.ts'])
+  expect(reasonFor({ ...MAIN, defaultBranch: undefined, branch: 'master' }, '/repo/a.ts')).not.toBeNull()
+  expect(reasonFor({ ...MAIN, defaultBranch: undefined, branch: 'dev' }, '/repo/a.ts')).toBeNull()
 })
 
 test('a feature branch, a worktree, a subagent and a file outside the repo are never stopped', async ($, on) => {
@@ -100,12 +85,15 @@ test('a feature branch, a worktree, a subagent and a file outside the repo are n
   expect(ran).toHaveLength(4)
 })
 
-test('never stops nothing', { options: { mode: 'never' } }, async ($, on) => {
-  engine(on, { now: ON_MAIN })
+test('turned off, nothing is stopped and no note is added', { options: { enabled: false } }, async ($, on) => {
+  const ran: string[] = []
+  engine(on, { now: ON_MAIN }, ran)
   expect((await $.tool.call(edit('/repo/a.ts'))).deny).toBeUndefined()
+  expect((await $.prompt.submit(prompt('Fix it'))).context).toBeUndefined()
+  expect(ran).toEqual(['Edit /repo/a.ts'])
 })
 
-test('always stops every edit on main, and an edit in the worktree goes through', { options: { mode: 'always' } }, async ($, on) => {
+test('every edit on main is stopped, and an edit in the worktree goes through', async ($, on) => {
   const git = { now: ON_MAIN }
   engine(on, git)
   expect(await $.tool.call(edit('/repo/a.ts'))).toMatchObject({ deny: expect.stringContaining('EnterWorktree') })
@@ -137,16 +125,14 @@ test('the stopped list keeps the newest ids', () => {
   expect(withStopped(many, 'new')[0]).toBe('tu1')
 })
 
-test('only always mode on the default branch, outside a worktree, has a note', () => {
-  expect(noteFor('always', MAIN)).toContain('EnterWorktree')
-  expect(noteFor('ask', MAIN)).toBeNull()
-  expect(noteFor('never', MAIN)).toBeNull()
-  expect(noteFor('always', { ...MAIN, branch: 's-1' })).toBeNull()
-  expect(noteFor('always', { ...MAIN, isLinked: true })).toBeNull()
-  expect(noteFor('always', { ...MAIN, branch: undefined })).toBeNull()
+test('only the default branch, outside a worktree, has a note', () => {
+  expect(noteFor(MAIN)).toContain('EnterWorktree')
+  expect(noteFor({ ...MAIN, branch: 's-1' })).toBeNull()
+  expect(noteFor({ ...MAIN, isLinked: true })).toBeNull()
+  expect(noteFor({ ...MAIN, branch: undefined })).toBeNull()
 })
 
-test('in always mode a prompt on main tells Claude to move first, until it has moved', { options: { mode: 'always' } }, async ($, on) => {
+test('a prompt on main tells Claude to move first, until it has moved', async ($, on) => {
   const git = { now: ON_MAIN }
   engine(on, git)
   const first = await $.prompt.submit(prompt('Fix the band'))
@@ -156,23 +142,18 @@ test('in always mode a prompt on main tells Claude to move first, until it has m
   expect((await $.prompt.submit(prompt('And the pane'))).context).toBeUndefined()
 })
 
-test('in always mode the note keeps coming after a stop, while the session is still on main', { options: { mode: 'always' } }, async ($, on) => {
+test('the note keeps coming after a stop, while the session is still on main', async ($, on) => {
   engine(on, { now: ON_MAIN })
   await $.tool.call(edit('/repo/a.ts'))
   expect((await $.prompt.submit(prompt('Go on'))).context).toEqual([expect.stringContaining('call EnterWorktree')])
 })
 
-test('ask mode adds no note', async ($, on) => {
-  engine(on, { now: ON_MAIN })
-  expect((await $.prompt.submit(prompt('Fix it'))).context).toBeUndefined()
-})
-
-test('a feature branch in always mode adds no note', { options: { mode: 'always' } }, async ($, on) => {
+test('a feature branch adds no note', async ($, on) => {
   engine(on, { now: { ...ON_MAIN, branch: 's-1' } })
   expect((await $.prompt.submit(prompt('Fix it'))).context).toBeUndefined()
 })
 
-test('each stopped edit draws as a dim note, and other rows as the engine draws them', { options: { mode: 'always' } }, async ($, on) => {
+test('each stopped edit draws as a dim note, and other rows as the engine draws them', async ($, on) => {
   engine(on, { now: ON_MAIN })
   await $.tool.call(edit('/repo/a.ts', 'tu1'))
   await $.tool.call(edit('/repo/a.ts', 'tu3'))
@@ -192,7 +173,7 @@ test('each stopped edit draws as a dim note, and other rows as the engine draws 
   }
 })
 
-test('when git fails the prompt goes in unchanged', { options: { mode: 'always' } }, async ($, on) => {
+test('when git fails the prompt goes in unchanged', async ($, on) => {
   on('session.cwd', async () => ({ value: '/repo' }))
   on('process.run', async () => {
     throw new Error('git is missing')

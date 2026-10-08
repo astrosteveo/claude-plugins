@@ -3,7 +3,7 @@
   "name": "worktree",
   "displayName": "Worktree",
   "version": "0.3.0",
-  "description": "Asks once, before Claude's first edit on the default branch, whether to move the work into a git worktree.",
+  "description": "Keeps Claude's edits off the default branch: Claude moves into a git worktree before its first edit.",
   "author": {
     "name": "astrosteveo"
   },
@@ -18,12 +18,11 @@
   ],
   "types": "./types/index.d.ts",
   "userConfig": {
-    "mode": {
-      "type": "string",
-      "title": "Before the first edit on the default branch",
-      "description": "ask: Claude asks you whether to use a worktree. always: Claude moves into a worktree. never: nothing happens.",
-      "options": ["ask", "always", "never"],
-      "default": "ask"
+    "enabled": {
+      "type": "boolean",
+      "title": "Keep edits off the default branch",
+      "description": "On: Claude moves into a git worktree before editing, and edits on the default branch are stopped. Off: nothing is stopped; the /wt pane still works.",
+      "default": true
     }
   }
 }

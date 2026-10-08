@@ -1,32 +1,25 @@
 # Worktree
 
-Asks once, before Claude's first edit on the default branch, whether to do
-the work in a git worktree instead. This keeps changes off `main` without
-you having to remember to say so. It also adds a `/wt` pane to see, switch
+Keeps Claude's edits off the default branch. Before Claude changes a file,
+it moves the session into a git worktree, so `main` stays clean without you
+having to remember to say so. It also adds a `/wt` pane to see, switch
 between, create and leave worktrees.
 
-## Before the first edit
+## How edits are kept off main
 
-When Claude is about to change a file (with Edit, MultiEdit, Write or
-NotebookEdit) in a checkout of the default branch, the edit is stopped once.
+While the session is on the default branch, each prompt carries a note
+Claude reads but you don't see. It tells Claude to move into a worktree,
+with Claude Code's own `EnterWorktree` tool, before its first edit. A prompt
+that needs no edits doesn't move the session.
+
+If Claude tries to change a file there anyway (with Edit, MultiEdit, Write or
+NotebookEdit), the edit is stopped, and Claude is told to move and make it
+again in the worktree. Every such edit is stopped until Claude moves. The
+stopped edit's row says `○ Edit stopped to move into a worktree first` in
+dim text, instead of showing a red error.
+
 The default branch is the one `origin/HEAD` points at. If the repository has
 no `origin/HEAD`, `main` and `master` count as the default.
-
-Claude then asks you, with the usual question dialog, whether to use a
-worktree. If you say yes, Claude moves the session into a new worktree with
-Claude Code's own `EnterWorktree` tool and makes the edit there. If you say
-no, Claude makes the edit where it is. Either way, only one edit is stopped
-per session.
-
-The stopped edit's row says so in dim text, such as `○ Edit stopped once to
-ask about a worktree first`, instead of showing a red error.
-
-With the `always` setting, nothing is asked and every edit on the default
-branch is stopped until Claude has moved into a worktree. Claude usually
-moves before it is ever stopped: while the session is on the default branch,
-each prompt carries a note Claude reads but you don't see, telling it to
-move before its first edit. A prompt that needs no edits doesn't move the
-session.
 
 Nothing is stopped:
 
@@ -70,12 +63,12 @@ from the start.
 
 Set under `/config`.
 
-- `mode` (default `ask`): what happens before the first edit on the default
-  branch.
-  - `ask`: Claude asks you whether to use a worktree.
-  - `always`: Claude moves into a worktree without asking. No edit lands
-    on the default branch.
-  - `never`: nothing is stopped. The `/wt` pane still works.
+- `enabled` (default on): keep edits off the default branch. Turn it off
+  and nothing is stopped or added to your prompts. The `/wt` pane still
+  works.
+
+Versions before 0.3.0 had a `mode` setting with an `ask` choice. It is gone:
+isolation is either on or off. An old `mode` value is ignored.
 
 ## Requirements
 

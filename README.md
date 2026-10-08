@@ -11,7 +11,7 @@ Every plugin here is a mod: TypeScript hooks that draw inside Claude Code and re
 | [usage](plugins/usage) | Context fill, cost and rate limits in a band above the prompt, each turn's tokens and cost on its closing line, and a `/spend` pane. |
 | [gutter](plugins/gutter) | A time column in the transcript: when you sent each prompt, how long each tool ran, and each folded group's total. |
 | [minimap](plugins/minimap) | The session as a strip of colored cells above the prompt: what each turn did, what it cost, and where it failed. |
-| [worktree](plugins/worktree) | Asks once, before Claude's first edit on the default branch, whether to work in a git worktree. Adds a `/wt` pane. |
+| [worktree](plugins/worktree) | Keeps Claude's edits off the default branch: Claude moves into a git worktree before its first edit. Adds a `/wt` pane. |
 | [backlog](https://github.com/astrosteveo/backlog) | A project tracker stored outside your repo, with a board pane, tools for Claude and a local web app. |
 
 backlog lives in its own repository. This marketplace points at a pinned commit of it.
