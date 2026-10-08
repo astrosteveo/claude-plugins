@@ -78,8 +78,10 @@ plugins/<name>/
 - Every `userConfig` field must be a kind `/config` can show as a row: boolean, number, text, or a choice of strings.
   `scripts/config-rows.test.mjs` checks this.
 - TypeScript runs as source. Never commit compiled `.js` next to it; `validate.sh` fails if you do.
-- Claude Code writes `.claude-plugin/types/` each time the mod loads, and git ignores it. Switching branches can
-  leave a plugin folder that holds only these files, which fails `validate.sh`. Delete such a folder.
+- Claude Code writes `.claude-plugin/types/` when an interactive session loads the mod from its folder, and git
+  ignores it. `claude -p` never writes it, so `typecheck.sh` loads each mod in an interactive session of its own.
+  Switching branches can leave a plugin folder that holds only these files, which fails `validate.sh`. Delete such a
+  folder.
 
 ## Tests
 
