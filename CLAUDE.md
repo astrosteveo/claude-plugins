@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A Claude Code plugin marketplace (`astrosteveo-plugins`). Each plugin under `plugins/` is a **mod**: a plugin of
 function hooks written in TypeScript/TSX that draws panes, bands and hint text inside Claude Code and hooks its events.
-The plugins are `ask` and `usage`. The issue board that used to live here has moved to its own repository. Load the
+The plugins are `ask`, `usage` and `gutter`. The issue board that used to live here has moved to its own repository. Load the
 `plugin-authoring` skill before writing or debugging hooks: it points at this build's full API typings
 (`claude-code.d.ts`), which are the reference for every event, `$` method and element prop.
 
@@ -48,7 +48,7 @@ After changing a plugin, or after merging and pulling `main`, the person runs `/
   engine. Put new deciding, layout or text logic there when it can be tested without mounting a pane. Each file is
   imported by name; there is no barrel.
   - ask: `parse.ts` and `decide.ts`.
-  - usage: `format.ts`.
+  - usage and gutter: `format.ts`.
 - `types/index.d.ts` is the plugin's state contract: every `$.state` atom (`atom({ plugin, key })`) is declared there
   under the plugin's name, and `claude plugin validate` holds the module's keys to it. Add a key there when adding an
   atom. Shared value types (`Turn`, `Measure`, `Ask`…) live there too.

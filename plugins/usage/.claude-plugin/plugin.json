@@ -2,8 +2,8 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "usage",
   "displayName": "Usage",
-  "version": "0.1.1",
-  "description": "Context fill, cost and rate limits in a band above the prompt, and each turn's tokens and cache hits in a /spend pane.",
+  "version": "0.2.0",
+  "description": "Context fill, cost and rate limits in a band above the prompt, each turn's tokens and cost on the line that closes it, and a /spend pane.",
   "author": {
     "name": "astrosteveo"
   },

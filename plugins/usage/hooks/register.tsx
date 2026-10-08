@@ -2,13 +2,14 @@ import { atom, read, update } from 'claude-code'
 import type { Caught, EngineInterface, HookFailure, Register } from 'claude-code'
 
 import type { Turn } from '../types'
-import { HEADER, bandParts, colorOf, columns, crossings, levelOf, limitName, measureOf, resetIn, rowCells, tokens, totals, usd, withTurn } from './format'
+import { HEADER, bandParts, colorOf, columns, crossings, duration, levelOf, limitName, measureOf, resetIn, rowCells, tokens, totals, turnFigures, turnOf, usd, withCost, withTurn } from './format'
 
 const PANE = 'usage'
 const COMMAND = 'spend'
 const measure = atom({ plugin: 'usage', key: 'measure' } as const, null)
 const turns = atom({ plugin: 'usage', key: 'turns' } as const, [])
 const warned = atom({ plugin: 'usage', key: 'warned' } as const, [])
+const start = atom({ plugin: 'usage', key: 'start' } as const, null)
 
 const openPane = ($: EngineInterface) => $.ui.open({ id: PANE, title: 'Usage' })
 
@@ -47,6 +48,21 @@ export const register: Register = on => {
     const crossed = crossings(now, await read($, warned))
     await update($, warned, () => crossed.warned)
     for (const text of crossed.toasts) $.ui.toast(text)
+    // The first measurement after a turn prices it.
+    const priced = withCost(await read($, turns), await read($, start), now.usd)
+    if (priced !== null) {
+      await update($, turns, () => priced)
+      await update($, start, () => null)
+    }
+
+    return next(e)
+  })
+
+  // Only the main loop raises turn.start, so this is the cost before one of
+  // the person's own turns.
+  on('turn.start', async ($, e, next) => {
+    const { cost } = await $.session.usage()
+    if (cost !== undefined) await update($, start, () => ({ turnId: e.turnId, usd: cost.usd }))
 
     return next(e)
   })
@@ -56,6 +72,7 @@ export const register: Register = on => {
   on('turn.complete', async ($, e, next) => {
     if (e.agentId === undefined && e.usage !== undefined) {
       const turn: Turn = {
+        turnId: e.turnId,
         at: await $.clock.now(),
         model: e.usage.model,
         input: e.usage.input_tokens,
@@ -73,8 +90,7 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
-    const list = await read($, turns)
-    const parts = bandParts(await read($, measure), list.at(-1))
+    const parts = bandParts(await read($, measure))
     if (parts.length === 0) return next(e)
     const { Box, Text } = $.ui.resolve(e)
 
@@ -84,6 +100,27 @@ export const register: Register = on => {
           <Text key={part.key} dimColor={part.level === 'ok'} color={colorOf(part.level)}>
             {i === 0 ? '' : ' · '}
             {part.text}
+          </Text>
+        ))}
+      </Box>
+    )
+  })
+
+  // The line that closes a turn, `Baked for 12s`, with what the turn took.
+  on('ui.render', { component: 'TurnDuration' }, async ($, e, next) => {
+    const turn = turnOf(await read($, turns), e.props.durationMs)
+    if (turn === undefined) return next(e)
+    const { Box, Text } = $.ui.resolve(e)
+
+    return (
+      <Box key="turn" flexDirection="row" flexWrap="wrap">
+        <Text dimColor>
+          ✻ {e.props.word} for {duration(e.props.durationMs)}
+        </Text>
+        {turnFigures(turn).map(figure => (
+          <Text key={figure.key} color={figure.key === 'usd' ? 'claude' : 'subtle'} dimColor={figure.key !== 'usd'}>
+            {' · '}
+            {figure.text}
           </Text>
         ))}
       </Box>
@@ -128,7 +165,7 @@ export const register: Register = on => {
               </Text>
             ))}
             <Text key="totals" bold>
-              {columns([`${sum.turns} turns`, tokens(sum.input), tokens(sum.cacheRead), tokens(sum.cacheWrite), tokens(sum.output), sum.hit === null ? '-' : `${sum.hit}%`, ''])}
+              {columns([`${sum.turns} turns`, tokens(sum.input), tokens(sum.cacheRead), tokens(sum.cacheWrite), tokens(sum.output), sum.hit === null ? '-' : `${sum.hit}%`, '', ''])}
             </Text>
           </Box>
         )}

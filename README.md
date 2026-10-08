@@ -9,6 +9,7 @@ maintained by astrosteveo.
 | --- | --- |
 | [ask](plugins/ask) | Ask Claude a side question in a pane, and get Claude's own pick, remembered answers and a decision log when Claude asks you. |
 | [usage](plugins/usage) | Context fill, cost and rate limits in a band above the prompt, each turn's tokens and cost on the line that closes it, and a `/spend` pane. |
+| [gutter](plugins/gutter) | A time column at the right of the transcript: when you sent each prompt, how long each tool ran, and each folded group's total. |
 
 The issue board that used to live here has moved to its own repository.
 
