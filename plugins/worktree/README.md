@@ -17,9 +17,27 @@ Nothing is stopped:
 - for files outside the repository, such as Claude's memory or a scratch folder
 - for a subagent's edits
 
+## The /wt pane
+
+`/wt` lists the repository's worktrees: the main checkout, each worktree's
+branch, and whether it has uncommitted changes, is locked, or has lost its
+folder. A dot marks the one the session is in.
+
+- **Switch** moves the session into another worktree.
+- **New worktree** makes one with the name you type and moves into it. It
+  is offered while you are in the main checkout.
+- **Leave, keep it** takes the session back to where it started and keeps
+  the worktree on disk.
+- **Leave and remove it** also deletes the worktree and its branch. Claude
+  Code refuses if it holds uncommitted changes or unmerged commits.
+
+Leaving and removing only work for a worktree this session made or entered
+with Claude Code's own tools. A refusal shows as a toast. The name field
+isn't drawn on mobile.
+
 The mod creates no worktrees itself. Moving in and out is left to Claude
-Code's own tools, with their safety checks. `claude -w` still starts a
-session in a worktree from the start.
+Code's own `EnterWorktree` and `ExitWorktree` tools, with their safety
+checks. `claude -w` still starts a session in a worktree from the start.
 
 ## Settings
 
