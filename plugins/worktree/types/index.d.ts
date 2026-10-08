@@ -26,6 +26,8 @@ declare module 'claude-code' {
       rows: Row[]
       // The top folder of the checkout the session is in, as last read.
       here: string | null
+      // The id of the edit that was stopped, so its row draws as a note.
+      stopped: string | null
     }
   }
 }

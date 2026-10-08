@@ -18,6 +18,15 @@ Claude Code's own `EnterWorktree` tool and makes the edit there. If you say
 no, Claude makes the edit where it is. Either way, only one edit is stopped
 per session.
 
+The stopped edit's row says so in dim text, such as `○ Edit stopped once to
+ask about a worktree first`, instead of showing a red error.
+
+With the `always` setting, Claude usually never gets stopped. While the
+session is on the default branch, each prompt carries a note Claude reads
+but you don't see. It tells Claude to move into a worktree before its first
+edit. A prompt that needs no edits doesn't move the session. If Claude edits
+without moving anyway, the edit is stopped as above.
+
 Nothing is stopped:
 
 - on any other branch, on a detached head, or inside a worktree

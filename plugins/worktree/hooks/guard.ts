@@ -43,6 +43,19 @@ export const reasonFor = (mode: Mode, checkout: Checkout, path: string): string 
   return `${where} Before the first edit, ask the person with AskUserQuestion whether to do this work in a git worktree instead. If they choose the worktree, call EnterWorktree with a short name for the task and make the edit inside it, with its paths. If they choose to stay, make the same edit again here. This edit is the only one stopped this session.`
 }
 
+// The note a prompt carries in always mode while the session sits on the
+// default branch, so Claude moves before it writes an edit that would be
+// stopped; null when no note is due.
+export const noteFor = (mode: Mode, checkout: Checkout): string | null => {
+  if (mode !== 'always' || checkout.isLinked || !isDefault(checkout)) return null
+  return `This session is on ${checkout.branch}, the default branch of ${checkout.top}. The person's worktree setting is "always": before your first edit to a file in this repository, call EnterWorktree with a short name for the task, then make your edits inside the worktree, with its paths. A prompt that needs no edits needs no worktree.`
+}
+
+// What the stopped edit's row says in place of the refusal, which reads as an
+// error though nothing went wrong.
+export const stoppedLabelOf = (mode: Mode): string =>
+  mode === 'always' ? 'stopped once to move into a worktree first' : 'stopped once to ask about a worktree first'
+
 // `git rev-parse` output, one answer per line, into a Checkout. The lines are
 // the top folder, the branch (`HEAD` when detached), the git folder and the
 // common git folder.

@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Caught, EngineInterface, HookFailure, Register } from 'claude-code'
 
 import type { Mode, Row } from '../types'
-import { checkoutOf, mayStop, pathOf, reasonFor } from './guard'
+import { checkoutOf, mayStop, noteFor, pathOf, reasonFor, stoppedLabelOf } from './guard'
 import { isWorktreeName, labelOf, outcomeOf, parseWorktrees } from './worktrees'
 
 const PANE = 'worktree'
@@ -11,6 +11,7 @@ const COMMAND = 'wt'
 const asked = atom({ plugin: 'worktree', key: 'asked' } as const, false)
 const rows = atom({ plugin: 'worktree', key: 'rows' } as const, [])
 const here = atom({ plugin: 'worktree', key: 'here' } as const, null)
+const stopped = atom({ plugin: 'worktree', key: 'stopped' } as const, null)
 
 const failureOf = (error: HookFailure): string => (error.kind === 'timeout' ? 'ran out of time' : (error.message ?? 'threw'))
 
@@ -67,8 +68,33 @@ export const register: Register = (on, options) => {
     const reason = checkout === null ? null : reasonFor(mode, checkout, path)
     if (reason === null) return next(e)
     await update($, asked, () => true)
+    await update($, stopped, () => e.tool_use_id)
     return { deny: reason }
   }).catch(($, e, next) => fallBack($, e, next, 'tool.call'))
+
+  // In always mode each prompt on the default branch tells Claude to move
+  // first, so the first edit is made in the worktree and never stopped. The
+  // stop above stays for a Claude that does not.
+  on('prompt.submit', async ($, e, next) => {
+    if (mode !== 'always' || (await read($, asked))) return next(e)
+    const checkout = await checkoutNow($)
+    const note = checkout === null ? null : noteFor(mode, checkout)
+    return next(note === null ? e : { ...e, context: [...(e.context ?? []), note] })
+  }).catch(($, e, next) => fallBack($, e, next, 'prompt.submit'))
+
+  // The stopped edit draws as a dim note, not a red error: the stop is the
+  // plugin working, and Claude makes the edit again.
+  on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
+    if (e.props.tool_use_id !== (await read($, stopped))) return next(e)
+    const { Text } = $.ui.resolve(e)
+    return <Text dimColor>{`○ ${e.props.tool} ${stoppedLabelOf(mode)}`}</Text>
+  })
+
+  on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
+    if (e.props.tool_use_id !== (await read($, stopped))) return next(e)
+    const { Text } = $.ui.resolve(e)
+    return <Text dimColor>{'  ⎿ Claude makes the edit again.'}</Text>
+  })
 
   on('session.start', async ($, e, next) => {
     // A built-in /wt would win, so the pane then goes without a command. A

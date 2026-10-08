@@ -1,7 +1,7 @@
 import type { On } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 
-import { checkoutOf, isInside, mayStop, pathOf, reasonFor } from '../hooks/guard'
+import { checkoutOf, isInside, mayStop, noteFor, pathOf, reasonFor } from '../hooks/guard'
 import type { Checkout } from '../hooks/guard'
 
 const MAIN: Checkout = { top: '/repo', branch: 'main', defaultBranch: 'main', isLinked: false }
@@ -33,9 +33,17 @@ function engine(on: On, git: { now: Git }, ran: string[] = []) {
     return { result: {} } as never
   })
   on('ui.log', async () => ({ value: undefined }))
+  on('prompt.submit', async (_$, e) => ({ text: e.text, context: e.context }))
+  on('ui.render', async ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>engine row</Text>
+  })
 }
 
-const edit = (path: string) => ({ tool: 'Edit', file_path: path, old_string: 'a', new_string: 'b' }) as never
+const edit = (path: string, id = 'tu1') => ({ tool: 'Edit', tool_use_id: id, file_path: path, old_string: 'a', new_string: 'b' }) as never
+const ORIGIN = { kind: 'composer' } as const
+const prompt = (text: string) => ({ text, wait: false, origin: ORIGIN })
+const ROW = { tool_use_id: 'tu1', tool: 'Edit', input: {}, isRunning: false, isErrored: true, isInterrupted: false } as const
 
 test('git output reads as a checkout', () => {
   expect(checkoutOf('/repo\nmain\n/repo/.git\n/repo/.git\n', 'origin/main\n')).toEqual(MAIN)
@@ -116,4 +124,68 @@ test('when git fails the edit goes through', async ($, on) => {
   })
   expect((await $.tool.call(edit('/repo/a.ts'))).deny).toBeUndefined()
   expect(logged.some(line => line.startsWith('worktree: tool.call failed'))).toBe(true)
+})
+
+test('only always mode on the default branch, outside a worktree, has a note', () => {
+  expect(noteFor('always', MAIN)).toContain('EnterWorktree')
+  expect(noteFor('ask', MAIN)).toBeNull()
+  expect(noteFor('never', MAIN)).toBeNull()
+  expect(noteFor('always', { ...MAIN, branch: 's-1' })).toBeNull()
+  expect(noteFor('always', { ...MAIN, isLinked: true })).toBeNull()
+  expect(noteFor('always', { ...MAIN, branch: undefined })).toBeNull()
+})
+
+test('in always mode a prompt on main tells Claude to move first, until it has moved', { options: { mode: 'always' } }, async ($, on) => {
+  const git = { now: ON_MAIN }
+  engine(on, git)
+  const first = await $.prompt.submit(prompt('Fix the band'))
+  expect(first.context).toEqual([expect.stringContaining('call EnterWorktree')])
+  expect(first.text).toBe('Fix the band')
+  git.now = { top: '/repo/.claude/worktrees/fix', branch: 'worktree-fix', gitDir: '/repo/.git/worktrees/fix', commonDir: '/repo/.git' }
+  expect((await $.prompt.submit(prompt('And the pane'))).context).toBeUndefined()
+})
+
+test('in always mode no note comes once the edit was stopped', { options: { mode: 'always' } }, async ($, on) => {
+  engine(on, { now: ON_MAIN })
+  await $.tool.call(edit('/repo/a.ts'))
+  expect((await $.prompt.submit(prompt('Go on'))).context).toBeUndefined()
+})
+
+test('ask mode adds no note', async ($, on) => {
+  engine(on, { now: ON_MAIN })
+  expect((await $.prompt.submit(prompt('Fix it'))).context).toBeUndefined()
+})
+
+test('a feature branch in always mode adds no note', { options: { mode: 'always' } }, async ($, on) => {
+  engine(on, { now: { ...ON_MAIN, branch: 's-1' } })
+  expect((await $.prompt.submit(prompt('Fix it'))).context).toBeUndefined()
+})
+
+test('the stopped edit draws as a dim note, and other rows as the engine draws them', { options: { mode: 'always' } }, async ($, on) => {
+  engine(on, { now: ON_MAIN })
+  await $.tool.call(edit('/repo/a.ts', 'tu1'))
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const row = await $.ui.mount({ plugin: 'worktree', surface, component: 'ToolUse', requestId: 'tu1', props: ROW })
+    expect(await row.find({ type: 'Text', text: '○ Edit stopped once to move into a worktree first' })).toMatchObject({ props: { dimColor: true } })
+    expect(await row.find({ type: 'Text', text: 'engine row' })).toBeUndefined()
+    await row.unmount()
+    const result = await $.ui.mount({ plugin: 'worktree', surface, component: 'ToolResult', requestId: 'tu1', props: { tool_use_id: 'tu1', tool: 'Edit', output: 'refused', isErrored: true } as never })
+    expect(await result.find({ type: 'Text', text: '  ⎿ Claude makes the edit again.' })).toMatchObject({ props: { dimColor: true } })
+    await result.unmount()
+    const other = await $.ui.mount({ plugin: 'worktree', surface, component: 'ToolUse', requestId: 'tu2', props: { ...ROW, tool_use_id: 'tu2' } })
+    expect(await other.find({ type: 'Text', text: 'engine row' })).toBeDefined()
+    await other.unmount()
+  }
+})
+
+test('when git fails the prompt goes in unchanged', { options: { mode: 'always' } }, async ($, on) => {
+  on('session.cwd', async () => ({ value: '/repo' }))
+  on('process.run', async () => {
+    throw new Error('git is missing')
+  })
+  on('prompt.submit', async (_$, e) => ({ text: e.text, context: e.context }))
+  on('ui.log', async () => ({ value: undefined }))
+  const entered = await $.prompt.submit(prompt('Fix it'))
+  expect(entered).toMatchObject({ text: 'Fix it' })
+  expect(entered.context).toBeUndefined()
 })
