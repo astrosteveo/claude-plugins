@@ -1,0 +1,21 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "meter",
+  "displayName": "Meter",
+  "version": "0.1.0",
+  "description": "The spinner says what the turn is doing (reading, editing, testing or stuck) and how long since a file last changed, and the line that closes a turn says what it did.",
+  "author": {
+    "name": "astrosteveo"
+  },
+  "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/meter",
+  "repository": "https://github.com/astrosteveo/claude-plugins",
+  "license": "MIT",
+  "keywords": [
+    "mod",
+    "spinner",
+    "turn",
+    "progress",
+    "meter"
+  ],
+  "types": "./types/index.d.ts"
+}

@@ -11,6 +11,7 @@ Every plugin here is a mod: TypeScript hooks that draw inside Claude Code and re
 | [usage](plugins/usage) | Context fill, cost and rate limits in a band above the prompt, each turn's tokens and cost on its closing line, and a `/spend` pane. |
 | [gutter](plugins/gutter) | A time column in the transcript: when you sent each prompt, how long each tool ran, and each folded group's total. |
 | [minimap](plugins/minimap) | The session as a strip of colored cells above the prompt: what each turn did, what it cost, and where it failed. |
+| [meter](plugins/meter) | The spinner says what the turn is doing and how long since a file last changed, and the closing line says what the turn did. |
 | [backlog](https://github.com/astrosteveo/backlog) | A project tracker stored outside your repo, with a board pane, tools for Claude and a local web app. |
 
 backlog lives in its own repository. This marketplace points at a pinned commit of it.

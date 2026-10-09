@@ -13,6 +13,7 @@ function hooks that draw inside Claude Code and hook its events. `.claude-plugin
 | `usage` | Context, cost and rate limits in the band; each turn's figures on its closing line; the `/spend` pane |
 | `gutter` | A time column in the transcript: prompt times, tool run times, folded-group totals |
 | `minimap` | The session as a strip of colored cells in the band: each turn's kind, cost and failures |
+| `meter` | The spinner's words: each call's phase, files changed, a stuck turn; the closing line's summary of the turn |
 | `backlog` | The project tracker. It lives in its own repository (see below) |
 
 Load the `plugin-authoring` skill before writing or debugging hooks. It points at the API typings

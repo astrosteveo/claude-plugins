@@ -78,6 +78,23 @@
       ]
     },
     {
+      "name": "meter",
+      "source": "./plugins/meter",
+      "description": "The spinner says what the turn is doing (reading, editing, testing or stuck) and how long since a file last changed, and the line that closes a turn says what it did.",
+      "version": "0.1.0",
+      "author": {
+        "name": "astrosteveo"
+      },
+      "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/meter",
+      "category": "productivity",
+      "tags": [
+        "mod",
+        "spinner",
+        "turn",
+        "progress"
+      ]
+    },
+    {
       "name": "backlog",
       "source": {
         "source": "github",
