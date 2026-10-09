@@ -6,5 +6,24 @@
     "name": "astrosteveo",
     "url": "https://github.com/astrosteveo"
   },
-  "plugins": []
+  "plugins": [
+    {
+      "name": "gauge",
+      "source": "./plugins/gauge",
+      "description": "Context, cost and rate limits in the footer, warnings at thresholds you set, a compact helper, and /gauge for per-turn figures, the context breakdown and spend history.",
+      "version": "0.1.1",
+      "author": {
+        "name": "astrosteveo"
+      },
+      "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/gauge",
+      "category": "productivity",
+      "tags": [
+        "mod",
+        "usage",
+        "context",
+        "tokens",
+        "cost"
+      ]
+    }
+  ]
 }
