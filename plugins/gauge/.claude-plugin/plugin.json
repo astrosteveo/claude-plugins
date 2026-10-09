@@ -2,8 +2,8 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "gauge",
   "displayName": "Gauge",
-  "version": "0.1.0",
-  "description": "Context, cost and rate limits in the status line, warnings at thresholds you set, a compact helper, and /gauge for per-turn figures, the context breakdown and spend history.",
+  "version": "0.1.1",
+  "description": "Context, cost and rate limits in the footer, warnings at thresholds you set, a compact helper, and /gauge for per-turn figures, the context breakdown and spend history.",
   "author": {
     "name": "astrosteveo"
   },

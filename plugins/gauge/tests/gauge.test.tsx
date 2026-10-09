@@ -4,20 +4,22 @@ import { expect, mock, test } from 'claude-code/testing'
 const NOW = new Date(2026, 9, 9, 12).getTime()
 const USAGE = { model: 'claude-opus-5-5', input_tokens: 200, output_tokens: 1_234, cache_read_input_tokens: 8_000, cache_creation_input_tokens: 1_800 }
 const TURN = { answer: 'Done.', durationMs: 12_400, isAborted: false, turnId: 't1', reason: 'answer' } as const
+const FOOTER = { component: 'SessionMode', props: { modes: ['focus'] } } as const
 const RUN = { origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
 
 // What the engine answers beneath the plugin, and what the plugin showed.
 function engine(on: On, { usage = { startedAt: 0, context: { window: 1_000_000 }, rateLimits: [], cost: { usd: 1 } } as SessionUsage } = {}) {
-  const seen = { toasts: [] as string[], status: [] as (string | undefined)[], compacts: 0, registered: [] as string[] }
+  const seen = { toasts: [] as string[], compacts: 0, registered: [] as string[] }
   const clock = mock.clock(on, { now: NOW })
   mock.store(on)
   on('ui.toast', async (_$, e) => {
     seen.toasts.push(e.text)
     return { value: undefined }
   })
-  on('ui.status', async (_$, e) => {
-    seen.status.push(e.text)
-    return { value: undefined }
+  on('ui.status', async () => ({ value: undefined }))
+  on('ui.render', { component: 'SessionMode' }, async (_$, e) => {
+    const { Text } = _$.ui.resolve(e)
+    return <Text dimColor>{e.props.modes.join(' & ')}</Text>
   })
   on('session.compact', async () => {
     seen.compacts++
@@ -44,7 +46,6 @@ function context(tokens: number, window = 1_000_000): SessionMeasureInput {
 test('the status line shows the figures and the token warning fires once per crossing', async ($, on) => {
   const { seen } = engine(on)
   await $.session.measure({ ...context(150_000), rateLimits: [{ kind: 'five_hour', percentUsed: 31 }], cost: { usd: 1 }, changed: ['context', 'cost', 'rateLimits'] })
-  expect(seen.status.at(-1)).toBe('ctx 150k/1M 15% · $1.00 · 5h 31%')
   expect(seen.toasts).toEqual([])
 
   await $.session.measure(context(205_000))
@@ -57,6 +58,26 @@ test('the status line shows the figures and the token warning fires once per cro
   await $.session.measure(context(220_000))
   expect(seen.toasts).toHaveLength(2)
   expect(seen.compacts).toBe(0)
+})
+
+test('the footer shows the figures beside the engine\'s modes, colored near their limits', async ($, on) => {
+  engine(on)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const quiet = await $.ui.mount({ plugin: 'gauge', surface, ...FOOTER })
+    expect(await quiet.find({ type: 'Text', text: /ctx/ })).toBeUndefined()
+    await quiet.unmount()
+  }
+
+  await $.session.measure({ ...context(250_000), rateLimits: [{ kind: 'five_hour', percentUsed: 31 }, { kind: 'seven_day', percentUsed: 97 }], cost: { usd: 2.38 }, changed: ['context', 'cost', 'rateLimits'] })
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const footer = await $.ui.mount({ plugin: 'gauge', surface, ...FOOTER })
+    expect(await footer.find({ type: 'Text', text: 'focus · ' })).toMatchObject({ props: { dimColor: true } })
+    expect(await footer.find({ type: 'Text', text: 'ctx 250k/1M 25%' })).toMatchObject({ props: { color: 'warning' } })
+    expect(await footer.find({ type: 'Text', text: '$2.38' })).toMatchObject({ props: { dimColor: true } })
+    expect(await footer.find({ type: 'Text', text: '5h 31%' })).toMatchObject({ props: { dimColor: true } })
+    expect(await footer.find({ type: 'Text', text: '7d 97%' })).toMatchObject({ props: { color: 'error' } })
+    await footer.unmount()
+  }
 })
 
 test('each threshold is configurable', { options: { warnTokens: 100_000, compact: 'off', limitPercent: 80 } }, async ($, on) => {

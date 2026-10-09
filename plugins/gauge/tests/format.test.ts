@@ -36,3 +36,12 @@ test('the turn table lists newest first with a totals row', () => {
   expect(lines[2]).toMatch(/^opus-5-5 .* \$0\.04 +12s/)
   expect(lines[3]).toMatch(/^2 turns +400 +16k +3\.6k +2\.5k +80% +\$0\.04/)
 })
+
+test('each figure is yellow past its warning and red nearly full', () => {
+  const lines = { warnTokens: 200_000, warnPercent: 85, limitPercent: 90 }
+  const levels = (tokens: number, percent: number, used: number) =>
+    fmt.statusParts({ tokens, window: 1_000_000, percent, limits: [{ kind: 'five_hour', percentUsed: used }] }, lines).map(p => p.level)
+  expect(levels(150_000, 15, 50)).toEqual(['ok', 'ok'])
+  expect(levels(250_000, 25, 91)).toEqual(['warn', 'warn'])
+  expect(levels(960_000, 96, 99)).toEqual(['high', 'high'])
+})

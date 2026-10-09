@@ -134,7 +134,7 @@ export const register: Register = (on, options) => {
         description: 'Context, cost and rate limits; /gauge context for the breakdown, /gauge history for spend by day',
       })
     } catch {
-      // A clash with another command leaves the status line and toasts working.
+      // A clash with another command leaves the footer and toasts working.
     }
     const usage = await $.session.usage()
     const m = toMeasure(usage)
@@ -143,7 +143,8 @@ export const register: Register = (on, options) => {
     // earlier spend is not counted twice. A reload keeps what it banked.
     const { version } = await $.state.get({ plugin: 'gauge', key: 'banked' })
     if (version === 0) await update($, banked, () => m.usd ?? 0)
-    $.ui.status(fmt.statusLine(m) || undefined)
+    // The figures draw in the footer; clear the notice an earlier version pinned.
+    $.ui.status(undefined)
     await pruneHistory($, s.historyDays).catch(() => {})
 
     return result
@@ -195,7 +196,6 @@ export const register: Register = (on, options) => {
   on('session.measure', async ($, e, next) => {
     const m = toMeasure(e)
     await update($, measure, () => m)
-    $.ui.status(fmt.statusLine(m) || undefined)
 
     if (e.changed.includes('cost') && m.usd !== undefined) {
       await priceTurn($, m.usd)
@@ -219,6 +219,26 @@ export const register: Register = (on, options) => {
     }
 
     return next(e)
+  })
+
+  // The figures at the right of the footer, beside the engine's mode labels:
+  // dim, yellow past a warning threshold, red nearly full.
+  on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
+    const m = await read($, measure)
+    const parts = m === null ? [] : fmt.statusParts(m, s)
+    if (parts.length === 0) return next(e)
+    const { Box, Text } = $.ui.resolve(e)
+    const modes = e.props.modes.join(' & ')
+
+    return (
+      <Box>
+        {modes !== '' && <Text dimColor>{modes} · </Text>}
+        {parts.flatMap((p, i) => [
+          ...(i > 0 ? [<Text dimColor> · </Text>] : []),
+          p.level === 'ok' ? <Text dimColor>{p.text}</Text> : <Text color={p.level === 'high' ? 'error' : 'warning'}>{p.text}</Text>,
+        ])}
+      </Box>
+    )
   })
 
   on('command.run', { command: 'gauge' }, async ($, e) => {

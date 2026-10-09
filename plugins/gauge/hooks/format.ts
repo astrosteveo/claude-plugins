@@ -44,17 +44,44 @@ export function limit(l: Limit): string {
   return `${limitName(l.kind)} ${Math.round(l.percentUsed)}%`
 }
 
-// The status line: ctx 142k/200k 71% · $1.23 · 5h 31% · 7d 12%.
-export function statusLine(m: Measure): string {
-  const parts: string[] = []
+// How close a figure is to its limit: under its warning, past it, or nearly full.
+export type Level = 'ok' | 'warn' | 'high'
+export type Part = { text: string; level: Level }
+// The warning thresholds; 0 turns one off.
+export type Lines = { warnTokens: number; warnPercent: number; limitPercent: number }
+
+const FULL = 95
+
+function past(n: number | undefined, line: number): boolean {
+  return line > 0 && n !== undefined && n >= line
+}
+
+// The footer's figures, each with its level: ctx 142k/200k 71%, $1.23, 5h 31%.
+export function statusParts(m: Measure, lines: Lines): Part[] {
+  const parts: Part[] = []
   if (m.tokens !== undefined) {
     const pct = m.percent === undefined ? '' : ` ${Math.round(m.percent)}%`
-    parts.push(`ctx ${tokens(m.tokens)}/${tokens(m.window)}${pct}`)
+    const level: Level = past(m.percent, FULL)
+      ? 'high'
+      : past(m.tokens, lines.warnTokens) || past(m.percent, lines.warnPercent)
+        ? 'warn'
+        : 'ok'
+    parts.push({ text: `ctx ${tokens(m.tokens)}/${tokens(m.window)}${pct}`, level })
   }
-  if (m.usd !== undefined) parts.push(usd(m.usd))
-  for (const l of m.limits) parts.push(limit(l))
+  if (m.usd !== undefined) parts.push({ text: usd(m.usd), level: 'ok' })
+  for (const l of m.limits) {
+    const level: Level = l.percentUsed >= FULL ? 'high' : past(l.percentUsed, lines.limitPercent) ? 'warn' : 'ok'
+    parts.push({ text: limit(l), level })
+  }
 
-  return parts.join(' · ')
+  return parts
+}
+
+// The figures as one line: ctx 142k/200k 71% · $1.23 · 5h 31% · 7d 12%.
+export function statusLine(m: Measure): string {
+  return statusParts(m, { warnTokens: 0, warnPercent: 0, limitPercent: 0 })
+    .map(p => p.text)
+    .join(' · ')
 }
 
 // What share of a turn's input the prompt cache served, as a whole percent.

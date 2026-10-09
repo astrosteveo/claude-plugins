@@ -1,16 +1,18 @@
 # Gauge
 
-Gauge keeps track of how much context and usage a session spends. The status line shows the context, the cost and
-your rate-limit windows. Toasts warn you at thresholds you set. `/gauge` shows tokens and cost for each turn, what
+Gauge keeps track of how much context and usage a session spends. The right of the footer, under the prompt, shows
+the context, the cost and your rate-limit windows. Toasts warn you at thresholds you set. `/gauge` shows tokens and cost for each turn, what
 fills the context window, and your spend by day.
 
-## The status line
+## The footer
 
 ```
 ctx 142k/200k 71% · $1.23 · 5h 31% · 7d 12%
 ```
 
-The figures update after each reply, and when a rate-limit window moves. A figure with no reading yet is left out.
+The figures sit beside Claude Code's own mode labels at the right of the footer, and update after each reply and when a
+rate-limit window moves. A figure with no reading yet is left out. They are dim until a figure passes its warning
+threshold (below), which turns it yellow, and red from 95%.
 
 ## Warnings
 
