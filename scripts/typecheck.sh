@@ -31,6 +31,7 @@ write_typings() (
 
 status=0
 for plugin in plugins/*/; do
+  [ -d "$plugin" ] || continue
   plugin=${plugin%/}
   [ -f "$plugin/tsconfig.json" ] || continue
   echo "Type-checking plugin: $plugin"

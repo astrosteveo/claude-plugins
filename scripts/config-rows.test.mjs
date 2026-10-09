@@ -34,7 +34,7 @@ test('the field kinds map to /config rows as Claude Code draws them', () => {
   assert.ok(rowKindOf({ type: 'number', options: ['1'] }).none)
 })
 
-for (const name of readdirSync(plugins)) {
+for (const name of existsSync(plugins) ? readdirSync(plugins) : []) {
   const manifest = join(plugins, name, '.claude-plugin', 'plugin.json')
   if (!existsSync(manifest)) continue
   test(`every userConfig field of ${name} can be a /config row`, () => {

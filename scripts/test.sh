@@ -8,6 +8,7 @@ status=0
 echo "Checking userConfig fields"
 node --test scripts/config-rows.test.mjs || status=1
 for plugin in plugins/*/; do
+  [ -d "$plugin" ] || continue
   plugin=${plugin%/}
   [ -n "$(find "$plugin" -path "$plugin/node_modules" -prune -o \( -name '*.test.ts' -o -name '*.test.tsx' \) -print -quit)" ] || continue
   echo "Testing plugin: $plugin"
