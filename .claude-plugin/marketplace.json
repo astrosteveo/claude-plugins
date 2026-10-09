@@ -8,24 +8,6 @@
   },
   "plugins": [
     {
-      "name": "ask",
-      "source": "./plugins/ask",
-      "description": "Ask Claude a side question in a pane, and get Claude's own pick, remembered answers and a decision log when Claude asks you.",
-      "version": "0.3.4",
-      "author": {
-        "name": "astrosteveo"
-      },
-      "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/ask",
-      "category": "productivity",
-      "tags": [
-        "mod",
-        "ask",
-        "side-question",
-        "prompts",
-        "pane"
-      ]
-    },
-    {
       "name": "usage",
       "source": "./plugins/usage",
       "description": "Context fill, cost and rate limits in a band above the prompt, each turn's tokens and cost on the line that closes it, and a /spend pane.",
@@ -58,43 +40,6 @@
         "transcript",
         "timing",
         "tools"
-      ]
-    },
-    {
-      "name": "minimap",
-      "source": "./plugins/minimap",
-      "description": "The whole session as a strip of colored cells above the prompt: what each turn did, what it cost, and where it failed, and a /minimap pane.",
-      "version": "0.2.1",
-      "author": {
-        "name": "astrosteveo"
-      },
-      "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/minimap",
-      "category": "productivity",
-      "tags": [
-        "mod",
-        "transcript",
-        "minimap",
-        "cost"
-      ]
-    },
-    {
-      "name": "backlog",
-      "source": {
-        "source": "github",
-        "repo": "astrosteveo/backlog",
-        "sha": "8f713d91a3bf67c8f665f5fa922e4aa4590b3c6d"
-      },
-      "description": "A project tracker (milestones, epics, stories, tasks, bugs) stored outside your repo, with a board pane, Claude tools and a local web app.",
-      "author": {
-        "name": "astrosteveo"
-      },
-      "homepage": "https://github.com/astrosteveo/backlog",
-      "category": "productivity",
-      "tags": [
-        "mod",
-        "tracker",
-        "backlog",
-        "board"
       ]
     }
   ]
