@@ -1,0 +1,54 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "gauge",
+  "displayName": "Gauge",
+  "version": "0.1.0",
+  "description": "Context, cost and rate limits in the status line, warnings at thresholds you set, a compact helper, and /gauge for per-turn figures, the context breakdown and spend history.",
+  "author": {
+    "name": "astrosteveo"
+  },
+  "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/gauge",
+  "repository": "https://github.com/astrosteveo/claude-plugins",
+  "license": "MIT",
+  "keywords": ["mod", "usage", "context", "tokens", "cost", "rate-limits"],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "warnTokens": {
+      "type": "number",
+      "title": "Warn at context tokens",
+      "description": "A toast warns once when the context passes this many tokens. 0 turns it off.",
+      "default": 200000
+    },
+    "warnPercent": {
+      "type": "number",
+      "title": "Warn at context percent",
+      "description": "A toast warns once when the context passes this share of the window. 0 turns it off.",
+      "default": 85
+    },
+    "limitPercent": {
+      "type": "number",
+      "title": "Warn at rate-limit percent",
+      "description": "A toast warns once when a rate-limit window passes this share. 0 turns it off.",
+      "default": 90
+    },
+    "compact": {
+      "type": "string",
+      "title": "When the context passes the compact threshold",
+      "description": "off: nothing. suggest: a toast tells you to run /compact. auto: Gauge compacts the conversation once the turn has ended.",
+      "options": ["off", "suggest", "auto"],
+      "default": "suggest"
+    },
+    "compactTokens": {
+      "type": "number",
+      "title": "Compact threshold in tokens",
+      "description": "The context size the compact setting acts at. 0 uses the warning threshold.",
+      "default": 0
+    },
+    "historyDays": {
+      "type": "number",
+      "title": "Days of history to keep",
+      "description": "How many days of spend /gauge history keeps.",
+      "default": 90
+    }
+  }
+}
