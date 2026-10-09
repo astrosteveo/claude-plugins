@@ -43,7 +43,7 @@ function context(tokens: number, window = 1_000_000): SessionMeasureInput {
   return { context: { tokens, window, percent: Math.round((tokens / window) * 100) }, rateLimits: [], changed: ['context'] }
 }
 
-test('the status line shows the figures and the token warning fires once per crossing', async ($, on) => {
+test('the token warning fires once per crossing', async ($, on) => {
   const { seen } = engine(on)
   await $.session.measure({ ...context(150_000), rateLimits: [{ kind: 'five_hour', percentUsed: 31 }], cost: { usd: 1 }, changed: ['context', 'cost', 'rateLimits'] })
   expect(seen.toasts).toEqual([])

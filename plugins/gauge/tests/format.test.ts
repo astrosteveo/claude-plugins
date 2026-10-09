@@ -17,7 +17,7 @@ test('durations read short', () => {
   expect([3_200, 48_000, 125_000, 4_200_000].map(fmt.duration)).toEqual(['3.2s', '48s', '2m 5s', '1h 10m'])
 })
 
-test('the status line leaves out figures it has no reading for', () => {
+test('the figures leave out figures it has no reading for', () => {
   const full = { tokens: 142_000, window: 200_000, percent: 71, usd: 1.23, limits: [{ kind: 'five_hour', percentUsed: 31 }, { kind: 'seven_day', percentUsed: 12.4 }] }
   expect(fmt.statusLine(full)).toBe('ctx 142k/200k 71% · $1.23 · 5h 31% · 7d 12%')
   expect(fmt.statusLine({ window: 200_000, limits: [] })).toBe('')
