@@ -15,3 +15,5 @@ __pycache__/
 # Each person's own Claude Code settings for this repo
 .claude/settings.local.json
 
+# The roadmap tracker's database (binary, per checkout).
+.claude/roadmap.db*
