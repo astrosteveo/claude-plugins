@@ -24,6 +24,24 @@
         "tokens",
         "cost"
       ]
+    },
+    {
+      "name": "aside",
+      "source": "./plugins/aside",
+      "description": "Ask Claude for advice in a side pane without touching the session's context: any model, optional read-only tools, an ongoing side thread, cache-aware cost warnings, and a hand-off when an answer is worth keeping.",
+      "version": "0.1.0",
+      "author": {
+        "name": "astrosteveo"
+      },
+      "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/aside",
+      "category": "productivity",
+      "tags": [
+        "mod",
+        "advice",
+        "side-question",
+        "cache",
+        "cost"
+      ]
     }
   ]
 }
