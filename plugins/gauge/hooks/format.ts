@@ -104,8 +104,19 @@ function table(rows: string[][], right: boolean[]): string {
     .join('\n')
 }
 
+// How long until a time: 42m, 4h 10m, 6d 7h.
+export function until(at: string, now: number): string {
+  const ms = Date.parse(at) - now
+  if (!Number.isFinite(ms)) return at
+  const m = Math.max(0, Math.round(ms / 60_000))
+  if (m < 60) return `${m}m`
+  if (m < 1_440) return `${Math.floor(m / 60)}h ${m % 60}m`
+
+  return `${Math.floor(m / 1_440)}d ${Math.floor((m % 1_440) / 60)}h`
+}
+
 // The current figures, one per line.
-export function summary(m: Measure | null): string {
+export function summary(m: Measure | null, now: number): string {
   if (m === null) return 'No measurement yet: figures arrive after the first reply.'
   const lines: string[] = []
   if (m.tokens !== undefined) {
@@ -116,7 +127,7 @@ export function summary(m: Measure | null): string {
   }
   if (m.usd !== undefined) lines.push(`Cost      ${usd(m.usd)}`)
   for (const l of m.limits) {
-    lines.push(`${limitName(l.kind).padEnd(10)}${Math.round(l.percentUsed)}% used${l.resetsAt ? `, resets ${l.resetsAt}` : ''}`)
+    lines.push(`${limitName(l.kind).padEnd(10)}${Math.round(l.percentUsed)}% used${l.resetsAt ? `, resets in ${until(l.resetsAt, now)}` : ''}`)
   }
 
   return lines.join('\n')
@@ -143,7 +154,7 @@ export function turnTable(turns: Turn[], now: number): string {
   const cacheWrite = sum(t => t.cacheWrite)
   const priced = turns.filter(t => t.usd !== undefined)
   const total = [
-    `${turns.length} turns`,
+    turns.length === 1 ? '1 turn' : `${turns.length} turns`,
     tokens(input),
     tokens(cacheRead),
     tokens(cacheWrite),
@@ -165,7 +176,7 @@ export function breakdown(categories: readonly ContextCategory[], total: number,
   const rows = [...used, ...rest].map(c => [c.name, tokens(c.tokens), share(c.tokens)])
   const deferred = categories.filter(c => c.kind === 'deferred' && c.tokens > 0)
   const out = [
-    `Context ${tokens(total)} of ${tokens(max)} (${share(total)})`,
+    `context window, ${tokens(total)} of ${tokens(max)} (${share(total)})`,
     '',
     table(rows, [false, true, true]),
   ]

@@ -114,12 +114,13 @@ test('/gauge lists each turn with its tokens and cost, and history keeps the day
   await $.session.measure({ ...context(10_000), cost: { usd: 1.25 }, changed: ['context', 'cost'] })
 
   const ran = await $.command.run({ command: 'gauge', args: '', ...RUN })
-  expect(ran.text).toMatch(/Context +10k of 1M/)
+  expect(ran.text).toMatch(/^this session\n\nContext +10k of 1M/)
   expect(ran.text).toMatch(/Cost +\$1\.25/)
   expect(ran.text).toMatch(/opus-5-5 .* \$0\.25/)
   expect(ran.text).not.toMatch(/haiku/)
 
   const history = await $.command.run({ command: 'gauge', args: 'history', ...RUN })
+  expect(history.text).toMatch(/^spend, last 14 days\n/)
   expect(history.text).toMatch(/2026-10-09 +app +\$0\.25 +1 +20k +2\.5k/)
 })
 
@@ -137,7 +138,7 @@ test('/gauge context breaks the window down by category', async ($, on) => {
   engine(on, { usage: { startedAt: 0, context: { window: 200_000, breakdown }, rateLimits: [] } as unknown as SessionUsage })
   const ran = await $.command.run({ command: 'gauge', args: 'context', ...RUN })
   const lines = (ran.text ?? '').split('\n')
-  expect(lines[0]).toBe('Context 30k of 200k (15%)')
+  expect(lines[0]).toBe('context window, 30k of 200k (15%)')
   expect(lines[2]).toMatch(/^Messages +26k +13%$/)
   expect(lines[3]).toMatch(/^System prompt +4k +2%$/)
   expect(ran.text).toMatch(/Loaded on demand, outside the window: MCP tools 9k/)

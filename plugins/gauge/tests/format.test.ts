@@ -45,3 +45,16 @@ test('each figure is yellow past its warning and red nearly full', () => {
   expect(levels(250_000, 25, 91)).toEqual(['warn', 'warn'])
   expect(levels(960_000, 96, 99)).toEqual(['high', 'high'])
 })
+
+test('a reset reads as how long until it comes', () => {
+  const now = Date.parse('2026-10-09T23:00:00Z')
+  expect(fmt.until('2026-10-09T23:42:00Z', now)).toBe('42m')
+  expect(fmt.until('2026-10-10T04:50:00.000Z', now)).toBe('5h 50m')
+  expect(fmt.until('2026-10-16T03:00:00.000Z', now)).toBe('6d 4h')
+  expect(fmt.summary({ window: 1_000_000, limits: [{ kind: 'five_hour', percentUsed: 0, resetsAt: '2026-10-10T04:50:00.000Z' }] }, now)).toMatch(/5h +0% used, resets in 5h 50m/)
+})
+
+test('one turn is one turn', () => {
+  const turn = { turnId: 't1', at: 0, model: 'claude-opus-5-5', input: 4, cacheRead: 0, cacheWrite: 0, output: 1, ms: 1_000, isAborted: false }
+  expect(fmt.turnTable([turn], 0)).toMatch(/\n1 turn /)
+})

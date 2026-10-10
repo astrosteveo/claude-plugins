@@ -265,7 +265,7 @@ export const register: Register = (on, options) => {
         if (day !== undefined) days.push([key, day])
       }
 
-      return { text: fmt.history(days) }
+      return { text: `spend, last 14 days\n\n${fmt.history(days)}` }
     }
 
     if (what !== '') return { text: 'Usage: /gauge, /gauge context [full], /gauge history' }
@@ -273,6 +273,8 @@ export const register: Register = (on, options) => {
     const m = await read($, measure)
     const list = await read($, turns)
 
-    return { text: `${fmt.summary(m)}\n\n${fmt.turnTable(list.slice(-20), await $.clock.now())}` }
+    const now = await $.clock.now()
+
+    return { text: `this session\n\n${fmt.summary(m, now)}\n\n${fmt.turnTable(list.slice(-20), now)}` }
   })
 }
