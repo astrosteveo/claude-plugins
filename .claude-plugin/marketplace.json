@@ -11,7 +11,6 @@
       "name": "gauge",
       "source": "./plugins/gauge",
       "description": "Context, cost and rate limits in the footer, warnings at thresholds you set, a compact helper, and /gauge for per-turn figures, the context breakdown and spend history.",
-      "version": "0.1.2",
       "author": {
         "name": "astrosteveo"
       },
@@ -29,7 +28,6 @@
       "name": "aside",
       "source": "./plugins/aside",
       "description": "Ask Claude for advice in a side pane without touching the session's context: any model, optional read-only tools, an ongoing side thread, cache-aware cost warnings, and a hand-off when an answer is worth keeping.",
-      "version": "0.1.0",
       "author": {
         "name": "astrosteveo"
       },
