@@ -1,0 +1,72 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "aside",
+  "displayName": "Aside",
+  "version": "0.1.0",
+  "description": "Ask Claude for advice in a side pane without touching the session's context: any model, optional read-only tools, an ongoing side thread, cache-aware cost warnings, and a hand-off when an answer is worth keeping.",
+  "author": {
+    "name": "astrosteveo"
+  },
+  "homepage": "https://github.com/astrosteveo/claude-plugins/tree/main/plugins/aside",
+  "repository": "https://github.com/astrosteveo/claude-plugins",
+  "license": "MIT",
+  "keywords": [
+    "mod",
+    "advice",
+    "side-question",
+    "btw",
+    "cache",
+    "cost"
+  ],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "model": {
+      "type": "string",
+      "title": "Default model",
+      "description": "Who answers an aside. session: the session's own model, reading the session's prompt cache.",
+      "options": [
+        "session",
+        "fable",
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "default": "session"
+    },
+    "tools": {
+      "type": "boolean",
+      "title": "Read-only tools by default",
+      "description": "Let an aside read files, search and run read-only commands before it answers.",
+      "default": false
+    },
+    "confirmSwitch": {
+      "type": "boolean",
+      "title": "Confirm a pricier model",
+      "description": "Hold a question and ask first when the model you picked would cost more than the session's own model reading its cache.",
+      "default": true
+    },
+    "cacheTtl": {
+      "type": "string",
+      "title": "Session prompt-cache lifetime",
+      "description": "How long the session's prompt cache lives. auto reads it from the transcript's last cache write, or learns it from asides when the transcript is too big to read.",
+      "options": [
+        "auto",
+        "5m",
+        "1h"
+      ],
+      "default": "auto"
+    },
+    "transcriptTokens": {
+      "type": "number",
+      "title": "Conversation sent to another model, in tokens",
+      "description": "The most of the conversation, newest first, that an aside on another model reads.",
+      "default": 100000
+    },
+    "threadTurns": {
+      "type": "number",
+      "title": "Earlier asides each question carries",
+      "description": "How many earlier questions and answers of the side thread a new question carries.",
+      "default": 10
+    }
+  }
+}
