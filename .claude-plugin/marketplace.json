@@ -11,7 +11,7 @@
       "name": "gauge",
       "source": "./plugins/gauge",
       "description": "Context, cost and rate limits in the footer, warnings at thresholds you set, a compact helper, and /gauge for per-turn figures, the context breakdown and spend history.",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "author": {
         "name": "astrosteveo"
       },
